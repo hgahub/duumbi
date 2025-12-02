@@ -1,4 +1,6 @@
 {
+  "buildCommand": "npx nx build web --prod",
+  "outputDirectory": "dist/apps/web",
   "rewrites": [
     {
       "source": "/(.*)",
