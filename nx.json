@@ -75,12 +75,6 @@
       "inputs": ["production", "^production"]
     }
   },
-  "generators": {
-    "@nx/react": {
-      "library": {
-        "unitTestRunner": "jest"
-      }
-    }
-  },
-  "nxCloudId": "692e14a380aa1348e24a2417"
+  "generators": { "@nx/react": { "library": { "unitTestRunner": "jest" } } },
+  "nxCloudId": "692f0e1bf35d6c998e160941"
 }
