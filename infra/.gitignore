@@ -1,0 +1,22 @@
+# Pulumi stack state files
+Pulumi.*.yaml
+Pulumi.*.yaml.bak
+Pulumi.*.yaml.enc
+
+# Node modules
+node_modules/
+
+# Compiled JS
+bin/
+dist/
+*.js.map
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

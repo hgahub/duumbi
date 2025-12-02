@@ -1,0 +1,24 @@
+{
+  "name": "@duumbi/ts-models",
+  "targets": {
+    "test": {
+      "command": "node --localstorage-file=/tmp/jest-localstorage.db --no-warnings=ExperimentalWarning $(npx which jest)",
+      "options": {
+        "cwd": "libs/data/ts-models",
+        "env": {
+          "TS_NODE_COMPILER_OPTIONS": "{\"moduleResolution\":\"node10\",\"module\":\"commonjs\",\"customConditions\":null}"
+        }
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/jest.preset.js",
+        {
+          "externalDependencies": ["jest"]
+        }
+      ],
+      "outputs": ["{projectRoot}/test-output/jest/coverage"]
+    }
+  }
+}

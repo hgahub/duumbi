@@ -1,0 +1,44 @@
+{
+  "name": "backend",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/backend/src",
+  "targets": {
+    "serve": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run uvicorn src.main:app --reload",
+        "cwd": "apps/backend"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv build",
+        "cwd": "apps/backend"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run --extra dev pytest",
+        "cwd": "apps/backend"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run --extra dev ruff check .",
+        "cwd": "apps/backend"
+      }
+    },
+    "install": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv sync --extra dev",
+        "cwd": "apps/backend"
+      }
+    }
+  },
+  "tags": ["type:app", "lang:python"]
+}

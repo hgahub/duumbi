@@ -1,0 +1,33 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+default_stages: [pre-commit]
+
+repos:
+  # BASIC CONF FOR ALL PRE-COMMITS REPO TYPE
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Git style
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: forbid-submodules
+
+      # Common errors
+      - id: check-json
+      - id: check-yaml
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+      # Cross platform
+      - id: mixed-line-ending
+        args: [--fix=auto]
+
+        # Security
+      - id: detect-private-key
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks

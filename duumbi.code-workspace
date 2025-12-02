@@ -1,0 +1,68 @@
+{
+  "folders": [
+    {
+      "name": "Duumbi Monorepo (Root)",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "chat.promptFiles": true,
+    "liveServer.settings.multiRootWorkspaceName": "Duumbi",
+    "java.configuration.updateBuildConfiguration": "automatic",
+    "java.compile.nullAnalysis.mode": "automatic",
+
+    // Formázás és nyelvi asszociációk
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
+    },
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "eslint.validate": ["javascript", "typescript", "typescriptreact"],
+
+    "terraform.languageServer.enable": true,
+    // Terraform plugin
+    "[terraform]": {
+      "editor.defaultFormatter": "hashicorp.terraform",
+      "editor.formatOnSave": true
+    },
+
+    // Markdown preview
+    "markdown.preview.breaks": true,
+
+    // Typescript / React
+    "typescript.tsdk": "apps/web/node_modules/typescript/lib",
+    "typescript.enablePromptUseWorkspaceTsdk": true,
+
+    // File exclusions (secrets/env)
+    "files.exclude": {
+      ".env": true,
+      "*.env.*": true,
+      "secrets.auto.tfvars": true
+    },
+
+    "github.copilot.enable": {
+      "*": false
+    },
+
+    "files.associations": {
+      "*.tsx": "typescriptreact",
+      "*.ts": "typescript",
+      "*.js": "javascript",
+      "*.jsx": "javascriptreact"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "esbenp.prettier-vscode",
+      "dbaeumer.vscode-eslint",
+      "hashicorp.terraform",
+      "ms-azuretools.vscode-azureterraform",
+      "github.copilot",
+      "github.vscode-pull-request-github",
+      "bierner.markdown-preview-github-styles",
+      "ms-python.python",
+      "azemoh.one-monokai"
+    ]
+  }
+}

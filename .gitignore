@@ -1,0 +1,64 @@
+# Ignore backup files created by draw.io
+*.drawio.bkp
+*.drawio.dtmp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Node.js dependencies
+node_modules/
+.pnpm-store/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+*.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Temporary files
+*.tmp
+*.swp
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Obsidian
+.obsidian/
+
+# NX
+.nx/cache
+.nx/workspace-data
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
+test-output
+
+/coverage/
+/reports/
