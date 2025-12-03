@@ -74,7 +74,7 @@ export const stagingRecord = new network.RecordSet('staging-record', {
   relativeRecordSetName: 'staging',
   recordType: 'CNAME',
   ttl: 300,
-  cnameRecord: { cname: 'cname.vercel-dns.com' },
+  cnameRecord: { cname: 'd1d445165161870d.vercel-dns-017.com' },
 });
 
 // Status CNAME Record (status.duumbi.io)
