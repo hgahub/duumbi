@@ -81,10 +81,10 @@ We prioritize automation using **GitHub Actions**.
 The following steps are required to fully realize this strategy from the current state:
 
 1.  **Containerization**:
-    - [ ] Add `Dockerfile` for `apps/avm-api`.
-    - [ ] Add `Dockerfile` for `apps/core-api`.
+    - [x] Add `Dockerfile` for `apps/avm-api`.
+    - [x] Add `Dockerfile` for `apps/core-api`.
 2.  **Infrastructure Refactor**:
-    - [ ] Update `infra` to support `staging` and `production` stack names (migrating from the `temporary` concept).
+    - [x] Update `infra` to support `staging` and `production` stack names (migrating from the `temporary` concept).
     - [x] Configure DNS for `duumbi.io` and `staging.duumbi.io`.
 3.  **CI/CD Setup**:
     - [ ] Create GitHub Actions workflows for `pulumi up`.

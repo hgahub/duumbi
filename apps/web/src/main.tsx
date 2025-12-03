@@ -1,11 +1,18 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./index.css";
-import './i18n';
+import { StrictMode } from 'react';
+import * as ReactDOM from 'react-dom/client';
+import { AuthProvider } from './context/AuthContext';
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
+import App from './App';
+import './i18n';
+import './index.css';
+
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
+root.render(
+  <StrictMode>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </StrictMode>
 );
