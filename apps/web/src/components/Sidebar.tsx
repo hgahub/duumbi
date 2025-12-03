@@ -55,17 +55,17 @@ export default function Sidebar({
         {/* Header */}
         <div className="p-4 flex-shrink-0 flex items-center justify-between">
           <div
-            className={`flex items-center gap-2 ${isCollapsed ? 'hidden' : ''}`}
+            className={`flex items-center justify-center flex-1 ${isCollapsed ? 'hidden' : ''}`}
           >
             <img
               src="/DuumbiLogoLight.svg"
               alt="Duumbi Logo"
-              className="h-8 dark:hidden"
+              className="h-12 dark:hidden"
             />
             <img
               src="/DuumbiLogoDark.svg"
               alt="Duumbi Logo"
-              className="h-8 hidden dark:block"
+              className="h-12 hidden dark:block"
             />
           </div>
           <button
@@ -99,7 +99,7 @@ export default function Sidebar({
           {/* New Chat */}
           <button
             onClick={onNewChat}
-            className="w-full flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="w-full flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -123,7 +123,7 @@ export default function Sidebar({
           {/* Post New Listing */}
           <a
             href="#"
-            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -147,7 +147,7 @@ export default function Sidebar({
           {/* My Listings */}
           <a
             href="#"
-            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -171,7 +171,7 @@ export default function Sidebar({
           {/* Recent Chats */}
           {!isCollapsed && (
             <div className="pt-4 mt-4 space-y-2 border-t border-gray-200 dark:border-higashi-kashmirblue-700">
-              <h2 className="px-2 text-xs font-semibold text-gray-500 dark:text-higashi-kashmirblue-300 uppercase tracking-wider">
+              <h2 className="px-2 text-xs font-semibold text-gray-600 dark:text-higashi-kashmirblue-200 uppercase tracking-wider">
                 {t('Recent Chats')}
               </h2>
               {recentChats.map((chat, index) => (
@@ -196,7 +196,7 @@ export default function Sidebar({
           <SettingsMenu
             onNavigate={onNavigate}
             trigger={
-              <button className="flex w-full items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700">
+              <button className="flex w-full items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   className="h-6 w-6 text-gray-500 dark:text-higashi-kashmirblue-300"

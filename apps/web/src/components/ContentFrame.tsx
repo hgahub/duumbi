@@ -10,7 +10,7 @@ interface ContentFrameProps {
 export default function ContentFrame({ children }: ContentFrameProps) {
   const { t } = useTranslation();
   return (
-    <main className="flex-1 p-4 md:p-6 lg:p-8 overflow-y-auto flex flex-col">
+    <main className="flex-1 p-4 md:p-6 lg:p-8 overflow-y-auto flex flex-col bg-higashi-concrete-100 dark:bg-transparent transition-colors duration-200">
       <div className="max-w-4xl w-full mx-auto flex flex-col flex-grow">
         {children || (
           <div className="flex items-center justify-center flex-grow">

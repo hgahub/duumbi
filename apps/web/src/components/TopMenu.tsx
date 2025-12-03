@@ -1,17 +1,38 @@
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../context/AuthContext';
+import { useState, useRef, useEffect } from 'react';
 
 interface TopMenuProps {
   onMenuToggle: () => void;
+  onNavigate: (view: 'home' | 'preferences' | 'login') => void;
 }
 
-export default function TopMenu({ onMenuToggle }: TopMenuProps) {
+export default function TopMenu({ onMenuToggle, onNavigate }: TopMenuProps) {
   const { t } = useTranslation();
-  // Placeholder for authentication state
-  const isAuthenticated = false;
+  const { user, signOut } = useAuth();
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const handleSignOut = async () => {
+    await signOut();
+    setIsUserMenuOpen(false);
+  };
 
   return (
     <header className="flex items-center justify-between p-4 bg-higashi-concrete-200 dark:bg-higashi-kashmirblue-800 border-b border-gray-200 dark:border-higashi-kashmirblue-700 md:justify-end">
-      {/* Mobile menu button (icon-only) - add accessible name and type to satisfy axe */}
+      {/* Mobile menu button (icon-only) */}
       <button
         type="button"
         onClick={onMenuToggle}
@@ -37,9 +58,9 @@ export default function TopMenu({ onMenuToggle }: TopMenuProps) {
 
       {/* Action buttons */}
       <div className="flex items-center space-x-4">
-        {isAuthenticated ? (
+        {user ? (
           <>
-            {/* Notifications (icon-only) - add aria-label/title and type */}
+            {/* Notifications (icon-only) */}
             <button
               type="button"
               aria-label="View notifications"
@@ -62,29 +83,50 @@ export default function TopMenu({ onMenuToggle }: TopMenuProps) {
               </svg>
             </button>
 
-            {/* User Profile - button contains image with alt text, but add explicit aria-label/title for clarity */}
-            <button
-              type="button"
-              aria-label="Open user menu"
-              title="Open user menu"
-            >
-              <img
-                src="https://placehold.co/32x32/E2E8F0/4A5568?text=U"
-                className="rounded-full h-8 w-8"
-                alt="User Avatar"
-              />
-            </button>
+            {/* User Profile */}
+            <div className="relative" ref={userMenuRef}>
+              <button
+                type="button"
+                aria-label="Open user menu"
+                title="Open user menu"
+                onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+              >
+                <img
+                  src={user.user_metadata.avatar_url || "https://placehold.co/32x32/E2E8F0/4A5568?text=U"}
+                  className="rounded-full h-8 w-8"
+                  alt="User Avatar"
+                />
+              </button>
+
+              {isUserMenuOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-higashi-kashmirblue-800 rounded-md shadow-lg py-1 z-50 ring-1 ring-black ring-opacity-5">
+                  <div className="px-4 py-2 border-b border-gray-100 dark:border-higashi-kashmirblue-700">
+                    <p className="text-sm text-gray-900 dark:text-white font-medium truncate">
+                      {user.email}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleSignOut}
+                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+                  >
+                    {t('Sign out')}
+                  </button>
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <>
             <button
               type="button"
+              onClick={() => onNavigate('login')}
               className="text-gray-700 dark:text-higashi-concrete-200 hover:text-gray-900 dark:hover:text-white font-medium px-3 py-2 rounded-md transition-colors border border-higashi-kashmirblue-500"
             >
               {t('Sign in')}
             </button>
             <button
               type="button"
+              onClick={() => onNavigate('login')}
               className="bg-gradient-to-r from-higashi-kashmirblue-500 to-higashi-kashmirblue-500 hover:opacity-90 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm"
             >
               {t('Sign up')}
