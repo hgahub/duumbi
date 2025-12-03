@@ -99,7 +99,7 @@ export default function Sidebar({
           {/* New Chat */}
           <button
             onClick={onNewChat}
-            className="w-full flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="w-full flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -123,7 +123,7 @@ export default function Sidebar({
           {/* Post New Listing */}
           <a
             href="#"
-            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -147,7 +147,7 @@ export default function Sidebar({
           {/* My Listings */}
           <a
             href="#"
-            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
+            className="flex items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -196,7 +196,7 @@ export default function Sidebar({
           <SettingsMenu
             onNavigate={onNavigate}
             trigger={
-              <button className="flex w-full items-center p-2 text-base font-normal text-gray-900 dark:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700">
+              <button className="flex w-full items-center p-2 text-base font-normal text-gray-900 dark:text-higashi-concrete-200 transition-colors duration-200 rounded-lg hover:bg-gray-100 dark:hover:bg-higashi-kashmirblue-700">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   className="h-6 w-6 text-gray-500 dark:text-higashi-kashmirblue-300"
