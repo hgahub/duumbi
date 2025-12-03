@@ -96,7 +96,7 @@ export const AgentQuery = () => {
 
   return (
     <div className="w-full max-w-3xl mx-auto mt-8">
-      <div className="relative bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl shadow-lg transition-all focus-within:ring-2 focus-within:ring-blue-500/50 focus-within:border-blue-500/50">
+      <div className="relative bg-white dark:bg-gray-800/50 backdrop-blur-sm border border-gray-200 dark:border-gray-700 rounded-2xl shadow-lg transition-all focus-within:ring-2 focus-within:ring-blue-500/50 focus-within:border-blue-500/50">
         <div className="p-4">
           <textarea
             value={query}
@@ -108,7 +108,7 @@ export const AgentQuery = () => {
               }
             }}
             placeholder={t('Ask Duumbi')}
-            className="w-full bg-transparent text-white placeholder-gray-400 resize-none outline-none text-lg min-h-[60px]"
+            className="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 resize-none outline-none text-lg min-h-[60px]"
             rows={2}
           />
         </div>
@@ -117,13 +117,13 @@ export const AgentQuery = () => {
           <div className="flex items-center gap-3">
             <button
               onClick={handleUpload}
-              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-full transition-colors"
+              className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded-full transition-colors"
               title={t('Upload Image')}
             >
               <PlusIcon />
             </button>
 
-            <button className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 bg-gray-700/30 hover:bg-gray-700/50 rounded-full transition-colors">
+            <button className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700/30 hover:bg-gray-200 dark:hover:bg-gray-700/50 rounded-full transition-colors">
               <span>{t('Tools')}</span>
               <ChevronDownIcon />
             </button>
@@ -132,14 +132,14 @@ export const AgentQuery = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={handleWizard}
-              className="p-2 text-gray-400 hover:text-purple-400 hover:bg-gray-700/50 rounded-full transition-colors"
+              className="p-2 text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded-full transition-colors"
               title={t('Prompt Wizard')}
             >
               <SparklesIcon />
             </button>
             <button
               onClick={handleVoice}
-              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-full transition-colors"
+              className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded-full transition-colors"
               title={t('Voice Search')}
             >
               <MicIcon />
@@ -148,7 +148,7 @@ export const AgentQuery = () => {
         </div>
       </div>
 
-      {/* Quick Action Chips - Optional based on screenshot, but good for completeness if needed later */}
+      {/* Quick Action Chips */}
       <div className="flex flex-wrap justify-center gap-3 mt-6">
         {[
           'Create Image',
@@ -158,7 +158,7 @@ export const AgentQuery = () => {
         ].map((action) => (
           <button
             key={action}
-            className="px-4 py-2 text-sm text-gray-300 bg-gray-800/40 hover:bg-gray-800/60 border border-gray-700/50 rounded-xl transition-colors"
+            className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800/40 hover:bg-gray-50 dark:hover:bg-gray-800/60 border border-gray-200 dark:border-gray-700/50 rounded-xl transition-colors shadow-sm"
           >
             {t(action)}
           </button>
