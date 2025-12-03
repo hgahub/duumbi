@@ -55,17 +55,17 @@ export default function Sidebar({
         {/* Header */}
         <div className="p-4 flex-shrink-0 flex items-center justify-between">
           <div
-            className={`flex items-center gap-2 ${isCollapsed ? 'hidden' : ''}`}
+            className={`flex items-center justify-center flex-1 ${isCollapsed ? 'hidden' : ''}`}
           >
             <img
               src="/DuumbiLogoLight.svg"
               alt="Duumbi Logo"
-              className="h-8 dark:hidden"
+              className="h-12 dark:hidden"
             />
             <img
               src="/DuumbiLogoDark.svg"
               alt="Duumbi Logo"
-              className="h-8 hidden dark:block"
+              className="h-12 hidden dark:block"
             />
           </div>
           <button
@@ -171,7 +171,7 @@ export default function Sidebar({
           {/* Recent Chats */}
           {!isCollapsed && (
             <div className="pt-4 mt-4 space-y-2 border-t border-gray-200 dark:border-higashi-kashmirblue-700">
-              <h2 className="px-2 text-xs font-semibold text-gray-500 dark:text-higashi-kashmirblue-300 uppercase tracking-wider">
+              <h2 className="px-2 text-xs font-semibold text-gray-600 dark:text-higashi-kashmirblue-200 uppercase tracking-wider">
                 {t('Recent Chats')}
               </h2>
               {recentChats.map((chat, index) => (
