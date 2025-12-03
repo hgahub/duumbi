@@ -35,34 +35,46 @@ export const dnsZone = new network.Zone('duumbi-zone', {
   tags,
 });
 
-// Root A Record (@)
+// Root A Record (@) - Vercel
 export const rootRecord = new network.RecordSet('root-record', {
   resourceGroupName: resourceGroup.name,
   zoneName: dnsZone.name,
   relativeRecordSetName: '@',
   recordType: 'A',
   ttl: 300,
-  aRecords: [{ ipv4Address: '20.8.24.149' }], // Vercel or legacy IP from backup
+  aRecords: [
+    { ipv4Address: '216.198.79.1' }, // Vercel project-specific IP
+  ],
 });
 
-// WWW CNAME Record
+// WWW CNAME Record - Vercel
 export const wwwRecord = new network.RecordSet('www-record', {
   resourceGroupName: resourceGroup.name,
   zoneName: dnsZone.name,
   relativeRecordSetName: 'www',
   recordType: 'CNAME',
   ttl: 300,
-  cnameRecord: { cname: 'gray-plant-0f013cd03.5.azurestaticapps.net' },
+  cnameRecord: { cname: 'd1d445165161870d.vercel-dns-017.com' },
 });
 
-// App CNAME Record (app.duumbi.io)
+// App CNAME Record (app.duumbi.io) - Vercel
 export const appRecord = new network.RecordSet('app-record', {
   resourceGroupName: resourceGroup.name,
   zoneName: dnsZone.name,
   relativeRecordSetName: 'app',
   recordType: 'CNAME',
   ttl: 300,
-  cnameRecord: { cname: 'white-water-0cb6b9203.5.azurestaticapps.net' },
+  cnameRecord: { cname: 'cname.vercel-dns.com' },
+});
+
+// Staging CNAME Record (staging.duumbi.io) - Vercel
+export const stagingRecord = new network.RecordSet('staging-record', {
+  resourceGroupName: resourceGroup.name,
+  zoneName: dnsZone.name,
+  relativeRecordSetName: 'staging',
+  recordType: 'CNAME',
+  ttl: 300,
+  cnameRecord: { cname: 'cname.vercel-dns.com' },
 });
 
 // Status CNAME Record (status.duumbi.io)
