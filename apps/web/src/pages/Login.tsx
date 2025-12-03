@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTranslation } from 'react-i18next';
 
@@ -31,8 +31,9 @@ export default function Login() {
         if (error) throw error;
         // Navigation will be handled by AuthContext state change in App.tsx
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'An error occurred' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      setMessage({ type: 'error', text: message });
     } finally {
       setLoading(false);
     }
