@@ -50,6 +50,15 @@
       "*.ts": "typescript",
       "*.js": "javascript",
       "*.jsx": "javascriptreact"
+    },
+    "[markdown]": {
+      "editor.unicodeHighlight.ambiguousCharacters": false,
+      "editor.unicodeHighlight.invisibleCharacters": false,
+      "diffEditor.ignoreTrimWhitespace": false,
+      "editor.wordWrap": "on",
+      "editor.codeActionsOnSave": {
+        "source.organizeImports": "never"
+      }
     }
   },
   "extensions": {

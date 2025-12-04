@@ -52,8 +52,8 @@ function App() {
         />
 
         <div className="flex flex-col flex-1 w-full h-full">
-          <TopMenu 
-            onMenuToggle={toggleSidebar} 
+          <TopMenu
+            onMenuToggle={toggleSidebar}
             onNavigate={handleNavigate}
           />
           {currentView === 'preferences' ? (
