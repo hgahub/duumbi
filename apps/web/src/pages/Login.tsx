@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTranslation } from 'react-i18next';
+import { GoogleOAuthButton } from '../components/GoogleOAuthButton';
 
 export default function Login() {
   const { t } = useTranslation();
@@ -106,6 +107,26 @@ export default function Login() {
             </button>
           </div>
         </form>
+
+        {/* OAuth Divider */}
+        <div className="relative mt-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-300 dark:border-higashi-kashmirblue-600" />
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="bg-white dark:bg-higashi-kashmirblue-800 px-2 text-gray-500 dark:text-gray-400">
+              {t('or')}
+            </span>
+          </div>
+        </div>
+
+        {/* Google OAuth Button */}
+        <div className="mt-6">
+          <GoogleOAuthButton
+            onError={(msg) => setMessage({ type: 'error', text: msg })}
+            disabled={loading}
+          />
+        </div>
 
         <div className="text-center text-sm">
           <button
