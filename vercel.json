@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npx nx build web --prod",
+  "buildCommand": "npx nx build web --prod --no-cloud",
   "outputDirectory": "dist/apps/web",
   "rewrites": [
     {
