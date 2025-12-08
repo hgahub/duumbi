@@ -20,7 +20,7 @@ async def health_check():
 # Mount routers
 app.include_router(avm_router, prefix="/api/avm", tags=["AVM"])
 app.include_router(scraper_router, prefix="/api/scraper", tags=["Scraper"])
-app.include_router(tagger_router, prefix="/api/tagger", tags=["Tagger"])
+app.include_router(tagger_router, prefix="/api")  # Tagger router has its own /tagger prefix
 
 if __name__ == "__main__":
     import uvicorn

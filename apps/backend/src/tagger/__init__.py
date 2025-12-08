@@ -12,6 +12,7 @@ from .models import (
 from .config import TaggerSettings, get_settings
 from .validators import validate_image_file, calculate_image_quality
 from .azure_client import AzureVisionService
+from .service import ImageAnalysisService
 from .exceptions import (
     TaggerException,
     ImageValidationError,
@@ -41,6 +42,8 @@ __all__ = [
     "calculate_image_quality",
     # Azure Client
     "AzureVisionService",
+    # Service
+    "ImageAnalysisService",
     # Exceptions
     "TaggerException",
     "ImageValidationError",
