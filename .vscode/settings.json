@@ -3,5 +3,10 @@
   "editor.quickSuggestions": {
     "strings": true
   },
-  "tailwindCSS.emmetCompletions": true
+  "tailwindCSS.emmetCompletions": true,
+  "python.defaultInterpreterPath": "/Users/heizergabor/.pyenv/versions/3.14.2/bin/python",
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["apps/backend/tests"],
+  "python.testing.autoTestDiscoverOnSaveEnabled": true
 }
