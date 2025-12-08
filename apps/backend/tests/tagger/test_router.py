@@ -1,5 +1,4 @@
 """Tests for FastAPI router endpoints."""
-import pytest
 from io import BytesIO
 from PIL import Image
 from fastapi.testclient import TestClient

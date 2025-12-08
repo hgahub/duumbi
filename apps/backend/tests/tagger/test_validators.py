@@ -6,9 +6,7 @@ from PIL import Image
 from src.tagger.validators import validate_image_file, calculate_image_quality
 from src.tagger.exceptions import (
     ImageTooLargeError,
-    ImageTooSmallError,
-    UnsupportedImageFormatError,
-    ImageProcessingError,
+    ImageTooSmallError
 )
 from src.tagger.models import ImageQualityIssue
 

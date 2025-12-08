@@ -1,6 +1,5 @@
 """FastAPI router for image analysis endpoints."""
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
-from fastapi.responses import JSONResponse
 
 from .service import ImageAnalysisService
 from .models import (
@@ -11,8 +10,7 @@ from .models import (
 )
 from .exceptions import (
     ImageValidationError,
-    AzureVisionError,
-    TaggerException,
+    AzureVisionError
 )
 
 router = APIRouter(prefix="/tagger", tags=["Image Analysis"])

@@ -1,6 +1,5 @@
 """Image analysis service - business logic layer."""
 import time
-from io import BytesIO
 from typing import BinaryIO, Optional
 
 from .azure_client import AzureVisionService
@@ -12,7 +11,6 @@ from .models import (
     RoomType,
     ImageFeature,
 )
-from .exceptions import ImageValidationError, AzureVisionError
 
 
 class ImageAnalysisService:

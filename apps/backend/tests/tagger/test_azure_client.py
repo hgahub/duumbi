@@ -1,6 +1,6 @@
 """Tests for Azure AI Vision client."""
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch
 
 from src.tagger.azure_client import AzureVisionService
 from src.tagger.exceptions import AzureVisionError

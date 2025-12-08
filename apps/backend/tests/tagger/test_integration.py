@@ -33,7 +33,7 @@ class TestEndToEndWorkflows:
         buffer.seek(0)
         
         # Step 2: Mock Azure response
-        mock_azure_result = {
+        """ mock_azure_result = {
             'tags': [
                 {'name': 'living room', 'confidence': 0.95},
                 {'name': 'modern', 'confidence': 0.90},
@@ -52,7 +52,7 @@ class TestEndToEndWorkflows:
                 'text': 'A modern living room with bright natural lighting',
                 'confidence': 0.89
             }
-        }
+        } """
         
         # Step 3: Execute full workflow with mock
         from src.tagger.service import ImageAnalysisService
