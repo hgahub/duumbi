@@ -1,6 +1,15 @@
 name: Deploy Backend (Container Apps)
 
 on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
   pull_request:
     types: [closed]
     branches:
@@ -18,7 +27,7 @@ env:
 
 jobs:
   deploy-staging:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'feat/')
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'feat/')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -73,7 +82,7 @@ jobs:
           curl -fsS "https://$FQDN/api/tagger/health" -w '\n%{http_code}\n'
 
   deploy-prod:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
