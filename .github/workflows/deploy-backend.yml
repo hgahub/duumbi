@@ -1,0 +1,128 @@
+name: Deploy Backend (Container Apps)
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - staging
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  ACR_NAME: acrduumbi
+  IMAGE_NAME: duumbi-backend
+
+jobs:
+  deploy-staging:
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'feat/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set variables (staging)
+        id: vars
+        run: |
+          echo "RG=rg-duumbi-staging" >> $GITHUB_OUTPUT
+          echo "APP=ca-backend-staging" >> $GITHUB_OUTPUT
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          echo "ACR_SERVER=$ACR_SERVER" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: ACR Login
+        run: |
+          az acr login -n "$ACR_NAME"
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
+          docker build -f apps/backend/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Configure Container App Registry
+        run: |
+          az containerapp registry set \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --server "${{ steps.vars.outputs.ACR_SERVER }}"
+
+      - name: Update Container App image
+        run: |
+          IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
+          az containerapp update \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --image "$IMAGE"
+
+      - name: Get backend URL and test health
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "FQDN=$FQDN"
+          curl -fsS "https://$FQDN/api/tagger/health" -w '\n%{http_code}\n'
+
+  deploy-prod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set variables (prod)
+        id: vars
+        run: |
+          echo "RG=rg-duumbi-production" >> $GITHUB_OUTPUT
+          echo "APP=ca-backend-production" >> $GITHUB_OUTPUT
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          echo "ACR_SERVER=$ACR_SERVER" >> $GITHUB_OUTPUT
+          echo "TAG=prod-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: ACR Login
+        run: |
+          az acr login -n "$ACR_NAME"
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
+          docker build -f apps/backend/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Configure Container App Registry
+        run: |
+          az containerapp registry set \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --server "${{ steps.vars.outputs.ACR_SERVER }}"
+
+      - name: Update Container App image
+        run: |
+          IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
+          az containerapp update \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --image "$IMAGE"
+
+      - name: Get backend URL and test health
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ steps.vars.outputs.APP }}" \
+            --resource-group "${{ steps.vars.outputs.RG }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "FQDN=$FQDN"
+          curl -fsS "https://$FQDN/health" -w '\n%{http_code}\n'
