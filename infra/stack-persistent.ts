@@ -1,8 +1,8 @@
 import * as authorization from '@pulumi/azure-native/authorization';
 import * as keyvault from '@pulumi/azure-native/keyvault';
 import * as operationalinsights from '@pulumi/azure-native/operationalinsights';
-import * as resources from '@pulumi/azure-native/resources';
 import * as pulumi from '@pulumi/pulumi';
+import * as resources from '@pulumi/azure-native/resources';
 import { getTags } from './lib/tags';
 
 const location = 'West Europe';
@@ -11,6 +11,10 @@ const tags = getTags({ environment: 'Platform' });
 
 // Get current client configuration for Tenant ID
 const clientConfig = authorization.getClientConfigOutput();
+
+// Get Doppler Service Principal Object ID from Pulumi config
+const config = new pulumi.Config();
+const dopplerSpObjectId = config.require('dopplerSpObjectId');
 
 // Create an Azure Resource Group
 export const resourceGroup = new resources.ResourceGroup('rg-duumbi-persistent', {
@@ -31,8 +35,13 @@ export const vault = new keyvault.Vault('kv-duumbi-persistent', {
     },
     tenantId: clientConfig.tenantId,
     accessPolicies: [
-      // Access policies will be managed via external tools (Doppler) or additional Pulumi resources
-      // Initial deployment starts with empty policies to avoid circular dependencies or permission issues
+      {
+        tenantId: clientConfig.tenantId,
+        objectId: dopplerSpObjectId,
+        permissions: {
+          secrets: ['get', 'list', 'set', 'delete'],
+        },
+      },
     ],
     enableSoftDelete: true,
     softDeleteRetentionInDays: 90,
