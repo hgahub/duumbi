@@ -8,15 +8,17 @@ This is the Python backend service for Duumbi, providing REST APIs for:
 
 - **AVM (Automated Valuation Model)**: Property valuation services
 - **Scraper**: Data collection and web scraping functionality
-- **Tagger**: Content tagging and classification
+- **Tagger**: AI-powered image analysis for property photos (✅ **Implemented**)
 
 ## Technology Stack
 
 - **Framework**: FastAPI
 - **Server**: Uvicorn
 - **ML/Data**: scikit-learn
-- **Validation**: Pydantic
+- **Validation**: Pydantic v2
 - **HTTP Client**: httpx
+- **Image Processing**: Pillow, NumPy
+- **AI Services**: Azure AI Vision
 - **Package Manager**: uv
 - **Python**: >=3.9
 
@@ -93,9 +95,44 @@ All commands can be run via Nx from the workspace root:
 
 - `/api/avm/*` - AVM (Automated Valuation Model) endpoints
 - `/api/scraper/*` - Web scraping endpoints
-- `/api/tagger/*` - Content tagging endpoints
+- `/api/tagger/*` - **Image analysis endpoints** ✅
+  - `POST /api/tagger/analyze` - Analyze image from URL
+  - `POST /api/tagger/analyze/upload` - Analyze uploaded image
+  - `POST /api/tagger/analyze/batch` - Batch analysis (max 20 images)
+  - `GET /api/tagger/health` - Health check
 
 See `/docs` for complete API documentation.
+
+## Modules
+
+### Tagger Module ✅ (Implemented)
+
+AI-powered image analysis for property listings.
+
+**Features:**
+- Quality assessment (brightness, sharpness, composition)
+- Room type detection (13 types)
+- Feature detection (10 features)
+- Azure AI Vision integration
+- Smart recommendations
+
+**Documentation:**
+- [Module README](src/tagger/README.md)
+- [API Examples](docs/TAGGER_API_EXAMPLES.md)
+- [Azure Setup Guide](docs/AZURE_VISION_SETUP.md)
+- [Test Documentation](tests/tagger/README.md)
+
+**Quick Start:**
+```bash
+# Set Azure credentials in .env
+TAGGER_AZURE_VISION_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+TAGGER_AZURE_VISION_KEY=your-api-key
+
+# Test the API
+curl -X POST http://localhost:8000/api/tagger/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"image_url": "https://example.com/property.jpg"}'
+```
 
 ## Testing
 

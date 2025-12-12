@@ -10,6 +10,13 @@ Thumbs.db
 node_modules/
 .pnpm-store/
 
+# Python dependencies
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Logs
 logs/
 *.log
@@ -42,7 +49,6 @@ build/
 
 # IDE - VSCode
 .vscode/*
-!.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
