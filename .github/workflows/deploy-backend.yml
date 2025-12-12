@@ -81,8 +81,18 @@ jobs:
             --name "${{ steps.vars.outputs.APP }}" \
             --resource-group "${{ steps.vars.outputs.RG }}" \
             --query "properties.configuration.ingress.fqdn" -o tsv)
-          echo "FQDN=$FQDN"
-          curl -fsS "https://$FQDN/api/tagger/health" -w '\n%{http_code}\n'
+          echo "Backend URL: https://$FQDN/api/tagger/health"
+          echo "Waiting for application to start..."
+          for i in {1..12}; do
+            if curl -fsS "https://$FQDN/api/tagger/health" -w '\n%{http_code}\n'; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i/12 failed, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "Health check failed after 12 attempts"
+          exit 1
 
   deploy-prod:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
@@ -136,5 +146,15 @@ jobs:
             --name "${{ steps.vars.outputs.APP }}" \
             --resource-group "${{ steps.vars.outputs.RG }}" \
             --query "properties.configuration.ingress.fqdn" -o tsv)
-          echo "FQDN=$FQDN"
-          curl -fsS "https://$FQDN/health" -w '\n%{http_code}\n'
+          echo "Backend URL: https://$FQDN/health"
+          echo "Waiting for application to start..."
+          for i in {1..12}; do
+            if curl -fsS "https://$FQDN/health" -w '\n%{http_code}\n'; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i/12 failed, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "Health check failed after 12 attempts"
+          exit 1
