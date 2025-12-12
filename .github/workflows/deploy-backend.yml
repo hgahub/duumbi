@@ -43,6 +43,7 @@ jobs:
         run: |
           echo "RG=rg-duumbi-staging" >> $GITHUB_OUTPUT
           echo "APP=ca-backend-staging" >> $GITHUB_OUTPUT
+          echo "IDENTITY=id-backend-staging" >> $GITHUB_OUTPUT
           ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
           echo "ACR_SERVER=$ACR_SERVER" >> $GITHUB_OUTPUT
           echo "TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -62,7 +63,8 @@ jobs:
           az containerapp registry set \
             --name "${{ steps.vars.outputs.APP }}" \
             --resource-group "${{ steps.vars.outputs.RG }}" \
-            --server "${{ steps.vars.outputs.ACR_SERVER }}"
+            --server "${{ steps.vars.outputs.ACR_SERVER }}" \
+            --identity "${{ steps.vars.outputs.IDENTITY }}"
 
       - name: Update Container App image
         run: |
