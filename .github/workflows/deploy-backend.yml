@@ -54,7 +54,7 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
-          docker build -f apps/backend/Dockerfile -t "$IMAGE" .
+          docker build -f apps/backend/Dockerfile -t "$IMAGE" apps/backend
           docker push "$IMAGE"
 
       - name: Configure Container App Registry
@@ -109,7 +109,7 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${{ steps.vars.outputs.ACR_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.TAG }}"
-          docker build -f apps/backend/Dockerfile -t "$IMAGE" .
+          docker build -f apps/backend/Dockerfile -t "$IMAGE" apps/backend
           docker push "$IMAGE"
 
       - name: Configure Container App Registry
