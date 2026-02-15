@@ -10,12 +10,12 @@ if (stack === 'persistent') {
   const platform = require('./stack-platform');
   // Export for Pulumi stack outputs
   module.exports = platform;
-} else if (stack === 'staging' || stack === 'production') {
+} else if (stack === 'production') {
   const workloads = require('./stack-workloads');
   // Export for Pulumi stack outputs
   module.exports = workloads;
 } else {
   throw new Error(
-    `Unknown stack: ${stack}. Use 'persistent', 'staging', or 'production' stack.`
+    `Unknown stack: ${stack}. Use 'persistent', 'platform', or 'production' stack.`
   );
 }

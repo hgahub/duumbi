@@ -50,8 +50,8 @@ This guide covers deploying the Tagger module's Azure infrastructure using Pulum
 ```bash
 cd infra
 
-# Select stack (staging or production)
-pulumi stack select staging
+# Select production stack
+pulumi stack select production
 
 # Preview changes
 pulumi preview
@@ -61,10 +61,10 @@ pulumi up
 ```
 
 This will create:
-- Resource Group (`rg-duumbi-staging`)
-- Azure AI Vision account (`cv-duumbi-staging`)
-- Container Apps Environment (`cae-duumbi-staging`)
-- Container App (`ca-backend-staging`)
+- Resource Group (`rg-duumbi-production`)
+- Azure AI Vision account (`cv-duumbi-production`)
+- Container Apps Environment (`cae-duumbi-production`)
+- Container App (`ca-backend-production`)
 
 ### Step 2: Get Azure AI Vision Credentials
 
@@ -78,7 +78,7 @@ pulumi stack output visionKey --show-secrets
 
 **Example output:**
 ```
-visionEndpoint: https://cv-duumbi-staging.cognitiveservices.azure.com/
+visionEndpoint: https://cv-duumbi-production.cognitiveservices.azure.com/
 visionKey: 1234567890abcdef1234567890abcdef
 ```
 
@@ -88,11 +88,11 @@ visionKey: 1234567890abcdef1234567890abcdef
 
 1. Go to [Doppler Dashboard](https://dashboard.doppler.com/)
 2. Select project: `duumbi`
-3. Select environment: `staging` or `production`
+3. Select environment: `production`
 4. Add/Update secrets:
 
 ```
-TAGGER_AZURE_VISION_ENDPOINT=https://cv-duumbi-staging.cognitiveservices.azure.com/
+TAGGER_AZURE_VISION_ENDPOINT=https://cv-duumbi-production.cognitiveservices.azure.com/
 TAGGER_AZURE_VISION_KEY=<from-pulumi-output>
 ```
 
@@ -100,9 +100,9 @@ TAGGER_AZURE_VISION_KEY=<from-pulumi-output>
 
 ```bash
 # Set secrets
-doppler secrets set TAGGER_AZURE_VISION_ENDPOINT="https://cv-duumbi-staging.cognitiveservices.azure.com/" --project duumbi --config staging
+doppler secrets set TAGGER_AZURE_VISION_ENDPOINT="https://cv-duumbi-production.cognitiveservices.azure.com/" --project duumbi --config production
 
-doppler secrets set TAGGER_AZURE_VISION_KEY="<from-pulumi-output>" --project duumbi --config staging
+doppler secrets set TAGGER_AZURE_VISION_KEY="<from-pulumi-output>" --project duumbi --config production
 ```
 
 ### Step 4: Sync Doppler to Azure Key Vault (Optional)
@@ -128,8 +128,8 @@ If using Azure Key Vault for Container Apps:
 ```bash
 # Update Container App with environment variables
 az containerapp update \
-  --name ca-backend-staging \
-  --resource-group rg-duumbi-staging \
+  --name ca-backend-production \
+  --resource-group rg-duumbi-production \
   --set-env-vars \
     TAGGER_AZURE_VISION_ENDPOINT=secretref:tagger-vision-endpoint \
     TAGGER_AZURE_VISION_KEY=secretref:tagger-vision-key \
@@ -225,7 +225,7 @@ TAGGER_MAX_RETRIES=3
 - 5,000 transactions/month
 - 20 calls/minute
 - **Cost:** Free
-- **Use for:** Staging/Development
+- **Use for:** Development/Testing
 
 **Standard Tier (S1):**
 - Pay per 1,000 transactions
@@ -244,12 +244,12 @@ TAGGER_MAX_RETRIES=3
 **Check:**
 ```bash
 # Verify secret in Doppler
-doppler secrets get TAGGER_AZURE_VISION_KEY --project duumbi --config staging
+doppler secrets get TAGGER_AZURE_VISION_KEY --project duumbi --config production
 
 # Verify in Container App
 az containerapp show \
-  --name ca-backend-staging \
-  --resource-group rg-duumbi-staging \
+  --name ca-backend-production \
+  --resource-group rg-duumbi-production \
   --query "properties.template.containers[0].env"
 ```
 
@@ -300,7 +300,7 @@ pulumi up
 ```bash
 # View metrics
 az monitor metrics list \
-  --resource /subscriptions/<sub-id>/resourceGroups/rg-duumbi-staging/providers/Microsoft.CognitiveServices/accounts/cv-duumbi-staging \
+  --resource /subscriptions/<sub-id>/resourceGroups/rg-duumbi-production/providers/Microsoft.CognitiveServices/accounts/cv-duumbi-production \
   --metric "TotalCalls"
 ```
 
@@ -309,8 +309,8 @@ az monitor metrics list \
 ```bash
 # Stream logs
 az containerapp logs show \
-  --name ca-backend-staging \
-  --resource-group rg-duumbi-staging \
+  --name ca-backend-production \
+  --resource-group rg-duumbi-production \
   --follow
 ```
 

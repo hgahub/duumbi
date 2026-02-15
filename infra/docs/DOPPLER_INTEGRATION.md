@@ -40,7 +40,7 @@ Create the following secrets in Doppler for each environment (staging, productio
 **Tagger Module Secrets:**
 ```bash
 # Azure AI Vision
-TAGGER_AZURE_VISION_ENDPOINT=https://cv-duumbi-staging.cognitiveservices.azure.com/
+TAGGER_AZURE_VISION_ENDPOINT=https://cv-duumbi-production.cognitiveservices.azure.com/
 TAGGER_AZURE_VISION_KEY=<from-pulumi-output>
 
 # Image Constraints

@@ -15,15 +15,14 @@ Contains stateful and shared resources that should **always remain active**:
 ### 2. Platform Stack (`platform`)
 Contains shared platform services required by workloads:
 - **Resource Group**: `rg-duumbi-platform`
-- **Azure Container Registry (ACR)**: Stores Docker images for all apps.
-- **Cost**: Small fixed cost (Basic SKU).
+- **DNS Zone**: `duumbi.io` domain management.
+- **Cost**: Minimal (DNS only).
 
-### 3. Workload Stacks (`staging`, `production`)
-Contains the application compute resources. These stacks depend on both `persistent` and `platform` stacks.
+### 3. Workload Stack (`production`)
+Contains the application compute resources. This stack depends on both `persistent` and `platform` stacks.
 
 | Environment | Stack Name | Description | Cost Strategy |
 |-------------|------------|-------------|---------------|
-| **Staging** | `staging` | Mirror of production for testing. | **Scale-to-Zero** / Destroy when not in use. |
 | **Production**| `production`| Live user-facing environment. | **Always On** / High Availability. |
 
 ---
@@ -47,12 +46,11 @@ just --list
 # Check prerequisites
 just check
 
-# Setup everything (persistent + staging)
+# Setup everything (persistent + production)
 just setup
 
 # Or setup individually
 just setup-persistent
-just setup-staging
 just setup-production
 ```
 
@@ -72,38 +70,9 @@ pulumi stack select platform --create
 pulumi up
 ```
 
-**3. Deploy Staging Environment**
-```bash
-pulumi stack select staging --create
-pulumi up
-```
-
 **3. Deploy Production Environment**
 ```bash
 pulumi stack select production --create
-pulumi up
-```
-
----
-
-## 💰 Cost Management (Staging)
-
-To save costs on the Staging environment when it is not being used (e.g., weekends), you can destroy the compute resources while keeping the data/logs safe in the Persistent stack.
-
-**Using Just:**
-```bash
-just destroy-staging  # Pause
-just deploy-staging   # Resume
-```
-
-**Using Pulumi:**
-```bash
-# Pause
-pulumi stack select staging
-pulumi destroy
-
-# Resume
-pulumi stack select staging
 pulumi up
 ```
 
@@ -117,8 +86,8 @@ infra/
 ├── lib/                     # Shared Utilities
 │   └── tags.ts              # Tagging Logic
 ├── stack-persistent.ts      # Shared Resources (RG, Logs)
-├── stack-platform.ts        # Platform Resources (ACR)
-├── stack-workloads.ts       # Workload Resources (Container Apps) - used by Staging/Prod
+├── stack-platform.ts        # Platform Resources (DNS)
+├── stack-workloads.ts       # Workload Resources (Container Apps) - used by Production
 ├── Pulumi.yaml              # Project Configuration
 └── Pulumi.*.yaml            # Stack-specific Configuration
 ```
@@ -126,9 +95,9 @@ infra/
 ## Troubleshooting
 
 ### "Stack not found"
-If you see an error like `Stack 'staging' does not exist`, create it:
+If you see an error like `Stack 'production' does not exist`, create it:
 ```bash
-pulumi stack select staging --create
+pulumi stack select production --create
 ```
 
 ### "Cannot reference persistent stack outputs"

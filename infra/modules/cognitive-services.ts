@@ -1,6 +1,6 @@
 /**
  * Azure Cognitive Services module for AI Vision
- * 
+ *
  * This module creates Azure AI Vision (Computer Vision) resources
  * for the Tagger module's image analysis functionality.
  */

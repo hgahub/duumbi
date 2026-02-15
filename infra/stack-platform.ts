@@ -1,4 +1,3 @@
-import * as containerregistry from '@pulumi/azure-native/containerregistry';
 import * as network from '@pulumi/azure-native/network';
 import * as resources from '@pulumi/azure-native/resources';
 import * as pulumi from '@pulumi/pulumi';
@@ -11,18 +10,6 @@ const tags = getTags({ environment: 'Platform' });
 export const resourceGroup = new resources.ResourceGroup('rg-duumbi-platform', {
   resourceGroupName: 'rg-duumbi-platform',
   location,
-  tags,
-});
-
-// Create Azure Container Registry
-export const registry = new containerregistry.Registry('acrduumbi', {
-  resourceGroupName: resourceGroup.name,
-  registryName: 'acrduumbi', // Must be globally unique
-  location: resourceGroup.location,
-  sku: {
-    name: 'Basic', // Most cost-effective for MVP
-  },
-  adminUserEnabled: true, // For simple auth in MVP
   tags,
 });
 
@@ -169,6 +156,4 @@ const zoneData = network.getZoneOutput({
 
 // Export as Pulumi Stack Outputs (not just TS exports)
 export const resourceGroupNameOutput = pulumi.output(resourceGroup.name);
-export const registryNameOutput = pulumi.output(registry.name);
-export const registryLoginServerOutput = pulumi.output(registry.loginServer);
 export const nameServersOutput = pulumi.output(zoneData.nameServers);
