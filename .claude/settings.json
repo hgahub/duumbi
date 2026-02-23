@@ -1,0 +1,51 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(cat /dev/stdin | jq -r '.tool_input.file_path // empty'); if [ -n \"$file\" ] && echo \"$file\" | grep -q '\\.rs$'; then cargo fmt -- \"$file\" 2>/dev/null; cargo clippy --all-targets -- -D warnings 2>&1 | head -20; fi",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f Cargo.toml ]; then cargo test --all 2>&1 | tail -5 && cargo build 2>&1 | tail -5; fi",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(cat /dev/stdin | jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'rm -rf|cargo publish|git push.*--force'; then echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Blocked destructive command\"}}' >&2; exit 2; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f Cargo.toml ]; then cargo check --message-format short 2>&1 | tail -3; fi; echo 'DUUMBI session started'",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

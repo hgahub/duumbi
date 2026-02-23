@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "rust-tools": {
+      "command": "rust-mcp-server",
+      "args": ["--workspace", "."],
+      "env": {}
+    },
+    "cratedocs": {
+      "command": "/Users/heizergabor/space/hgahub/rust-cargo-docs-rag-mcp/target/release/cratedocs",
+      "args": ["stdio"],
+      "env": {}
+    }
+  }
+}
