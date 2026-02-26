@@ -1,0 +1,69 @@
+//! Typed AST representation for parsed JSON-LD.
+//!
+//! These structures mirror the JSON-LD schema but use Rust types for
+//! safety. They are the intermediate representation between raw JSON
+//! and the semantic graph.
+
+use crate::types::{BlockLabel, DuumbiType, FunctionName, ModuleName, NodeId, Op};
+
+/// A reference to another node by its `@id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRef {
+    /// The `@id` of the referenced node.
+    pub id: NodeId,
+}
+
+/// A parsed operation within a block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpAst {
+    /// The `@id` of this operation node.
+    pub id: NodeId,
+    /// The operation type with embedded data (e.g. `Const(42)`).
+    pub op: Op,
+    /// Result type of this operation, if applicable.
+    pub result_type: Option<DuumbiType>,
+    /// Left operand reference (for binary ops).
+    pub left: Option<NodeRef>,
+    /// Right operand reference (for binary ops).
+    pub right: Option<NodeRef>,
+    /// Single operand reference (for Print, Return).
+    pub operand: Option<NodeRef>,
+}
+
+/// A parsed basic block.
+#[allow(dead_code)] // Fields used in future compilation phases
+#[derive(Debug, Clone)]
+pub struct BlockAst {
+    /// The `@id` of this block.
+    pub id: NodeId,
+    /// Block label (e.g. `"entry"`).
+    pub label: BlockLabel,
+    /// Operations in this block, in order.
+    pub ops: Vec<OpAst>,
+}
+
+/// A parsed function.
+#[allow(dead_code)] // Fields used in future compilation phases
+#[derive(Debug, Clone)]
+pub struct FunctionAst {
+    /// The `@id` of this function.
+    pub id: NodeId,
+    /// Function name.
+    pub name: FunctionName,
+    /// Declared return type.
+    pub return_type: DuumbiType,
+    /// Blocks in this function.
+    pub blocks: Vec<BlockAst>,
+}
+
+/// A parsed module — the top-level AST node.
+#[allow(dead_code)] // Fields used in future compilation phases
+#[derive(Debug, Clone)]
+pub struct ModuleAst {
+    /// The `@id` of this module.
+    pub id: NodeId,
+    /// Module name.
+    pub name: ModuleName,
+    /// Functions in this module.
+    pub functions: Vec<FunctionAst>,
+}
