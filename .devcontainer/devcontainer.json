@@ -1,0 +1,12 @@
+{
+    "name": "Rust Remote Environment",
+    "image": "mcr.microsoft.com/devcontainers/rust:1",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml"
+            ]
+        }
+    }
+}
