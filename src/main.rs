@@ -1,3 +1,8 @@
+//! Duumbi CLI entry point.
+//!
+//! Orchestrates the full compilation pipeline: parse → graph → validate →
+//! compile → link. Uses `anyhow` for error handling at the application boundary.
+
 mod cli;
 mod compiler;
 mod errors;

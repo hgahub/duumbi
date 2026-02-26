@@ -55,7 +55,7 @@ pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileE
 
 /// Links the Cranelift object file with the runtime object to produce a binary.
 ///
-/// Runs `cc output_o runtime_o -o binary_path -lc`.
+/// Runs `cc output_o runtime_o -o binary_path`.
 #[must_use = "link errors should be handled"]
 pub fn link(output_o: &Path, runtime_o: &Path, binary_path: &Path) -> Result<(), CompileError> {
     let cc = find_cc();
