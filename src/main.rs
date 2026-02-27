@@ -5,6 +5,7 @@
 
 mod cli;
 mod compiler;
+mod config;
 mod errors;
 mod graph;
 mod parser;
