@@ -9,6 +9,8 @@ mod config;
 mod errors;
 mod graph;
 mod parser;
+#[allow(dead_code)] // patch types and helpers used in Issue #31 orchestrator
+mod patch;
 mod types;
 
 use std::fs;
