@@ -2,6 +2,9 @@
 //!
 //! Command-line interface using `clap` for the duumbi compiler.
 
+pub mod describe;
+pub mod init;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -18,13 +21,38 @@ pub struct Cli {
 /// Available CLI commands.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Initialize a new duumbi workspace.
+    Init {
+        /// Optional project name (defaults to current directory name).
+        name: Option<String>,
+    },
+
     /// Compile a JSON-LD graph to a native binary.
     Build {
-        /// Path to the input `.jsonld` file.
-        input: PathBuf,
+        /// Path to the input `.jsonld` file (optional if in a workspace).
+        input: Option<PathBuf>,
 
         /// Path for the output binary (default: `output`).
-        #[arg(short, long, default_value = "output")]
-        output: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Build and run the compiled binary.
+    Run {
+        /// Arguments to pass to the compiled binary.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Parse and validate without compiling.
+    Check {
+        /// Path to the input `.jsonld` file (optional if in a workspace).
+        input: Option<PathBuf>,
+    },
+
+    /// Describe the program as human-readable pseudo-code.
+    Describe {
+        /// Path to the input `.jsonld` file (optional if in a workspace).
+        input: Option<PathBuf>,
     },
 }

@@ -6,11 +6,11 @@
 
 pub mod ast;
 
-use ast::{BlockAst, FunctionAst, ModuleAst, NodeRef, OpAst};
+use ast::{BlockAst, FunctionAst, ModuleAst, NodeRef, OpAst, ParamAst};
 use thiserror::Error;
 
 use crate::errors::codes;
-use crate::types::{BlockLabel, DuumbiType, FunctionName, ModuleName, NodeId, Op};
+use crate::types::{BlockLabel, CompareOp, DuumbiType, FunctionName, ModuleName, NodeId, Op};
 
 /// Errors that can occur during JSON-LD parsing.
 #[derive(Debug, Error)]
@@ -101,10 +101,27 @@ fn get_array<'a>(
 fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
     match s {
         "i64" => Ok(DuumbiType::I64),
+        "f64" => Ok(DuumbiType::F64),
+        "bool" => Ok(DuumbiType::Bool),
         "void" => Ok(DuumbiType::Void),
         other => Err(ParseError::SchemaInvalid {
             code: codes::E009_SCHEMA_INVALID,
             message: format!("Unknown type '{other}'"),
+        }),
+    }
+}
+
+fn parse_compare_op(s: &str) -> Result<CompareOp, ParseError> {
+    match s {
+        "eq" => Ok(CompareOp::Eq),
+        "ne" => Ok(CompareOp::Ne),
+        "lt" => Ok(CompareOp::Lt),
+        "le" => Ok(CompareOp::Le),
+        "gt" => Ok(CompareOp::Gt),
+        "ge" => Ok(CompareOp::Ge),
+        other => Err(ParseError::SchemaInvalid {
+            code: codes::E009_SCHEMA_INVALID,
+            message: format!("Unknown compare operator '{other}'"),
         }),
     }
 }
@@ -173,6 +190,27 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
     let return_type = parse_type_str(return_type_str)?;
     let blocks_arr = get_array(value, "duumbi:blocks", node_id_str)?;
 
+    // Parse params (optional — Phase 0 functions may not have params)
+    let params = if let Some(params_val) = value.get("duumbi:params") {
+        if let Some(params_arr) = params_val.as_array() {
+            let mut params = Vec::with_capacity(params_arr.len());
+            for param_val in params_arr {
+                let param_name = get_str(param_val, "duumbi:name", node_id_str)?;
+                let param_type_str = get_str(param_val, "duumbi:paramType", node_id_str)?;
+                let param_type = parse_type_str(param_type_str)?;
+                params.push(ParamAst {
+                    name: param_name.to_string(),
+                    param_type,
+                });
+            }
+            params
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     let mut blocks = Vec::with_capacity(blocks_arr.len());
     for block_val in blocks_arr {
         blocks.push(parse_block(block_val)?);
@@ -182,6 +220,7 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
         id: NodeId(node_id_str.to_string()),
         name: FunctionName(name.to_string()),
         return_type,
+        params,
         blocks,
     })
 }
@@ -211,6 +250,22 @@ fn parse_block(value: &serde_json::Value) -> Result<BlockAst, ParseError> {
     })
 }
 
+/// Creates a default OpAst with only id, op, and result_type set.
+fn make_op_ast(id: NodeId, op: Op, result_type: Option<DuumbiType>) -> OpAst {
+    OpAst {
+        id,
+        op,
+        result_type,
+        left: None,
+        right: None,
+        operand: None,
+        condition: None,
+        true_block: None,
+        false_block: None,
+        args: Vec::new(),
+    }
+}
+
 fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
     let node_id_str = get_str(value, "@id", "<unknown op>")?;
     let at_type = get_str(value, "@type", node_id_str)?;
@@ -223,22 +278,48 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
 
     match at_type {
         "duumbi:Const" => {
-            let val = value
-                .get("duumbi:value")
-                .and_then(|v| v.as_i64())
-                .ok_or_else(|| ParseError::MissingField {
-                    code: codes::E003_MISSING_FIELD,
-                    field: "duumbi:value".to_string(),
-                    node_id: node_id_str.to_string(),
-                })?;
-            Ok(OpAst {
-                id: NodeId(node_id_str.to_string()),
-                op: Op::Const(val),
+            // Determine const type from resultType
+            let rt = result_type.unwrap_or(DuumbiType::I64);
+            let op = match rt {
+                DuumbiType::F64 => {
+                    let val = value
+                        .get("duumbi:value")
+                        .and_then(|v| v.as_f64())
+                        .ok_or_else(|| ParseError::MissingField {
+                            code: codes::E003_MISSING_FIELD,
+                            field: "duumbi:value".to_string(),
+                            node_id: node_id_str.to_string(),
+                        })?;
+                    Op::ConstF64(val)
+                }
+                DuumbiType::Bool => {
+                    let val = value
+                        .get("duumbi:value")
+                        .and_then(|v| v.as_bool())
+                        .ok_or_else(|| ParseError::MissingField {
+                            code: codes::E003_MISSING_FIELD,
+                            field: "duumbi:value".to_string(),
+                            node_id: node_id_str.to_string(),
+                        })?;
+                    Op::ConstBool(val)
+                }
+                _ => {
+                    let val = value
+                        .get("duumbi:value")
+                        .and_then(|v| v.as_i64())
+                        .ok_or_else(|| ParseError::MissingField {
+                            code: codes::E003_MISSING_FIELD,
+                            field: "duumbi:value".to_string(),
+                            node_id: node_id_str.to_string(),
+                        })?;
+                    Op::Const(val)
+                }
+            };
+            Ok(make_op_ast(
+                NodeId(node_id_str.to_string()),
+                op,
                 result_type,
-                left: None,
-                right: None,
-                operand: None,
-            })
+            ))
         }
         "duumbi:Add" | "duumbi:Sub" | "duumbi:Mul" | "duumbi:Div" => {
             let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
@@ -250,14 +331,91 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 "duumbi:Div" => Op::Div,
                 _ => unreachable!(),
             };
-            Ok(OpAst {
-                id: NodeId(node_id_str.to_string()),
-                op,
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:Compare" => {
+            let operator_str = get_str(value, "duumbi:operator", node_id_str)?;
+            let compare_op = parse_compare_op(operator_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Compare(compare_op),
                 result_type,
-                left: Some(left),
-                right: Some(right),
-                operand: None,
-            })
+            );
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:Branch" => {
+            let condition = parse_node_ref(value, "duumbi:condition", node_id_str)?;
+            let true_block_str = get_str(value, "duumbi:trueBlock", node_id_str)?;
+            let false_block_str = get_str(value, "duumbi:falseBlock", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::Branch, result_type);
+            ast.condition = Some(condition);
+            ast.true_block = Some(BlockLabel(true_block_str.to_string()));
+            ast.false_block = Some(BlockLabel(false_block_str.to_string()));
+            Ok(ast)
+        }
+        "duumbi:Call" => {
+            let function_name = get_str(value, "duumbi:function", node_id_str)?;
+            let args = if let Some(args_val) = value.get("duumbi:args") {
+                if let Some(args_arr) = args_val.as_array() {
+                    let mut refs = Vec::with_capacity(args_arr.len());
+                    for arg_val in args_arr {
+                        let id = arg_val.get("@id").and_then(|v| v.as_str()).ok_or_else(|| {
+                            ParseError::MissingField {
+                                code: codes::E003_MISSING_FIELD,
+                                field: "duumbi:args.@id".to_string(),
+                                node_id: node_id_str.to_string(),
+                            }
+                        })?;
+                        refs.push(NodeRef {
+                            id: NodeId(id.to_string()),
+                        });
+                    }
+                    refs
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Call {
+                    function: function_name.to_string(),
+                },
+                result_type,
+            );
+            ast.args = args;
+            Ok(ast)
+        }
+        "duumbi:Load" => {
+            let variable = get_str(value, "duumbi:variable", node_id_str)?;
+            Ok(make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Load {
+                    variable: variable.to_string(),
+                },
+                result_type,
+            ))
+        }
+        "duumbi:Store" => {
+            let variable = get_str(value, "duumbi:variable", node_id_str)?;
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Store {
+                    variable: variable.to_string(),
+                },
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
         }
         "duumbi:Print" | "duumbi:Return" => {
             let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
@@ -266,14 +424,9 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 "duumbi:Return" => Op::Return,
                 _ => unreachable!(),
             };
-            Ok(OpAst {
-                id: NodeId(node_id_str.to_string()),
-                op,
-                result_type,
-                left: None,
-                right: None,
-                operand: Some(operand),
-            })
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
         }
         other => Err(ParseError::UnknownOp {
             code: codes::E002_UNKNOWN_OP,
@@ -286,6 +439,7 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::CompareOp;
 
     fn fixture_add() -> String {
         std::fs::read_to_string("tests/fixtures/add.jsonld")
@@ -380,5 +534,289 @@ mod tests {
     fn invalid_json() {
         let err = parse_jsonld("not json at all").unwrap_err();
         assert!(matches!(err, ParseError::Json { .. }));
+    }
+
+    #[test]
+    fn parse_compare_all_operators() {
+        for (op_str, expected) in [
+            ("eq", CompareOp::Eq),
+            ("ne", CompareOp::Ne),
+            ("lt", CompareOp::Lt),
+            ("le", CompareOp::Le),
+            ("gt", CompareOp::Gt),
+            ("ge", CompareOp::Ge),
+        ] {
+            let json = format!(
+                r#"{{
+                "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+                "duumbi:functions": [{{
+                    "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                    "duumbi:name": "main", "duumbi:returnType": "i64",
+                    "duumbi:blocks": [{{
+                        "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {{"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 1, "duumbi:resultType": "i64"}},
+                            {{"@type": "duumbi:Const", "@id": "duumbi:t/main/e/1", "duumbi:value": 2, "duumbi:resultType": "i64"}},
+                            {{
+                                "@type": "duumbi:Compare",
+                                "@id": "duumbi:t/main/e/2",
+                                "duumbi:operator": "{op_str}",
+                                "duumbi:left": {{"@id": "duumbi:t/main/e/0"}},
+                                "duumbi:right": {{"@id": "duumbi:t/main/e/1"}},
+                                "duumbi:resultType": "bool"
+                            }}
+                        ]
+                    }}]
+                }}]
+            }}"#
+            );
+            let module = parse_jsonld(&json)
+                .unwrap_or_else(|e| panic!("parse failed for operator '{op_str}': {e}"));
+            let op = &module.functions[0].blocks[0].ops[2].op;
+            assert_eq!(*op, Op::Compare(expected), "failed for operator '{op_str}'");
+        }
+    }
+
+    #[test]
+    fn parse_branch() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": true, "duumbi:resultType": "bool"},
+                        {
+                            "@type": "duumbi:Branch",
+                            "@id": "duumbi:t/main/e/1",
+                            "duumbi:condition": {"@id": "duumbi:t/main/e/0"},
+                            "duumbi:trueBlock": "then",
+                            "duumbi:falseBlock": "else"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let branch = &module.functions[0].blocks[0].ops[1];
+        assert_eq!(branch.op, Op::Branch);
+        assert!(branch.condition.is_some());
+        assert_eq!(
+            branch.true_block.as_ref().map(|b| &b.0),
+            Some(&"then".to_string())
+        );
+        assert_eq!(
+            branch.false_block.as_ref().map(|b| &b.0),
+            Some(&"else".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_branch_missing_true_block() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [{
+                        "@type": "duumbi:Branch",
+                        "@id": "duumbi:t/main/e/0",
+                        "duumbi:condition": {"@id": "duumbi:t/main/e/x"},
+                        "duumbi:falseBlock": "else"
+                    }]
+                }]
+            }]
+        }"#;
+        let err = parse_jsonld(json).unwrap_err();
+        assert!(
+            matches!(err, ParseError::MissingField { field, .. } if field == "duumbi:trueBlock")
+        );
+    }
+
+    #[test]
+    fn parse_call() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 10, "duumbi:resultType": "i64"},
+                        {
+                            "@type": "duumbi:Call",
+                            "@id": "duumbi:t/main/e/1",
+                            "duumbi:function": "fib",
+                            "duumbi:args": [{"@id": "duumbi:t/main/e/0"}],
+                            "duumbi:resultType": "i64"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let call = &module.functions[0].blocks[0].ops[1];
+        assert_eq!(
+            call.op,
+            Op::Call {
+                function: "fib".to_string()
+            }
+        );
+        assert_eq!(call.args.len(), 1);
+        assert_eq!(call.args[0].id.0, "duumbi:t/main/e/0");
+    }
+
+    #[test]
+    fn parse_load_store() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 42, "duumbi:resultType": "i64"},
+                        {
+                            "@type": "duumbi:Store",
+                            "@id": "duumbi:t/main/e/1",
+                            "duumbi:variable": "x",
+                            "duumbi:operand": {"@id": "duumbi:t/main/e/0"}
+                        },
+                        {
+                            "@type": "duumbi:Load",
+                            "@id": "duumbi:t/main/e/2",
+                            "duumbi:variable": "x",
+                            "duumbi:resultType": "i64"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let store = &module.functions[0].blocks[0].ops[1];
+        assert_eq!(
+            store.op,
+            Op::Store {
+                variable: "x".to_string()
+            }
+        );
+        assert!(store.operand.is_some());
+
+        let load = &module.functions[0].blocks[0].ops[2];
+        assert_eq!(
+            load.op,
+            Op::Load {
+                variable: "x".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_const_f64() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [{
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:t/main/e/0",
+                        "duumbi:value": 2.5,
+                        "duumbi:resultType": "f64"
+                    }]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        assert_eq!(module.functions[0].blocks[0].ops[0].op, Op::ConstF64(2.5));
+    }
+
+    #[test]
+    fn parse_const_bool() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [{
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:t/main/e/0",
+                        "duumbi:value": true,
+                        "duumbi:resultType": "bool"
+                    }]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        assert_eq!(module.functions[0].blocks[0].ops[0].op, Op::ConstBool(true));
+    }
+
+    #[test]
+    fn parse_function_params() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/fib",
+                "duumbi:name": "fib", "duumbi:returnType": "i64",
+                "duumbi:params": [
+                    {"duumbi:name": "n", "duumbi:paramType": "i64"}
+                ],
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/fib/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/fib/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/fib/e/1", "duumbi:operand": {"@id": "duumbi:t/fib/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let func = &module.functions[0];
+        assert_eq!(func.params.len(), 1);
+        assert_eq!(func.params[0].name, "n");
+        assert_eq!(func.params[0].param_type, DuumbiType::I64);
+    }
+
+    #[test]
+    fn missing_compare_operator() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [{
+                        "@type": "duumbi:Compare",
+                        "@id": "duumbi:t/main/e/0",
+                        "duumbi:left": {"@id": "duumbi:t/main/e/x"},
+                        "duumbi:right": {"@id": "duumbi:t/main/e/y"}
+                    }]
+                }]
+            }]
+        }"#;
+        let err = parse_jsonld(json).unwrap_err();
+        assert!(
+            matches!(err, ParseError::MissingField { field, .. } if field == "duumbi:operator")
+        );
     }
 }

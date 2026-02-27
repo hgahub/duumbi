@@ -2,7 +2,7 @@
 
 > AI-first semantic graph compiler. Programs are stored as JSON-LD graphs — not text files. The toolchain validates, compiles, and links them to native binaries via Cranelift.
 
-**Status:** Phase 0 — active development. No release yet.
+**Status:** Phase 1 — usable CLI with branching, function calls, and multiple types.
 
 ---
 
@@ -32,7 +32,30 @@ cc --version
 
 ---
 
-## Build
+## Quickstart (5 minutes)
+
+```bash
+# Install
+git clone git@github.com:hgahub/duumbi.git
+cd duumbi
+cargo install --path .
+
+# Create a workspace
+duumbi init myproject
+cd myproject
+
+# Build and run the skeleton program (prints 8)
+duumbi build
+duumbi run
+
+# Validate without compiling
+duumbi check
+
+# See human-readable pseudo-code
+duumbi describe
+```
+
+## Build from source
 
 ```bash
 git clone git@github.com:hgahub/duumbi.git
@@ -131,19 +154,27 @@ Expected output: prints `8`, exits with code 8.
 
 ---
 
-## Phase 0 Op Set
+## Op Set
 
-| Op | Cranelift | Description |
-|----|-----------|-------------|
-| `duumbi:Const` | `iconst.i64` | Constant integer value |
-| `duumbi:Add` | `iadd` | Integer addition |
-| `duumbi:Sub` | `isub` | Integer subtraction |
-| `duumbi:Mul` | `imul` | Integer multiplication |
-| `duumbi:Div` | `sdiv` | Integer division (truncating) |
-| `duumbi:Print` | `call duumbi_print_i64` | Print value to stdout |
-| `duumbi:Return` | `return` | Return from function |
+| Op | Cranelift | Description | Phase |
+|----|-----------|-------------|-------|
+| `duumbi:Const` | `iconst.i64` | Constant integer value | 0 |
+| `duumbi:Add` | `iadd` / `fadd` | Addition (i64 or f64) | 0 |
+| `duumbi:Sub` | `isub` / `fsub` | Subtraction | 0 |
+| `duumbi:Mul` | `imul` / `fmul` | Multiplication | 0 |
+| `duumbi:Div` | `sdiv` / `fdiv` | Division | 0 |
+| `duumbi:Print` | `call duumbi_print_*` | Print value to stdout | 0 |
+| `duumbi:Return` | `return` | Return from function | 0 |
+| `duumbi:ConstF64` | `f64const` | Constant float value | 1 |
+| `duumbi:ConstBool` | `iconst.i8` | Constant boolean | 1 |
+| `duumbi:Compare` | `icmp` / `fcmp` | Comparison (eq, ne, lt, le, gt, ge) | 1 |
+| `duumbi:Branch` | `brif` | Conditional branch | 1 |
+| `duumbi:Call` | `call` | Function call | 1 |
+| `duumbi:Load` | `use_var` | Load named variable | 1 |
+| `duumbi:Store` | `def_var` | Store to named variable | 1 |
 
-Phase 1 adds: `f64`, `bool`, `Compare`, `Branch`, `Call`, `Load`, `Store`, multi-module.
+**Types:** `i64`, `f64`, `bool`, `void`
+
 Phase 2 adds: AI mutation (`duumbi add "..."`, `duumbi undo`).
 Phase 3 adds: WASM web visualizer (`duumbi viz`).
 

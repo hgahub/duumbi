@@ -12,7 +12,7 @@ use crate::errors::codes;
 use crate::parser::ast::ModuleAst;
 use crate::types::NodeId;
 
-use super::{BlockInfo, FunctionInfo, GraphEdge, GraphError, GraphNode, SemanticGraph};
+use super::{BlockInfo, FunctionInfo, GraphEdge, GraphError, GraphNode, ParamInfo, SemanticGraph};
 
 /// Builds a semantic graph from a parsed module AST.
 ///
@@ -25,6 +25,11 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut has_main = false;
+    let mut branch_targets: HashMap<NodeId, (String, String)> = HashMap::new();
+
+    // Collect all function names for Call target validation
+    let function_names: std::collections::HashSet<&str> =
+        module.functions.iter().map(|f| f.name.0.as_str()).collect();
 
     // Pass 1: Create all nodes
     for func_ast in &module.functions {
@@ -46,6 +51,17 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     continue;
                 }
 
+                // Validate Call targets
+                if let crate::types::Op::Call { ref function } = op_ast.op
+                    && !function_names.contains(function.as_str())
+                {
+                    errors.push(GraphError::OrphanRef {
+                        code: codes::E004_ORPHAN_REF,
+                        from_node: op_ast.id.0.clone(),
+                        target: function.clone(),
+                    });
+                }
+
                 let node = GraphNode {
                     id: op_ast.id.clone(),
                     op: op_ast.op.clone(),
@@ -53,6 +69,13 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     function: func_ast.name.clone(),
                     block: block_ast.label.clone(),
                 };
+
+                // Store branch target labels for later lowering
+                if matches!(op_ast.op, crate::types::Op::Branch)
+                    && let (Some(tb), Some(fb)) = (&op_ast.true_block, &op_ast.false_block)
+                {
+                    branch_targets.insert(op_ast.id.clone(), (tb.0.clone(), fb.0.clone()));
+                }
 
                 let idx = graph.add_node(node);
                 node_map.insert(op_ast.id.clone(), idx);
@@ -65,9 +88,19 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
             });
         }
 
+        let params = func_ast
+            .params
+            .iter()
+            .map(|p| ParamInfo {
+                name: p.name.clone(),
+                param_type: p.param_type,
+            })
+            .collect();
+
         functions.push(FunctionInfo {
             name: func_ast.name.clone(),
             return_type: func_ast.return_type,
+            params,
             blocks: block_infos,
         });
     }
@@ -86,6 +119,7 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     continue; // Skip duplicates already reported
                 };
 
+                // Left operand edge
                 if let Some(ref left) = op_ast.left {
                     match node_map.get(&left.id) {
                         Some(&target_idx) => {
@@ -99,6 +133,7 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     }
                 }
 
+                // Right operand edge
                 if let Some(ref right) = op_ast.right {
                     match node_map.get(&right.id) {
                         Some(&target_idx) => {
@@ -112,6 +147,7 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     }
                 }
 
+                // Single operand edge (Print, Return, Store)
                 if let Some(ref operand) = op_ast.operand {
                     match node_map.get(&operand.id) {
                         Some(&target_idx) => {
@@ -124,6 +160,34 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                         }),
                     }
                 }
+
+                // Condition edge (Branch)
+                if let Some(ref condition) = op_ast.condition {
+                    match node_map.get(&condition.id) {
+                        Some(&target_idx) => {
+                            graph.add_edge(target_idx, src_idx, GraphEdge::Condition);
+                        }
+                        None => errors.push(GraphError::OrphanRef {
+                            code: codes::E004_ORPHAN_REF,
+                            from_node: op_ast.id.0.clone(),
+                            target: condition.id.0.clone(),
+                        }),
+                    }
+                }
+
+                // Call argument edges
+                for (i, arg_ref) in op_ast.args.iter().enumerate() {
+                    match node_map.get(&arg_ref.id) {
+                        Some(&target_idx) => {
+                            graph.add_edge(target_idx, src_idx, GraphEdge::Arg(i));
+                        }
+                        None => errors.push(GraphError::OrphanRef {
+                            code: codes::E004_ORPHAN_REF,
+                            from_node: op_ast.id.0.clone(),
+                            target: arg_ref.id.0.clone(),
+                        }),
+                    }
+                }
             }
         }
     }
@@ -133,6 +197,7 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
             graph,
             node_map,
             functions,
+            branch_targets,
         })
     } else {
         Err(errors)
@@ -160,7 +225,6 @@ mod tests {
 
     #[test]
     fn duplicate_id_detected() {
-        // Manually construct an AST with duplicate IDs
         use crate::parser::ast::*;
         use crate::types::*;
 
@@ -171,6 +235,7 @@ mod tests {
                 id: NodeId("duumbi:test/main".to_string()),
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
+                params: vec![],
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -182,6 +247,10 @@ mod tests {
                             left: None,
                             right: None,
                             operand: None,
+                            condition: None,
+                            true_block: None,
+                            false_block: None,
+                            args: Vec::new(),
                         },
                         OpAst {
                             id: NodeId("duumbi:test/main/entry/0".to_string()), // duplicate!
@@ -190,6 +259,10 @@ mod tests {
                             left: None,
                             right: None,
                             operand: None,
+                            condition: None,
+                            true_block: None,
+                            false_block: None,
+                            args: Vec::new(),
                         },
                     ],
                 }],
@@ -215,6 +288,7 @@ mod tests {
                 id: NodeId("duumbi:test/main".to_string()),
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
+                params: vec![],
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -227,6 +301,10 @@ mod tests {
                         operand: Some(NodeRef {
                             id: NodeId("duumbi:nonexistent".to_string()),
                         }),
+                        condition: None,
+                        true_block: None,
+                        false_block: None,
+                        args: Vec::new(),
                     }],
                 }],
             }],
@@ -251,6 +329,7 @@ mod tests {
                 id: NodeId("duumbi:test/helper".to_string()),
                 name: FunctionName("helper".to_string()),
                 return_type: DuumbiType::I64,
+                params: vec![],
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/helper/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -261,6 +340,10 @@ mod tests {
                         left: None,
                         right: None,
                         operand: None,
+                        condition: None,
+                        true_block: None,
+                        false_block: None,
+                        args: Vec::new(),
                     }],
                 }],
             }],
@@ -268,5 +351,106 @@ mod tests {
 
         let errs = build_graph(&module).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, GraphError::NoEntry { .. })));
+    }
+
+    #[test]
+    fn call_unknown_function_detected() {
+        use crate::parser::ast::*;
+        use crate::types::*;
+
+        let module = ModuleAst {
+            id: NodeId("duumbi:test".to_string()),
+            name: ModuleName("test".to_string()),
+            functions: vec![FunctionAst {
+                id: NodeId("duumbi:test/main".to_string()),
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                blocks: vec![BlockAst {
+                    id: NodeId("duumbi:test/main/entry".to_string()),
+                    label: BlockLabel("entry".to_string()),
+                    ops: vec![OpAst {
+                        id: NodeId("duumbi:test/main/entry/0".to_string()),
+                        op: Op::Call {
+                            function: "nonexistent".to_string(),
+                        },
+                        result_type: Some(DuumbiType::I64),
+                        left: None,
+                        right: None,
+                        operand: None,
+                        condition: None,
+                        true_block: None,
+                        false_block: None,
+                        args: Vec::new(),
+                    }],
+                }],
+            }],
+        };
+
+        let errs = build_graph(&module).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, GraphError::OrphanRef {
+                target, ..
+            } if target == "nonexistent")));
+    }
+
+    #[test]
+    fn function_params_preserved() {
+        use crate::types::DuumbiType;
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:params": [{"duumbi:name": "n", "duumbi:paramType": "i64"}],
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let sg = build_graph(&module).expect("build should succeed");
+        assert_eq!(sg.functions[0].params.len(), 1);
+        assert_eq!(sg.functions[0].params[0].name, "n");
+        assert_eq!(sg.functions[0].params[0].param_type, DuumbiType::I64);
+    }
+
+    #[test]
+    fn multi_block_graph() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [
+                    {
+                        "@type": "duumbi:Block", "@id": "duumbi:t/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:t/main/entry/0", "duumbi:value": 1, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:t/main/entry/1", "duumbi:operand": {"@id": "duumbi:t/main/entry/0"}}
+                        ]
+                    },
+                    {
+                        "@type": "duumbi:Block", "@id": "duumbi:t/main/alt",
+                        "duumbi:label": "alt",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:t/main/alt/0", "duumbi:value": 2, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:t/main/alt/1", "duumbi:operand": {"@id": "duumbi:t/main/alt/0"}}
+                        ]
+                    }
+                ]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let sg = build_graph(&module).expect("build should succeed");
+        assert_eq!(sg.functions[0].blocks.len(), 2);
+        assert_eq!(sg.functions[0].blocks[0].label.0, "entry");
+        assert_eq!(sg.functions[0].blocks[1].label.0, "alt");
+        assert_eq!(sg.graph.node_count(), 4);
     }
 }
