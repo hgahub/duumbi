@@ -75,22 +75,44 @@ pub struct GraphNode {
 
 /// Edge label in the semantic graph.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 1 variants used once compiler handles them
 pub enum GraphEdge {
     /// Left operand of a binary operation.
     Left,
     /// Right operand of a binary operation.
     Right,
-    /// Single operand (for Print, Return).
+    /// Single operand (for Print, Return, Store).
     Operand,
+    /// Condition edge (for Branch → condition node).
+    Condition,
+    /// True branch target (Branch → true block first node).
+    TrueBlock,
+    /// False branch target (Branch → false block first node).
+    FalseBlock,
+    /// Call argument by position.
+    Arg(usize),
+}
+
+/// Parameter info for a function.
+#[allow(dead_code)] // Used by compiler in Phase 1
+#[derive(Debug, Clone)]
+pub struct ParamInfo {
+    /// Parameter name.
+    pub name: String,
+    /// Parameter type.
+    pub param_type: DuumbiType,
 }
 
 /// Information about a function in the graph.
+#[allow(dead_code)] // Fields used by compiler in Phase 1
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
     /// Function name.
     pub name: FunctionName,
     /// Declared return type.
     pub return_type: DuumbiType,
+    /// Function parameters.
+    pub params: Vec<ParamInfo>,
     /// Blocks in this function, in order.
     pub blocks: Vec<BlockInfo>,
 }
@@ -118,4 +140,6 @@ pub struct SemanticGraph {
     pub node_map: HashMap<NodeId, NodeIndex>,
     /// Function metadata, in order.
     pub functions: Vec<FunctionInfo>,
+    /// Branch target labels: NodeId → (true_block_label, false_block_label).
+    pub branch_targets: HashMap<NodeId, (String, String)>,
 }

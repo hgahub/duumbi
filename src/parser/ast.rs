@@ -13,8 +13,18 @@ pub struct NodeRef {
     pub id: NodeId,
 }
 
+/// A parsed function parameter.
+#[allow(dead_code)] // Fields used once graph builder handles params
+#[derive(Debug, Clone)]
+pub struct ParamAst {
+    /// Parameter name.
+    pub name: String,
+    /// Parameter type.
+    pub param_type: DuumbiType,
+}
+
 /// A parsed operation within a block.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct OpAst {
     /// The `@id` of this operation node.
     pub id: NodeId,
@@ -26,8 +36,16 @@ pub struct OpAst {
     pub left: Option<NodeRef>,
     /// Right operand reference (for binary ops).
     pub right: Option<NodeRef>,
-    /// Single operand reference (for Print, Return).
+    /// Single operand reference (for Print, Return, Compare).
     pub operand: Option<NodeRef>,
+    /// Condition reference (for Branch).
+    pub condition: Option<NodeRef>,
+    /// True block label (for Branch).
+    pub true_block: Option<BlockLabel>,
+    /// False block label (for Branch).
+    pub false_block: Option<BlockLabel>,
+    /// Argument references (for Call).
+    pub args: Vec<NodeRef>,
 }
 
 /// A parsed basic block.
@@ -52,6 +70,8 @@ pub struct FunctionAst {
     pub name: FunctionName,
     /// Declared return type.
     pub return_type: DuumbiType,
+    /// Function parameters.
+    pub params: Vec<ParamAst>,
     /// Blocks in this function.
     pub blocks: Vec<BlockAst>,
 }

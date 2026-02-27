@@ -60,29 +60,37 @@ Example: `duumbi:main/main/entry/2`
 
 ---
 
-## Phase 0 pipeline (current build target)
+## Build pipeline
 
 ```
-add.jsonld  →  parse  →  DiGraph  →  validate  →  Cranelift IR  →  output.o
-                                                                        │
-                                         cc output.o duumbi_runtime.o -o output
+.jsonld files  →  parse  →  StableGraph  →  validate  →  Cranelift IR  →  output.o
+                                                                              │
+                                            cc output.o duumbi_runtime.o -o output
 ```
 
-Kill criterion: `add(3, 5)` → binary prints `8`, exits with code 8.
+**Phase 0 kill criterion:** `add(3, 5)` → binary prints `8`, exits with code 8.
+**Phase 1 kill criterion:** External dev installs and runs fibonacci in < 10 min.
 
-**Phase 0 Op set:** `Const`, `Add`, `Sub`, `Mul`, `Div`, `Print`, `Return`
+**Full Op set:**
 
-**Cranelift lowering map:**
+| duumbi: Op | Cranelift IR | Phase |
+|------------|--------------|-------|
+| `Const` (i64) | `iconst` | 0 |
+| `ConstF64` (f64) | `f64const` | 1 |
+| `ConstBool` (bool) | `iconst` (i8) | 1 |
+| `Add` | `iadd` / `fadd` | 0 |
+| `Sub` | `isub` / `fsub` | 0 |
+| `Mul` | `imul` / `fmul` | 0 |
+| `Div` | `sdiv` / `fdiv` | 0 |
+| `Compare` | `icmp` / `fcmp` | 1 |
+| `Branch` | `brif` | 1 |
+| `Call` | `call` | 1 |
+| `Load` | `use_var` | 1 |
+| `Store` | `def_var` | 1 |
+| `Print` | `call duumbi_print_*` | 0 |
+| `Return` | `return` | 0 |
 
-| duumbi: Op | Cranelift IR |
-|------------|--------------|
-| `Const` (i64) | `iconst` |
-| `Add` | `iadd` |
-| `Sub` | `isub` |
-| `Mul` | `imul` |
-| `Div` | `sdiv` |
-| `Print` | `call duumbi_print_i64` |
-| `Return` | `return` |
+**Types:** `i64`, `f64`, `bool`, `void`
 
 ---
 
