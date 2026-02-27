@@ -11,6 +11,8 @@ mod graph;
 mod parser;
 #[allow(dead_code)] // patch types and helpers used in Issue #31 orchestrator
 mod patch;
+#[allow(dead_code)] // tool schema types used in Issue #29/#30 providers
+mod tools;
 mod types;
 
 use std::fs;
