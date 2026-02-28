@@ -280,7 +280,7 @@ mod tests {
             .filter(|n| {
                 n["data"]["opType"]
                     .as_str()
-                    .map_or(false, |t| t.starts_with("Const"))
+                    .is_some_and(|t| t.starts_with("Const"))
             })
             .collect();
         for node in &const_nodes {

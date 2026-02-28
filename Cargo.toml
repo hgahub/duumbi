@@ -18,7 +18,8 @@ target-lexicon = "0.13"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal"] }
+notify = "7"
 reqwest = { version = "0.12", features = ["json"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
@@ -26,3 +27,5 @@ notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
