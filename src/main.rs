@@ -15,6 +15,7 @@ mod patch;
 mod snapshot;
 mod tools;
 mod types;
+mod web;
 
 use std::fs;
 use std::io::{self, Write as _};

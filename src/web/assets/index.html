@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>duumbi — Graph Visualizer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="logo">duumbi <span class="version">viz</span></div>
+    <div id="status" class="status disconnected">disconnected</div>
+  </header>
+  <main>
+    <div id="graph-container"></div>
+    <aside id="inspector">
+      <h3>Node Inspector</h3>
+      <div id="inspector-content">
+        <p class="placeholder">Click a node to inspect it.</p>
+      </div>
+    </aside>
+  </main>
+  <div id="error-panel" class="hidden"></div>
+  <script src="/dagre.min.js"></script>
+  <script src="/cytoscape.min.js"></script>
+  <script src="/cytoscape-dagre.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
