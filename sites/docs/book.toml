@@ -1,0 +1,24 @@
+[book]
+title = "DUUMBI Documentation"
+description = "AI-first semantic graph compiler — CLI reference, JSON-LD format, and module system guide."
+authors = ["DUUMBI Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+site-url = "https://docs.duumbi.dev/"
+git-repository-url = "https://github.com/hgahub/duumbi"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/hgahub/duumbi/edit/main/sites/docs/src/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 20
