@@ -35,17 +35,21 @@ pub fn spawn_watcher(graph_path: PathBuf, state: AppState) -> tokio::task::JoinH
 async fn run_watcher(graph_path: PathBuf, state: AppState) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel::<()>(8);
 
-    // Spawn the synchronous notify watcher on a blocking thread
+    // Spawn the synchronous notify watcher on a dedicated OS thread.
+    //
+    // NOTE: `Handle::current()` cannot be called here because `std::thread::spawn`
+    // creates a plain OS thread with no tokio context. Instead we use
+    // `Sender::blocking_send()`, which is designed for exactly this use case:
+    // sending from sync code into an async channel.
     let watch_path = graph_path.clone();
+    let tx_for_thread = tx.clone();
     let _watcher_handle = std::thread::spawn(move || {
-        let rt = tokio::runtime::Handle::current();
-        let tx_clone = tx.clone();
-
         let mut debouncer = new_debouncer(
             Duration::from_millis(200),
             move |result: DebounceEventResult| {
                 if result.is_ok() {
-                    let _ = rt.block_on(tx_clone.send(()));
+                    // blocking_send is safe from a non-tokio thread
+                    let _ = tx_for_thread.blocking_send(());
                 }
             },
         )
@@ -56,8 +60,7 @@ async fn run_watcher(graph_path: PathBuf, state: AppState) -> anyhow::Result<()>
             .watch(&watch_path, notify::RecursiveMode::NonRecursive)
             .expect("invariant: failed to watch graph path");
 
-        // Keep debouncer alive until the channel is closed
-        // (drops when the spawn_watcher JoinHandle is aborted/dropped)
+        // Park keeps the debouncer (and watcher) alive for the process lifetime.
         std::thread::park();
     });
 
