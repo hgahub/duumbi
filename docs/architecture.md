@@ -34,8 +34,20 @@ Validator         │
     ▼             ▼
 Error JSONL   Native Binary
 
-Phase 2 additions:
-  AI Agent Module  →  Graph Patch  →  Schema Validator  →  Semantic Graph
+Phase 2 (implemented):
+  duumbi add "..."
+      │
+      ▼
+  LlmClient (Anthropic / OpenAI)
+      │   tool_use / function_calling API
+      ▼
+  Vec<PatchOp>  (6 variants: AddFunction, AddBlock, AddOp,
+      │          ModifyOp, RemoveNode, SetEdge)
+      ▼
+  apply_patch()  →  JSON-LD Value  →  parse+build+validate  →  write to disk
+      │                                                             │
+      ▼                                                             ▼
+  Retry (max 1)                                          .duumbi/history/ snapshot
 
 Phase 3 additions:
   Telemetry Engine  →  traceId injection  →  Web Visualizer (WASM + axum)
@@ -52,6 +64,7 @@ Phase 3 additions:
 | `.o` | Cranelift object file output | `.duumbi/build/` |
 | `traces.jsonl` | Runtime traceId → nodeId mapping | `.duumbi/telemetry/` |
 | `config.toml` | LLM provider, model, API key env ref | `.duumbi/` |
+| `{N:06}.jsonld` | Undo history snapshots | `.duumbi/history/` |
 
 **JSON-LD namespace:** `https://duumbi.dev/ns/core#` (prefix: `duumbi:`)
 
@@ -68,8 +81,9 @@ Example: `duumbi:main/main/entry/2`
                                             cc output.o duumbi_runtime.o -o output
 ```
 
-**Phase 0 kill criterion:** `add(3, 5)` → binary prints `8`, exits with code 8.
-**Phase 1 kill criterion:** External dev installs and runs fibonacci in < 10 min.
+**Phase 0 kill criterion:** `add(3, 5)` → binary prints `8`, exits with code 8. ✓
+**Phase 1 kill criterion:** External dev installs and runs fibonacci in < 10 min. ✓
+**Phase 2 kill criterion:** > 70% correct on 20-command AI benchmark (mock: 20/20). ✓
 
 **Full Op set:**
 
@@ -102,6 +116,37 @@ Example: `duumbi:main/main/entry/2`
 
 `duumbi_runtime.c` provides: `duumbi_print_i64(int64_t)`,
 `duumbi_print_f64(double)` (Phase 1), `duumbi_print_bool(int8_t)` (Phase 1).
+
+---
+
+## AI mutation pipeline (Phase 2)
+
+`duumbi add "<request>"` runs the following loop:
+
+1. Load `.duumbi/config.toml` → `LlmClient` (Anthropic or OpenAI)
+2. Read `.duumbi/graph/main.jsonld` as `serde_json::Value`
+3. Send `SYSTEM_PROMPT + graph_json + user_request` to LLM with 6 tools
+4. LLM responds with one or more tool calls → deserialized as `Vec<PatchOp>`
+5. `apply_patch(source, patch)` — clone source, apply all ops (all-or-nothing)
+6. `parse_jsonld → build_graph → validate` on the patched value
+7. On failure: retry once with error message appended to user prompt
+8. Show `describe_changes` diff summary, ask for confirmation (unless `--yes`)
+9. `save_snapshot` to `.duumbi/history/{N:06}.jsonld`
+10. Write patched graph to `.duumbi/graph/main.jsonld`
+
+**GraphPatch operations** (`src/patch.rs`, serde tag: `"kind"`):
+
+| Kind | Description |
+|------|-------------|
+| `add_function` | Append a complete function JSON-LD object |
+| `add_block` | Append a block to a function by `function_id` |
+| `add_op` | Append an op to a block by `block_id` |
+| `modify_op` | Set a field on any node by `node_id` |
+| `remove_node` | Remove a node (op/block/function) by `node_id` |
+| `set_edge` | Set an `@id` reference field on a node |
+
+**Undo:** `duumbi undo` restores the latest `.duumbi/history/*.jsonld` snapshot
+and removes it (LIFO stack). `snapshot_count()` reports remaining undo depth.
 
 ---
 
