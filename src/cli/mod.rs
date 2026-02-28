@@ -55,4 +55,17 @@ pub enum Commands {
         /// Path to the input `.jsonld` file (optional if in a workspace).
         input: Option<PathBuf>,
     },
+
+    /// Apply an AI-generated mutation to the graph (requires [llm] config).
+    Add {
+        /// Natural language description of the desired change.
+        request: String,
+
+        /// Apply immediately without confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Undo the last AI mutation (restores from snapshot in `.duumbi/history/`).
+    Undo,
 }

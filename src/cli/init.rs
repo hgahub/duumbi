@@ -71,6 +71,12 @@ version = "0.1"
 
 [build]
 output_dir = "build"
+
+# Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
+# [llm]
+# provider = "anthropic"      # or "openai"
+# model = "claude-sonnet-4-6" # or "gpt-4o"
+# api_key_env = "ANTHROPIC_API_KEY"  # name of env var holding the API key
 "#;
 
 /// Initializes a new duumbi workspace at the given base path.

@@ -2,7 +2,7 @@
 
 > AI-first semantic graph compiler. Programs are stored as JSON-LD graphs — not text files. The toolchain validates, compiles, and links them to native binaries via Cranelift.
 
-**Status:** Phase 1 — usable CLI with branching, function calls, and multiple types.
+**Status:** Phase 2 — AI mutation via `duumbi add` / `duumbi undo` (Anthropic + OpenAI).
 
 ---
 
@@ -55,6 +55,49 @@ duumbi check
 duumbi describe
 ```
 
+## AI Mutation (Phase 2)
+
+`duumbi add` calls an LLM to mutate the graph. Configure your provider in `.duumbi/config.toml`:
+
+```toml
+[compiler]
+version = "0.1"
+
+[build]
+output_dir = "build"
+
+[llm]
+provider = "anthropic"          # or "openai"
+model = "claude-sonnet-4-6"     # or "gpt-4o"
+api_key_env = "ANTHROPIC_API_KEY"  # name of the env var holding your key
+```
+
+Then export your API key and use `duumbi add`:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Describe a change in plain language
+duumbi add "change the constant 3 to 7"
+
+# Apply without confirmation prompt
+duumbi add --yes "multiply instead of add"
+
+# Undo the last AI mutation
+duumbi undo
+```
+
+The command runs a prompt → LLM → patch → validate → (retry once on failure) loop.
+Changes are shown as a diff summary before writing. The original graph is saved to
+`.duumbi/history/` before every mutation so `duumbi undo` can restore it.
+
+**Providers:**
+
+| Provider | `provider` value | Models |
+|----------|-----------------|--------|
+| Anthropic Claude | `anthropic` | `claude-sonnet-4-6`, `claude-opus-4-6` |
+| OpenAI | `openai` | `gpt-4o`, `gpt-4o-mini` |
+
 ## Build from source
 
 ```bash
@@ -70,12 +113,17 @@ cargo test --all
 ```
 duumbi/
 ├── src/
-│   ├── main.rs          # CLI entry point (clap)
+│   ├── main.rs          # CLI entry point (clap, async tokio)
+│   ├── lib.rs           # Library crate root (for integration tests)
 │   ├── parser/          # JSON-LD → serde_json → typed structs
 │   ├── graph/           # petgraph semantic graph IR
 │   ├── compiler/        # Graph → Cranelift IR → .o
 │   ├── cli/             # Command implementations
-│   ├── agents/          # AI agent module (Phase 2)
+│   ├── agents/          # AI agent module (Anthropic + OpenAI)
+│   ├── config.rs        # Workspace config loader (.duumbi/config.toml)
+│   ├── patch.rs         # GraphPatch: atomic JSON-LD mutations
+│   ├── snapshot.rs      # Undo history (.duumbi/history/)
+│   ├── tools.rs         # LLM tool schema definitions
 │   └── web/             # WASM visualizer + axum server (Phase 3)
 ├── tests/               # Integration tests with .jsonld fixtures
 ├── examples/
@@ -175,7 +223,6 @@ Expected output: prints `8`, exits with code 8.
 
 **Types:** `i64`, `f64`, `bool`, `void`
 
-Phase 2 adds: AI mutation (`duumbi add "..."`, `duumbi undo`).
 Phase 3 adds: WASM web visualizer (`duumbi viz`).
 
 ---
