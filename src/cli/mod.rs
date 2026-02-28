@@ -68,4 +68,18 @@ pub enum Commands {
 
     /// Undo the last AI mutation (restores from snapshot in `.duumbi/history/`).
     Undo,
+
+    /// Start the web visualizer for the semantic graph.
+    Viz {
+        /// Port to listen on.
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+
+        /// Serve frontend assets from disk (development mode).
+        #[arg(long)]
+        dev: bool,
+
+        /// Path to the input `.jsonld` file (optional if in a workspace).
+        input: Option<PathBuf>,
+    },
 }

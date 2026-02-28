@@ -15,6 +15,7 @@ mod patch;
 mod snapshot;
 mod tools;
 mod types;
+mod web;
 
 use std::fs;
 use std::io::{self, Write as _};
@@ -87,6 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
+        Commands::Viz { port, dev, input } => viz(port, dev, input).await,
     }
 }
 
@@ -308,6 +310,26 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     eprintln!("Graph updated. Run `duumbi build` to compile.");
     Ok(())
+}
+
+/// Starts the web visualizer server.
+///
+/// Loads the initial graph, spawns the file watcher, and runs the axum
+/// server until CTRL+C. The visualizer URL is printed to stderr.
+async fn viz(port: u16, dev: bool, input: Option<PathBuf>) -> Result<()> {
+    let graph_path = resolve_input(input.as_deref())?;
+
+    // Load initial graph
+    let initial = web::watcher::load_initial_graph(&graph_path);
+
+    // Build shared app state
+    let state = web::server::AppState::new(initial, dev);
+
+    // Spawn the file watcher background task
+    let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
+
+    // Run the HTTP server (blocks until CTRL+C)
+    web::server::run_server(port, state).await
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.
