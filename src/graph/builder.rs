@@ -267,6 +267,8 @@ mod tests {
                     ],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -308,6 +310,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -347,6 +351,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -385,6 +391,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
