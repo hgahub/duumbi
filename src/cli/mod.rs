@@ -2,8 +2,10 @@
 //!
 //! Command-line interface using `clap` for the duumbi compiler.
 
+pub mod commands;
 pub mod describe;
 pub mod init;
+pub mod repl;
 
 use std::path::PathBuf;
 

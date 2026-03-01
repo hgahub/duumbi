@@ -2,7 +2,8 @@
 //!
 //! Orchestrates the full compilation pipeline: parse → graph → validate →
 //! compile → link. Uses `anyhow` for error handling at the application boundary.
-//! Async runtime (tokio) is needed for `duumbi add` which makes LLM API calls.
+//! Async runtime (tokio) is needed for `duumbi add` and the interactive REPL,
+//! which make LLM API calls.
 
 mod agents;
 mod cli;
@@ -18,7 +19,7 @@ mod types;
 mod web;
 
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -27,18 +28,28 @@ use clap::Parser;
 
 use agents::orchestrator;
 use cli::{Cli, Commands};
-use compiler::linker;
-use compiler::lowering;
-use errors::Diagnostic;
-use graph::builder;
-use graph::validator;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
+    // If invoked with no arguments and stdin is a terminal, enter the
+    // interactive REPL instead of showing help.
+    if std::env::args().len() == 1 && io::stdin().is_terminal() {
+        let workspace_root = PathBuf::from(".");
+        if workspace_root.join(".duumbi").exists() {
+            let config =
+                config::load_config(&workspace_root).unwrap_or(config::DuumbiConfig { llm: None });
+            if let Err(e) = cli::repl::run(workspace_root, config).await {
+                eprintln!("error: {e:#}");
+                process::exit(1);
+            }
+            return;
+        }
+        // No workspace — fall through to normal CLI parsing (shows help).
+    }
 
+    let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("error: {e:#}");
         process::exit(1);
@@ -62,7 +73,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Build { input, output } => {
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            build(&input_path, &output_path)
+            cli::commands::build(&input_path, &output_path)
         }
         Commands::Run { args } => {
             let binary = resolve_output(None)?;
@@ -80,11 +91,11 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Check { input } => {
             let input_path = resolve_input(input.as_deref())?;
-            check(&input_path)
+            cli::commands::check(&input_path)
         }
         Commands::Describe { input } => {
             let input_path = resolve_input(input.as_deref())?;
-            describe(&input_path)
+            cli::commands::describe(&input_path)
         }
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
@@ -127,104 +138,6 @@ fn resolve_output(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(PathBuf::from("output"))
 }
 
-/// Parses and validates a source file, returning the semantic graph on success.
-fn parse_and_validate(input: &Path) -> Result<graph::SemanticGraph> {
-    let source = fs::read_to_string(input)
-        .with_context(|| format!("Failed to read input file '{}'", input.display()))?;
-
-    let module_ast = match parser::parse_jsonld(&source) {
-        Ok(ast) => ast,
-        Err(e) => {
-            let diag = match &e {
-                parser::ParseError::Json { code, .. } => Diagnostic::error(code, e.to_string()),
-                parser::ParseError::MissingField { code, node_id, .. } => {
-                    Diagnostic::error(code, e.to_string())
-                        .with_node(&types::NodeId(node_id.clone()))
-                }
-                parser::ParseError::UnknownOp { code, node_id, .. } => {
-                    Diagnostic::error(code, e.to_string())
-                        .with_node(&types::NodeId(node_id.clone()))
-                }
-                parser::ParseError::SchemaInvalid { code, .. } => {
-                    Diagnostic::error(code, e.to_string())
-                }
-            };
-            emit_diagnostic(&diag);
-            anyhow::bail!("Parse failed");
-        }
-    };
-
-    let semantic_graph = match builder::build_graph(&module_ast) {
-        Ok(sg) => sg,
-        Err(errors) => {
-            for err in &errors {
-                let diag = Diagnostic::error(err.code(), err.to_string());
-                emit_diagnostic(&diag);
-            }
-            anyhow::bail!("Graph construction failed with {} error(s)", errors.len());
-        }
-    };
-
-    let diagnostics = validator::validate(&semantic_graph);
-    if !diagnostics.is_empty() {
-        for diag in &diagnostics {
-            emit_diagnostic(diag);
-        }
-        anyhow::bail!("Validation failed with {} error(s)", diagnostics.len());
-    }
-
-    Ok(semantic_graph)
-}
-
-fn build(input: &Path, output: &Path) -> Result<()> {
-    let semantic_graph = parse_and_validate(input)?;
-
-    // Compile to object
-    let obj_bytes =
-        lowering::compile_to_object(&semantic_graph).context("Cranelift compilation failed")?;
-
-    // Write object file to a unique temp directory (avoid race conditions)
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let tmp_dir =
-        std::env::temp_dir().join(format!("duumbi_build_{}_{}", std::process::id(), unique_id));
-    fs::create_dir_all(&tmp_dir).context("Failed to create temp build directory")?;
-
-    let obj_path = tmp_dir.join("output.o");
-    fs::write(&obj_path, &obj_bytes).context("Failed to write object file")?;
-
-    // Compile C runtime
-    let runtime_c = find_runtime_c()?;
-    let runtime_o = tmp_dir.join("duumbi_runtime.o");
-    linker::compile_runtime(&runtime_c, &runtime_o).context("Failed to compile C runtime")?;
-
-    // Link
-    linker::link(&obj_path, &runtime_o, output).context("Failed to link binary")?;
-
-    // Clean up temp build artifacts
-    let _ = fs::remove_dir_all(&tmp_dir);
-
-    eprintln!("Build successful: {}", output.display());
-    Ok(())
-}
-
-fn check(input: &Path) -> Result<()> {
-    match parse_and_validate(input) {
-        Ok(_) => {
-            eprintln!("Validation passed.");
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn describe(input: &Path) -> Result<()> {
-    let semantic_graph = parse_and_validate(input)?;
-    cli::describe::describe(&semantic_graph);
-    Ok(())
-}
-
 /// Applies an AI-generated mutation to the graph.
 ///
 /// Loads `.duumbi/config.toml` for LLM provider settings, saves a snapshot
@@ -233,7 +146,6 @@ fn describe(input: &Path) -> Result<()> {
 async fn add(request: &str, yes: bool) -> Result<()> {
     let workspace_root = PathBuf::from(".");
 
-    // Load config
     let cfg = config::load_config(&workspace_root).context(
         "Cannot run 'duumbi add': no .duumbi/config.toml found or [llm] section missing.\n\
          Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
@@ -250,7 +162,6 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         .resolve_api_key()
         .context("Failed to resolve LLM API key")?;
 
-    // Load current graph source
     let graph_path = workspace_root
         .join(".duumbi")
         .join("graph")
@@ -262,7 +173,6 @@ async fn add(request: &str, yes: bool) -> Result<()> {
     let source: serde_json::Value =
         serde_json::from_str(&source_str).context("Failed to parse current graph as JSON")?;
 
-    // Build LLM client
     let client = match llm_cfg.provider {
         config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
         config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
@@ -270,10 +180,8 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
 
-    // Run mutation with 1 retry on validation failure
     let result = orchestrator::mutate(&client, &source, request, 1).await?;
 
-    // Show diff
     let diff = orchestrator::describe_changes(&source, &result.patched);
     eprintln!(
         "\nProposed changes ({} tool call{}):\n{}",
@@ -282,7 +190,6 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         diff
     );
 
-    // Confirm unless --yes
     if !yes {
         eprint!("\nApply changes? [y/N] ");
         io::stderr().flush().ok();
@@ -298,10 +205,8 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         }
     }
 
-    // Save snapshot before writing
     snapshot::save_snapshot(&workspace_root, &source_str).context("Failed to save snapshot")?;
 
-    // Write patched graph
     let patched_str = serde_json::to_string_pretty(&result.patched)
         .context("Failed to serialize patched graph")?;
 
@@ -313,22 +218,13 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 }
 
 /// Starts the web visualizer server.
-///
-/// Loads the initial graph, spawns the file watcher, and runs the axum
-/// server until CTRL+C. The visualizer URL is printed to stderr.
 async fn viz(port: u16, dev: bool, input: Option<PathBuf>) -> Result<()> {
     let graph_path = resolve_input(input.as_deref())?;
 
-    // Load initial graph
     let initial = web::watcher::load_initial_graph(&graph_path);
-
-    // Build shared app state
     let state = web::server::AppState::new(initial, dev);
-
-    // Spawn the file watcher background task
     let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
 
-    // Run the HTTP server (blocks until CTRL+C)
     web::server::run_server(port, state).await
 }
 
@@ -346,44 +242,4 @@ fn undo() -> Result<()> {
             anyhow::bail!("Nothing to undo — no snapshots found in .duumbi/history/.");
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Runtime helpers
-// ---------------------------------------------------------------------------
-
-/// The C runtime source, embedded at compile time.
-const RUNTIME_C_SOURCE: &str = include_str!("../runtime/duumbi_runtime.c");
-
-/// Provides the `duumbi_runtime.c` file, writing it to a temp location if needed.
-///
-/// First checks for the file on disk (relative to CWD or executable), then
-/// falls back to writing the embedded source to a temp file.
-fn find_runtime_c() -> Result<std::path::PathBuf> {
-    let candidates = [
-        std::path::PathBuf::from("runtime/duumbi_runtime.c"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("runtime/duumbi_runtime.c")))
-            .unwrap_or_default(),
-    ];
-
-    for path in &candidates {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-    }
-
-    // Fall back to writing the embedded runtime source
-    let tmp_dir = std::env::temp_dir().join("duumbi_build");
-    fs::create_dir_all(&tmp_dir).context("Failed to create temp build directory")?;
-    let runtime_path = tmp_dir.join("duumbi_runtime.c");
-    fs::write(&runtime_path, RUNTIME_C_SOURCE).context("Failed to write embedded runtime")?;
-    Ok(runtime_path)
-}
-
-/// Emits a diagnostic as JSONL to stdout and a human summary to stderr.
-fn emit_diagnostic(diag: &Diagnostic) {
-    println!("{}", diag.to_jsonl());
-    eprintln!("{diag}");
 }
