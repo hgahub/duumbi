@@ -1,0 +1,42 @@
+name: Docs Review (Oz)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    # Trigger on code changes, not just docs, because we want to check if docs NEED update
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'sites/docs/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  oz-review:
+    name: Oz Documentation Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Oz Agent Review
+        uses: warpdotdev/oz-agent-action@v1
+        env:
+          WARP_API_KEY: ${{ secrets.WARP_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          prompt: |
+            You are a documentation review agent for the DUUMBI project.
+            A PR has been opened. Your job:
+            1. Run `gh pr diff $PR_NUMBER` to see what changed.
+            2. Read the relevant docs under `sites/docs/src/`.
+            3. Identify if any CLI commands, JSON-LD schema, types, ops, or architecture changed.
+            4. If docs are outdated or missing coverage for the changes, write a PR review comment
+               using `gh pr comment $PR_NUMBER --body "..."` listing:
+               - Which doc files need updating
+               - What specifically changed that the docs don't reflect
+            5. If docs are already up-to-date or the change is trivial/irrelevant to docs, comment: "✅ Docs look up-to-date for this change."
+            Do NOT make commits. Only comment.
