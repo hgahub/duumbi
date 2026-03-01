@@ -18,8 +18,31 @@ use super::{BlockInfo, FunctionInfo, GraphEdge, GraphError, GraphNode, ParamInfo
 ///
 /// Collects all errors rather than stopping at the first one.
 /// Returns the graph on success, or all accumulated errors.
+///
+/// For multi-module programs use [`build_graph_no_call_check`] to skip
+/// intra-module `Call` validation; cross-module call resolution is handled
+/// by the [`crate::graph::program`] layer.
 #[must_use = "graph build errors should be handled"]
 pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
+    build_graph_impl(module, true)
+}
+
+/// Builds a semantic graph, skipping intra-module `Call` target validation.
+///
+/// Used by the [`crate::graph::program`] layer when loading a multi-module
+/// program: cross-module `Call` references are validated there (producing
+/// E010 errors) rather than here (which would produce E004 orphan refs for
+/// functions defined in other modules).
+#[allow(dead_code)] // Called by graph::program, which is used in upcoming phase (#59)
+#[must_use = "graph build errors should be handled"]
+pub fn build_graph_no_call_check(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
+    build_graph_impl(module, false)
+}
+
+fn build_graph_impl(
+    module: &ModuleAst,
+    validate_calls: bool,
+) -> Result<SemanticGraph, Vec<GraphError>> {
     let mut graph = StableGraph::new();
     let mut node_map: HashMap<NodeId, petgraph::stable_graph::NodeIndex> = HashMap::new();
     let mut errors = Vec::new();
@@ -51,8 +74,11 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     continue;
                 }
 
-                // Validate Call targets
-                if let crate::types::Op::Call { ref function } = op_ast.op
+                // Validate Call targets against locally-defined functions.
+                // In multi-module mode (validate_calls = false) this check is
+                // skipped; the program layer performs cross-module validation.
+                if validate_calls
+                    && let crate::types::Op::Call { ref function } = op_ast.op
                     && !function_names.contains(function.as_str())
                 {
                     errors.push(GraphError::OrphanRef {

@@ -29,6 +29,9 @@ pub mod codes {
     pub const E008_LINK_FAILED: &str = "E008";
     /// Schema validation failed (malformed JSON-LD structure).
     pub const E009_SCHEMA_INVALID: &str = "E009";
+    /// Unresolved cross-module function reference.
+    #[allow(dead_code)] // Used by graph::program in upcoming phase (#59)
+    pub const E010_UNRESOLVED_CROSS_MODULE: &str = "E010";
 }
 
 /// Severity level for a diagnostic message.
