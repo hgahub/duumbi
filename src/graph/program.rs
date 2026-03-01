@@ -77,11 +77,26 @@ pub enum ProgramError {
 impl Program {
     /// Discovers and loads all `.jsonld` modules from `<workspace>/.duumbi/graph/`.
     ///
+    /// Delegates to [`Program::load_from_dirs`] with the workspace graph directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a non-empty `Vec<ProgramError>` if any module fails to load,
+    /// parse, build, or validate.
+    pub fn load(workspace: &Path) -> Result<Self, Vec<ProgramError>> {
+        let graph_dir = workspace.join(".duumbi").join("graph");
+        Self::load_from_dirs(&[&graph_dir])
+    }
+
+    /// Discovers and loads all `.jsonld` modules from one or more graph directories.
+    ///
+    /// This is the primary loading function. [`Program::load`] is a convenience
+    /// wrapper that passes the workspace's single graph directory.
+    ///
     /// **Loading steps:**
-    /// 1. Scan `<workspace>/.duumbi/graph/` for `*.jsonld` files.
+    /// 1. Scan all `graph_dirs` for `*.jsonld` files.
     /// 2. Parse each file into a `ModuleAst` and collect `duumbi:exports`.
-    /// 3. Build per-module semantic graphs, passing other modules' exports as
-    ///    known externals so cross-module calls are not flagged as orphan refs.
+    /// 3. Build per-module semantic graphs without intra-module Call validation.
     /// 4. Validate that all cross-module `Call` ops resolve to an entry in the
     ///    combined export table; report [`ProgramError::UnresolvedCrossModuleRef`]
     ///    (E010) for any that do not.
@@ -91,47 +106,60 @@ impl Program {
     /// # Errors
     ///
     /// Returns a non-empty `Vec<ProgramError>` if any module fails to load,
-    /// parse, build, or validate.
-    pub fn load(workspace: &Path) -> Result<Self, Vec<ProgramError>> {
-        let graph_dir = workspace.join(".duumbi").join("graph");
+    /// parse, build, or validate, or if all directories are missing.
+    pub fn load_from_dirs(graph_dirs: &[&Path]) -> Result<Self, Vec<ProgramError>> {
         let mut errors: Vec<ProgramError> = Vec::new();
-
-        // Step 1: discover and parse all .jsonld files
-        let entries = match fs::read_dir(&graph_dir) {
-            Ok(e) => e,
-            Err(e) => {
-                return Err(vec![ProgramError::LoadFailed {
-                    path: graph_dir.display().to_string(),
-                    reason: e.to_string(),
-                }]);
-            }
-        };
-
         let mut asts = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
-                continue;
-            }
 
-            let source = match fs::read_to_string(&path) {
-                Ok(s) => s,
+        // Step 1: discover and parse all .jsonld files from all directories
+        let mut found_any_dir = false;
+        for &graph_dir in graph_dirs {
+            let entries = match fs::read_dir(graph_dir) {
+                Ok(e) => {
+                    found_any_dir = true;
+                    e
+                }
                 Err(e) => {
                     errors.push(ProgramError::LoadFailed {
-                        path: path.display().to_string(),
+                        path: graph_dir.display().to_string(),
                         reason: e.to_string(),
                     });
                     continue;
                 }
             };
 
-            match parser::parse_jsonld(&source) {
-                Ok(ast) => asts.push(ast),
-                Err(e) => errors.push(ProgramError::LoadFailed {
-                    path: path.display().to_string(),
-                    reason: e.to_string(),
-                }),
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
+                    continue;
+                }
+
+                let source = match fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(ProgramError::LoadFailed {
+                            path: path.display().to_string(),
+                            reason: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+
+                match parser::parse_jsonld(&source) {
+                    Ok(ast) => asts.push(ast),
+                    Err(e) => errors.push(ProgramError::LoadFailed {
+                        path: path.display().to_string(),
+                        reason: e.to_string(),
+                    }),
+                }
             }
+        }
+
+        if !found_any_dir && errors.is_empty() {
+            errors.push(ProgramError::LoadFailed {
+                path: "<no graph directories provided>".to_string(),
+                reason: "no graph directories were accessible".to_string(),
+            });
         }
 
         if !errors.is_empty() {

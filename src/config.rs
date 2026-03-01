@@ -7,7 +7,8 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use thiserror::Error;
 
 /// Errors that can occur when loading or validating the config file.
@@ -44,7 +45,7 @@ pub enum ConfigError {
 
 /// LLM provider selection.
 #[allow(dead_code)] // Used in Issue #29/#30 provider implementations
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
     /// Anthropic's Claude API (tool_use format).
@@ -64,7 +65,7 @@ impl fmt::Display for LlmProvider {
 
 /// LLM configuration block from `[llm]` in `config.toml`.
 #[allow(dead_code)] // Used in Issue #31 orchestrator
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmConfig {
     /// LLM provider to use (`"anthropic"` or `"openai"`).
     pub provider: LlmProvider,
@@ -93,15 +94,57 @@ impl LlmConfig {
     }
 }
 
+/// A local path dependency declared in `[dependencies]`.
+///
+/// Example in `config.toml`:
+/// ```toml
+/// [dependencies]
+/// mylib = { path = "../mylib" }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DependencyConfig {
+    /// Relative path from the workspace root to the dependency workspace.
+    pub path: String,
+}
+
 /// Top-level duumbi workspace configuration.
 #[allow(dead_code)] // Used in Issue #31 orchestrator
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DuumbiConfig {
     /// LLM provider settings — required for `duumbi add` / AI commands.
     ///
     /// Omitting this section is allowed; the CLI will return a clear error
     /// when an AI command is invoked without LLM config.
     pub llm: Option<LlmConfig>,
+
+    /// Local path dependencies declared for this workspace.
+    ///
+    /// Keys are dependency names; values are `{ path = "..." }` entries.
+    #[serde(default)]
+    pub dependencies: HashMap<String, DependencyConfig>,
+}
+
+/// Saves a [`DuumbiConfig`] to `<workspace_root>/.duumbi/config.toml`.
+///
+/// Creates the `.duumbi/` directory if it does not exist.
+/// Overwrites any existing `config.toml`.
+#[must_use = "save errors should be handled"]
+pub fn save_config(workspace_root: &Path, config: &DuumbiConfig) -> Result<(), ConfigError> {
+    let duumbi_dir = workspace_root.join(".duumbi");
+    fs::create_dir_all(&duumbi_dir).map_err(|source| ConfigError::Io {
+        path: duumbi_dir.display().to_string(),
+        source,
+    })?;
+    let path = duumbi_dir.join("config.toml");
+    let contents = toml::to_string_pretty(config).map_err(|e| ConfigError::Invalid {
+        field: "config".to_string(),
+        reason: e.to_string(),
+    })?;
+    fs::write(&path, contents).map_err(|source| ConfigError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// Loads and validates configuration from `<workspace_root>/.duumbi/config.toml`.

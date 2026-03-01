@@ -9,6 +9,7 @@ mod agents;
 mod cli;
 mod compiler;
 mod config;
+mod deps;
 mod errors;
 mod graph;
 mod parser;
@@ -38,8 +39,7 @@ async fn main() {
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
         let workspace_root = PathBuf::from(".");
         if workspace_root.join(".duumbi").exists() {
-            let config =
-                config::load_config(&workspace_root).unwrap_or(config::DuumbiConfig { llm: None });
+            let config = config::load_config(&workspace_root).unwrap_or_default();
             if let Err(e) = cli::repl::run(workspace_root, config).await {
                 eprintln!("error: {e:#}");
                 process::exit(1);
@@ -100,6 +100,18 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
         Commands::Viz { port, dev, input } => viz(port, dev, input).await,
+        Commands::Deps { subcommand } => {
+            let workspace = PathBuf::from(".");
+            match subcommand {
+                cli::DepsSubcommand::List => cli::deps::run_deps_list(&workspace),
+                cli::DepsSubcommand::Add { name, path } => {
+                    cli::deps::run_deps_add(&workspace, &name, &path)
+                }
+                cli::DepsSubcommand::Remove { name } => {
+                    cli::deps::run_deps_remove(&workspace, &name)
+                }
+            }
+        }
     }
 }
 
