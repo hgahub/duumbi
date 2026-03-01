@@ -18,8 +18,32 @@ use super::{BlockInfo, FunctionInfo, GraphEdge, GraphError, GraphNode, ParamInfo
 ///
 /// Collects all errors rather than stopping at the first one.
 /// Returns the graph on success, or all accumulated errors.
+///
+/// For multi-module programs use [`build_graph_no_call_check`] to skip
+/// intra-module `Call` validation; cross-module call resolution is handled
+/// by the [`crate::graph::program`] layer.
 #[must_use = "graph build errors should be handled"]
 pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
+    build_graph_impl(module, true, true)
+}
+
+/// Builds a semantic graph for a library module in a multi-module program.
+///
+/// Skips both intra-module `Call` target validation and the `main` entry-point
+/// requirement: library modules are allowed to export functions without
+/// defining `main`. Cross-module call resolution and entry-point validation
+/// are handled by the [`crate::graph::program`] and compiler layers.
+#[allow(dead_code)] // Called by graph::program, which is used in upcoming phase (#59)
+#[must_use = "graph build errors should be handled"]
+pub fn build_graph_no_call_check(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
+    build_graph_impl(module, false, false)
+}
+
+fn build_graph_impl(
+    module: &ModuleAst,
+    validate_calls: bool,
+    require_main: bool,
+) -> Result<SemanticGraph, Vec<GraphError>> {
     let mut graph = StableGraph::new();
     let mut node_map: HashMap<NodeId, petgraph::stable_graph::NodeIndex> = HashMap::new();
     let mut errors = Vec::new();
@@ -51,8 +75,11 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
                     continue;
                 }
 
-                // Validate Call targets
-                if let crate::types::Op::Call { ref function } = op_ast.op
+                // Validate Call targets against locally-defined functions.
+                // In multi-module mode (validate_calls = false) this check is
+                // skipped; the program layer performs cross-module validation.
+                if validate_calls
+                    && let crate::types::Op::Call { ref function } = op_ast.op
                     && !function_names.contains(function.as_str())
                 {
                     errors.push(GraphError::OrphanRef {
@@ -105,7 +132,7 @@ pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>>
         });
     }
 
-    if !has_main {
+    if require_main && !has_main {
         errors.push(GraphError::NoEntry {
             code: codes::E006_NO_ENTRY,
         });
@@ -267,6 +294,8 @@ mod tests {
                     ],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -308,6 +337,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -347,6 +378,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();
@@ -385,6 +418,8 @@ mod tests {
                     }],
                 }],
             }],
+            imports: vec![],
+            exports: vec![],
         };
 
         let errs = build_graph(&module).unwrap_err();

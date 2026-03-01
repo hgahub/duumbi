@@ -1,12 +1,18 @@
 //! Workspace initialization command.
 //!
 //! Creates the `.duumbi/` directory structure with default configuration,
-//! schema, and a skeleton `main.jsonld` program.
+//! schema, a skeleton `main.jsonld` program, and the standard library modules.
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+
+/// Embedded `stdlib/math.jsonld` — abs, max, min for i64.
+const STDLIB_MATH: &str = include_str!("../../stdlib/math.jsonld");
+
+/// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool.
+const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
 
 /// Skeleton `main.jsonld` — a simple `add(3, 5)` program.
 const SKELETON_MAIN: &str = r#"{
@@ -65,12 +71,17 @@ const SKELETON_MAIN: &str = r#"{
 }
 "#;
 
-/// Default `config.toml` template.
+/// Default `config.toml` template (with stdlib dependencies pre-configured).
 const DEFAULT_CONFIG: &str = r#"[compiler]
 version = "0.1"
 
 [build]
 output_dir = "build"
+
+# Standard library modules (created in .duumbi/stdlib/ by duumbi init).
+[dependencies]
+math = { path = ".duumbi/stdlib/math" }
+io   = { path = ".duumbi/stdlib/io" }
 
 # Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
 # [llm]
@@ -82,7 +93,8 @@ output_dir = "build"
 /// Initializes a new duumbi workspace at the given base path.
 ///
 /// Creates `.duumbi/` with subdirectories for config, graph, schema, build,
-/// and telemetry. Fails if `.duumbi/` already exists.
+/// telemetry, and the embedded standard library modules (math, io).
+/// Fails if `.duumbi/` already exists.
 pub fn run_init(base: &Path) -> Result<()> {
     let duumbi_dir = base.join(".duumbi");
 
@@ -97,7 +109,26 @@ pub fn run_init(base: &Path) -> Result<()> {
     fs::create_dir_all(duumbi_dir.join("telemetry"))
         .context("Failed to create .duumbi/telemetry/")?;
 
-    // Write config
+    // Write stdlib modules — each is a self-contained workspace at
+    // .duumbi/stdlib/{math,io}/.duumbi/graph/
+    let math_graph = duumbi_dir
+        .join("stdlib")
+        .join("math")
+        .join(".duumbi")
+        .join("graph");
+    fs::create_dir_all(&math_graph).context("Failed to create stdlib/math graph dir")?;
+    fs::write(math_graph.join("math.jsonld"), STDLIB_MATH)
+        .context("Failed to write stdlib math.jsonld")?;
+
+    let io_graph = duumbi_dir
+        .join("stdlib")
+        .join("io")
+        .join(".duumbi")
+        .join("graph");
+    fs::create_dir_all(&io_graph).context("Failed to create stdlib/io graph dir")?;
+    fs::write(io_graph.join("io.jsonld"), STDLIB_IO).context("Failed to write stdlib io.jsonld")?;
+
+    // Write config (includes stdlib deps by default)
     fs::write(duumbi_dir.join("config.toml"), DEFAULT_CONFIG)
         .context("Failed to write config.toml")?;
 
@@ -125,6 +156,9 @@ mod tests {
         assert!(d.join("schema").is_dir());
         assert!(d.join("build").is_dir());
         assert!(d.join("telemetry").is_dir());
+        // stdlib modules
+        assert!(d.join("stdlib/math/.duumbi/graph/math.jsonld").exists());
+        assert!(d.join("stdlib/io/.duumbi/graph/io.jsonld").exists());
     }
 
     #[test]

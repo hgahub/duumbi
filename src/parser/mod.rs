@@ -6,7 +6,7 @@
 
 pub mod ast;
 
-use ast::{BlockAst, FunctionAst, ModuleAst, NodeRef, OpAst, ParamAst};
+use ast::{BlockAst, FunctionAst, ImportAst, ModuleAst, NodeRef, OpAst, ParamAst};
 use thiserror::Error;
 
 use crate::errors::codes;
@@ -168,9 +168,52 @@ fn parse_module(value: &serde_json::Value) -> Result<ModuleAst, ParseError> {
         functions.push(parse_function(func_val)?);
     }
 
+    // Parse imports (optional — missing field defaults to empty)
+    let imports = match value.get("duumbi:imports").and_then(|v| v.as_array()) {
+        Some(arr) => {
+            let mut imports = Vec::with_capacity(arr.len());
+            for import_val in arr {
+                imports.push(parse_import(import_val, node_id_str)?);
+            }
+            imports
+        }
+        None => Vec::new(),
+    };
+
+    // Parse exports (optional — missing field defaults to empty)
+    let exports = match value.get("duumbi:exports").and_then(|v| v.as_array()) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        None => Vec::new(),
+    };
+
     Ok(ModuleAst {
         id: NodeId(node_id_str.to_string()),
         name: ModuleName(name.to_string()),
+        functions,
+        imports,
+        exports,
+    })
+}
+
+/// Parses one entry from the `duumbi:imports` array.
+fn parse_import(value: &serde_json::Value, parent_id: &str) -> Result<ImportAst, ParseError> {
+    let module_name = get_str(value, "duumbi:module", parent_id)?;
+    let path = get_str(value, "duumbi:path", parent_id)?;
+
+    let functions = match value.get("duumbi:functions").and_then(|v| v.as_array()) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        None => Vec::new(),
+    };
+
+    Ok(ImportAst {
+        module_name: module_name.to_string(),
+        path: path.to_string(),
         functions,
     })
 }
@@ -793,6 +836,132 @@ mod tests {
         assert_eq!(func.params.len(), 1);
         assert_eq!(func.params[0].name, "n");
         assert_eq!(func.params[0].param_type, DuumbiType::I64);
+    }
+
+    // -------------------------------------------------------------------------
+    // Import / export parsing tests (#49)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn module_without_imports_exports_defaults_to_empty() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 1, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        assert!(module.imports.is_empty(), "imports should default to empty");
+        assert!(module.exports.is_empty(), "exports should default to empty");
+    }
+
+    #[test]
+    fn module_with_imports_parsed_correctly() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:app", "duumbi:name": "app",
+            "duumbi:imports": [
+                {
+                    "duumbi:module": "stdlib/math",
+                    "duumbi:path": "../stdlib/math.jsonld",
+                    "duumbi:functions": ["abs", "max"]
+                },
+                {
+                    "duumbi:module": "utils",
+                    "duumbi:path": "./utils.jsonld"
+                }
+            ],
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:app/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:app/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:app/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:app/main/e/1", "duumbi:operand": {"@id": "duumbi:app/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+
+        assert_eq!(module.imports.len(), 2);
+
+        let first = &module.imports[0];
+        assert_eq!(first.module_name, "stdlib/math");
+        assert_eq!(first.path, "../stdlib/math.jsonld");
+        assert_eq!(first.functions, vec!["abs", "max"]);
+
+        let second = &module.imports[1];
+        assert_eq!(second.module_name, "utils");
+        assert_eq!(second.path, "./utils.jsonld");
+        assert!(
+            second.functions.is_empty(),
+            "omitted duumbi:functions defaults to empty"
+        );
+    }
+
+    #[test]
+    fn module_with_exports_parsed_correctly() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:lib", "duumbi:name": "lib",
+            "duumbi:exports": ["add", "sub"],
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:lib/add",
+                "duumbi:name": "add", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:lib/add/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:lib/add/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:lib/add/e/1", "duumbi:operand": {"@id": "duumbi:lib/add/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        assert_eq!(module.exports, vec!["add", "sub"]);
+    }
+
+    #[test]
+    fn import_missing_module_field_returns_error() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:app", "duumbi:name": "app",
+            "duumbi:imports": [
+                { "duumbi:path": "./other.jsonld" }
+            ],
+            "duumbi:functions": []
+        }"#;
+        let err = parse_jsonld(json).expect_err("must fail on missing duumbi:module");
+        assert!(
+            matches!(err, ParseError::MissingField { ref field, .. } if field == "duumbi:module"),
+            "expected MissingField for duumbi:module, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn import_missing_path_field_returns_error() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:app", "duumbi:name": "app",
+            "duumbi:imports": [
+                { "duumbi:module": "stdlib/math" }
+            ],
+            "duumbi:functions": []
+        }"#;
+        let err = parse_jsonld(json).expect_err("must fail on missing duumbi:path");
+        assert!(
+            matches!(err, ParseError::MissingField { ref field, .. } if field == "duumbi:path"),
+            "expected MissingField for duumbi:path, got: {err:?}"
+        );
     }
 
     #[test]

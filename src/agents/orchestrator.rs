@@ -115,6 +115,85 @@ pub async fn mutate(
     }
 }
 
+/// Runs the full mutation loop with streaming text output via `on_text`.
+///
+/// Identical to [`mutate`] but calls [`LlmClient::call_with_tools_streaming`]
+/// so the provider can surface its reasoning text in real time. The `on_text`
+/// callback is invoked once per streamed text chunk; it is called from the
+/// async context but must not block.
+///
+/// # Errors
+///
+/// See [`mutate`] — same error conditions apply.
+pub async fn mutate_streaming<F>(
+    client: &LlmClient,
+    source: &serde_json::Value,
+    user_request: &str,
+    max_retries: u32,
+    on_text: F,
+) -> Result<MutationResult>
+where
+    F: Fn(&str),
+{
+    let graph_json = serde_json::to_string_pretty(source)
+        .context("Failed to serialize current graph for context")?;
+
+    let user_message = format!(
+        "Current program graph:\n```json\n{graph_json}\n```\n\nRequested change: {user_request}"
+    );
+
+    let ops = client
+        .call_with_tools_streaming(SYSTEM_PROMPT, &user_message, &on_text)
+        .await
+        .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
+
+    if ops.is_empty() {
+        anyhow::bail!("LLM returned no tool calls — nothing to apply");
+    }
+
+    let ops_count = ops.len();
+    let patch = GraphPatch { ops };
+
+    match try_apply_and_validate(source, &patch) {
+        Ok(patched) => Ok(MutationResult { patched, ops_count }),
+        Err(validation_err) if max_retries == 0 => {
+            anyhow::bail!(
+                "Patch validation failed: {validation_err}\n\
+                 Run `duumbi check` for details."
+            );
+        }
+        Err(validation_err) => {
+            eprintln!("First attempt failed ({validation_err}), retrying with error context…");
+
+            let retry_message = format!(
+                "{user_message}\n\n\
+                 Previous attempt failed validation with error: {validation_err}\n\
+                 Please fix the error and try again."
+            );
+
+            let retry_ops = client
+                .call_with_tools_streaming(SYSTEM_PROMPT, &retry_message, &on_text)
+                .await
+                .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
+
+            if retry_ops.is_empty() {
+                anyhow::bail!("LLM returned no tool calls on retry");
+            }
+
+            let retry_count = retry_ops.len();
+            let retry_patch = GraphPatch { ops: retry_ops };
+
+            let patched = try_apply_and_validate(source, &retry_patch)
+                .map_err(|e| anyhow::anyhow!("Retry validation failed: {e}"))?;
+
+            Ok(MutationResult {
+                patched,
+                ops_count: retry_count,
+            })
+        }
+    }
+}
+
 /// Applies a patch to `source` and validates the result using the full pipeline.
 ///
 /// Returns the patched value on success, or a descriptive error string on failure.

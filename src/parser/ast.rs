@@ -76,6 +76,19 @@ pub struct FunctionAst {
     pub blocks: Vec<BlockAst>,
 }
 
+/// A parsed import declaration on a `duumbi:Module` node.
+///
+/// Corresponds to one entry in the `duumbi:imports` array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportAst {
+    /// Logical module name (e.g. `"stdlib/math"`).
+    pub module_name: String,
+    /// Relative path to the `.jsonld` file (e.g. `"../stdlib/math.jsonld"`).
+    pub path: String,
+    /// Specific function names to import. An empty list means all exported functions.
+    pub functions: Vec<String>,
+}
+
 /// A parsed module — the top-level AST node.
 #[allow(dead_code)] // Fields used in future compilation phases
 #[derive(Debug, Clone)]
@@ -84,6 +97,10 @@ pub struct ModuleAst {
     pub id: NodeId,
     /// Module name.
     pub name: ModuleName,
-    /// Functions in this module.
+    /// Functions defined in this module.
     pub functions: Vec<FunctionAst>,
+    /// Modules imported by this module (from `duumbi:imports`).
+    pub imports: Vec<ImportAst>,
+    /// Function names exported by this module (from `duumbi:exports`).
+    pub exports: Vec<String>,
 }

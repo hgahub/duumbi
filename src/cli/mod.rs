@@ -2,8 +2,11 @@
 //!
 //! Command-line interface using `clap` for the duumbi compiler.
 
+pub mod commands;
+pub mod deps;
 pub mod describe;
 pub mod init;
+pub mod repl;
 
 use std::path::PathBuf;
 
@@ -81,5 +84,33 @@ pub enum Commands {
 
         /// Path to the input `.jsonld` file (optional if in a workspace).
         input: Option<PathBuf>,
+    },
+
+    /// Manage local path dependencies declared in `.duumbi/config.toml`.
+    Deps {
+        /// Dependency subcommand.
+        #[command(subcommand)]
+        subcommand: DepsSubcommand,
+    },
+}
+
+/// Subcommands for `duumbi deps`.
+#[derive(Subcommand, Debug)]
+pub enum DepsSubcommand {
+    /// List all declared dependencies.
+    List,
+
+    /// Add a local path dependency.
+    Add {
+        /// Dependency name (used as module identifier).
+        name: String,
+        /// Relative or absolute path to the dependency workspace.
+        path: String,
+    },
+
+    /// Remove a declared dependency.
+    Remove {
+        /// Dependency name to remove.
+        name: String,
     },
 }

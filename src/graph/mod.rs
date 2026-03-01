@@ -5,6 +5,7 @@
 //! all transformations are graph-to-graph.
 
 pub mod builder;
+pub mod program;
 pub mod validator;
 
 use std::collections::HashMap;
