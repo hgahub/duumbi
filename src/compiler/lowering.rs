@@ -1017,6 +1017,39 @@ mod tests {
     }
 
     #[test]
+    fn stdlib_math_module_parses_builds_and_compiles() {
+        use crate::graph::program::Program;
+
+        // Validate the embedded stdlib math module end-to-end.
+        // It exports abs, max, min — no main function.
+        const MATH_JSONLD: &str = include_str!("../../stdlib/math.jsonld");
+        let main_module = make_module_jsonld("main", &[]);
+
+        // Write math as the stdlib dep + main
+        let dir = tempfile::TempDir::new().expect("invariant: tempdir");
+        let graph_dir = dir.path().join(".duumbi").join("graph");
+        std::fs::create_dir_all(&graph_dir).expect("invariant: create graph dir");
+        std::fs::write(graph_dir.join("main.jsonld"), &main_module).expect("write main");
+        std::fs::write(graph_dir.join("math.jsonld"), MATH_JSONLD).expect("write math");
+
+        let program = Program::load(dir.path()).expect("program must load with math stdlib");
+        assert!(
+            program
+                .modules
+                .contains_key(&crate::types::ModuleName("math".to_string()))
+        );
+        assert_eq!(
+            program.exports.len(),
+            3,
+            "abs + max + min should be exported"
+        );
+
+        let objects = compile_program(&program).expect("stdlib math must compile");
+        assert_eq!(objects.len(), 2, "main + math modules");
+        assert_valid_object(&objects["math"]);
+    }
+
+    #[test]
     fn compile_program_multiple_main_returns_error() {
         use crate::graph::program::Program;
 
