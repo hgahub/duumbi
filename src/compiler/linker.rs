@@ -53,6 +53,48 @@ pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileE
     Ok(())
 }
 
+/// Links multiple object files with the runtime object to produce a binary.
+///
+/// Runs `cc module1.o module2.o ... runtime_o -o binary_path`.
+/// Used for multi-module programs where each module compiles to its own `.o`.
+#[allow(dead_code)] // Called by CLI in upcoming phase (#61)
+#[must_use = "link errors should be handled"]
+pub fn link_multi(
+    object_paths: &[&Path],
+    runtime_o: &Path,
+    binary_path: &Path,
+) -> Result<(), CompileError> {
+    let cc = find_cc();
+
+    let mut args: Vec<String> = object_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    args.push(runtime_o.to_string_lossy().into_owned());
+    args.push("-o".to_string());
+    args.push(binary_path.to_string_lossy().into_owned());
+
+    let status =
+        Command::new(&cc)
+            .args(&args)
+            .status()
+            .map_err(|e| CompileError::CompilerNotFound {
+                code: codes::E008_LINK_FAILED,
+                message: format!("Failed to run linker '{cc}': {e}"),
+            })?;
+
+    if !status.success() {
+        return Err(CompileError::link_failed(format!(
+            "Linker failed (exit code: {})",
+            status
+                .code()
+                .map_or("signal".to_string(), |c| c.to_string())
+        )));
+    }
+
+    Ok(())
+}
+
 /// Links the Cranelift object file with the runtime object to produce a binary.
 ///
 /// Runs `cc output_o runtime_o -o binary_path`.

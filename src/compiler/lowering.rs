@@ -5,7 +5,7 @@
 //! multi-block compilation with f64/bool types, Compare, Branch,
 //! Call, Load, and Store operations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
@@ -18,6 +18,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use petgraph::visit::EdgeRef;
 use target_lexicon::Triple;
 
+use crate::graph::program::Program;
 use crate::graph::{FunctionInfo, GraphEdge, SemanticGraph};
 use crate::types::{CompareOp, DuumbiType, NodeId, Op};
 
@@ -116,8 +117,92 @@ fn make_func_signature(
 /// Compiles a validated semantic graph to a native object file.
 ///
 /// Returns the raw bytes of the object file (Mach-O on macOS, ELF on Linux).
+/// For multi-module programs use [`compile_program`] instead.
 #[must_use = "compilation errors should be handled"]
 pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError> {
+    compile_to_object_impl(graph, &HashSet::new(), &[])
+}
+
+/// Compiles a multi-module [`Program`] to per-module native object files.
+///
+/// Returns a map of `module_name → object_bytes`. Each exported function
+/// receives `Linkage::Export`; each cross-module callee is declared with
+/// `Linkage::Import` so the linker can resolve the symbol.
+///
+/// # Errors
+///
+/// Returns [`CompileError`] if more than one module defines `main`, or if
+/// Cranelift IR generation fails for any module.
+#[allow(dead_code)] // Called by CLI in upcoming phase (#61)
+#[must_use = "compilation errors should be handled"]
+pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, CompileError> {
+    // Build a cross-module function info lookup: fn_name → &FunctionInfo
+    let all_fn_info: HashMap<&str, &FunctionInfo> = program
+        .modules
+        .values()
+        .flat_map(|sg| sg.functions.iter().map(|fi| (fi.name.0.as_str(), fi)))
+        .collect();
+
+    // Validate: at most one module may define `main`
+    let main_count = program
+        .modules
+        .values()
+        .filter(|sg| sg.functions.iter().any(|f| f.name.0 == "main"))
+        .count();
+    if main_count > 1 {
+        return Err(CompileError::Cranelift {
+            message: "Multiple modules define 'main': only one entry module is allowed".to_string(),
+        });
+    }
+
+    let mut objects: HashMap<String, Vec<u8>> = HashMap::new();
+
+    for (module_name, sg) in &program.modules {
+        // Functions exported by this module
+        let exported_fns: HashSet<String> = program
+            .exports
+            .iter()
+            .filter(|(_, mn)| mn.0 == module_name.0)
+            .map(|(fn_name, _)| fn_name.0.clone())
+            .collect();
+
+        // Local function names defined in this module
+        let local_fn_names: HashSet<&str> =
+            sg.functions.iter().map(|f| f.name.0.as_str()).collect();
+
+        // Cross-module calls: Call ops targeting functions not in this module
+        let mut imported: HashMap<String, &FunctionInfo> = HashMap::new();
+        for node in sg.graph.node_weights() {
+            if let Op::Call { function } = &node.op
+                && !local_fn_names.contains(function.as_str())
+                && !imported.contains_key(function.as_str())
+                && let Some(fi) = all_fn_info.get(function.as_str())
+            {
+                imported.insert(function.clone(), fi);
+            }
+        }
+
+        let imported_list: Vec<(&str, &FunctionInfo)> =
+            imported.iter().map(|(n, fi)| (n.as_str(), *fi)).collect();
+
+        let obj_bytes = compile_to_object_impl(sg, &exported_fns, &imported_list)?;
+        objects.insert(module_name.0.clone(), obj_bytes);
+    }
+
+    Ok(objects)
+}
+
+/// Internal implementation shared by [`compile_to_object`] and [`compile_program`].
+///
+/// - `exported_fns`: function names in this module that get `Linkage::Export`
+///   (in addition to `main` which is always exported).
+/// - `imported_fns`: `(name, FunctionInfo)` pairs for functions defined in other
+///   modules; declared with `Linkage::Import` so the linker resolves them.
+fn compile_to_object_impl(
+    graph: &SemanticGraph,
+    exported_fns: &HashSet<String>,
+    imported_fns: &[(&str, &FunctionInfo)],
+) -> Result<Vec<u8>, CompileError> {
     let mut obj_module = create_object_module()?;
 
     // Declare external print functions
@@ -145,12 +230,27 @@ pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError>
             message: format!("Failed to declare duumbi_print_bool: {e}"),
         })?;
 
-    // Phase 1: Declare all functions first (needed for cross-function calls)
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     let mut func_sigs: HashMap<String, cranelift_codegen::ir::Signature> = HashMap::new();
+
+    // Declare imported cross-module functions (Linkage::Import) first.
+    // Their FuncIds are added to func_ids so compile_function can resolve calls.
+    for (name, fi) in imported_fns {
+        let sig = make_func_signature(&obj_module, fi);
+        let func_id = obj_module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CompileError::Cranelift {
+                message: format!("Failed to declare imported function '{name}': {e}"),
+            })?;
+        func_ids.insert((*name).to_string(), func_id);
+        func_sigs.insert((*name).to_string(), sig);
+    }
+
+    // Declare all local functions.
+    // `main` and explicitly exported functions get Linkage::Export.
     for func_info in &graph.functions {
         let sig = make_func_signature(&obj_module, func_info);
-        let linkage = if func_info.name.0 == "main" {
+        let linkage = if func_info.name.0 == "main" || exported_fns.contains(&func_info.name.0) {
             Linkage::Export
         } else {
             Linkage::Local
@@ -164,7 +264,7 @@ pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError>
         func_sigs.insert(func_info.name.0.clone(), sig);
     }
 
-    // Phase 2: Define each function
+    // Define each local function (emit Cranelift IR).
     let mut fn_builder_ctx = FunctionBuilderContext::new();
     for func_info in &graph.functions {
         let func_id = func_ids[&func_info.name.0];
@@ -790,5 +890,149 @@ mod tests {
 
         let obj_bytes = compile_to_object(&sg).expect("f64 compilation should succeed");
         assert!(!obj_bytes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-module compile_program tests
+    // -----------------------------------------------------------------------
+
+    /// Builds a minimal valid module JSON-LD string for testing.
+    fn make_module_jsonld(name: &str, exports: &[&str]) -> String {
+        let exports_json = if exports.is_empty() {
+            String::new()
+        } else {
+            let items: Vec<String> = exports.iter().map(|e| format!("\"{e}\"")).collect();
+            format!(",\n    \"duumbi:exports\": [{}]", items.join(", "))
+        };
+        format!(
+            r#"{{
+    "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:{name}",
+    "duumbi:name": "{name}"{exports_json},
+    "duumbi:functions": [{{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:{name}/main",
+        "duumbi:name": "main",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:{name}/main/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {{"@type": "duumbi:Const", "@id": "duumbi:{name}/main/entry/0",
+                  "duumbi:value": 0, "duumbi:resultType": "i64"}},
+                {{"@type": "duumbi:Return", "@id": "duumbi:{name}/main/entry/1",
+                  "duumbi:operand": {{"@id": "duumbi:{name}/main/entry/0"}}}}
+            ]
+        }}]
+    }}]
+}}"#
+        )
+    }
+
+    fn write_program_workspace(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().expect("invariant: tempdir must be creatable");
+        let graph_dir = dir.path().join(".duumbi").join("graph");
+        std::fs::create_dir_all(&graph_dir).expect("invariant: must create graph dir");
+        for (filename, content) in files {
+            std::fs::write(graph_dir.join(filename), content)
+                .expect("invariant: must write fixture file");
+        }
+        dir
+    }
+
+    #[test]
+    fn compile_program_single_module_produces_object() {
+        use crate::graph::program::Program;
+
+        let module = make_module_jsonld("main", &[]);
+        let ws = write_program_workspace(&[("main.jsonld", &module)]);
+        let program = Program::load(ws.path()).expect("invariant: single-module program must load");
+
+        let objects = compile_program(&program).expect("compilation must succeed");
+        assert_eq!(objects.len(), 1);
+        assert!(
+            objects.contains_key("main"),
+            "must have 'main' module object"
+        );
+        assert_valid_object(&objects["main"]);
+    }
+
+    /// Builds a module with a single exported function named `helper` (not `main`).
+    ///
+    /// Useful for multi-module tests where only one module should have `main`.
+    fn make_helper_module_jsonld(name: &str) -> String {
+        format!(
+            r#"{{
+    "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:{name}",
+    "duumbi:name": "{name}",
+    "duumbi:exports": ["helper"],
+    "duumbi:functions": [{{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:{name}/helper",
+        "duumbi:name": "helper",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:{name}/helper/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {{"@type": "duumbi:Const", "@id": "duumbi:{name}/helper/entry/0",
+                  "duumbi:value": 1, "duumbi:resultType": "i64"}},
+                {{"@type": "duumbi:Return", "@id": "duumbi:{name}/helper/entry/1",
+                  "duumbi:operand": {{"@id": "duumbi:{name}/helper/entry/0"}}}}
+            ]
+        }}]
+    }}]
+}}"#
+        )
+    }
+
+    #[test]
+    fn compile_program_two_modules_both_produce_objects() {
+        use crate::graph::program::Program;
+
+        // math exports `helper` (not `main`) — only `entry` has the real `main`
+        let math = make_helper_module_jsonld("math");
+        let entry = make_module_jsonld("entry", &[]);
+
+        let ws = write_program_workspace(&[("math.jsonld", &math), ("entry.jsonld", &entry)]);
+        let program = Program::load(ws.path()).expect("invariant: program must load");
+
+        let objects = compile_program(&program).expect("compilation must succeed");
+        assert_eq!(objects.len(), 2);
+        assert!(
+            objects.contains_key("math"),
+            "must have 'math' module object"
+        );
+        assert!(
+            objects.contains_key("entry"),
+            "must have 'entry' module object"
+        );
+        assert_valid_object(&objects["math"]);
+        assert_valid_object(&objects["entry"]);
+    }
+
+    #[test]
+    fn compile_program_multiple_main_returns_error() {
+        use crate::graph::program::Program;
+
+        // Both modules define `main` — compile_program should reject this
+        let mod_a = make_module_jsonld("a", &[]);
+        let mod_b = make_module_jsonld("b", &[]);
+
+        let ws = write_program_workspace(&[("a.jsonld", &mod_a), ("b.jsonld", &mod_b)]);
+        let program = Program::load(ws.path()).expect("invariant: program must load");
+
+        let result = compile_program(&program);
+        assert!(result.is_err(), "multiple mains should be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("Multiple modules define 'main'"),
+            "unexpected error: {err}"
+        );
     }
 }

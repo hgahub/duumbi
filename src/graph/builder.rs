@@ -24,24 +24,25 @@ use super::{BlockInfo, FunctionInfo, GraphEdge, GraphError, GraphNode, ParamInfo
 /// by the [`crate::graph::program`] layer.
 #[must_use = "graph build errors should be handled"]
 pub fn build_graph(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
-    build_graph_impl(module, true)
+    build_graph_impl(module, true, true)
 }
 
-/// Builds a semantic graph, skipping intra-module `Call` target validation.
+/// Builds a semantic graph for a library module in a multi-module program.
 ///
-/// Used by the [`crate::graph::program`] layer when loading a multi-module
-/// program: cross-module `Call` references are validated there (producing
-/// E010 errors) rather than here (which would produce E004 orphan refs for
-/// functions defined in other modules).
+/// Skips both intra-module `Call` target validation and the `main` entry-point
+/// requirement: library modules are allowed to export functions without
+/// defining `main`. Cross-module call resolution and entry-point validation
+/// are handled by the [`crate::graph::program`] and compiler layers.
 #[allow(dead_code)] // Called by graph::program, which is used in upcoming phase (#59)
 #[must_use = "graph build errors should be handled"]
 pub fn build_graph_no_call_check(module: &ModuleAst) -> Result<SemanticGraph, Vec<GraphError>> {
-    build_graph_impl(module, false)
+    build_graph_impl(module, false, false)
 }
 
 fn build_graph_impl(
     module: &ModuleAst,
     validate_calls: bool,
+    require_main: bool,
 ) -> Result<SemanticGraph, Vec<GraphError>> {
     let mut graph = StableGraph::new();
     let mut node_map: HashMap<NodeId, petgraph::stable_graph::NodeIndex> = HashMap::new();
@@ -131,7 +132,7 @@ fn build_graph_impl(
         });
     }
 
-    if !has_main {
+    if require_main && !has_main {
         errors.push(GraphError::NoEntry {
             code: codes::E006_NO_ENTRY,
         });
