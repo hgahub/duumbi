@@ -300,10 +300,14 @@ impl Session {
         // Build prompt with conversation history (#55)
         let prompt = build_prompt_with_history(request, &self.history);
 
-        eprintln!("Thinking… (~{ctx_k:.1}k context)");
+        eprint!("Thinking… (~{ctx_k:.1}k context)");
 
-        // Run AI mutation
-        let result = orchestrator::mutate(client, &source, &prompt, 1).await?;
+        // Run AI mutation with streaming text output
+        let result = orchestrator::mutate_streaming(client, &source, &prompt, 1, |text| {
+            eprint!("{text}");
+        })
+        .await?;
+        eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
 
         // Show diff summary
         let diff = orchestrator::describe_changes(&source, &result.patched);

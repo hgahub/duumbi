@@ -83,4 +83,32 @@ impl LlmClient {
             LlmClient::OpenAi(c) => c.call_with_tools(system_prompt, user_message).await,
         }
     }
+
+    /// Sends a prompt to the LLM with streaming text output via `on_text`.
+    ///
+    /// For Anthropic, text content blocks are streamed in real time via the
+    /// server-sent events API. For OpenAI, this falls back to non-streaming
+    /// (tool call arguments are not surfaced as streaming text).
+    ///
+    /// Returns the parsed [`PatchOp`] values once the full response is received.
+    pub async fn call_with_tools_streaming<F>(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        on_text: &F,
+    ) -> Result<Vec<PatchOp>, AgentError>
+    where
+        F: Fn(&str),
+    {
+        match self {
+            LlmClient::Anthropic(c) => {
+                c.call_with_tools_streaming(system_prompt, user_message, on_text)
+                    .await
+            }
+            LlmClient::OpenAi(c) => {
+                c.call_with_tools_streaming(system_prompt, user_message, on_text)
+                    .await
+            }
+        }
+    }
 }

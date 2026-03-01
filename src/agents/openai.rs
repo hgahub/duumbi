@@ -69,6 +69,23 @@ impl OpenAiClient {
         let response: serde_json::Value = resp.json().await?;
         parse_openai_response(&response)
     }
+
+    /// Sends a streaming message to OpenAI with graph-mutation tools attached.
+    ///
+    /// OpenAI streaming for tool calls requires complex delta reconstruction;
+    /// this implementation falls back to a standard non-streaming request so
+    /// that `on_text` is never called. Tool results are returned normally.
+    pub async fn call_with_tools_streaming<F>(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        _on_text: &F,
+    ) -> Result<Vec<PatchOp>, AgentError>
+    where
+        F: Fn(&str),
+    {
+        self.call_with_tools(system_prompt, user_message).await
+    }
 }
 
 /// Parses the OpenAI API response into a list of `PatchOp` values.
