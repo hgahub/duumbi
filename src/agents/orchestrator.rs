@@ -25,6 +25,25 @@ Important rules:\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
 - Operations within a block must form a valid data-flow DAG\n\
 - The last op in each block must be Return or Branch\n\
+\n\
+Op reference (exhaustive — no other @type values exist):\n\
+- Const:   {\"@type\":\"duumbi:Const\",  \"duumbi:value\":<n>,        \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
+- Add:     {\"@type\":\"duumbi:Add\",    \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- Sub:     {\"@type\":\"duumbi:Sub\",    \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- Mul:     {\"@type\":\"duumbi:Mul\",    \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- Div:     {\"@type\":\"duumbi:Div\",    \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- Compare: {\"@type\":\"duumbi:Compare\",\"duumbi:operator\":\"eq\"|\"ne\"|\"lt\"|\"le\"|\"gt\"|\"ge\", \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"bool\"}\n\
+- Branch:  {\"@type\":\"duumbi:Branch\", \"duumbi:condition\":{\"@id\":\"…\"}, \"duumbi:trueBlock\":\"<label>\", \"duumbi:falseBlock\":\"<label>\"}\n\
+- Load:    {\"@type\":\"duumbi:Load\",   \"duumbi:variable\":\"<name>\", \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
+- Store:   {\"@type\":\"duumbi:Store\",  \"duumbi:variable\":\"<name>\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+- Call:    {\"@type\":\"duumbi:Call\",   \"duumbi:function\":\"<name>\", \"duumbi:args\":[{\"@id\":\"…\"}], \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
+- Print:   {\"@type\":\"duumbi:Print\",  \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+- Return:  {\"@type\":\"duumbi:Return\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+\n\
+Function parameters:\n\
+- Declare them on the function node: \"duumbi:params\":[{\"duumbi:name\":\"x\",\"duumbi:paramType\":\"i64\"}]\n\
+- To READ a parameter inside the function body use duumbi:Load with \"duumbi:variable\":\"x\"\n\
+- There is NO duumbi:LoadParam op — always use duumbi:Load to access parameters\n\
 ";
 
 /// Result of a successful mutation.
