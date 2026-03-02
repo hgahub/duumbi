@@ -250,6 +250,22 @@ impl Session {
                 }
             }
 
+            "/history" => {
+                if self.history.is_empty() {
+                    eprintln!("No session history yet.");
+                } else {
+                    eprintln!(
+                        "Session history ({} turn{}):",
+                        self.history.len(),
+                        if self.history.len() == 1 { "" } else { "s" }
+                    );
+                    for (i, turn) in self.history.iter().enumerate() {
+                        eprintln!("  {}. \"{}\"", i + 1, turn.request);
+                        eprintln!("     {}", turn.summary);
+                    }
+                }
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
@@ -303,10 +319,18 @@ impl Session {
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let result = orchestrator::mutate_streaming(client, &source, &prompt, 1, |text| {
+        let result = match orchestrator::mutate_streaming(client, &source, &prompt, 1, |text| {
             eprint!("{text}");
         })
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!();
+                eprintln!("{e:#}");
+                return Ok(());
+            }
+        };
         eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
 
         // Show diff summary
@@ -429,6 +453,7 @@ Slash commands:
   /undo               Restore the previous graph snapshot
   /viz [port]         Open the web visualizer (default port: 8420)
   /status             Show workspace, model, and session information
+  /history            Show session conversation history (sent as context to LLM)
   /model              Show the current LLM model
   /help               Show this help text
   /exit               Exit the REPL
