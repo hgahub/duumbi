@@ -18,6 +18,20 @@ pub fn find_cc() -> String {
     std::env::var("CC").unwrap_or_else(|_| "cc".to_string())
 }
 
+/// Returns extra linker flags needed for the current platform.
+///
+/// On macOS, Cranelift object files lack the `LC_BUILD_VERSION` Mach-O load
+/// command, causing `ld` to emit "no platform load command found" warnings.
+/// This is a known Cranelift limitation — the generated binaries work correctly.
+/// We suppress linker warnings with `-w` to avoid confusing users.
+fn platform_link_args() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec!["-Wl,-w"]
+    } else {
+        vec![]
+    }
+}
+
 /// Compiles the C runtime shim to an object file.
 ///
 /// Runs `cc -c runtime_c_path -o output_o_path`.
@@ -73,6 +87,7 @@ pub fn link_multi(
     args.push(runtime_o.to_string_lossy().into_owned());
     args.push("-o".to_string());
     args.push(binary_path.to_string_lossy().into_owned());
+    args.extend(platform_link_args().iter().map(|s| (*s).to_string()));
 
     let status =
         Command::new(&cc)
@@ -106,18 +121,23 @@ pub fn link(output_o: &Path, runtime_o: &Path, binary_path: &Path) -> Result<(),
     let runtime_o_str = runtime_o.to_string_lossy().into_owned();
     let binary_str = binary_path.to_string_lossy().into_owned();
 
-    let status = Command::new(&cc)
-        .args([
-            output_o_str.as_str(),
-            runtime_o_str.as_str(),
-            "-o",
-            binary_str.as_str(),
-        ])
-        .status()
-        .map_err(|e| CompileError::CompilerNotFound {
-            code: codes::E008_LINK_FAILED,
-            message: format!("Failed to run linker '{cc}': {e}"),
-        })?;
+    let mut args = vec![
+        output_o_str.as_str(),
+        runtime_o_str.as_str(),
+        "-o",
+        binary_str.as_str(),
+    ];
+    let platform_args = platform_link_args();
+    args.extend(&platform_args);
+
+    let status =
+        Command::new(&cc)
+            .args(&args)
+            .status()
+            .map_err(|e| CompileError::CompilerNotFound {
+                code: codes::E008_LINK_FAILED,
+                message: format!("Failed to run linker '{cc}': {e}"),
+            })?;
 
     if !status.success() {
         return Err(CompileError::link_failed(format!(

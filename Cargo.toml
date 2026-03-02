@@ -17,7 +17,7 @@ cranelift-object = "0.129"
 target-lexicon = "0.13"
 toml = "0.8"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal"] }
 notify = "7"
 reqwest = { version = "0.12", features = ["json", "stream"] }
