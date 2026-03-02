@@ -18,6 +18,10 @@ The program is represented as a directed acyclic graph of typed operations. \
 Use the provided tools to implement the requested change. \
 Each tool call is one atomic graph mutation. You may call multiple tools in sequence.\n\
 \n\
+CRITICAL: emit ALL tool calls needed for the COMPLETE change in this SINGLE response.\n\
+Do NOT plan multi-step sequences — the system calls you ONCE per user request.\n\
+A function with no blocks, or a block with no ops, is invalid and will fail compilation.\n\
+\n\
 Important rules:\n\
 - All @id values must be globally unique (format: duumbi:<module>/<function>/<block>/<index>)\n\
 - Use the duumbi: prefix for all field names (duumbi:value, duumbi:left, etc.)\n\
@@ -25,6 +29,7 @@ Important rules:\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
 - Operations within a block must form a valid data-flow DAG\n\
 - The last op in each block must be Return or Branch\n\
+- Every function must have at least one block; every block must have at least one op\n\
 \n\
 Op reference (exhaustive — no other @type values exist):\n\
 - Const:   {\"@type\":\"duumbi:Const\",  \"duumbi:value\":<n>,        \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\

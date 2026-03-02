@@ -22,12 +22,46 @@ use super::{GraphEdge, SemanticGraph};
 pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    check_function_structure(graph, &mut diagnostics);
     check_cycles(graph, &mut diagnostics);
     check_types(graph, &mut diagnostics);
     check_return_types(graph, &mut diagnostics);
     check_branch_conditions(graph, &mut diagnostics);
 
     diagnostics
+}
+
+/// Checks that every function has at least one block, and every block has at least one op.
+///
+/// A function with no blocks, or a block with no ops, will cause Cranelift to fail
+/// with an opaque "No blocks in function" error. Catching this here produces a
+/// user-readable E009 diagnostic before compilation is attempted.
+fn check_function_structure(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for func_info in &graph.functions {
+        if func_info.blocks.is_empty() {
+            diagnostics.push(Diagnostic::error(
+                codes::E009_SCHEMA_INVALID,
+                format!(
+                    "Function '{}' has no blocks — every function must have at least one block",
+                    func_info.name
+                ),
+            ));
+            continue;
+        }
+        for block_info in &func_info.blocks {
+            if block_info.nodes.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        codes::E009_SCHEMA_INVALID,
+                        format!(
+                            "Block '{}' in function '{}' has no ops — every block must have at least one op",
+                            block_info.label, func_info.name
+                        ),
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// Checks for cycles in the data-flow graph.
@@ -423,6 +457,57 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d.code == codes::E001_TYPE_MISMATCH),
             "Expected no E001 for bool Branch condition"
+        );
+    }
+
+    #[test]
+    fn function_with_no_blocks_produces_e009() {
+        let graph = StableGraph::new();
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("empty_fn".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                blocks: vec![], // no blocks!
+            }],
+            branch_targets: std::collections::HashMap::new(),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == codes::E009_SCHEMA_INVALID && d.message.contains("no blocks")),
+            "Expected E009 for function with no blocks, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn block_with_no_ops_produces_e009() {
+        let graph = StableGraph::new();
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("fn_empty_block".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: vec![], // no ops!
+                }],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == codes::E009_SCHEMA_INVALID && d.message.contains("no ops")),
+            "Expected E009 for block with no ops, got: {diags:?}"
         );
     }
 
