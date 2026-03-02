@@ -87,6 +87,19 @@ pub enum PatchOp {
         /// The `@id` of the target node.
         target_id: String,
     },
+
+    /// Replace the entire ops list of a block with a new list.
+    ///
+    /// Preferred over multiple `RemoveNode` + `AddOp` calls when rewriting a
+    /// block body (e.g. changing `Add` to `Call`). Single atomic operation
+    /// that cannot leave the block in a partial state.
+    ReplaceBlock {
+        /// The `@id` of the target block.
+        block_id: String,
+        /// Complete new ops list (array of JSON-LD op objects).
+        /// Must end with a Return or Branch op.
+        ops: Vec<serde_json::Value>,
+    },
 }
 
 /// A sequence of patch operations to apply in order.
@@ -159,6 +172,10 @@ fn apply_op(doc: &mut serde_json::Value, op: &PatchOp) -> Result<(), PatchError>
             if !modify_node(doc, node_id, field, &edge_value) {
                 return Err(PatchError::NodeNotFound(node_id.clone()));
             }
+        }
+        PatchOp::ReplaceBlock { block_id, ops } => {
+            let block = find_block_mut(doc, block_id)?;
+            block["duumbi:ops"] = serde_json::Value::Array(ops.clone());
         }
     }
     Ok(())
@@ -610,6 +627,49 @@ mod tests {
         let s = serde_json::to_string(&op).expect("must serialize");
         let parsed: serde_json::Value = serde_json::from_str(&s).expect("must parse");
         assert_eq!(parsed["kind"], "modify_op");
+    }
+
+    #[test]
+    fn replace_block_replaces_ops_array() {
+        let source = minimal_module();
+        let new_ops = vec![
+            json!({
+                "@type": "duumbi:Const",
+                "@id": "duumbi:main/main/entry/0",
+                "duumbi:value": 99,
+                "duumbi:resultType": "i64"
+            }),
+            json!({
+                "@type": "duumbi:Return",
+                "@id": "duumbi:main/main/entry/1",
+                "duumbi:operand": { "@id": "duumbi:main/main/entry/0" }
+            }),
+        ];
+        let patch = GraphPatch {
+            ops: vec![PatchOp::ReplaceBlock {
+                block_id: "duumbi:main/main/entry".to_string(),
+                ops: new_ops,
+            }],
+        };
+        let result = apply_patch(&source, &patch).expect("replace_block must succeed");
+        let ops = result["duumbi:functions"][0]["duumbi:blocks"][0]["duumbi:ops"]
+            .as_array()
+            .expect("ops must be array");
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0]["duumbi:value"], 99);
+    }
+
+    #[test]
+    fn replace_block_missing_id_returns_block_not_found() {
+        let source = minimal_module();
+        let patch = GraphPatch {
+            ops: vec![PatchOp::ReplaceBlock {
+                block_id: "duumbi:main/main/nonexistent".to_string(),
+                ops: vec![],
+            }],
+        };
+        let err = apply_patch(&source, &patch).expect_err("must fail on missing block");
+        assert!(matches!(err, PatchError::BlockNotFound(_)));
     }
 
     #[test]

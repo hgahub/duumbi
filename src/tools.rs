@@ -339,6 +339,30 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 }
             }),
         },
+        ToolSpec {
+            name: "replace_block",
+            description: "Replace ALL ops in an existing block with a completely new ops list. \
+                Use this when rewriting a function body (e.g. changing Add to Call, inserting \
+                a Call before Return). PREFERRED over multiple remove_node + add_op calls — \
+                one atomic operation that cannot leave the block half-built. \
+                The new ops array MUST end with a Return or Branch op.",
+            schema: json!({
+                "type": "object",
+                "required": ["block_id", "ops"],
+                "properties": {
+                    "block_id": {
+                        "type": "string",
+                        "description": "The @id of the block to rewrite, e.g. 'duumbi:main/main/entry'."
+                    },
+                    "ops": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Complete new ops list. Must end with Return or Branch. \
+                            Each element is a full JSON-LD op object with @type and @id."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -352,15 +376,15 @@ mod tests {
     use crate::patch::PatchOp;
 
     #[test]
-    fn anthropic_tools_returns_six_tools() {
+    fn anthropic_tools_returns_seven_tools() {
         let tools = anthropic_tools();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
     }
 
     #[test]
-    fn openai_tools_returns_six_tools() {
+    fn openai_tools_returns_seven_tools() {
         let tools = openai_tools();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
         for t in &tools {
             assert_eq!(t.tool_type, "function");
         }
@@ -375,6 +399,7 @@ mod tests {
             "modify_op",
             "remove_node",
             "set_edge",
+            "replace_block",
         ];
         let tools = anthropic_tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -453,6 +478,31 @@ mod tests {
         };
         let op = patch_op_from_anthropic(&call).expect("must parse");
         assert!(matches!(op, PatchOp::SetEdge { .. }));
+    }
+
+    #[test]
+    fn patch_op_from_anthropic_replace_block() {
+        let call = AnthropicToolCall {
+            name: "replace_block".to_string(),
+            input: serde_json::json!({
+                "block_id": "duumbi:main/main/entry",
+                "ops": [
+                    {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:main/main/entry/0",
+                        "duumbi:value": 42,
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:Return",
+                        "@id": "duumbi:main/main/entry/1",
+                        "duumbi:operand": { "@id": "duumbi:main/main/entry/0" }
+                    }
+                ]
+            }),
+        };
+        let op = patch_op_from_anthropic(&call).expect("must parse replace_block");
+        assert!(matches!(op, PatchOp::ReplaceBlock { .. }));
     }
 
     #[test]
