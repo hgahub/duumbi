@@ -30,9 +30,17 @@ Important rules:\n\
 - Operations within a block must form a valid data-flow DAG\n\
 - The last op in each block must be Return or Branch — NO ops may follow a terminator\n\
 - Every function must have at least one block; every block must have at least one op\n\
-- add_op APPENDS to the end of a block. To insert BEFORE a Return/Branch: first remove_node \
-the terminator, then add_op the new ops, then add_op the terminator back. \
-Also use set_edge to rewire any operand references to the new ops.\n\
+- add_op APPENDS to the end of a block.\n\
+- To insert a new op BEFORE an existing Return/Branch (e.g. insert a Call before Return):\n\
+  PATTERN A — minimal removes (preferred):\n\
+    1. remove_node the Return (or Branch) — the block now ends with your data op\n\
+    2. add_op the new Call/computation op\n\
+    3. add_op the new Return (pointing to the new op's @id)\n\
+    4. set_edge any OTHER ops that should now point to the new op (e.g. Print operand)\n\
+  PATTERN B — when you must remove multiple ops before the terminator:\n\
+    remove ALL of them first, then add_op ALL replacements (in correct order), \
+    ending with a new Return or Branch. ALL in this SINGLE response.\n\
+- NEVER remove ops without adding them back in the same response.\n\
 \n\
 Op reference (exhaustive — no other @type values exist):\n\
 - Const:   {\"@type\":\"duumbi:Const\",  \"duumbi:value\":<n>,        \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
