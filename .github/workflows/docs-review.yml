@@ -25,9 +25,9 @@ jobs:
       - name: Oz Agent Review
         uses: warpdotdev/oz-agent-action@v1
         env:
-          WARP_API_KEY: ${{ secrets.WARP_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
+          warp_api_key: ${{ secrets.WARP_API_KEY }}
           prompt: |
             You are a documentation review agent for the DUUMBI project.
             A PR has been opened. Your job:
