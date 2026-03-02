@@ -49,6 +49,18 @@ Function parameters:\n\
 - Declare them on the function node: \"duumbi:params\":[{\"duumbi:name\":\"x\",\"duumbi:paramType\":\"i64\"}]\n\
 - To READ a parameter inside the function body use duumbi:Load with \"duumbi:variable\":\"x\"\n\
 - There is NO duumbi:LoadParam op — always use duumbi:Load to access parameters\n\
+\n\
+Example — adding a function multiply(a, b) → a*b via one add_function call:\n\
+{\"function\":{\"@type\":\"duumbi:Function\",\"@id\":\"duumbi:main/multiply\",\n\
+\"duumbi:name\":\"multiply\",\"duumbi:returnType\":\"i64\",\n\
+\"duumbi:params\":[{\"duumbi:name\":\"a\",\"duumbi:paramType\":\"i64\"},{\"duumbi:name\":\"b\",\"duumbi:paramType\":\"i64\"}],\n\
+\"duumbi:blocks\":[{\"@type\":\"duumbi:Block\",\"@id\":\"duumbi:main/multiply/entry\",\n\
+\"duumbi:label\":\"entry\",\"duumbi:ops\":[\n\
+{\"@type\":\"duumbi:Load\",\"@id\":\"duumbi:main/multiply/entry/0\",\"duumbi:variable\":\"a\",\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Load\",\"@id\":\"duumbi:main/multiply/entry/1\",\"duumbi:variable\":\"b\",\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Mul\",\"@id\":\"duumbi:main/multiply/entry/2\",\"duumbi:left\":{\"@id\":\"duumbi:main/multiply/entry/0\"},\n\
+\"duumbi:right\":{\"@id\":\"duumbi:main/multiply/entry/1\"},\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:main/multiply/entry/3\",\"duumbi:operand\":{\"@id\":\"duumbi:main/multiply/entry/2\"}}]}]}}\n\
 ";
 
 /// Result of a successful mutation.

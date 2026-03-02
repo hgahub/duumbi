@@ -184,24 +184,33 @@ fn build_tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "add_function",
-            description: "Add a new function to the duumbi module. \
-                The function object must be a valid duumbi:Function JSON-LD node with \
-                @type, @id, duumbi:name, duumbi:returnType, and duumbi:blocks fields.",
+            description: "Add a COMPLETE function to the duumbi module. \
+                The function object MUST include at least one block in duumbi:blocks, \
+                and each block MUST include its ops in duumbi:ops. \
+                Do NOT pass empty duumbi:blocks — that is invalid. \
+                Include the full function body (blocks + ops) in this single call.",
             schema: json!({
                 "type": "object",
                 "required": ["function"],
                 "properties": {
                     "function": {
                         "type": "object",
-                        "description": "Complete JSON-LD duumbi:Function node to add.",
+                        "description": "Complete JSON-LD duumbi:Function node with blocks and ops included.",
                         "required": ["@type", "@id", "duumbi:name", "duumbi:returnType", "duumbi:blocks"],
                         "properties": {
                             "@type": { "type": "string", "const": "duumbi:Function" },
-                            "@id": { "type": "string", "description": "Unique node ID, e.g. 'duumbi:main/helper'" },
+                            "@id": { "type": "string", "description": "Unique node ID, e.g. 'duumbi:main/multiply'" },
                             "duumbi:name": { "type": "string" },
                             "duumbi:returnType": { "type": "string", "enum": ["i64", "f64", "bool", "void"] },
-                            "duumbi:params": { "type": "array" },
-                            "duumbi:blocks": { "type": "array" }
+                            "duumbi:params": {
+                                "type": "array",
+                                "description": "Function parameters. Each: {\"duumbi:name\": \"x\", \"duumbi:paramType\": \"i64\"}"
+                            },
+                            "duumbi:blocks": {
+                                "type": "array",
+                                "minItems": 1,
+                                "description": "Non-empty array of duumbi:Block nodes, each with duumbi:ops populated."
+                            }
                         }
                     }
                 }
