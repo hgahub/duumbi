@@ -23,6 +23,7 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     check_function_structure(graph, &mut diagnostics);
+    check_terminator_position(graph, &mut diagnostics);
     check_cycles(graph, &mut diagnostics);
     check_types(graph, &mut diagnostics);
     check_return_types(graph, &mut diagnostics);
@@ -59,6 +60,34 @@ fn check_function_structure(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnos
                         ),
                     ),
                 );
+            }
+        }
+    }
+}
+
+/// Checks that Return and Branch ops appear only as the last op in a block.
+///
+/// Cranelift treats these as block terminators — any instruction emitted after
+/// a terminator causes a panic ("you cannot add an instruction to a block already filled").
+fn check_terminator_position(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for func_info in &graph.functions {
+        for block_info in &func_info.blocks {
+            for (i, &node_idx) in block_info.nodes.iter().enumerate() {
+                let node = &graph.graph[node_idx];
+                let is_terminator = matches!(&node.op, Op::Return | Op::Branch);
+                if is_terminator && i < block_info.nodes.len() - 1 {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            codes::E009_SCHEMA_INVALID,
+                            format!(
+                                "{} op '{}' is not the last op in block '{}' of function '{}' \
+                                 — no ops may follow a terminator",
+                                node.op, node.id, block_info.label, func_info.name
+                            ),
+                        )
+                        .with_node(&node.id),
+                    );
+                }
             }
         }
     }
@@ -508,6 +537,49 @@ mod tests {
                 .iter()
                 .any(|d| d.code == codes::E009_SCHEMA_INVALID && d.message.contains("no ops")),
             "Expected E009 for block with no ops, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn return_not_last_op_produces_e009() {
+        let mut graph = StableGraph::new();
+        let ret = graph.add_node(GraphNode {
+            id: NodeId("ret".to_string()),
+            op: Op::Return,
+            result_type: None,
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+        });
+        let extra = graph.add_node(GraphNode {
+            id: NodeId("extra".to_string()),
+            op: Op::Const(1),
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+        });
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: vec![ret, extra], // Return before Const — invalid!
+                }],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == codes::E009_SCHEMA_INVALID
+                    && d.message.contains("not the last op")),
+            "Expected E009 for Return not at end, got: {diags:?}"
         );
     }
 

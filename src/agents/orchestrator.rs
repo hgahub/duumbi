@@ -28,8 +28,11 @@ Important rules:\n\
 - resultType must be one of: i64, f64, bool, void\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
 - Operations within a block must form a valid data-flow DAG\n\
-- The last op in each block must be Return or Branch\n\
+- The last op in each block must be Return or Branch — NO ops may follow a terminator\n\
 - Every function must have at least one block; every block must have at least one op\n\
+- add_op APPENDS to the end of a block. To insert BEFORE a Return/Branch: first remove_node \
+the terminator, then add_op the new ops, then add_op the terminator back. \
+Also use set_edge to rewire any operand references to the new ops.\n\
 \n\
 Op reference (exhaustive — no other @type values exist):\n\
 - Const:   {\"@type\":\"duumbi:Const\",  \"duumbi:value\":<n>,        \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
