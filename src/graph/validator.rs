@@ -72,6 +72,28 @@ fn check_function_structure(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnos
 fn check_terminator_position(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
     for func_info in &graph.functions {
         for block_info in &func_info.blocks {
+            if block_info.nodes.is_empty() {
+                continue; // Already reported by check_function_structure
+            }
+
+            // Check: last op must be Return or Branch
+            let last_idx = *block_info.nodes.last().expect("invariant: non-empty nodes");
+            let last_node = &graph.graph[last_idx];
+            if !matches!(&last_node.op, Op::Return | Op::Branch) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        codes::E009_SCHEMA_INVALID,
+                        format!(
+                            "Block '{}' in function '{}' does not end with Return or Branch \
+                             — last op is {} '{}'",
+                            block_info.label, func_info.name, last_node.op, last_node.id
+                        ),
+                    )
+                    .with_node(&last_node.id),
+                );
+            }
+
+            // Check: no terminator before the last position
             for (i, &node_idx) in block_info.nodes.iter().enumerate() {
                 let node = &graph.graph[node_idx];
                 let is_terminator = matches!(&node.op, Op::Return | Op::Branch);
@@ -537,6 +559,40 @@ mod tests {
                 .iter()
                 .any(|d| d.code == codes::E009_SCHEMA_INVALID && d.message.contains("no ops")),
             "Expected E009 for block with no ops, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn block_missing_terminator_produces_e009() {
+        let mut graph = StableGraph::new();
+        let c = graph.add_node(GraphNode {
+            id: NodeId("c".to_string()),
+            op: Op::Const(1),
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+        });
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: vec![c], // Const only, no Return!
+                }],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("does not end with Return or Branch")),
+            "Expected E009 for missing terminator, got: {diags:?}"
         );
     }
 
