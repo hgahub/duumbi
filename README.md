@@ -55,6 +55,26 @@ duumbi check
 duumbi describe
 ```
 
+If you don't want to register/install the CLI globally (`cargo install --path .`),
+you can run the same commands through Cargo:
+
+```bash
+# Equivalent to: duumbi init myproject
+cargo run -- init myproject
+
+# Equivalent to: duumbi build
+cargo run -- build
+
+# Equivalent to: duumbi run
+cargo run -- run
+
+# Equivalent to: duumbi check
+cargo run -- check
+
+# Equivalent to: duumbi describe
+cargo run -- describe
+```
+
 ## AI Mutation (Phase 2)
 
 `duumbi add` calls an LLM to mutate the graph. Configure your provider in `.duumbi/config.toml`:
