@@ -166,8 +166,19 @@ impl Program {
             return Err(errors);
         }
 
+        // Preserve first-seen module definition for duplicate module names.
+        // `load_program_with_deps` passes workspace graph dir first, so this
+        // gives workspace modules precedence over dependencies with the same name.
+        let mut selected_asts = Vec::new();
+        let mut seen_modules: HashSet<String> = HashSet::new();
+        for ast in asts {
+            if seen_modules.insert(ast.name.0.clone()) {
+                selected_asts.push(ast);
+            }
+        }
+
         // Step 2: collect the combined export table (fn_name → module_name)
-        let all_exports: HashMap<String, String> = asts
+        let all_exports: HashMap<String, String> = selected_asts
             .iter()
             .flat_map(|ast| {
                 ast.exports
@@ -180,7 +191,7 @@ impl Program {
         // Cross-module calls are validated in step 4 using the export table.
         let mut modules: HashMap<ModuleName, SemanticGraph> = HashMap::new();
 
-        for ast in &asts {
+        for ast in &selected_asts {
             match builder::build_graph_no_call_check(ast) {
                 Ok(sg) => {
                     modules.insert(ast.name.clone(), sg);

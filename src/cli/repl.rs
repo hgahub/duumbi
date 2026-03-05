@@ -14,11 +14,12 @@
 //!   session history prepended as context.
 
 use std::fs;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result};
-use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
+use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::{DuumbiConfig, LlmProvider};
@@ -48,6 +49,35 @@ struct Session {
     history: Vec<Turn>,
 }
 
+/// Minimal REPL prompt that renders a single `> ` marker.
+struct ReplPrompt;
+
+impl Prompt for ReplPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("> ")
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
+        // Suppress reedline's default mode indicator (`〉`) so we only show one prompt marker.
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("... ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Owned(format!("(reverse-search: {}) ", history_search.term))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -70,10 +100,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     };
 
     let mut editor = Reedline::create();
-    let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("> ".to_string()),
-        DefaultPromptSegment::Empty,
-    );
+    let prompt = ReplPrompt;
 
     loop {
         match editor.read_line(&prompt) {
