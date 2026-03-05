@@ -140,8 +140,7 @@ fn build_workspace_program(workspace_root: &Path, output: &Path) -> Result<()> {
     linker::compile_runtime(&runtime_c, &runtime_o).context("Failed to compile C runtime")?;
 
     let object_path_refs: Vec<&Path> = object_paths.iter().map(|p| p.as_path()).collect();
-    linker::link_multi(&object_path_refs, &runtime_o, output)
-        .context("Failed to link binary")?;
+    linker::link_multi(&object_path_refs, &runtime_o, output).context("Failed to link binary")?;
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
@@ -216,7 +215,9 @@ fn describe_workspace_program(workspace_root: &Path, input: &Path) -> Result<()>
             parser::ParseError::UnknownOp { code, node_id, .. } => {
                 Diagnostic::error(code, e.to_string()).with_node(&types::NodeId(node_id.clone()))
             }
-            parser::ParseError::SchemaInvalid { code, .. } => Diagnostic::error(code, e.to_string()),
+            parser::ParseError::SchemaInvalid { code, .. } => {
+                Diagnostic::error(code, e.to_string())
+            }
         };
         emit_diagnostic(&diag);
         anyhow::anyhow!("Parse failed")
@@ -227,10 +228,9 @@ fn describe_workspace_program(workspace_root: &Path, input: &Path) -> Result<()>
         anyhow::anyhow!("Graph construction failed: {e}")
     })?;
 
-    let module_graph = program
-        .modules
-        .get(&module_ast.name)
-        .ok_or_else(|| anyhow::anyhow!("Module '{}' not found in loaded program", module_ast.name.0))?;
+    let module_graph = program.modules.get(&module_ast.name).ok_or_else(|| {
+        anyhow::anyhow!("Module '{}' not found in loaded program", module_ast.name.0)
+    })?;
 
     crate::cli::describe::describe(module_graph);
     Ok(())
