@@ -2,13 +2,46 @@
     "name": "Rust Remote Environment",
     "image": "mcr.microsoft.com/devcontainers/rust:1",
     "features": {
-        "ghcr.io/devcontainers/features/github-cli:1": {}
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/copilot-cli:1": {},
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "lts"
+        },
+        "ghcr.io/devcontainers-extra/features/claude-code:1": {},
+        "ghcr.io/gvatsal60/dev-container-features/pre-commit:1": {},
+        "ghcr.io/devcontainers/features/python:1": {
+            "version": "3.12"
+        }
     },
+    "containerEnv": {
+        "CARGO_TERM_COLOR": "always",
+        "RUST_BACKTRACE": "1"
+    },
+    "mounts": [
+        "source=duumbi-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+        "source=duumbi-cargo-git,target=/usr/local/cargo/git,type=volume",
+        "source=duumbi-target,target=${containerWorkspaceFolder}/target,type=volume"
+    ],
+    "forwardPorts": [
+        8420
+    ],
+    "portsAttributes": {
+        "8420": {
+            "label": "DUUMBI Visualizer"
+        }
+    },
+    "postCreateCommand": "bash -lc 'rustup component add rustfmt clippy && command -v pre-commit >/dev/null 2>&1 && pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg || true && command -v mdbook >/dev/null 2>&1 || cargo install mdbook --version 0.4.37'",
     "customizations": {
         "vscode": {
+            "settings": {
+                "rust-analyzer.check.command": "clippy",
+                "rust-analyzer.cargo.allTargets": true
+            },
             "extensions": [
                 "rust-lang.rust-analyzer",
-                "tamasfe.even-better-toml"
+                "tamasfe.even-better-toml",
+                "ms-python.python",
+                "vadimcn.vscode-lldb"
             ]
         }
     }
