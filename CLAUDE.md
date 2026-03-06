@@ -12,6 +12,7 @@ src/
   graph/       # Semantic graph IR using petgraph (DiGraph<Node, Edge>)
   compiler/    # Graph → Cranelift IR lowering (cranelift-codegen, cranelift-frontend)
   agents/      # AI agent framework for graph mutation (async, reqwest)
+  intent/      # Intent-Driven Development (Phase 5): spec, coordinator, verifier, execute
   mcp/         # MCP server implementation (rmcp crate)
   web/         # WASM visualizer + axum HTTP server
   cli/         # CLI entry point (clap)
@@ -41,6 +42,7 @@ wasm-pack build crates/web-viz       # Build WASM visualizer
 - Cranelift compilation: Graph → Cranelift IR (one function per subgraph)
 - AI agents receive read-only graph snapshots, propose mutation plans
 - MCP server exposes graph query/mutation as tools
+- Intent system (Phase 5): YAML spec → Coordinator tasks → LLM mutations → Verifier
 
 @docs/architecture.md
 @docs/coding-conventions.md

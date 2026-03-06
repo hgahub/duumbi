@@ -11,7 +11,10 @@ mod compiler;
 mod config;
 mod deps;
 mod errors;
+mod examples;
 mod graph;
+mod intent;
+mod manifest;
 mod parser;
 mod patch;
 mod snapshot;
@@ -117,6 +120,10 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Intent { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_intent(subcommand, workspace).await
+        }
     }
 }
 
@@ -197,7 +204,7 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
 
-    let result = orchestrator::mutate(&client, &source, request, 1).await?;
+    let result = orchestrator::mutate(&client, &source, request, 3).await?;
 
     let diff = orchestrator::describe_changes(&source, &result.patched);
     eprintln!(
@@ -243,6 +250,63 @@ async fn viz(port: u16, dev: bool, input: Option<PathBuf>) -> Result<()> {
     let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
 
     web::server::run_server(port, state).await
+}
+
+/// Dispatches `duumbi intent` subcommands.
+async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Result<()> {
+    match subcommand {
+        cli::IntentSubcommand::Create { description, yes } => {
+            let client = require_llm_client(&workspace)?;
+            intent::create::run_create(&client, &workspace, &description, yes).await?;
+            Ok(())
+        }
+        cli::IntentSubcommand::Review { name, edit } => {
+            match name {
+                None => intent::review::print_intent_list(&workspace)
+                    .map_err(|e| anyhow::anyhow!("{e}")),
+                Some(ref slug) if edit => intent::review::edit_intent(&workspace, slug)
+                    .map_err(|e| anyhow::anyhow!("{e}")),
+                Some(ref slug) => intent::review::print_intent_detail(&workspace, slug)
+                    .map_err(|e| anyhow::anyhow!("{e}")),
+            }
+        }
+        cli::IntentSubcommand::Execute { name } => {
+            let client = require_llm_client(&workspace)?;
+            let ok = intent::execute::run_execute(&client, &workspace, &name).await?;
+            if !ok {
+                process::exit(1);
+            }
+            Ok(())
+        }
+        cli::IntentSubcommand::Status { name } => match name {
+            None => {
+                intent::status::print_status_list(&workspace).map_err(|e| anyhow::anyhow!("{e}"))
+            }
+            Some(ref slug) => intent::status::print_status_detail(&workspace, slug)
+                .map_err(|e| anyhow::anyhow!("{e}")),
+        },
+    }
+}
+
+/// Builds an [`agents::LlmClient`] from workspace config, or bails with a helpful message.
+fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
+    let cfg = config::load_config(workspace).context(
+        "Cannot run intent commands: no .duumbi/config.toml found.\n\
+         Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
+    )?;
+    let llm_cfg = cfg.llm.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No [llm] section in .duumbi/config.toml.\n\
+             Add provider, model, and api_key_env settings."
+        )
+    })?;
+    let api_key = llm_cfg
+        .resolve_api_key()
+        .context("Failed to resolve LLM API key")?;
+    Ok(match llm_cfg.provider {
+        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
+        config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
+    })
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.

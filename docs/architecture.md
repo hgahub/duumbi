@@ -51,6 +51,27 @@ Phase 2 (implemented):
 
 Phase 3 additions:
   Telemetry Engine  →  traceId injection  →  Web Visualizer (WASM + axum)
+
+Phase 5 (implemented):
+  duumbi intent create "<description>"
+      │
+      ▼
+  LlmClient  →  IntentSpec YAML  (.duumbi/intents/<slug>.yaml)
+      │          (acceptance_criteria, modules, test_cases)
+      ▼
+  duumbi intent execute <slug>
+      │
+      ▼
+  Coordinator::decompose()  →  Vec<Task>  (rule-based ordering)
+      │   CreateModule tasks first, ModifyMain last
+      ▼
+  orchestrator::mutate_streaming()  ×  task count  (3-step retry)
+      │
+      ▼
+  Verifier::run_tests()  →  TestReport
+      │   generates wrapper main.jsonld, compiles, runs, checks exit code
+      ▼
+  archive_intent()  →  .duumbi/intents/history/<slug>.yaml
 ```
 
 ---
@@ -65,6 +86,8 @@ Phase 3 additions:
 | `traces.jsonl` | Runtime traceId → nodeId mapping | `.duumbi/telemetry/` |
 | `config.toml` | LLM provider, model, API key env ref | `.duumbi/` |
 | `{N:06}.jsonld` | Undo history snapshots | `.duumbi/history/` |
+| `<slug>.yaml` | Active intent specs | `.duumbi/intents/` |
+| `<slug>.yaml` | Archived completed/failed intents | `.duumbi/intents/history/` |
 
 **JSON-LD namespace:** `https://duumbi.dev/ns/core#` (prefix: `duumbi:`)
 
@@ -173,9 +196,44 @@ E007 cycle · E008 link failed · E009 schema invalid
 
 | Phase | Goal | Kill criterion |
 |-------|------|----------------|
-| 0 | JSON-LD → native binary | `add(3,5)` prints `8` |
-| 1 | Usable CLI | External dev installs + runs in < 10 min |
-| 2 | AI graph mutation | > 70% correct on 20-cmd benchmark |
-| 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD |
+| 0 | JSON-LD → native binary | `add(3,5)` prints `8` ✓ |
+| 1 | Usable CLI | External dev installs + runs in < 10 min ✓ |
+| 2 | AI graph mutation | > 70% correct on 20-cmd benchmark ✓ |
+| 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD ✓ |
+| 4 | Interactive CLI + module system | `abs(-7) = 7` (init → 2-module → binary) ✓ |
+| 5 | Intent-Driven Development | Verifier passes `double(21)=42` via intent pipeline ✓ |
 
 Phases beyond MVP (A–D): Knowledge base, Agent swarm, Self-healing, IDE.
+
+## Intent system (Phase 5)
+
+**CLI commands:**
+- `duumbi intent create "<description>"` — LLM generates structured YAML spec
+- `duumbi intent review [name]` — list or show intent details; `--edit` opens $EDITOR
+- `duumbi intent execute <name>` — decompose → mutate → verify → archive
+- `duumbi intent status [name]` — show active intent status
+
+**REPL slash commands:** `/intent`, `/intent create <desc>`, `/intent review [name]`,
+`/intent execute <name>`, `/intent status [name]`
+
+**Intent YAML layout (`.duumbi/intents/<slug>.yaml`):**
+```yaml
+intent: "Build a calculator"
+version: 1
+status: Pending
+acceptance_criteria:
+  - "add(a, b) returns a+b for i64"
+modules:
+  create: ["calculator/ops"]
+  modify: ["app/main"]
+test_cases:
+  - name: basic_add
+    function: add
+    args: [3, 5]
+    expected_return: 8
+```
+
+**Coordinator task order:** CreateModule → AddFunction (non-main) → ModifyMain
+
+**Verifier strategy:** generates a temp `main.jsonld` that calls the target function,
+compiles the full workspace, runs the binary, checks exit code against `expected_return`.

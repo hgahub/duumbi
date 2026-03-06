@@ -1,18 +1,24 @@
 //! Workspace initialization command.
 //!
 //! Creates the `.duumbi/` directory structure with default configuration,
-//! schema, a skeleton `main.jsonld` program, and the standard library modules.
+//! schema, a skeleton `main.jsonld` program, and the standard library modules
+//! in the M5 cache layout (`.duumbi/cache/@duumbi/<name>@<version>/`).
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::manifest::ModuleManifest;
+
 /// Embedded `stdlib/math.jsonld` — abs, max, min for i64.
 const STDLIB_MATH: &str = include_str!("../../stdlib/math.jsonld");
 
 /// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool.
 const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
+
+/// Stdlib module versions pinned at init time.
+const STDLIB_VERSION: &str = "1.0.0";
 
 /// Skeleton `main.jsonld` — a simple `add(3, 5)` program.
 const SKELETON_MAIN: &str = r#"{
@@ -71,17 +77,18 @@ const SKELETON_MAIN: &str = r#"{
 }
 "#;
 
-/// Default `config.toml` template (with stdlib dependencies pre-configured).
+/// Default `config.toml` template (M5 format with scope-based stdlib deps).
 const DEFAULT_CONFIG: &str = r#"[compiler]
 version = "0.1"
 
 [build]
 output_dir = "build"
 
-# Standard library modules (created in .duumbi/stdlib/ by duumbi init).
+# Standard library modules (created in .duumbi/cache/@duumbi/ by duumbi init).
+# The cache directory is excluded from version control (.gitignore).
 [dependencies]
-math = { path = ".duumbi/stdlib/math" }
-io   = { path = ".duumbi/stdlib/io" }
+"@duumbi/stdlib-math" = "1.0.0"
+"@duumbi/stdlib-io" = "1.0.0"
 
 # Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
 # [llm]
@@ -90,10 +97,21 @@ io   = { path = ".duumbi/stdlib/io" }
 # api_key_env = "ANTHROPIC_API_KEY"  # name of env var holding the API key
 "#;
 
+/// `.gitignore` template — excludes the auto-generated cache and build dirs.
+const GITIGNORE: &str = "\
+# duumbi generated — do not commit
+.duumbi/cache/
+.duumbi/build/
+.duumbi/history/
+.duumbi/telemetry/
+";
+
 /// Initializes a new duumbi workspace at the given base path.
 ///
 /// Creates `.duumbi/` with subdirectories for config, graph, schema, build,
-/// telemetry, and the embedded standard library modules (math, io).
+/// telemetry, and intents. Stdlib modules are written to the M5 cache layout:
+/// `.duumbi/cache/@duumbi/stdlib-math@1.0.0/` and
+/// `.duumbi/cache/@duumbi/stdlib-io@1.0.0/`.
 /// Fails if `.duumbi/` already exists.
 pub fn run_init(base: &Path) -> Result<()> {
     let duumbi_dir = base.join(".duumbi");
@@ -102,31 +120,56 @@ pub fn run_init(base: &Path) -> Result<()> {
         anyhow::bail!("Workspace already exists at '{}'", duumbi_dir.display());
     }
 
-    // Create directory structure
-    fs::create_dir_all(duumbi_dir.join("graph")).context("Failed to create .duumbi/graph/")?;
-    fs::create_dir_all(duumbi_dir.join("schema")).context("Failed to create .duumbi/schema/")?;
-    fs::create_dir_all(duumbi_dir.join("build")).context("Failed to create .duumbi/build/")?;
-    fs::create_dir_all(duumbi_dir.join("telemetry"))
-        .context("Failed to create .duumbi/telemetry/")?;
+    // Core directory structure
+    for subdir in &[
+        "graph",
+        "schema",
+        "build",
+        "telemetry",
+        "intents",
+        "history",
+    ] {
+        fs::create_dir_all(duumbi_dir.join(subdir))
+            .with_context(|| format!("Failed to create .duumbi/{subdir}/"))?;
+    }
 
-    // Write stdlib modules — each is a self-contained workspace at
-    // .duumbi/stdlib/{math,io}/.duumbi/graph/
-    let math_graph = duumbi_dir
-        .join("stdlib")
-        .join("math")
-        .join(".duumbi")
-        .join("graph");
-    fs::create_dir_all(&math_graph).context("Failed to create stdlib/math graph dir")?;
-    fs::write(math_graph.join("math.jsonld"), STDLIB_MATH)
-        .context("Failed to write stdlib math.jsonld")?;
+    // Write stdlib math module to cache
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-math",
+        STDLIB_VERSION,
+        "math.jsonld",
+        STDLIB_MATH,
+        ModuleManifest::new(
+            "@duumbi/stdlib-math",
+            STDLIB_VERSION,
+            "Mathematical utility functions (abs, max, min) for i64",
+            vec!["abs".to_string(), "max".to_string(), "min".to_string()],
+        ),
+    )
+    .context("Failed to write stdlib math module")?;
 
-    let io_graph = duumbi_dir
-        .join("stdlib")
-        .join("io")
-        .join(".duumbi")
-        .join("graph");
-    fs::create_dir_all(&io_graph).context("Failed to create stdlib/io graph dir")?;
-    fs::write(io_graph.join("io.jsonld"), STDLIB_IO).context("Failed to write stdlib io.jsonld")?;
+    // Write stdlib io module to cache
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-io",
+        STDLIB_VERSION,
+        "io.jsonld",
+        STDLIB_IO,
+        ModuleManifest::new(
+            "@duumbi/stdlib-io",
+            STDLIB_VERSION,
+            "I/O utility functions (print wrappers for i64, f64, bool)",
+            vec![
+                "print_i64".to_string(),
+                "print_f64".to_string(),
+                "print_bool".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib io module")?;
 
     // Write config (includes stdlib deps by default)
     fs::write(duumbi_dir.join("config.toml"), DEFAULT_CONFIG)
@@ -136,7 +179,44 @@ pub fn run_init(base: &Path) -> Result<()> {
     fs::write(duumbi_dir.join("graph").join("main.jsonld"), SKELETON_MAIN)
         .context("Failed to write main.jsonld")?;
 
+    // Write .gitignore alongside .duumbi/ in the workspace root
+    let gitignore = base.join(".gitignore");
+    if !gitignore.exists() {
+        fs::write(&gitignore, GITIGNORE).context("Failed to write .gitignore")?;
+    }
+
     eprintln!("Project initialized at {}", duumbi_dir.display());
+    Ok(())
+}
+
+/// Writes a single stdlib module into the cache layer.
+///
+/// Creates: `.duumbi/cache/<scope>/<name>@<version>/graph/<jsonld_file>`
+/// and:     `.duumbi/cache/<scope>/<name>@<version>/manifest.toml`
+fn write_cache_module(
+    duumbi_dir: &Path,
+    scope: &str,
+    name: &str,
+    version: &str,
+    jsonld_file: &str,
+    jsonld_content: &str,
+    manifest: ModuleManifest,
+) -> Result<()> {
+    let entry_dir = duumbi_dir
+        .join("cache")
+        .join(scope)
+        .join(format!("{name}@{version}"));
+    let graph_dir = entry_dir.join("graph");
+
+    fs::create_dir_all(&graph_dir)
+        .with_context(|| format!("Failed to create cache dir for {scope}/{name}"))?;
+
+    fs::write(graph_dir.join(jsonld_file), jsonld_content)
+        .with_context(|| format!("Failed to write {jsonld_file} for {scope}/{name}"))?;
+
+    fs::write(entry_dir.join("manifest.toml"), manifest.to_toml())
+        .with_context(|| format!("Failed to write manifest.toml for {scope}/{name}"))?;
+
     Ok(())
 }
 
@@ -156,9 +236,73 @@ mod tests {
         assert!(d.join("schema").is_dir());
         assert!(d.join("build").is_dir());
         assert!(d.join("telemetry").is_dir());
-        // stdlib modules
-        assert!(d.join("stdlib/math/.duumbi/graph/math.jsonld").exists());
-        assert!(d.join("stdlib/io/.duumbi/graph/io.jsonld").exists());
+        assert!(d.join("intents").is_dir());
+
+        // M5 cache layout for stdlib
+        assert!(
+            d.join("cache/@duumbi/stdlib-math@1.0.0/graph/math.jsonld")
+                .exists(),
+            "stdlib-math jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-math@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-math manifest must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-io@1.0.0/graph/io.jsonld")
+                .exists(),
+            "stdlib-io jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-io@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-io manifest must exist"
+        );
+    }
+
+    #[test]
+    fn init_writes_gitignore() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+        let gi = tmp.path().join(".gitignore");
+        assert!(gi.exists(), ".gitignore must be created");
+        let content = std::fs::read_to_string(&gi).expect("read .gitignore");
+        assert!(
+            content.contains(".duumbi/cache/"),
+            ".gitignore must exclude cache"
+        );
+    }
+
+    #[test]
+    fn init_stdlib_manifests_are_valid() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let d = tmp.path().join(".duumbi");
+        let math_manifest = crate::manifest::parse_manifest(
+            &d.join("cache/@duumbi/stdlib-math@1.0.0/manifest.toml"),
+        )
+        .expect("math manifest must parse");
+        assert_eq!(math_manifest.module.name, "@duumbi/stdlib-math");
+        assert_eq!(math_manifest.module.version, "1.0.0");
+        assert!(math_manifest.exports.functions.contains(&"abs".to_string()));
+    }
+
+    #[test]
+    fn init_config_uses_scope_based_deps() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        assert!(
+            config.dependencies.contains_key("@duumbi/stdlib-math"),
+            "config must have @duumbi/stdlib-math dep"
+        );
+        assert_eq!(
+            config.dependencies["@duumbi/stdlib-math"].version(),
+            Some("1.0.0")
+        );
     }
 
     #[test]

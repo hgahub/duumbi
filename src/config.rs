@@ -94,34 +94,104 @@ impl LlmConfig {
     }
 }
 
-/// A local path dependency declared in `[dependencies]`.
+/// A dependency declared in the `[dependencies]` section of `config.toml`.
 ///
-/// Example in `config.toml`:
+/// Two syntactic forms are supported:
+///
 /// ```toml
-/// [dependencies]
+/// # Version-pinned (scope-based, M5+): value is a bare version string
+/// "@duumbi/stdlib-math" = "1.0.0"
+///
+/// # Local path dependency (all phases): value is a table with `path`
 /// mylib = { path = "../mylib" }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct DependencyConfig {
-    /// Relative path from the workspace root to the dependency workspace.
-    pub path: String,
+#[serde(untagged)]
+pub enum DependencyConfig {
+    /// Cache/registry-resolved dependency — value is the version string.
+    ///
+    /// The module is resolved from `.duumbi/cache/@scope/name@version/`.
+    Version(String),
+    /// Local path dependency — resolved relative to the workspace root.
+    Path {
+        /// Relative or absolute path to the dependency workspace.
+        path: String,
+    },
+}
+
+#[allow(dead_code)] // Methods called progressively as pipeline is integrated
+impl DependencyConfig {
+    /// Returns the version string if this is a `Version` variant.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Version(v) => Some(v.as_str()),
+            Self::Path { .. } => None,
+        }
+    }
+
+    /// Returns the path string if this is a `Path` variant.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Path { path } => Some(path.as_str()),
+            Self::Version(_) => None,
+        }
+    }
+}
+
+/// Optional `[workspace]` section for namespace and identity configuration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WorkspaceSection {
+    /// Short workspace name used in module IDs and log output.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Local module namespace prefix (used by the resolver).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+}
+
+/// Vendoring strategy for the optional `[vendor]` section.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VendorStrategy {
+    /// No vendoring — resolve all deps from the local cache (default).
+    #[default]
+    None,
+    /// Vendor every dependency into `.duumbi/vendor/`.
+    All,
+    /// Vendor only modules matching the `include` patterns.
+    Selective,
+}
+
+/// Optional `[vendor]` section in `config.toml`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VendorSection {
+    /// Vendoring strategy applied during `duumbi deps vendor`.
+    #[serde(default)]
+    pub strategy: VendorStrategy,
 }
 
 /// Top-level duumbi workspace configuration.
 #[allow(dead_code)] // Used in Issue #31 orchestrator
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DuumbiConfig {
+    /// Workspace identity settings (name, namespace).
+    pub workspace: Option<WorkspaceSection>,
+
     /// LLM provider settings — required for `duumbi add` / AI commands.
     ///
     /// Omitting this section is allowed; the CLI will return a clear error
     /// when an AI command is invoked without LLM config.
     pub llm: Option<LlmConfig>,
 
-    /// Local path dependencies declared for this workspace.
+    /// Dependencies declared for this workspace.
     ///
-    /// Keys are dependency names; values are `{ path = "..." }` entries.
+    /// Keys are either scoped module names (`@scope/name`) or plain dep names.
+    /// Values are either a bare version string or a `{ path = "..." }` table.
     #[serde(default)]
     pub dependencies: HashMap<String, DependencyConfig>,
+
+    /// Vendor configuration.
+    pub vendor: Option<VendorSection>,
 }
 
 /// Saves a [`DuumbiConfig`] to `<workspace_root>/.duumbi/config.toml`.

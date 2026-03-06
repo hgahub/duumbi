@@ -2,10 +2,23 @@
 //!
 //! Combines LLM provider calls, GraphPatch application, validation,
 //! and retry logic into a single [`mutate`] entry point.
+//!
+//! # Retry pipeline
+//!
+//! When a mutation fails validation, the orchestrator retries up to
+//! `max_retries` times with escalating context:
+//!
+//! - **Retry 1:** Structured error feedback (error code + nodeId + fix hint)
+//! - **Retry 2:** Same as above + a relevant few-shot example
+//! - **Retry 3:** Same as above + a simplified instruction to use `replace_block`
+//!
+//! Each retry sends the full original user message plus the escalating context,
+//! always working from the original `source` graph (not a partially-patched one).
 
 use anyhow::{Context, Result};
 
 use crate::agents::LlmClient;
+use crate::errors::Diagnostic;
 use crate::patch::{GraphPatch, apply_patch};
 
 /// System prompt sent to the LLM with every mutation request.
@@ -74,15 +87,21 @@ Example — adding a function multiply(a, b) → a*b via one add_function call:\
 pub struct MutationResult {
     /// The patched JSON-LD value (not yet written to disk).
     pub patched: serde_json::Value,
-    /// The patch operations that were applied.
+    /// Number of patch operations applied.
     pub ops_count: usize,
 }
 
-/// Runs the full mutation loop: prompt → LLM → patch → validate → optional retry.
+/// Runs the full mutation loop: prompt → LLM → patch → validate → retry.
 ///
 /// `source` is the current JSON-LD module value.
 /// `user_request` is the natural language mutation request.
-/// `max_retries` should be 0 (no retry) or 1 (one retry with error feedback).
+/// `max_retries` is the maximum number of additional attempts after the first
+/// failure (0 = no retry, 3 = up to 3 retries = 4 total attempts).
+///
+/// Retry escalation:
+/// - Retry 1: structured error feedback (code + nodeId + fix hint)
+/// - Retry 2: same + a relevant few-shot example
+/// - Retry 3: same + a simplified `replace_block` instruction
 ///
 /// On success, returns the patched JSON-LD value (caller is responsible for
 /// writing it to disk and saving a snapshot).
@@ -100,13 +119,13 @@ pub async fn mutate(
     let graph_json = serde_json::to_string_pretty(source)
         .context("Failed to serialize current graph for context")?;
 
-    let user_message = format!(
+    let base_message = format!(
         "Current program graph:\n```json\n{graph_json}\n```\n\nRequested change: {user_request}"
     );
 
     // First attempt
     let ops = client
-        .call_with_tools(SYSTEM_PROMPT, &user_message)
+        .call_with_tools(SYSTEM_PROMPT, &base_message)
         .await
         .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
 
@@ -117,43 +136,50 @@ pub async fn mutate(
     let ops_count = ops.len();
     let patch = GraphPatch { ops };
 
-    match try_apply_and_validate(source, &patch) {
+    match try_apply_collecting_diagnostics(source, &patch) {
         Ok(patched) => Ok(MutationResult { patched, ops_count }),
-        Err(validation_err) if max_retries == 0 => {
-            anyhow::bail!(
-                "Patch validation failed: {validation_err}\n\
-                 Run `duumbi check` for details."
-            );
+        Err(_) if max_retries == 0 => {
+            anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
-        Err(validation_err) => {
-            // Retry with error feedback
-            eprintln!("First attempt failed ({validation_err}), retrying with error context…");
+        Err((_, mut last_diagnostics)) => {
+            for attempt in 0..max_retries {
+                let attempt_num = attempt + 1;
+                eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
 
-            let retry_message = format!(
-                "{user_message}\n\n\
-                 Previous attempt failed validation with error: {validation_err}\n\
-                 Please fix the error and try again."
-            );
+                let retry_msg =
+                    build_retry_message(&base_message, attempt, &last_diagnostics, user_request);
 
-            let retry_ops = client
-                .call_with_tools(SYSTEM_PROMPT, &retry_message)
-                .await
-                .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
+                let retry_ops = client
+                    .call_with_tools(SYSTEM_PROMPT, &retry_msg)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
 
-            if retry_ops.is_empty() {
-                anyhow::bail!("LLM returned no tool calls on retry");
+                if retry_ops.is_empty() {
+                    anyhow::bail!("LLM returned no tool calls on retry {attempt_num}");
+                }
+
+                let retry_count = retry_ops.len();
+                let retry_patch = GraphPatch { ops: retry_ops };
+
+                match try_apply_collecting_diagnostics(source, &retry_patch) {
+                    Ok(patched) => {
+                        return Ok(MutationResult {
+                            patched,
+                            ops_count: retry_count,
+                        });
+                    }
+                    Err((_, new_diags)) => {
+                        last_diagnostics = new_diags;
+                        if attempt + 1 >= max_retries {
+                            let summary = format_retry_feedback(&last_diagnostics);
+                            anyhow::bail!(
+                                "All {max_retries} retries exhausted. Last errors:\n{summary}"
+                            );
+                        }
+                    }
+                }
             }
-
-            let retry_count = retry_ops.len();
-            let retry_patch = GraphPatch { ops: retry_ops };
-
-            let patched = try_apply_and_validate(source, &retry_patch)
-                .map_err(|e| anyhow::anyhow!("Retry validation failed: {e}"))?;
-
-            Ok(MutationResult {
-                patched,
-                ops_count: retry_count,
-            })
+            unreachable!("retry loop must return or bail before this point");
         }
     }
 }
@@ -162,8 +188,7 @@ pub async fn mutate(
 ///
 /// Identical to [`mutate`] but calls [`LlmClient::call_with_tools_streaming`]
 /// so the provider can surface its reasoning text in real time. The `on_text`
-/// callback is invoked once per streamed text chunk; it is called from the
-/// async context but must not block.
+/// callback is invoked once per streamed text chunk.
 ///
 /// # Errors
 ///
@@ -181,12 +206,12 @@ where
     let graph_json = serde_json::to_string_pretty(source)
         .context("Failed to serialize current graph for context")?;
 
-    let user_message = format!(
+    let base_message = format!(
         "Current program graph:\n```json\n{graph_json}\n```\n\nRequested change: {user_request}"
     );
 
     let ops = client
-        .call_with_tools_streaming(SYSTEM_PROMPT, &user_message, &on_text)
+        .call_with_tools_streaming(SYSTEM_PROMPT, &base_message, &on_text)
         .await
         .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
 
@@ -197,83 +222,242 @@ where
     let ops_count = ops.len();
     let patch = GraphPatch { ops };
 
-    match try_apply_and_validate(source, &patch) {
+    match try_apply_collecting_diagnostics(source, &patch) {
         Ok(patched) => Ok(MutationResult { patched, ops_count }),
-        Err(validation_err) if max_retries == 0 => {
-            anyhow::bail!(
-                "Patch validation failed: {validation_err}\n\
-                 Run `duumbi check` for details."
-            );
+        Err(_) if max_retries == 0 => {
+            anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
-        Err(validation_err) => {
-            eprintln!("First attempt failed ({validation_err}), retrying with error context…");
+        Err((_, mut last_diagnostics)) => {
+            for attempt in 0..max_retries {
+                let attempt_num = attempt + 1;
+                eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
 
-            let retry_message = format!(
-                "{user_message}\n\n\
-                 Previous attempt failed validation with error: {validation_err}\n\
-                 Please fix the error and try again."
-            );
+                let retry_msg =
+                    build_retry_message(&base_message, attempt, &last_diagnostics, user_request);
 
-            let retry_ops = client
-                .call_with_tools_streaming(SYSTEM_PROMPT, &retry_message, &on_text)
-                .await
-                .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
+                let retry_ops = client
+                    .call_with_tools_streaming(SYSTEM_PROMPT, &retry_msg, &on_text)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
 
-            if retry_ops.is_empty() {
-                anyhow::bail!("LLM returned no tool calls on retry");
+                if retry_ops.is_empty() {
+                    anyhow::bail!("LLM returned no tool calls on retry {attempt_num}");
+                }
+
+                let retry_count = retry_ops.len();
+                let retry_patch = GraphPatch { ops: retry_ops };
+
+                match try_apply_collecting_diagnostics(source, &retry_patch) {
+                    Ok(patched) => {
+                        return Ok(MutationResult {
+                            patched,
+                            ops_count: retry_count,
+                        });
+                    }
+                    Err((_, new_diags)) => {
+                        last_diagnostics = new_diags;
+                        if attempt + 1 >= max_retries {
+                            let summary = format_retry_feedback(&last_diagnostics);
+                            anyhow::bail!(
+                                "All {max_retries} retries exhausted. Last errors:\n{summary}"
+                            );
+                        }
+                    }
+                }
             }
-
-            let retry_count = retry_ops.len();
-            let retry_patch = GraphPatch { ops: retry_ops };
-
-            let patched = try_apply_and_validate(source, &retry_patch)
-                .map_err(|e| anyhow::anyhow!("Retry validation failed: {e}"))?;
-
-            Ok(MutationResult {
-                patched,
-                ops_count: retry_count,
-            })
+            unreachable!("retry loop must return or bail before this point");
         }
     }
 }
 
-/// Applies a patch to `source` and validates the result using the full pipeline.
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/// Applies a patch to `source` and validates the result, returning structured
+/// diagnostics on failure.
 ///
-/// Returns the patched value on success, or a descriptive error string on failure.
-fn try_apply_and_validate(
+/// Returns `Ok(patched_value)` on success, or
+/// `Err((summary_string, diagnostics))` on failure.
+fn try_apply_collecting_diagnostics(
     source: &serde_json::Value,
     patch: &GraphPatch,
-) -> std::result::Result<serde_json::Value, String> {
-    // Apply patch (all-or-nothing)
-    let patched = apply_patch(source, patch).map_err(|e| e.to_string())?;
+) -> Result<serde_json::Value, (String, Vec<Diagnostic>)> {
+    let patched = apply_patch(source, patch).map_err(|e| (e.to_string(), vec![]))?;
 
-    // Validate via parse → build → validate pipeline
-    let json_str = serde_json::to_string(&patched).map_err(|e| e.to_string())?;
-    validate_jsonld_string(&json_str)
-        .map_err(|e| e.to_string())
-        .map(|()| patched)
-}
+    let json_str = serde_json::to_string(&patched).map_err(|e| (e.to_string(), vec![]))?;
 
-/// Validates a JSON-LD string through the full parse → build → validate pipeline.
-///
-/// Returns `Ok(())` if valid, or an error describing the first failure.
-fn validate_jsonld_string(json_str: &str) -> Result<()> {
-    let module_ast =
-        crate::parser::parse_jsonld(json_str).map_err(|e| anyhow::anyhow!("Parse error: {e}"))?;
+    let module_ast = crate::parser::parse_jsonld(&json_str)
+        .map_err(|e| (format!("Parse error: {e}"), vec![]))?;
 
     let semantic_graph = crate::graph::builder::build_graph(&module_ast).map_err(|errors| {
-        let messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-        anyhow::anyhow!("Graph errors: {}", messages.join("; "))
+        let msg = errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        // GraphError is a separate type from Diagnostic; no structured diagnostics here.
+        (format!("Graph build errors: {msg}"), vec![])
     })?;
 
     let diagnostics = crate::graph::validator::validate(&semantic_graph);
     if !diagnostics.is_empty() {
-        let messages: Vec<String> = diagnostics.iter().map(|d| d.message.clone()).collect();
-        anyhow::bail!("Validation errors: {}", messages.join("; "));
+        let msg = diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err((format!("Validation errors: {msg}"), diagnostics));
     }
 
-    Ok(())
+    Ok(patched)
 }
+
+/// Applies a patch to `source` and validates the result.
+///
+/// Returns the patched value on success, or a descriptive error string on
+/// failure. Used internally by tests; prefer
+/// [`try_apply_collecting_diagnostics`] for new code.
+#[cfg(test)]
+pub(crate) fn try_apply_and_validate(
+    source: &serde_json::Value,
+    patch: &GraphPatch,
+) -> std::result::Result<serde_json::Value, String> {
+    try_apply_collecting_diagnostics(source, patch).map_err(|(msg, _)| msg)
+}
+
+// ---------------------------------------------------------------------------
+// Retry feedback formatting
+// ---------------------------------------------------------------------------
+
+/// Formats structured error feedback for the LLM retry prompt.
+///
+/// Produces a block with per-error details (code, nodeId, message) and
+/// per-code fix hints. Empty diagnostics produce a generic fallback.
+pub fn format_retry_feedback(diagnostics: &[Diagnostic]) -> String {
+    if diagnostics.is_empty() {
+        return "\
+Previous attempt failed. No specific diagnostic information available.\n\
+Fix hints:\n\
+- Check all required fields are present for the op type\n\
+- Ensure all @id references are valid and unique\n\
+- Use replace_block for atomic block rewrites"
+            .to_string();
+    }
+
+    let mut lines = vec!["Previous attempt failed. Errors:".to_string()];
+    for d in diagnostics {
+        let node_info = d
+            .node_id
+            .as_deref()
+            .map(|n| format!(" at {n}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {} {}{}: {}",
+            d.code, d.code, node_info, d.message
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("Fix hints:".to_string());
+
+    // Deduplicate codes to avoid repeated hints
+    let mut seen = std::collections::HashSet::new();
+    for d in diagnostics {
+        if seen.insert(d.code.as_str())
+            && let Some(hint) = hint_for_code(&d.code)
+        {
+            lines.push(format!("- For {}: {}", d.code, hint));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Returns a fix hint string for the given error code, or `None` if unknown.
+fn hint_for_code(code: &str) -> Option<&'static str> {
+    match code {
+        "E001" => Some(
+            "ensure binary ops (Add, Sub, Mul, Div, Compare) have operands with matching \
+             resultType (both i64 or both f64)",
+        ),
+        "E002" => Some(
+            "use a valid @type: Const, ConstF64, ConstBool, Add, Sub, Mul, Div, Compare, \
+             Branch, Call, Load, Store, Print, Return",
+        ),
+        "E003" => Some(
+            "ensure all required fields are present for this op type — \
+             Add/Sub/Mul/Div need duumbi:left + duumbi:right + duumbi:resultType; \
+             Return needs duumbi:operand; Branch needs duumbi:condition + duumbi:trueBlock + duumbi:falseBlock",
+        ),
+        "E004" => Some(
+            "ensure all @id references point to existing nodes defined earlier in the same module",
+        ),
+        "E005" => Some(
+            "ensure all @id values are globally unique — use format \
+             duumbi:<module>/<function>/<block>/<index>",
+        ),
+        "E006" => Some("add a function named 'main' with duumbi:returnType"),
+        "E007" => Some("remove the circular data-flow dependency between ops"),
+        "E008" => Some("check linker configuration and that all referenced functions are compiled"),
+        "E009" => Some(
+            "check JSON-LD structure: every node needs @type, @id; \
+             every block must end with Return or Branch",
+        ),
+        "E010" => Some(
+            "ensure all called functions are exported by their module and listed in \
+             duumbi:imports on the calling module",
+        ),
+        "E011" => Some(
+            "ensure the dependency module exists in workspace (.duumbi/graph/), \
+             vendor (.duumbi/vendor/), or cache (.duumbi/cache/) layer",
+        ),
+        "E012" => Some(
+            "use explicit scope qualifiers (@scope/module) to resolve the module name conflict",
+        ),
+        _ => None,
+    }
+}
+
+/// Builds the full retry prompt message, escalating context per attempt number.
+///
+/// - `attempt` 0: structured error feedback only
+/// - `attempt` 1: + a relevant few-shot example
+/// - `attempt` 2+: + simplified `replace_block` instruction
+fn build_retry_message(
+    base_user_message: &str,
+    attempt: u32,
+    diagnostics: &[Diagnostic],
+    user_request: &str,
+) -> String {
+    let feedback = format_retry_feedback(diagnostics);
+    let mut msg = format!("{base_user_message}\n\n{feedback}");
+
+    // Step 2: inject a relevant few-shot example
+    if attempt >= 1
+        && let Some(example) = crate::examples::select_example(diagnostics, user_request)
+    {
+        msg.push_str(&format!(
+            "\n\nRelevant example (similar successful mutation):\n{example}"
+        ));
+    }
+
+    // Step 3: simplified instruction
+    if attempt >= 2 {
+        msg.push_str(
+            "\n\nSimplified instruction: Use replace_block to atomically rewrite any block \
+             that needs changes. Provide the COMPLETE new ops array: all Loads first, then \
+             the operation, then Print (if needed), then Return as the LAST op. \
+             Never leave a block without a Return or Branch as its final op.",
+        );
+    }
+
+    msg
+}
+
+// ---------------------------------------------------------------------------
+// Diff summary
+// ---------------------------------------------------------------------------
 
 /// Builds a concise human-readable diff of changes between two JSON-LD values.
 ///
@@ -284,7 +468,6 @@ pub fn describe_changes(original: &serde_json::Value, patched: &serde_json::Valu
         return "No changes".to_string();
     }
 
-    // Count function/op differences at a high level
     let orig_funcs = original["duumbi:functions"]
         .as_array()
         .map_or(0, |a| a.len());
@@ -302,7 +485,6 @@ pub fn describe_changes(original: &serde_json::Value, patched: &serde_json::Valu
         ));
     }
 
-    // Count total ops
     let count_ops = |v: &serde_json::Value| -> usize {
         v["duumbi:functions"].as_array().map_or(0, |funcs| {
             funcs
@@ -336,6 +518,10 @@ pub fn describe_changes(original: &serde_json::Value, patched: &serde_json::Valu
 
     lines.join("\n")
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -395,21 +581,14 @@ mod tests {
     }
 
     #[test]
-    fn try_apply_and_validate_invalid_patch_fails() {
+    fn try_apply_and_validate_invalid_patch_does_not_panic() {
         let source = minimal_module();
-        // Remove the Return op — invalid (no return in block)
         let patch = GraphPatch {
             ops: vec![crate::patch::PatchOp::RemoveNode {
                 node_id: "duumbi:main/main/entry/1".to_string(),
             }],
         };
-        // This should fail validation (no return in block)
-        // Note: the validator may or may not catch this in Phase 1;
-        // at minimum the patch applies and the function returns
-        let result = try_apply_and_validate(&source, &patch);
-        // Either ok (validator doesn't catch missing Return yet) or error
-        // Just ensure it doesn't panic
-        let _ = result;
+        let _ = try_apply_and_validate(&source, &patch);
     }
 
     #[test]
@@ -440,5 +619,67 @@ mod tests {
             json!(99);
         let desc = describe_changes(&original, &patched);
         assert!(!desc.is_empty());
+    }
+
+    #[test]
+    fn format_retry_feedback_empty_diagnostics() {
+        let result = format_retry_feedback(&[]);
+        assert!(result.contains("No specific diagnostic"));
+        assert!(result.contains("replace_block"));
+    }
+
+    #[test]
+    fn format_retry_feedback_with_diagnostics() {
+        let diags = vec![
+            crate::errors::Diagnostic::error(
+                crate::errors::codes::E003_MISSING_FIELD,
+                "field 'duumbi:right' required",
+            ),
+            crate::errors::Diagnostic::error(
+                crate::errors::codes::E001_TYPE_MISMATCH,
+                "Add expects matching operand types",
+            ),
+        ];
+        let result = format_retry_feedback(&diags);
+        assert!(result.contains("Previous attempt failed"));
+        assert!(result.contains("E003"));
+        assert!(result.contains("E001"));
+        assert!(result.contains("Fix hints"));
+        assert!(result.contains("duumbi:right"));
+    }
+
+    #[test]
+    fn format_retry_feedback_deduplicates_codes() {
+        let diags = vec![
+            crate::errors::Diagnostic::error(crate::errors::codes::E003_MISSING_FIELD, "err 1"),
+            crate::errors::Diagnostic::error(crate::errors::codes::E003_MISSING_FIELD, "err 2"),
+        ];
+        let result = format_retry_feedback(&diags);
+        // E003 hint should appear only once
+        let count = result.matches("For E003:").count();
+        assert_eq!(count, 1, "deduplicated hint must appear exactly once");
+    }
+
+    #[test]
+    fn build_retry_message_escalates_per_attempt() {
+        let base = "Current program graph:\n```json\n{}\n```\n\nRequested change: add function";
+        let diags = vec![crate::errors::Diagnostic::error(
+            crate::errors::codes::E003_MISSING_FIELD,
+            "missing field",
+        )];
+
+        let msg0 = build_retry_message(base, 0, &diags, "add function");
+        let msg1 = build_retry_message(base, 1, &diags, "add function");
+        let msg2 = build_retry_message(base, 2, &diags, "add function");
+
+        // Attempt 0: no example, no simplified instruction
+        assert!(!msg0.contains("Simplified instruction"));
+
+        // Attempt 2: simplified instruction present
+        assert!(msg2.contains("Simplified instruction"));
+
+        // Each subsequent message should be longer (more context)
+        assert!(msg1.len() >= msg0.len());
+        assert!(msg2.len() >= msg1.len());
     }
 }
