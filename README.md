@@ -285,7 +285,7 @@ Read `docs/coding-conventions.md` before writing any code. Key rules:
 
 ---
 
-## Development Workflow
+## Development Workflow.
 
 ```bash
 # Check compilation
