@@ -12,6 +12,7 @@ pub mod deps;
 pub mod errors;
 pub mod examples;
 pub mod graph;
+pub mod manifest;
 pub mod parser;
 pub mod patch;
 pub mod snapshot;

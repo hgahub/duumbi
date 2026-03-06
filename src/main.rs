@@ -13,6 +13,7 @@ mod deps;
 mod errors;
 mod examples;
 mod graph;
+mod manifest;
 mod parser;
 mod patch;
 mod snapshot;

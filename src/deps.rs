@@ -1,8 +1,16 @@
-//! Dependency management — lockfile and multi-workspace program loading.
+//! Dependency management — lockfile, module resolution, and multi-workspace program loading.
 //!
-//! Reads local path dependencies from `.duumbi/config.toml`, resolves them,
-//! generates a deterministic `.duumbi/deps.lock` on each build, and
-//! provides `load_program_with_deps()` to build a `Program` from all modules.
+//! Reads dependencies from `.duumbi/config.toml`, resolves them through the
+//! three-layer pipeline (workspace → vendor → cache), generates a deterministic
+//! `.duumbi/deps.lock`, and provides `load_program_with_deps()` to build a
+//! `Program` from all modules.
+//!
+//! # Resolution order
+//!
+//! 1. **Workspace** (`.duumbi/graph/`) — own source, highest priority
+//! 2. **Vendor** (`.duumbi/vendor/`) — pinned, audited copies
+//! 3. **Cache** (`.duumbi/cache/`) — stdlib and downloaded modules
+//! 4. ❌ **Not found** → `E011 DependencyNotFound`
 
 #![allow(dead_code)] // Many functions used by upcoming build command (#61)
 
@@ -12,8 +20,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{self, DuumbiConfig};
+use crate::config::{self, DependencyConfig, DuumbiConfig};
 use crate::graph::program::{Program, ProgramError};
+use crate::manifest::{self, ModuleManifest};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -23,7 +32,7 @@ use crate::graph::program::{Program, ProgramError};
 #[allow(dead_code)] // Variants used by CLI and upcoming build integration (#61)
 #[derive(Debug, Error)]
 pub enum DepsError {
-    /// A dependency path does not exist or has no `.duumbi/graph/` directory.
+    /// A dependency path does not exist or has no graph directory.
     #[error("Dependency '{name}' at path '{path}' is not a valid duumbi workspace: {reason}")]
     InvalidDepPath {
         /// Dependency name.
@@ -32,6 +41,15 @@ pub enum DepsError {
         path: String,
         /// Reason it failed.
         reason: String,
+    },
+
+    /// A version-based dependency could not be found in any resolution layer.
+    #[error("Dependency '{name}@{version}' not found in vendor or cache layers")]
+    NotFound {
+        /// Dependency name (may include scope, e.g. `@duumbi/stdlib-math`).
+        name: String,
+        /// Version that was requested.
+        version: String,
     },
 
     /// I/O error while reading or writing.
@@ -66,7 +84,7 @@ pub enum DepsError {
 pub struct LockEntry {
     /// Dependency name as declared in `config.toml`.
     pub name: String,
-    /// Resolved absolute path to the dependency workspace.
+    /// Resolved absolute path to the dependency's graph directory.
     pub path: String,
     /// FNV-1a content fingerprint of all `.jsonld` files in the dep's graph dir.
     pub hash: String,
@@ -85,6 +103,127 @@ pub struct DepsLock {
 
 fn default_version() -> u32 {
     1
+}
+
+// ---------------------------------------------------------------------------
+// Module resolution types (#77)
+// ---------------------------------------------------------------------------
+
+/// Which resolution layer a module was found in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleSource {
+    /// Found in the workspace's own `.duumbi/graph/` directory.
+    Workspace,
+    /// Found in `.duumbi/vendor/@scope/name/graph/`.
+    Vendor,
+    /// Found in `.duumbi/cache/@scope/name@version/graph/`.
+    Cache,
+}
+
+/// A successfully resolved module with its graph directory and optional manifest.
+#[derive(Debug, Clone)]
+pub struct ResolvedModule {
+    /// Module key as declared in `config.toml`.
+    pub name: String,
+    /// Which layer this module was resolved from.
+    pub source: ModuleSource,
+    /// Absolute path to the module's graph directory.
+    pub graph_dir: PathBuf,
+    /// Parsed `manifest.toml`, if present.
+    pub manifest: Option<ModuleManifest>,
+}
+
+// ---------------------------------------------------------------------------
+// Scope / name parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Splits a scoped module key `"@scope/name"` into `("@scope", "name")`.
+///
+/// Returns `None` if the key is not scoped (i.e. does not start with `@`).
+fn parse_scoped_name(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix('@')?;
+    let slash = rest.find('/')?;
+    // scope includes the leading '@'
+    let scope = &key[..slash + 1]; // e.g. "@duumbi"
+    let name = &rest[slash + 1..]; // e.g. "stdlib-math"
+    Some((scope, name))
+}
+
+/// Builds the cache graph directory for a scoped module at a given version.
+///
+/// Layout: `.duumbi/cache/@scope/name@version/graph/`
+fn cache_entry_graph_dir(workspace: &Path, scope: &str, name: &str, version: &str) -> PathBuf {
+    workspace
+        .join(".duumbi")
+        .join("cache")
+        .join(scope)
+        .join(format!("{name}@{version}"))
+        .join("graph")
+}
+
+/// Builds the vendor graph directory for a scoped module.
+///
+/// Layout: `.duumbi/vendor/@scope/name/graph/`
+fn vendor_entry_graph_dir(workspace: &Path, scope: &str, name: &str) -> PathBuf {
+    workspace
+        .join(".duumbi")
+        .join("vendor")
+        .join(scope)
+        .join(name)
+        .join("graph")
+}
+
+/// Reads `manifest.toml` from the parent of the given graph directory, if it exists.
+fn try_read_manifest(graph_dir: &Path) -> Option<ModuleManifest> {
+    let manifest_path = graph_dir.parent()?.join("manifest.toml");
+    manifest::parse_manifest(&manifest_path).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Module resolution pipeline (#77)
+// ---------------------------------------------------------------------------
+
+/// Resolves a version-pinned dependency through the three-layer pipeline.
+///
+/// Resolution order: vendor → cache → `E011 NotFound`.
+/// (Workspace layer is handled separately by `load_program_with_deps`.)
+///
+/// # Errors
+///
+/// Returns [`DepsError::NotFound`] if the module is not present in any layer.
+pub fn resolve_module(
+    workspace: &Path,
+    module_key: &str,
+    version: &str,
+) -> Result<ResolvedModule, DepsError> {
+    if let Some((scope, name)) = parse_scoped_name(module_key) {
+        // 1. Vendor layer
+        let vendor_dir = vendor_entry_graph_dir(workspace, scope, name);
+        if vendor_dir.exists() {
+            return Ok(ResolvedModule {
+                name: module_key.to_string(),
+                source: ModuleSource::Vendor,
+                manifest: try_read_manifest(&vendor_dir),
+                graph_dir: vendor_dir,
+            });
+        }
+
+        // 2. Cache layer
+        let cache_dir = cache_entry_graph_dir(workspace, scope, name, version);
+        if cache_dir.exists() {
+            return Ok(ResolvedModule {
+                name: module_key.to_string(),
+                source: ModuleSource::Cache,
+                manifest: try_read_manifest(&cache_dir),
+                graph_dir: cache_dir,
+            });
+        }
+    }
+
+    Err(DepsError::NotFound {
+        name: module_key.to_string(),
+        version: version.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +264,6 @@ fn graph_dir_hash(graph_dir: &Path) -> Result<String, DepsError> {
             source: e,
         })?;
         let file_hash = fnv1a(&content);
-        // Mix the file hash into the combined hash
         combined ^= file_hash;
         combined = combined.wrapping_mul(0x100000001b3);
     }
@@ -155,26 +293,32 @@ pub fn load_lockfile(workspace: &Path) -> Result<DepsLock, DepsError> {
 
 /// Generates and saves the lockfile to `<workspace>/.duumbi/deps.lock`.
 ///
-/// Resolves all dependencies from `config.toml` and computes content hashes.
+/// Handles both path-based and version-based (cache) dependencies.
 #[must_use = "lockfile generation errors should be handled"]
 pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<DepsLock, DepsError> {
     let mut entries = Vec::new();
 
     for (name, dep) in &config.dependencies {
-        let dep_path = resolve_dep_path(workspace, &dep.path)?;
-        validate_dep_workspace(&dep_path, name)?;
+        let graph_dir = match dep {
+            DependencyConfig::Path { path } => {
+                let dep_path = resolve_dep_path(workspace, path)?;
+                validate_dep_workspace(&dep_path, name)?;
+                dep_path.join(".duumbi").join("graph")
+            }
+            DependencyConfig::Version(version) => {
+                let resolved = resolve_module(workspace, name, version)?;
+                resolved.graph_dir
+            }
+        };
 
-        let graph_dir = dep_path.join(".duumbi").join("graph");
         let hash = graph_dir_hash(&graph_dir)?;
-
         entries.push(LockEntry {
             name: name.clone(),
-            path: dep_path.display().to_string(),
+            path: graph_dir.display().to_string(),
             hash,
         });
     }
 
-    // Sort for determinism
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     let lock = DepsLock {
@@ -196,13 +340,12 @@ pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<Deps
 }
 
 // ---------------------------------------------------------------------------
-// Path resolution and validation
+// Path resolution and validation (for path-based deps)
 // ---------------------------------------------------------------------------
 
-/// Resolves a dependency path relative to the workspace root.
+/// Resolves a path dependency relative to the workspace root.
 ///
-/// If the path is absolute it is used as-is; otherwise it is joined
-/// to `workspace`.
+/// If the path is absolute it is used as-is; otherwise it is joined to `workspace`.
 fn resolve_dep_path(workspace: &Path, dep_path: &str) -> Result<PathBuf, DepsError> {
     let path = Path::new(dep_path);
     let resolved = if path.is_absolute() {
@@ -210,8 +353,6 @@ fn resolve_dep_path(workspace: &Path, dep_path: &str) -> Result<PathBuf, DepsErr
     } else {
         workspace.join(path)
     };
-
-    // Canonicalize to get an absolute path (also validates existence)
     resolved.canonicalize().map_err(|e| DepsError::Io {
         path: resolved.display().to_string(),
         source: e,
@@ -237,24 +378,16 @@ fn validate_dep_workspace(dep_path: &Path, name: &str) -> Result<(), DepsError> 
 
 /// Loads a [`Program`] from a workspace, including all declared dependencies.
 ///
-/// If the workspace has no `config.toml` or no `[dependencies]`, falls back
-/// to loading from the workspace's `.duumbi/graph/` directory only (same as
-/// `Program::load()`).
+/// Resolves through the three-layer pipeline (workspace → vendor → cache) for
+/// version-based deps. Path-based deps are resolved relative to the workspace root.
 ///
 /// On success, also generates/updates the lockfile.
-///
-/// # Errors
-///
-/// Returns an error if any dependency path is invalid or if module loading fails.
 #[must_use = "program load errors should be handled"]
 pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
-    // Load config (optional)
     let config = config::load_config(workspace).unwrap_or_default();
 
-    // Generate lockfile for all deps
     generate_lockfile(workspace, &config)?;
 
-    // Collect all graph directories: workspace first, then deps
     let mut graph_dirs: Vec<PathBuf> = Vec::new();
     let workspace_graph = workspace.join(".duumbi").join("graph");
     if workspace_graph.exists() {
@@ -262,9 +395,18 @@ pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
     }
 
     for (name, dep) in &config.dependencies {
-        let dep_path = resolve_dep_path(workspace, &dep.path)?;
-        validate_dep_workspace(&dep_path, name)?;
-        graph_dirs.push(dep_path.join(".duumbi").join("graph"));
+        let graph_dir = match dep {
+            DependencyConfig::Path { path } => {
+                let dep_path = resolve_dep_path(workspace, path)?;
+                validate_dep_workspace(&dep_path, name)?;
+                dep_path.join(".duumbi").join("graph")
+            }
+            DependencyConfig::Version(version) => {
+                let resolved = resolve_module(workspace, name, version)?;
+                resolved.graph_dir
+            }
+        };
+        graph_dirs.push(graph_dir);
     }
 
     let graph_dir_refs: Vec<&Path> = graph_dirs.iter().map(|p| p.as_path()).collect();
@@ -275,23 +417,22 @@ pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
 // Dependency CRUD (for deps add/remove commands)
 // ---------------------------------------------------------------------------
 
-/// Resolved dependency entry: `(name, declared_path, resolved_abs_path_or_error)`.
+/// Resolved dependency entry: `(name, declared_spec, resolved_abs_path_or_error)`.
 pub type DepEntry = (String, String, Result<PathBuf, String>);
 
-/// Adds a dependency to `config.toml`.
+/// Adds a path-based dependency to `config.toml`.
 ///
-/// Validates the dependency path before writing. Returns an error if the path
-/// is not a valid duumbi workspace.
+/// Validates the path before writing. Returns an error if the path is not a
+/// valid duumbi workspace.
 #[must_use = "deps add errors should be handled"]
 pub fn add_dependency(workspace: &Path, name: &str, dep_path: &str) -> Result<(), DepsError> {
-    // Validate the path first
     let resolved = resolve_dep_path(workspace, dep_path)?;
     validate_dep_workspace(&resolved, name)?;
 
     let mut config = config::load_config(workspace).unwrap_or_default();
     config.dependencies.insert(
         name.to_string(),
-        config::DependencyConfig {
+        DependencyConfig::Path {
             path: dep_path.to_string(),
         },
     );
@@ -314,15 +455,28 @@ pub fn remove_dependency(workspace: &Path, name: &str) -> Result<bool, DepsError
 
 /// Lists all declared dependencies with their resolution status.
 ///
-/// Returns `(name, dep_path, resolved_path_or_error)` for each dependency.
+/// Returns `(name, declared_spec, resolved_graph_dir_or_error)` for each dependency.
 #[must_use = "deps list errors should be handled"]
 pub fn list_dependencies(workspace: &Path) -> Result<Vec<DepEntry>, DepsError> {
     let config = config::load_config(workspace).unwrap_or_default();
     let mut out = Vec::new();
 
     for (name, dep) in &config.dependencies {
-        let resolution = resolve_dep_path(workspace, &dep.path).map_err(|e| e.to_string());
-        out.push((name.clone(), dep.path.clone(), resolution));
+        let (spec, resolution) = match dep {
+            DependencyConfig::Path { path } => {
+                let res = resolve_dep_path(workspace, path)
+                    .map(|p| p.join(".duumbi").join("graph"))
+                    .map_err(|e| e.to_string());
+                (path.clone(), res)
+            }
+            DependencyConfig::Version(version) => {
+                let res = resolve_module(workspace, name, version)
+                    .map(|r| r.graph_dir)
+                    .map_err(|e| e.to_string());
+                (version.clone(), res)
+            }
+        };
+        out.push((name.clone(), spec, resolution));
     }
 
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -341,7 +495,6 @@ mod tests {
     fn make_workspace(dir: &Path) {
         let graph = dir.join(".duumbi").join("graph");
         fs::create_dir_all(&graph).expect("invariant: must create graph dir");
-        // Write a minimal valid module
         fs::write(
             graph.join("main.jsonld"),
             r#"{
@@ -406,6 +559,33 @@ mod tests {
         .expect("invariant: must write lib module");
     }
 
+    fn make_cache_module(workspace: &Path, scope: &str, name: &str, version: &str) {
+        let graph_dir = cache_entry_graph_dir(workspace, scope, name, version);
+        fs::create_dir_all(&graph_dir).expect("create cache dir");
+        make_lib_workspace_in_graph(&graph_dir, name);
+    }
+
+    /// Writes a minimal lib jsonld directly into an arbitrary graph dir.
+    fn make_lib_workspace_in_graph(graph_dir: &Path, module_name: &str) {
+        fs::write(
+            graph_dir.join(format!("{module_name}.jsonld")),
+            format!(
+                r#"{{
+    "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:{module_name}",
+    "duumbi:name": "{module_name}",
+    "duumbi:functions": []
+}}"#
+            ),
+        )
+        .expect("write cache module");
+    }
+
+    // -------------------------------------------------------------------------
+    // Existing tests (path-based deps)
+    // -------------------------------------------------------------------------
+
     #[test]
     fn load_program_with_deps_no_config_uses_workspace_graph() {
         let ws = tempfile::TempDir::new().expect("tempdir");
@@ -426,7 +606,7 @@ mod tests {
 
         let config = config::load_config(ws.path()).expect("config must exist");
         assert!(config.dependencies.contains_key("mylib"));
-        assert_eq!(config.dependencies["mylib"].path, dep_path);
+        assert_eq!(config.dependencies["mylib"].path(), Some(dep_path.as_str()));
     }
 
     #[test]
@@ -477,9 +657,10 @@ mod tests {
         assert_eq!(lock.dependencies[0].name, "mylib");
         assert!(!lock.dependencies[0].hash.is_empty());
 
-        // Lockfile file must exist on disk
-        let lock_path = ws.path().join(".duumbi").join("deps.lock");
-        assert!(lock_path.exists(), "deps.lock must be created");
+        assert!(
+            ws.path().join(".duumbi").join("deps.lock").exists(),
+            "deps.lock must be created"
+        );
     }
 
     #[test]
@@ -510,5 +691,100 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].0, "mylib");
         assert!(deps[0].2.is_ok(), "dep must resolve");
+    }
+
+    // -------------------------------------------------------------------------
+    // New tests: module resolution pipeline (#77)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn parse_scoped_name_splits_correctly() {
+        let (scope, name) = parse_scoped_name("@duumbi/stdlib-math").expect("must parse");
+        assert_eq!(scope, "@duumbi");
+        assert_eq!(name, "stdlib-math");
+    }
+
+    #[test]
+    fn parse_scoped_name_returns_none_for_unscoped() {
+        assert!(parse_scoped_name("mylib").is_none());
+        assert!(parse_scoped_name("no-scope").is_none());
+    }
+
+    #[test]
+    fn resolve_module_finds_cache_entry() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let resolved =
+            resolve_module(ws.path(), "@duumbi/stdlib-math", "1.0.0").expect("must resolve");
+        assert_eq!(resolved.source, ModuleSource::Cache);
+        assert!(resolved.graph_dir.exists());
+    }
+
+    #[test]
+    fn resolve_module_vendor_takes_priority_over_cache() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        // Both vendor and cache exist
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+        let vendor_dir = vendor_entry_graph_dir(ws.path(), "@duumbi", "stdlib-math");
+        fs::create_dir_all(&vendor_dir).expect("create vendor dir");
+        make_lib_workspace_in_graph(&vendor_dir, "stdlib-math");
+
+        let resolved =
+            resolve_module(ws.path(), "@duumbi/stdlib-math", "1.0.0").expect("must resolve");
+        assert_eq!(resolved.source, ModuleSource::Vendor, "vendor must win");
+    }
+
+    #[test]
+    fn resolve_module_not_found_returns_error() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+
+        let result = resolve_module(ws.path(), "@duumbi/nonexistent", "1.0.0");
+        assert!(matches!(result, Err(DepsError::NotFound { .. })));
+    }
+
+    #[test]
+    fn resolve_module_reads_manifest_when_present() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Write a manifest alongside the graph
+        let cache_root = ws.path().join(".duumbi/cache/@duumbi/stdlib-math@1.0.0");
+        let m = crate::manifest::ModuleManifest::new(
+            "@duumbi/stdlib-math",
+            "1.0.0",
+            "Math stdlib",
+            vec!["abs".into()],
+        );
+        crate::manifest::write_manifest(&cache_root, &m).expect("write manifest");
+
+        let resolved =
+            resolve_module(ws.path(), "@duumbi/stdlib-math", "1.0.0").expect("must resolve");
+        assert!(resolved.manifest.is_some(), "manifest must be loaded");
+        assert_eq!(
+            resolved.manifest.unwrap().module.name,
+            "@duumbi/stdlib-math"
+        );
+    }
+
+    #[test]
+    fn version_dep_in_config_resolves_from_cache() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Write config with a version-based dep
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let deps = list_dependencies(ws.path()).expect("must list");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].0, "@duumbi/stdlib-math");
+        assert!(deps[0].2.is_ok(), "cache dep must resolve");
     }
 }

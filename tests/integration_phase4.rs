@@ -195,7 +195,7 @@ fn phase4_lockfile_is_deterministic() {
     let mut config = DuumbiConfig::default();
     config.dependencies.insert(
         "math".to_string(),
-        duumbi::config::DependencyConfig {
+        duumbi::config::DependencyConfig::Path {
             path: dep_ws.path().to_str().expect("utf8").to_string(),
         },
     );
