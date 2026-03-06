@@ -84,12 +84,16 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
         };
 
         let mut prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
-        let is_library = matches!(&task.kind, TaskKind::CreateModule { .. });
+        // Intent execution is always multi-module: skip intra-module Call
+        // validation for all tasks. Cross-module call resolution is handled
+        // by Program::load and the verifier, not the single-module builder.
+        let skip_call_validation = true;
 
         // For non-library tasks, tell the LLM about available exports from
         // other modules so it knows these functions exist and should only be
         // called, not re-defined.
-        if !is_library {
+        let is_create_module = matches!(&task.kind, TaskKind::CreateModule { .. });
+        if !is_create_module {
             let exports_summary = collect_module_exports(&graph_dir);
             if !exports_summary.is_empty() {
                 prompt.push_str(&format!(
@@ -99,18 +103,24 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
             }
         }
 
-        let result =
-            orchestrator::mutate_streaming(client, &source, &prompt, 3, is_library, |text| {
+        let result = orchestrator::mutate_streaming(
+            client,
+            &source,
+            &prompt,
+            3,
+            skip_call_validation,
+            |text| {
                 eprint!("{text}");
-            })
-            .await;
+            },
+        )
+        .await;
 
         eprintln!(); // newline after streamed output
 
         match result {
             Ok(mut mutation_result) => {
                 // For library modules, ensure all functions are exported
-                if is_library {
+                if is_create_module {
                     ensure_exports(&mut mutation_result.patched);
                 }
 
