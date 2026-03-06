@@ -155,9 +155,17 @@ fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
         .map(|arr| {
             arr.iter()
                 .filter_map(|tc| {
+                    let function = tc["function"].as_str()?.to_string();
+                    // Skip "main" test cases — they are inherently fragile because
+                    // the expected return value is speculative and often contradicts
+                    // the ModifyMain task instruction ("exit with result of first
+                    // call"). Individual function tests already validate correctness.
+                    if function == "main" {
+                        return None;
+                    }
                     Some(TestCase {
                         name: tc["name"].as_str()?.to_string(),
-                        function: tc["function"].as_str()?.to_string(),
+                        function,
                         args: tc["args"]
                             .as_array()?
                             .iter()
