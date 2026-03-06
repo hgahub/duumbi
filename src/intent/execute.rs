@@ -83,8 +83,21 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
             }
         };
 
-        let prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
+        let mut prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
         let is_library = matches!(&task.kind, TaskKind::CreateModule { .. });
+
+        // For non-library tasks, tell the LLM about available exports from
+        // other modules so it knows these functions exist and should only be
+        // called, not re-defined.
+        if !is_library {
+            let exports_summary = collect_module_exports(&graph_dir);
+            if !exports_summary.is_empty() {
+                prompt.push_str(&format!(
+                    "\n\nAvailable functions from other modules (do NOT re-define these, \
+                     just call them):\n{exports_summary}"
+                ));
+            }
+        }
 
         let result =
             orchestrator::mutate_streaming(client, &source, &prompt, 3, is_library, |text| {
@@ -227,6 +240,86 @@ fn empty_module_template(module_name: &str) -> serde_json::Value {
         "duumbi:exports": [],
         "duumbi:functions": []
     })
+}
+
+/// Scans the graph directory for non-main `.jsonld` modules and collects their
+/// exported function names + parameter signatures.
+///
+/// Returns a human-readable summary like:
+/// ```text
+/// - module "ops": add(a: i64, b: i64) -> i64, multiply(a: i64, b: i64) -> i64
+/// ```
+fn collect_module_exports(graph_dir: &Path) -> String {
+    let entries = match std::fs::read_dir(graph_dir) {
+        Ok(e) => e,
+        Err(_) => return String::new(),
+    };
+
+    let mut lines = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
+            continue;
+        }
+        if path
+            .file_name()
+            .map(|f| f == "main.jsonld")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let value: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let module_name = value["duumbi:name"].as_str().unwrap_or("unknown");
+        let exports: Vec<&str> = value["duumbi:exports"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        if exports.is_empty() {
+            continue;
+        }
+
+        // Build function signatures from duumbi:functions
+        let mut sigs = Vec::new();
+        if let Some(funcs) = value["duumbi:functions"].as_array() {
+            for func in funcs {
+                let fname = match func["duumbi:name"].as_str() {
+                    Some(n) if exports.contains(&n) => n,
+                    _ => continue,
+                };
+                let ret_type = func["duumbi:returnType"].as_str().unwrap_or("i64");
+                let params: Vec<String> = func["duumbi:params"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| {
+                                let name = p["duumbi:name"].as_str()?;
+                                let ptype = p["duumbi:paramType"].as_str().unwrap_or("i64");
+                                Some(format!("{name}: {ptype}"))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                sigs.push(format!("{}({}) -> {}", fname, params.join(", "), ret_type));
+            }
+        }
+
+        if !sigs.is_empty() {
+            lines.push(format!("- module \"{}\": {}", module_name, sigs.join(", ")));
+        }
+    }
+
+    lines.join("\n")
 }
 
 /// Builds the full mutation prompt for a task, including the intent context.
