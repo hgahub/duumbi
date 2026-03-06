@@ -4,7 +4,7 @@ tags:
   - doc/technical
 status: draft
 created: 2026-02-15
-updated: 2026-02-17
+updated: 2026-03-06
 related_maps:
   - "[[DUUMBI - MVP Specification]]"
   - "[[DUUMBI - Task List]]"
@@ -44,7 +44,7 @@ Windows support is not planned for MVP.
 
 ### 3. Semantic Graph (In-Memory)
 - **Role**: In-memory directed graph for validation, querying, and traversal.
-- **Crate**: `petgraph`
+- **Crate**: `petgraph` — **`StableGraph<N, E>`** (not `DiGraph`). `StableGraph` preserves `NodeIndex` and `EdgeIndex` values across node/edge removals, which is required so that graph indices remain valid throughout the mutation and compilation pipeline.
 - **Operations**: Add/remove nodes, traverse dependencies, detect cycles, detect orphan references, compute content hashes
 - **Invariant**: Every node must have a unique `@id`. Every `{"@id": "..."}` reference must resolve to an existing node.
 
@@ -97,8 +97,9 @@ Windows support is not planned for MVP.
 
 ### 9. Web Visualizer (Phase 3)
 - **Role**: Read-only, browser-based graph visualization.
-- **Tech**: Rust → WASM (via `wasm-pack`), HTML5 Canvas
-- **Server**: `axum` with `tokio-tungstenite` for WebSocket live sync
+- **Tech**: Cytoscape.js (vendored JS) — served by `axum` 0.8 HTTP + WebSocket server. No WASM required.
+- **Server**: `axum` 0.8 + `tower-http` for static file serving
+- **File Watcher**: `notify-debouncer-mini` → mpsc channel → tokio async reload → WebSocket push to browser
 - **Default Port**: 8420
 
 ## Rust Crate Dependencies
@@ -110,20 +111,20 @@ Windows support is not planned for MVP.
 | `serde_json` 1.x | JSON parsing | 0 |
 | `anyhow` 1.x | Error handling | 0 |
 | `thiserror` 1.x | Custom error types | 0 |
-| `petgraph` 0.6.x | Graph data structure | 0 |
-| `cranelift-codegen` | Code generation backend | 0 |
-| `cranelift-frontend` | IR builder API | 0 |
-| `cranelift-module` | Module management | 0 |
-| `cranelift-object` | Object file emission | 0 |
+| `petgraph` 0.7.x | Graph data structure (`StableGraph`) | 0 |
+| `cranelift-codegen` 0.129.x | Code generation backend | 0 |
+| `cranelift-frontend` 0.129.x | IR builder API | 0 |
+| `cranelift-module` 0.129.x | Module management | 0 |
+| `cranelift-object` 0.129.x | Object file emission | 0 |
 | `jsonschema` | JSON Schema validation | 1 |
 | `tracing` 0.1.x | Structured logging | 1 |
 | `tracing-subscriber` 0.3.x | Log output formatting | 1 |
 | `toml` 0.8.x | Config file parsing | 1 |
 | `reqwest` 0.12.x | HTTP client for LLM API | 2 |
 | `tokio` 1.x | Async runtime | 2 |
-| `axum` 0.7.x | Web server framework | 3 |
-| `tokio-tungstenite` | WebSocket support | 3 |
-| `wasm-bindgen` | WASM interop | 3 |
+| `axum` 0.8.x | Web server framework | 3 |
+| `tower-http` 0.6.x | Static file serving for axum | 3 |
+| `notify-debouncer-mini` 0.5.x | File system watcher for live reload | 3 |
 
 ## Development Tools
 
@@ -137,31 +138,53 @@ Windows support is not planned for MVP.
 | `pre-commit` | Git hooks for quality gates |
 | `cc` (system) | Linking object files to executables |
 | GitHub Actions | CI/CD pipeline |
-| `wasm-pack` | WASM compilation for visualizer (Phase 3) |
-
 ## Workspace File Structure
 
 ```
 project/
 ├── .duumbi/
-│   ├── config.toml            # Project configuration (LLM provider, targets)
+│   ├── config.toml            # Project configuration (LLM provider, registries, deps)
+│   ├── deps.lock              # Lockfile — semantic hash + SHA-256 per dependency
 │   ├── schema/
-│   │   └── core.schema.json   # JSON-LD schema definition (copied from duumbi install)
-│   ├── graph/
-│   │   ├── main.jsonld         # Main module graph
-│   │   └── lib/                # Library modules
+│   │   └── core.schema.json   # JSON-LD schema definition
+│   ├── graph/                 # Workspace Layer — local source modules
+│   │   ├── main.jsonld        # Main module graph
+│   │   └── lib/               # Library modules
+│   ├── vendor/                # Vendor Layer — VCS-committed dependency snapshots
+│   │   └── @duumbi/
+│   │       └── stdlib-math@1.0.0/
+│   ├── cache/                 # Cache Layer — registry-resolved downloads (not in VCS)
+│   │   └── @duumbi/
+│   │       └── stdlib-math@1.0.0/
 │   ├── build/
-│   │   ├── output.o            # Cranelift object file
-│   │   ├── duumbi_runtime.o    # Compiled runtime shim
-│   │   └── output              # Final linked executable
-│   └── telemetry/
-│       └── traces.jsonl        # Runtime trace logs
+│   │   ├── output.o           # Cranelift object file
+│   │   ├── duumbi_runtime.o   # Compiled runtime shim
+│   │   └── output             # Final linked executable
+│   ├── telemetry/
+│   │   └── traces.jsonl       # Runtime trace logs
+│   └── history/               # Undo stack — {N:06}.jsonld snapshots (Phase 2)
+│       └── 000001.jsonld
+├── sites/                     # Web presence (M4+)
+│   ├── docs/                  # docs.duumbi.dev (mdBook)
+│   └── landing/               # duumbi.dev (Astro, M5+)
 ├── examples/
-│   ├── add.jsonld              # add(3, 5) → prints 8
-│   ├── fibonacci.jsonld        # Fibonacci with branching and recursion (Phase 1)
-│   └── hello.jsonld            # Print multiple values (Phase 1)
+│   ├── add.jsonld             # add(3, 5) → prints 8
+│   ├── fibonacci.jsonld       # Fibonacci with branching and recursion (Phase 1)
+│   └── hello.jsonld           # Print multiple values (Phase 1)
 └── README.md
 ```
+
+## Post-MVP Tech Stack
+
+| Component | Tech | Milestone |
+|-----------|------|-----------|
+| Chat REPL line editor | `reedline` 0.37 | M4 |
+| Token counting | `tiktoken-rs` | M4 |
+| Docs site | `mdBook` | M4 |
+| Landing page | Astro (static) | M5 |
+| Web Studio | Leptos (Rust → WASM) | M6 |
+| MCP server | `rmcp` crate | M8 |
+| Graph registry client | custom HTTP client | M7 |
 
 ## Related Documents
 
@@ -169,79 +192,4 @@ project/
 - [[DUUMBI - Task List]] — Implementation breakdown
 - [[DUUMBI - Architecture Diagram]] — Visual component overview
 - [[DUUMBI - Glossary]] — Canonical term definitions
-
-
----
-
-## Javítások és frissítések (2026-02-28)
-
-> [!warning] Az alábbi szekciók felülírják a fenti elavult adatokat.
-
-### Helyes Rust Crate verziók
-
-| Crate | Helyes verzió | Megjegyzés |
-|---|---|---|
-| `petgraph` | **0.7.x** | (nem 0.6.x) — `StableGraph` használandó |
-| `cranelift-*` | **0.129.x** | |
-| `axum` | **0.8.x** | (nem 0.7.x) |
-| `tower-http` | **0.6.x** | Statikus fájl serving — **hozzáadandó** |
-| `notify-debouncer-mini` | **0.5.x** | File watcher — **hozzáadandó** |
-| `toml` | **0.8.x** | Config parsing — **hozzáadandó** |
-
-**Eltávolítandó (nem használt):** `tokio-tungstenite`, `wasm-bindgen`
-
-> axum natív WebSocket-et használunk (nem tokio-tungstenite), Cytoscape.js-t (nem WASM).
-
-### Helyes Web Visualizer leírás (9. komponens)
-
-- **Tech**: Cytoscape.js (vendored JS, **nem WASM**) — axum HTTP + WebSocket szerverrel tálalva
-- **Server**: `axum` 0.8 + `tower-http` statikus file serving
-- **File Watcher**: `notify-debouncer-mini` → mpsc channel → tokio async reload → WebSocket push
-- **Parancs**: `duumbi viz`
-
-### Helyes Semantic Graph típus (3. komponens)
-
-- **Crate**: `petgraph` — **`StableGraph<N, E>`** (nem `DiGraph`) — node indexek túlélik a törléseket
-
-### Workspace File Structure — kiegészítés
-
-```
-project/
-├── .duumbi/
-│   ├── config.toml
-│   ├── schema/
-│   │   └── core.schema.json
-│   ├── graph/
-│   │   └── main.jsonld
-│   ├── build/
-│   │   ├── output.o
-│   │   ├── duumbi_runtime.o
-│   │   └── output
-│   ├── telemetry/
-│   │   └── traces.jsonl
-│   └── history/               # Undo stack — {N:06}.jsonld snapshots (Phase 2)
-│       └── 000001.jsonld
-├── sites/                     # Webes jelenlét (M4+)
-│   ├── docs/                  # docs.duumbi.dev (mdBook)
-│   │   ├── book.toml
-│   │   └── src/
-│   │       ├── SUMMARY.md
-│   │       └── ...
-│   └── landing/               # duumbi.dev (Astro, M5+)
-├── examples/
-│   ├── add.jsonld
-│   ├── fibonacci.jsonld
-│   └── hello.jsonld
-└── README.md
-```
-
-### Post-MVP Tech Stack (M4+)
-
-| Komponens | Tech | Milestone |
-|-----------|------|-----------|
-| Chat REPL line editor | `reedline` | M4 |
-| Token számlálás | `tiktoken-rs` | M4 |
-| Docs site | `mdBook` | M4 |
-| Landing oldal | Astro (statikus) | M5 |
-| Web Studio | Leptos (Rust → WASM) | M6 |
-| MCP szerver | `rmcp` crate | M8 |
+- [[DUUMBI - Graph Repository Architecture]] — Graph module storage and namespace design
