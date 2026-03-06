@@ -131,6 +131,7 @@ related_maps:
 - [[DUUMBI - MVP Specification]] — Requirement IDs referenced in tasks
 - [[DUUMBI - Tools and Components]] — Technical stack details
 - [[DUUMBI - Glossary]] — Term definitions
+- [[DUUMBI - Graph Repository Architecture]] — M7 storage and namespace design
 
 
 ---
@@ -219,3 +220,74 @@ related_maps:
 | #62 | Integration tests | Phase 4 test suite + M4 kill criterion (`abs(-7) = 7`) |
 | #51 | Task List update | Mark phases 0–4 complete, add GitHub tracking tables |
 | #50 | Doc fixes | Architecture Diagram, Glossary, MVP Spec accuracy fixes |
+
+---
+
+## M7: Graph Repository & Module System (10–12 weeks)
+
+> [!warning] Kill Criterion: `duumbi deps add @duumbi/stdlib-math@1.0` → `duumbi build` → binary runs correctly using registry-resolved module. Reproducible across machines.
+
+### M7-STORE: Three-Layer Storage
+
+- [ ] Migrate current `.duumbi/stdlib/` layout to `.duumbi/cache/@duumbi/` (three-layer model)
+- [ ] Implement `WorkspaceLayer` — load from `.duumbi/graph/`, always highest priority
+- [ ] Implement `VendorLayer` — load from `.duumbi/vendor/`, committed to VCS
+- [ ] Implement `CacheLayer` — load from `.duumbi/cache/`, not committed to VCS
+- [ ] Add `.gitignore` rule for `.duumbi/cache/` in `duumbi init`
+- [ ] Write `duumbi upgrade` migration command — moves current stdlib to cache layout
+
+### M7-NS: Scope-Based Namespace
+
+- [ ] Define namespace format `@<scope>/<module-name>` (parser + validator)
+- [ ] Implement scope registry: `@duumbi/` (official), `@<user>/`, `@<org>/`, unscoped (local-only)
+- [ ] Add `E011` error: module not found after all resolution layers exhausted
+- [ ] Add `E012` error: unresolvable namespace collision (two layers return same `@id`)
+- [ ] Update `nodeId` format to include scope: `duumbi:<scope>/<module>/<fn>/<block>/<idx>`
+- [ ] Write unit tests: scoped resolution, collision detection, unscoped local-only enforcement
+
+### M7-REG: Registry Protocol
+
+- [ ] Define registry wire protocol (JSON over HTTPS): `GET /api/v1/<scope>/<name>/<version>` → manifest + download URL
+- [ ] Implement `RegistryClient` — fetch manifest + `.jsonld` tarball from remote registry
+- [ ] Implement `duumbi registry login <url>` — store auth token in OS keychain / env var
+- [ ] Implement `duumbi registry publish` — pack module + manifest.toml → POST to registry
+- [ ] Implement `duumbi registry search <query>` — text search, type-based filter
+- [ ] Implement `duumbi deps sync` — resolve all deps, populate cache layer
+- [ ] Implement `duumbi deps vendor --all` — copy cache → vendor layer
+- [ ] Implement `duumbi build --offline` — fail if any dep not in workspace or vendor layer
+
+### M7-HASH: Semantic Hash
+
+- [ ] Implement `semantic_hash(module)` — hash graph structure + op values, exclude `@id` values
+- [ ] Use semantic hash as binary cache key (skip recompile if hash unchanged)
+- [ ] Write unit tests: identical structure different IDs → same hash; different ops → different hash
+
+### M7-LOCK: Lockfile v1
+
+- [ ] Define `deps.lock` v1 TOML schema: `name`, `version`, `source`, `semantic_hash`, `integrity` (SHA-256), `resolved_path`, `vendored`
+- [ ] Implement `generate_lockfile_v1()` — deterministic lock generation from resolved deps
+- [ ] Implement lockfile verification on `duumbi build` — abort with E013 if hash mismatch
+- [ ] Add `duumbi deps check` — verify all lock entries match on-disk files
+- [ ] Write lockfile determinism tests (multiple runs → identical output)
+
+### M7-PRIV: Private Registry Support
+
+- [ ] Extend `config.toml` with `[registries]` section (name → URL mapping)
+- [ ] Extend `[dependencies]` to support `{ version = "x", registry = "name" }` syntax
+- [ ] Implement per-registry auth (token, header name configurable)
+- [ ] Implement `duumbi deps vendor --include "@company/*"` — selective vendoring by scope
+
+### M7-WEB: Registry Web Interface (optional)
+
+- [ ] Implement reference registry server in Rust (axum) — `duumbi-registry` binary
+- [ ] Module upload, version management, basic search API
+- [ ] Deploy reference instance at `registry.duumbi.dev`
+
+### Quality
+
+- [ ] Integration test: workspace-only build (no registry)
+- [ ] Integration test: vendor-only build (`--offline`, no network)
+- [ ] Integration test: registry fetch → cache → reproducible second build (cache hit)
+- [ ] Integration test: lockfile mismatch → E013 error
+- [ ] Integration test: scope collision → E012 error
+- [ ] **GATE REVIEW**: End-to-end registry test — `duumbi deps add @duumbi/stdlib-math@1.0` → `duumbi build` → correct binary output on clean machine.

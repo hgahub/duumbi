@@ -4,11 +4,13 @@ tags:
   - doc/reference
 status: draft
 created: 2026-02-17
-updated: 2026-02-17
+updated: 2026-03-06
 related_maps:
   - "[[DUUMBI - PRD]]"
   - "[[DUUMBI - MVP Specification]]"
   - "[[DUUMBI - Tools and Components]]"
+  - "[[DUUMBI - Post-MVP Implementation Roadmap]]"
+  - "[[DUUMBI - Graph Repository Architecture]]"
 ---
 # DUUMBI — Glossary
 
@@ -21,7 +23,7 @@ The state where the semantic graph is valid (passes all schema and type checks),
 *Used in:* [[DUUMBI - PRD]], [[DUUMBI - MVP Specification]]
 
 **Semantic Graph**
-The in-memory directed graph (`petgraph`) representation of all JSON-LD nodes and their relationships. It is the single source of truth for all operations: validation, compilation, mutation, and visualization. Each node has a unique `nodeId`.
+The in-memory directed graph (`petgraph::StableGraph<N, E>`) representation of all JSON-LD nodes and their relationships. It is the single source of truth for all operations: validation, compilation, mutation, and visualization. Each node has a unique `nodeId`. `StableGraph` is used (not `DiGraph`) because it preserves `NodeIndex` and `EdgeIndex` values across node/edge removals, which is required so that graph indices remain valid throughout the mutation and compilation pipeline.
 *Used in:* [[DUUMBI - MVP Specification]], [[DUUMBI - Architecture Diagram]], [[DUUMBI - Tools and Components]]
 
 **Op (Operation)**
@@ -91,17 +93,50 @@ An AI-generated graph patch that: (1) passes schema validation, (2) passes `duum
 ## Project Structure
 
 **Workspace**
-A directory initialized with `duumbi init`, containing a `.duumbi/` subdirectory with `config.toml`, `schema/`, `graph/`, `build/`, and `telemetry/` directories.
-*Used in:* [[DUUMBI - Tools and Components]], [[DUUMBI - Task List]]
+A directory initialized with `duumbi init`, containing a `.duumbi/` subdirectory. The workspace uses a three-layer storage model: `graph/` for local source files, `vendor/` for VCS-committed dependency snapshots, and `cache/` for registry-resolved modules. Also contains `config.toml`, `schema/`, `build/`, `telemetry/`, and `history/` directories.
+*Used in:* [[DUUMBI - Tools and Components]], [[DUUMBI - Task List]], [[DUUMBI - Graph Repository Architecture]]
 
 **Vault (Vision)**
 The long-term concept of a hybrid file system combining `.md`, `.xml`, and `.jsonld` files into a single knowledge graph. Not part of MVP scope. Described in [[DUUMBI - PRD]].
 *Used in:* [[DUUMBI - PRD]]
 
+## Graph Repository
+
+**Scope**
+A namespace prefix used to group related modules and prevent naming collisions. Format: `@<scope>/<module-name>`. Built-in scopes: `@duumbi/` (official stdlib), `@<user>/` (personal modules), `@<org>/` (organization modules). Unscoped names (e.g., `local-utils`) refer to workspace-local modules only.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Workspace Layer**
+The first and highest-priority storage layer in the three-layer model. Contains locally developed `.jsonld` source files under `.duumbi/graph/`. Always takes precedence over Vendor and Cache layers during module resolution.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Vendor Layer**
+The second storage layer under `.duumbi/vendor/`. Contains committed snapshots of dependencies for reproducible offline builds. Managed via `duumbi deps vendor`. Checked into VCS to ensure air-gapped deployments work without network access.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Cache Layer**
+The third storage layer under `.duumbi/cache/`. Contains registry-resolved modules downloaded on demand. Not committed to VCS. Populated automatically during `duumbi build` or `duumbi deps sync` when a module is not found in Workspace or Vendor layers.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Manifest**
+A `manifest.toml` file present in every publishable graph module. Declares the module's name, version, exported symbols, license, and minimum compiler version required. Used by the registry for discovery and by the resolver for compatibility checks.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Semantic Hash**
+A deterministic fingerprint of a graph module's structure and op values, excluding `@id` values. Used in `deps.lock` for binary cache keying and integrity verification. Two modules with the same semantic hash are structurally and semantically identical regardless of their node identity assignments.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
+**Resolution Pipeline**
+The ordered lookup sequence used to locate a module during `duumbi build`: (1) Workspace Layer → (2) Vendor Layer → (3) Cache Layer → (4) Registry fetch. The first layer to satisfy the request wins. If all layers fail, compilation aborts with error E011.
+*Used in:* [[DUUMBI - Graph Repository Architecture]]
+
 ---
 
-## Corrections (as of 2026-03-01)
+## Related Documents
 
-> [!note] These corrections supersede outdated definitions above.
-
-**Semantic Graph** — Implementation note: The actual type is `petgraph::StableGraph<N, E>` (not a bare `petgraph::DiGraph`). `StableGraph` preserves `NodeIndex` and `EdgeIndex` values across node/edge removals, which is required so that graph indices remain valid throughout the mutation and compilation pipeline. The `DiGraph` mention above reflects the original design; `StableGraph` was chosen during Phase 0 implementation and is now the canonical type.
+- [[DUUMBI - PRD]] — Product requirements and long-term vision
+- [[DUUMBI - MVP Specification]] — Phase-by-phase build specification
+- [[DUUMBI - Tools and Components]] — Technical stack reference
+- [[DUUMBI - Task List]] — Implementation checklist
+- [[DUUMBI - Post-MVP Implementation Roadmap]] — Post-MVP milestone plan
+- [[DUUMBI - Graph Repository Architecture]] — Graph module storage and namespace design
