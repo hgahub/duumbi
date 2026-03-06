@@ -149,42 +149,73 @@ fn run_one_test(tc: &TestCase, workspace: &Path) -> TestResult {
     }
 }
 
-/// Generates a wrapper main, compiles it alongside workspace modules, and runs it.
+/// Compiles and runs a test case, returning the function's return value.
 ///
-/// Returns the exit code (which equals the function's return value).
+/// For regular functions, generates a wrapper main that calls the function,
+/// prints the result, and returns it. For `function: "main"` test cases,
+/// uses the workspace's own main directly (no wrapper) to avoid self-recursion.
 fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
-    // Generate wrapper main JSON-LD
-    let wrapper = generate_wrapper_main(tc);
-
-    // Create temp workspace with wrapper + all workspace graph files
     let tmp = tempfile::TempDir::new().map_err(|e| format!("tempdir: {e}"))?;
     let tmp_graph = tmp.path().join(".duumbi").join("graph");
     std::fs::create_dir_all(&tmp_graph).map_err(|e| format!("create tmpdir: {e}"))?;
 
-    // Write the wrapper main
-    let wrapper_str =
-        serde_json::to_string_pretty(&wrapper).map_err(|e| format!("serialize: {e}"))?;
-    std::fs::write(tmp_graph.join("main.jsonld"), &wrapper_str)
-        .map_err(|e| format!("write wrapper: {e}"))?;
-
-    // Copy all other modules from workspace (excluding existing main.jsonld)
     let ws_graph = workspace.join(".duumbi").join("graph");
-    if ws_graph.exists() {
-        for entry in std::fs::read_dir(&ws_graph).map_err(|e| format!("read ws graph: {e}"))? {
-            let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
-            let src = entry.path();
-            if src.extension().and_then(|e| e.to_str()) == Some("jsonld") {
-                let fname = src.file_name().expect("invariant: file has name");
-                if fname != "main.jsonld" {
-                    let dst = tmp_graph.join(fname);
-                    std::fs::copy(&src, &dst).map_err(|e| format!("copy module: {e}"))?;
-                }
+
+    if tc.function == "main" {
+        // Copy ALL modules including main.jsonld — run the workspace as-is
+        copy_all_modules(&ws_graph, &tmp_graph)?;
+    } else {
+        // Generate wrapper main and copy non-main modules
+        let wrapper = generate_wrapper_main(tc);
+        let wrapper_str =
+            serde_json::to_string_pretty(&wrapper).map_err(|e| format!("serialize: {e}"))?;
+        std::fs::write(tmp_graph.join("main.jsonld"), &wrapper_str)
+            .map_err(|e| format!("write wrapper: {e}"))?;
+
+        copy_non_main_modules(&ws_graph, &tmp_graph)?;
+    }
+
+    compile_and_run(tmp.path(), &tc.function)
+}
+
+/// Copies all `.jsonld` files from `src_dir` to `dst_dir`.
+fn copy_all_modules(src_dir: &Path, dst_dir: &Path) -> Result<(), String> {
+    if !src_dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(src_dir).map_err(|e| format!("read ws graph: {e}"))? {
+        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
+        let src = entry.path();
+        if src.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+            let fname = src.file_name().expect("invariant: file has name");
+            std::fs::copy(&src, dst_dir.join(fname)).map_err(|e| format!("copy module: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies all `.jsonld` files from `src_dir` to `dst_dir`, excluding `main.jsonld`.
+fn copy_non_main_modules(src_dir: &Path, dst_dir: &Path) -> Result<(), String> {
+    if !src_dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(src_dir).map_err(|e| format!("read ws graph: {e}"))? {
+        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
+        let src = entry.path();
+        if src.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+            let fname = src.file_name().expect("invariant: file has name");
+            if fname != "main.jsonld" {
+                std::fs::copy(&src, dst_dir.join(fname))
+                    .map_err(|e| format!("copy module: {e}"))?;
             }
         }
     }
+    Ok(())
+}
 
-    // Load and compile
-    let program = Program::load(tmp.path()).map_err(|errs| {
+/// Compiles a workspace and runs the binary, returning the last printed i64 value.
+fn compile_and_run(tmp_workspace: &Path, function: &str) -> Result<i64, String> {
+    let program = Program::load(tmp_workspace).map_err(|errs| {
         errs.iter()
             .map(|e| e.to_string())
             .collect::<Vec<_>>()
@@ -193,11 +224,11 @@ fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
 
     let objects = lowering::compile_program(&program).map_err(|e| format!("compile: {e}"))?;
 
-    // Find runtime C source and compile it
+    // Compile runtime
     let runtime_c_src = include_str!("../../runtime/duumbi_runtime.c");
-    let runtime_c = tmp.path().join("duumbi_runtime.c");
+    let runtime_c = tmp_workspace.join("duumbi_runtime.c");
     std::fs::write(&runtime_c, runtime_c_src).map_err(|e| format!("write runtime: {e}"))?;
-    let runtime_o = tmp.path().join("duumbi_runtime.o");
+    let runtime_o = tmp_workspace.join("duumbi_runtime.o");
     linker::compile_runtime(&runtime_c, &runtime_o).map_err(|e| format!("compile runtime: {e}"))?;
 
     // Write object files and link
@@ -206,22 +237,40 @@ fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
     sorted_names.sort_by_key(|n| if n.as_str() == "main" { 0u8 } else { 1u8 });
     for name in &sorted_names {
         let bytes = &objects[*name];
-        let path = tmp.path().join(format!("{name}.o"));
+        let path = tmp_workspace.join(format!("{name}.o"));
         std::fs::write(&path, bytes).map_err(|e| format!("write obj: {e}"))?;
         obj_paths.push(path);
     }
 
-    let binary = tmp.path().join("test_output");
+    let binary = tmp_workspace.join("test_output");
     let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
     linker::link_multi(&obj_refs, &runtime_o, &binary).map_err(|e| format!("link: {e}"))?;
 
-    // Run binary, capture exit code
+    // Run binary, capture stdout
     let output = Command::new(&binary)
         .output()
         .map_err(|e| format!("run: {e}"))?;
 
-    let exit_code = output.status.code().unwrap_or(-1) as i64;
-    Ok(exit_code)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if function == "main" {
+        // For main tests, use exit code since main's return value may not be printed
+        // (the workspace main may or may not print it). Fall back to exit code
+        // which is correct for 0–255 values.
+        // Try stdout first, fall back to exit code.
+        let last_line = stdout.lines().last().unwrap_or("").trim();
+        if let Ok(val) = last_line.parse::<i64>() {
+            return Ok(val);
+        }
+        let exit_code = output.status.code().unwrap_or(-1) as i64;
+        Ok(exit_code)
+    } else {
+        // For wrapper tests, the last printed line is the return value
+        let last_line = stdout.lines().last().unwrap_or("").trim();
+        last_line
+            .parse::<i64>()
+            .map_err(|e| format!("failed to parse stdout '{last_line}' as i64: {e}"))
+    }
 }
 
 /// Generates a wrapper `main.jsonld` that calls `tc.function(tc.args...)` and

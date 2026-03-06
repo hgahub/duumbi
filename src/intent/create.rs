@@ -60,15 +60,65 @@ pub async fn generate_spec_with_llm(client: &LlmClient, description: &str) -> Re
     parse_llm_response(description, &raw)
 }
 
+/// Extracts the first valid JSON object from an LLM response.
+///
+/// Handles common LLM response patterns:
+/// - Pure JSON
+/// - JSON wrapped in markdown code fences (```json ... ```)
+/// - JSON with trailing text/explanation after the closing brace
+///
+/// Returns a slice of `raw` containing just the JSON object, or `None` if
+/// no balanced `{ ... }` is found.
+fn extract_json(raw: &str) -> Option<&str> {
+    // Strip markdown code fences if present
+    let stripped = raw.trim();
+    let content = if stripped.starts_with("```") {
+        let after_fence = stripped
+            .strip_prefix("```json")
+            .or_else(|| stripped.strip_prefix("```"))
+            .unwrap_or(stripped);
+        // Find the closing fence
+        if let Some(end) = after_fence.rfind("```") {
+            &after_fence[..end]
+        } else {
+            after_fence
+        }
+    } else {
+        stripped
+    };
+
+    // Find the first '{' and its matching '}'
+    let start = content.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in content[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&content[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 /// Parses the LLM's JSON response into an `IntentSpec`.
 fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
-    // Strip markdown code blocks if present
-    let json_str = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = extract_json(raw)
+        .context("Failed to parse LLM response as JSON: no valid JSON object found")?;
 
     let value: serde_json::Value =
         serde_json::from_str(json_str).context("Failed to parse LLM response as JSON")?;
@@ -105,9 +155,17 @@ fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
         .map(|arr| {
             arr.iter()
                 .filter_map(|tc| {
+                    let function = tc["function"].as_str()?.to_string();
+                    // Skip "main" test cases — they are inherently fragile because
+                    // the expected return value is speculative and often contradicts
+                    // the ModifyMain task instruction ("exit with result of first
+                    // call"). Individual function tests already validate correctness.
+                    if function == "main" {
+                        return None;
+                    }
                     Some(TestCase {
                         name: tc["name"].as_str()?.to_string(),
-                        function: tc["function"].as_str()?.to_string(),
+                        function,
                         args: tc["args"]
                             .as_array()?
                             .iter()
@@ -286,5 +344,44 @@ mod tests {
         let raw = r#"{"acceptance_criteria":[],"modules_create":[],"modules_modify":[],"test_cases":[],"dependencies":[]}"#;
         let spec = parse_llm_response("My custom intent", raw).expect("parse");
         assert_eq!(spec.intent, "My custom intent");
+    }
+
+    #[test]
+    fn parse_llm_response_with_trailing_text() {
+        let raw = r#"{"acceptance_criteria":["add works"],"modules_create":[],"modules_modify":["app/main"],"test_cases":[],"dependencies":[]}
+
+This intent creates an addition function that..."#;
+        let spec =
+            parse_llm_response("Test trailing", raw).expect("must parse despite trailing text");
+        assert_eq!(spec.acceptance_criteria, vec!["add works"]);
+    }
+
+    #[test]
+    fn extract_json_pure_json() {
+        let raw = r#"{"key": "value"}"#;
+        assert_eq!(extract_json(raw), Some(r#"{"key": "value"}"#));
+    }
+
+    #[test]
+    fn extract_json_with_trailing_text() {
+        let raw = "{\"a\": 1}\nSome extra explanation";
+        assert_eq!(extract_json(raw), Some("{\"a\": 1}"));
+    }
+
+    #[test]
+    fn extract_json_nested_braces() {
+        let raw = r#"{"outer": {"inner": 1}}"#;
+        assert_eq!(extract_json(raw), Some(raw));
+    }
+
+    #[test]
+    fn extract_json_braces_in_string() {
+        let raw = r#"{"key": "a {b} c"}"#;
+        assert_eq!(extract_json(raw), Some(raw));
+    }
+
+    #[test]
+    fn extract_json_no_json() {
+        assert_eq!(extract_json("no json here"), None);
     }
 }

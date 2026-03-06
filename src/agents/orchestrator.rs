@@ -136,7 +136,7 @@ pub async fn mutate(
     let ops_count = ops.len();
     let patch = GraphPatch { ops };
 
-    match try_apply_collecting_diagnostics(source, &patch) {
+    match try_apply_collecting_diagnostics(source, &patch, false) {
         Ok(patched) => Ok(MutationResult { patched, ops_count }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
@@ -161,7 +161,7 @@ pub async fn mutate(
                 let retry_count = retry_ops.len();
                 let retry_patch = GraphPatch { ops: retry_ops };
 
-                match try_apply_collecting_diagnostics(source, &retry_patch) {
+                match try_apply_collecting_diagnostics(source, &retry_patch, false) {
                     Ok(patched) => {
                         return Ok(MutationResult {
                             patched,
@@ -190,6 +190,10 @@ pub async fn mutate(
 /// so the provider can surface its reasoning text in real time. The `on_text`
 /// callback is invoked once per streamed text chunk.
 ///
+/// When `library_mode` is `true`, the validation step uses
+/// [`build_graph_no_call_check`] which skips the `main` function requirement
+/// and intra-module `Call` validation — appropriate for library modules.
+///
 /// # Errors
 ///
 /// See [`mutate`] — same error conditions apply.
@@ -198,6 +202,7 @@ pub async fn mutate_streaming<F>(
     source: &serde_json::Value,
     user_request: &str,
     max_retries: u32,
+    library_mode: bool,
     on_text: F,
 ) -> Result<MutationResult>
 where
@@ -222,7 +227,7 @@ where
     let ops_count = ops.len();
     let patch = GraphPatch { ops };
 
-    match try_apply_collecting_diagnostics(source, &patch) {
+    match try_apply_collecting_diagnostics(source, &patch, library_mode) {
         Ok(patched) => Ok(MutationResult { patched, ops_count }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
@@ -247,7 +252,7 @@ where
                 let retry_count = retry_ops.len();
                 let retry_patch = GraphPatch { ops: retry_ops };
 
-                match try_apply_collecting_diagnostics(source, &retry_patch) {
+                match try_apply_collecting_diagnostics(source, &retry_patch, library_mode) {
                     Ok(patched) => {
                         return Ok(MutationResult {
                             patched,
@@ -277,11 +282,16 @@ where
 /// Applies a patch to `source` and validates the result, returning structured
 /// diagnostics on failure.
 ///
+/// When `library_mode` is `true`, the graph builder skips the `main` entry
+/// function requirement and intra-module `Call` validation — appropriate for
+/// library modules that only export functions.
+///
 /// Returns `Ok(patched_value)` on success, or
 /// `Err((summary_string, diagnostics))` on failure.
 fn try_apply_collecting_diagnostics(
     source: &serde_json::Value,
     patch: &GraphPatch,
+    library_mode: bool,
 ) -> Result<serde_json::Value, (String, Vec<Diagnostic>)> {
     let patched = apply_patch(source, patch).map_err(|e| (e.to_string(), vec![]))?;
 
@@ -290,7 +300,13 @@ fn try_apply_collecting_diagnostics(
     let module_ast = crate::parser::parse_jsonld(&json_str)
         .map_err(|e| (format!("Parse error: {e}"), vec![]))?;
 
-    let semantic_graph = crate::graph::builder::build_graph(&module_ast).map_err(|errors| {
+    let build_result = if library_mode {
+        crate::graph::builder::build_graph_no_call_check(&module_ast)
+    } else {
+        crate::graph::builder::build_graph(&module_ast)
+    };
+
+    let semantic_graph = build_result.map_err(|errors| {
         let msg = errors
             .iter()
             .map(|e| e.to_string())
@@ -323,7 +339,7 @@ pub(crate) fn try_apply_and_validate(
     source: &serde_json::Value,
     patch: &GraphPatch,
 ) -> std::result::Result<serde_json::Value, String> {
-    try_apply_collecting_diagnostics(source, patch).map_err(|(msg, _)| msg)
+    try_apply_collecting_diagnostics(source, patch, false).map_err(|(msg, _)| msg)
 }
 
 // ---------------------------------------------------------------------------

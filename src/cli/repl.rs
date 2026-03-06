@@ -357,18 +357,19 @@ impl Session {
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let result = match orchestrator::mutate_streaming(client, &source, &prompt, 3, |text| {
-            eprint!("{text}");
-        })
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!();
-                eprintln!("{e:#}");
-                return Ok(());
-            }
-        };
+        let result =
+            match orchestrator::mutate_streaming(client, &source, &prompt, 3, false, |text| {
+                eprint!("{text}");
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!();
+                    eprintln!("{e:#}");
+                    return Ok(());
+                }
+            };
         eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
 
         // Show diff summary

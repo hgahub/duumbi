@@ -8,9 +8,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use serde_json::json;
+
 use crate::agents::{LlmClient, orchestrator};
 use crate::intent::coordinator;
-use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskStatus};
+use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
 use crate::snapshot;
@@ -58,31 +60,52 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
     eprintln!();
 
     // 4. Execute each task
+    let graph_dir = workspace.join(".duumbi/graph");
     let mut tasks_completed = 0;
     for task in &mut tasks {
         eprintln!("[{}/{}] {}…", task.id, total, task.description);
         task.status = TaskStatus::InProgress;
 
-        let source: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&graph_path)?)
-                .context("Failed to parse current graph")?;
+        // For CreateModule tasks, use an empty module template as source and
+        // write the result to a new file. For other tasks, mutate main.jsonld.
+        let (source, target_path) = match &task.kind {
+            TaskKind::CreateModule { module_name } => {
+                let file_name = module_name_to_filename(module_name);
+                let target = graph_dir.join(&file_name);
+                let template = empty_module_template(module_name);
+                (template, target)
+            }
+            _ => {
+                let source: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&graph_path)?)
+                        .context("Failed to parse current graph")?;
+                (source, graph_path.clone())
+            }
+        };
 
         let prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
+        let is_library = matches!(&task.kind, TaskKind::CreateModule { .. });
 
-        let result = orchestrator::mutate_streaming(client, &source, &prompt, 3, |text| {
-            eprint!("{text}");
-        })
-        .await;
+        let result =
+            orchestrator::mutate_streaming(client, &source, &prompt, 3, is_library, |text| {
+                eprint!("{text}");
+            })
+            .await;
 
         eprintln!(); // newline after streamed output
 
         match result {
-            Ok(mutation_result) => {
-                // Write patched graph
+            Ok(mut mutation_result) => {
+                // For library modules, ensure all functions are exported
+                if is_library {
+                    ensure_exports(&mut mutation_result.patched);
+                }
+
+                // Write patched graph to the appropriate file
                 let patched_str = serde_json::to_string_pretty(&mutation_result.patched)
                     .context("Serialize patched graph")?;
-                std::fs::write(&graph_path, &patched_str)
-                    .with_context(|| format!("Write '{}'", graph_path.display()))?;
+                std::fs::write(&target_path, &patched_str)
+                    .with_context(|| format!("Write '{}'", target_path.display()))?;
 
                 let diff = orchestrator::describe_changes(&source, &mutation_result.patched);
                 eprintln!(
@@ -161,6 +184,50 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Ensures all functions in a library module are listed in `duumbi:exports`.
+///
+/// LLMs frequently forget to populate the exports array even when prompted.
+/// This post-processing step deterministically collects all function names
+/// from `duumbi:functions` and sets them as the exports list.
+fn ensure_exports(module: &mut serde_json::Value) {
+    let function_names: Vec<serde_json::Value> = module["duumbi:functions"]
+        .as_array()
+        .map(|funcs| {
+            funcs
+                .iter()
+                .filter_map(|f| f["duumbi:name"].as_str().map(|s| json!(s)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    module["duumbi:exports"] = serde_json::Value::Array(function_names);
+}
+
+/// Converts a module name like `"calculator/ops"` to a flat filename `"calculator_ops.jsonld"`.
+fn module_name_to_filename(module_name: &str) -> String {
+    let sanitized = module_name.replace('/', "_");
+    format!("{sanitized}.jsonld")
+}
+
+/// Creates an empty module template for a new module.
+///
+/// The template includes `duumbi:exports` as an empty array — the LLM is
+/// expected to populate it with the names of functions it creates. The
+/// system prompt in [`build_task_prompt`] reminds the LLM to do this.
+fn empty_module_template(module_name: &str) -> serde_json::Value {
+    // Use the last path component as the short name for ids
+    let short_name = module_name.rsplit('/').next().unwrap_or(module_name);
+
+    json!({
+        "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+        "@type": "duumbi:Module",
+        "@id": format!("duumbi:{short_name}"),
+        "duumbi:name": short_name,
+        "duumbi:exports": [],
+        "duumbi:functions": []
+    })
+}
 
 /// Builds the full mutation prompt for a task, including the intent context.
 fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
