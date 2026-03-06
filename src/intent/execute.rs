@@ -98,7 +98,10 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
             if !exports_summary.is_empty() {
                 prompt.push_str(&format!(
                     "\n\nAvailable functions from other modules (do NOT re-define these, \
-                     just call them):\n{exports_summary}"
+                     just call them):\n{exports_summary}\n\
+                     IMPORTANT: When creating Call ops to these functions, use ONLY the plain \
+                     function name in \"duumbi:function\" (e.g., \"add\", NOT \"ops:add\" or \
+                     \"module:add\"). The module resolution is automatic."
                 ));
             }
         }
@@ -325,7 +328,12 @@ fn collect_module_exports(graph_dir: &Path) -> String {
         }
 
         if !sigs.is_empty() {
-            lines.push(format!("- module \"{}\": {}", module_name, sigs.join(", ")));
+            lines.push(format!(
+                "- from module \"{}\": {} (call with plain name, e.g. \"add\" not \"{}:add\")",
+                module_name,
+                sigs.join(", "),
+                module_name
+            ));
         }
     }
 
