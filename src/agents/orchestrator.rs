@@ -137,7 +137,7 @@ pub async fn mutate(
     let patch = GraphPatch { ops };
 
     match try_apply_collecting_diagnostics(source, &patch) {
-        Ok(patched) => return Ok(MutationResult { patched, ops_count }),
+        Ok(patched) => Ok(MutationResult { patched, ops_count }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
@@ -223,7 +223,7 @@ where
     let patch = GraphPatch { ops };
 
     match try_apply_collecting_diagnostics(source, &patch) {
-        Ok(patched) => return Ok(MutationResult { patched, ops_count }),
+        Ok(patched) => Ok(MutationResult { patched, ops_count }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
@@ -364,10 +364,10 @@ Fix hints:\n\
     // Deduplicate codes to avoid repeated hints
     let mut seen = std::collections::HashSet::new();
     for d in diagnostics {
-        if seen.insert(d.code.as_str()) {
-            if let Some(hint) = hint_for_code(&d.code) {
-                lines.push(format!("- For {}: {}", d.code, hint));
-            }
+        if seen.insert(d.code.as_str())
+            && let Some(hint) = hint_for_code(&d.code)
+        {
+            lines.push(format!("- For {}: {}", d.code, hint));
         }
     }
 
@@ -434,12 +434,12 @@ fn build_retry_message(
     let mut msg = format!("{base_user_message}\n\n{feedback}");
 
     // Step 2: inject a relevant few-shot example
-    if attempt >= 1 {
-        if let Some(example) = crate::examples::select_example(diagnostics, user_request) {
-            msg.push_str(&format!(
-                "\n\nRelevant example (similar successful mutation):\n{example}"
-            ));
-        }
+    if attempt >= 1
+        && let Some(example) = crate::examples::select_example(diagnostics, user_request)
+    {
+        msg.push_str(&format!(
+            "\n\nRelevant example (similar successful mutation):\n{example}"
+        ));
     }
 
     // Step 3: simplified instruction

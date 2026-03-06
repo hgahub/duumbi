@@ -329,7 +329,7 @@ static EXAMPLES: &[PatchExample] = &[
     // ------------------------------------------------------------------
     PatchExample {
         description: "Safe division function that returns 0 when divisor is zero",
-        error_codes: &["E001", "E003"],
+        error_codes: &["E003"],
         keywords: &["divide", "div", "division", "zero", "safe", "guard"],
         patch_json: r#"add_function: {
   "function": {

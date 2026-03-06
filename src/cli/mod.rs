@@ -92,6 +92,13 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: DepsSubcommand,
     },
+
+    /// Create, review, and execute intent-driven development specs.
+    Intent {
+        /// Intent subcommand.
+        #[command(subcommand)]
+        subcommand: IntentSubcommand,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
@@ -112,5 +119,41 @@ pub enum DepsSubcommand {
     Remove {
         /// Dependency name to remove.
         name: String,
+    },
+}
+
+/// Subcommands for `duumbi intent`.
+#[derive(Subcommand, Debug)]
+pub enum IntentSubcommand {
+    /// Generate a structured intent spec from a natural language description.
+    Create {
+        /// Natural language description of what you want to build.
+        description: String,
+
+        /// Skip confirmation prompt and save immediately.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Review (list or show details of) intent specs.
+    Review {
+        /// Intent name/slug to show details for. Omit to list all.
+        name: Option<String>,
+
+        /// Open intent in $EDITOR for manual editing.
+        #[arg(short, long)]
+        edit: bool,
+    },
+
+    /// Execute an intent: decompose → mutate graph → verify tests.
+    Execute {
+        /// Intent name/slug to execute.
+        name: String,
+    },
+
+    /// Show status of intents (active, in-progress, failed).
+    Status {
+        /// Intent name/slug to show details for. Omit to list all.
+        name: Option<String>,
     },
 }

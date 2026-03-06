@@ -23,6 +23,7 @@ use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::{DuumbiConfig, LlmProvider};
+use crate::intent;
 use crate::snapshot;
 
 use super::commands;
@@ -120,10 +121,8 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                             eprintln!("Command error: {e:#}");
                         }
                     }
-                } else {
-                    if let Err(e) = session.handle_ai_request(&input).await {
-                        eprintln!("Error: {e:#}");
-                    }
+                } else if let Err(e) = session.handle_ai_request(&input).await {
+                    eprintln!("Error: {e:#}");
                 }
             }
             Ok(Signal::CtrlC) => {
@@ -301,6 +300,10 @@ impl Session {
                 }
             }
 
+            "/intent" => {
+                self.handle_intent_slash(arg).await?;
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
@@ -409,6 +412,86 @@ impl Session {
     }
 
     // -------------------------------------------------------------------------
+    // /intent handler (#86)
+    // -------------------------------------------------------------------------
+
+    /// Handles `/intent <subcommand> [args]` within the REPL.
+    ///
+    /// Supported forms:
+    /// - `/intent` or `/intent list` — list active intents
+    /// - `/intent create <description>` — generate + save an intent spec
+    /// - `/intent review [name]` — show intent details
+    /// - `/intent execute <name>` — execute an intent
+    /// - `/intent status [name]` — show intent status
+    async fn handle_intent_slash(&mut self, arg: &str) -> Result<()> {
+        let mut parts = arg.splitn(2, ' ');
+        let subcmd = parts.next().unwrap_or("").trim();
+        let rest = parts.next().unwrap_or("").trim();
+
+        match subcmd {
+            "" | "list" => {
+                intent::review::print_intent_list(&self.workspace_root)
+                    .unwrap_or_else(|e| eprintln!("Error: {e}"));
+            }
+            "create" => {
+                if rest.is_empty() {
+                    eprintln!("Usage: /intent create <description>");
+                    return Ok(());
+                }
+                let Some(ref client) = self.client else {
+                    eprintln!("AI not available — add [llm] section to .duumbi/config.toml.");
+                    return Ok(());
+                };
+                match intent::create::run_create(client, &self.workspace_root, rest, false).await {
+                    Ok(slug) => eprintln!("Intent '{slug}' saved."),
+                    Err(e) => eprintln!("Error: {e:#}"),
+                }
+            }
+            "review" => {
+                if rest.is_empty() {
+                    intent::review::print_intent_list(&self.workspace_root)
+                        .unwrap_or_else(|e| eprintln!("Error: {e}"));
+                } else {
+                    intent::review::print_intent_detail(&self.workspace_root, rest)
+                        .unwrap_or_else(|e| eprintln!("Error: {e}"));
+                }
+            }
+            "execute" => {
+                if rest.is_empty() {
+                    eprintln!("Usage: /intent execute <name>");
+                    return Ok(());
+                }
+                let Some(ref client) = self.client else {
+                    eprintln!("AI not available — add [llm] section to .duumbi/config.toml.");
+                    return Ok(());
+                };
+                match intent::execute::run_execute(client, &self.workspace_root, rest).await {
+                    Ok(true) => eprintln!("Intent '{rest}' completed successfully."),
+                    Ok(false) => eprintln!("Intent '{rest}' failed."),
+                    Err(e) => eprintln!("Error: {e:#}"),
+                }
+            }
+            "status" => {
+                if rest.is_empty() {
+                    intent::status::print_status_list(&self.workspace_root)
+                        .unwrap_or_else(|e| eprintln!("Error: {e}"));
+                } else {
+                    intent::status::print_status_detail(&self.workspace_root, rest)
+                        .unwrap_or_else(|e| eprintln!("Error: {e}"));
+                }
+            }
+            _ => {
+                eprintln!("Unknown intent subcommand: {subcmd}");
+                eprintln!(
+                    "Available: /intent list, /intent create <desc>, \
+                     /intent review [name], /intent execute <name>, /intent status [name]"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // /status helper
     // -------------------------------------------------------------------------
 
@@ -490,6 +573,14 @@ Slash commands:
   /status             Show workspace, model, and session information
   /history            Show session conversation history (sent as context to LLM)
   /model              Show the current LLM model
+
+Intent commands:
+  /intent             List all active intents
+  /intent create <description>   Generate and save a new intent spec
+  /intent review [name]          Show intent details
+  /intent execute <name>         Execute an intent end-to-end
+  /intent status [name]          Show intent execution status
+
   /help               Show this help text
   /exit               Exit the REPL
 
