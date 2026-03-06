@@ -141,13 +141,18 @@ pub async fn mutate(
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
-        Err((_, mut last_diagnostics)) => {
+        Err((mut last_error_msg, mut last_diagnostics)) => {
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
 
-                let retry_msg =
-                    build_retry_message(&base_message, attempt, &last_diagnostics, user_request);
+                let retry_msg = build_retry_message(
+                    &base_message,
+                    attempt,
+                    &last_diagnostics,
+                    Some(&last_error_msg),
+                    user_request,
+                );
 
                 let retry_ops = client
                     .call_with_tools(SYSTEM_PROMPT, &retry_msg)
@@ -168,10 +173,14 @@ pub async fn mutate(
                             ops_count: retry_count,
                         });
                     }
-                    Err((_, new_diags)) => {
+                    Err((new_msg, new_diags)) => {
+                        last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {
-                            let summary = format_retry_feedback(&last_diagnostics);
+                            let summary = format_retry_feedback_with_message(
+                                &last_diagnostics,
+                                Some(&last_error_msg),
+                            );
                             anyhow::bail!(
                                 "All {max_retries} retries exhausted. Last errors:\n{summary}"
                             );
@@ -232,13 +241,18 @@ where
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
-        Err((_, mut last_diagnostics)) => {
+        Err((mut last_error_msg, mut last_diagnostics)) => {
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
 
-                let retry_msg =
-                    build_retry_message(&base_message, attempt, &last_diagnostics, user_request);
+                let retry_msg = build_retry_message(
+                    &base_message,
+                    attempt,
+                    &last_diagnostics,
+                    Some(&last_error_msg),
+                    user_request,
+                );
 
                 let retry_ops = client
                     .call_with_tools_streaming(SYSTEM_PROMPT, &retry_msg, &on_text)
@@ -259,10 +273,14 @@ where
                             ops_count: retry_count,
                         });
                     }
-                    Err((_, new_diags)) => {
+                    Err((new_msg, new_diags)) => {
+                        last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {
-                            let summary = format_retry_feedback(&last_diagnostics);
+                            let summary = format_retry_feedback_with_message(
+                                &last_diagnostics,
+                                Some(&last_error_msg),
+                            );
                             anyhow::bail!(
                                 "All {max_retries} retries exhausted. Last errors:\n{summary}"
                             );
@@ -349,16 +367,32 @@ pub(crate) fn try_apply_and_validate(
 /// Formats structured error feedback for the LLM retry prompt.
 ///
 /// Produces a block with per-error details (code, nodeId, message) and
-/// per-code fix hints. Empty diagnostics produce a generic fallback.
+/// per-code fix hints. When diagnostics are empty but an error message
+/// is available, includes that message instead of a generic fallback.
+#[cfg(test)]
 pub fn format_retry_feedback(diagnostics: &[Diagnostic]) -> String {
+    format_retry_feedback_with_message(diagnostics, None)
+}
+
+/// Like [`format_retry_feedback`] but accepts an optional error message
+/// from the patch application / graph building phase.
+pub fn format_retry_feedback_with_message(
+    diagnostics: &[Diagnostic],
+    error_message: Option<&str>,
+) -> String {
     if diagnostics.is_empty() {
-        return "\
-Previous attempt failed. No specific diagnostic information available.\n\
-Fix hints:\n\
-- Check all required fields are present for the op type\n\
-- Ensure all @id references are valid and unique\n\
-- Use replace_block for atomic block rewrites"
-            .to_string();
+        let detail = error_message
+            .map(|msg| format!("Previous attempt failed: {msg}"))
+            .unwrap_or_else(|| {
+                "Previous attempt failed. No specific diagnostic information available.".to_string()
+            });
+        return format!(
+            "{detail}\n\
+             Fix hints:\n\
+             - Check all required fields are present for the op type\n\
+             - Ensure all @id references are valid and unique\n\
+             - Use replace_block for atomic block rewrites"
+        );
     }
 
     let mut lines = vec!["Previous attempt failed. Errors:".to_string()];
@@ -444,9 +478,10 @@ fn build_retry_message(
     base_user_message: &str,
     attempt: u32,
     diagnostics: &[Diagnostic],
+    error_message: Option<&str>,
     user_request: &str,
 ) -> String {
-    let feedback = format_retry_feedback(diagnostics);
+    let feedback = format_retry_feedback_with_message(diagnostics, error_message);
     let mut msg = format!("{base_user_message}\n\n{feedback}");
 
     // Step 2: inject a relevant few-shot example
@@ -684,9 +719,9 @@ mod tests {
             "missing field",
         )];
 
-        let msg0 = build_retry_message(base, 0, &diags, "add function");
-        let msg1 = build_retry_message(base, 1, &diags, "add function");
-        let msg2 = build_retry_message(base, 2, &diags, "add function");
+        let msg0 = build_retry_message(base, 0, &diags, None, "add function");
+        let msg1 = build_retry_message(base, 1, &diags, None, "add function");
+        let msg2 = build_retry_message(base, 2, &diags, None, "add function");
 
         // Attempt 0: no example, no simplified instruction
         assert!(!msg0.contains("Simplified instruction"));
