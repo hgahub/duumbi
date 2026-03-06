@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest an improvement for DUUMBI
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a change with clear problem statement and expected outcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API/behavior/UX you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - CLI
+        - Compiler / Cranelift
+        - Parser / Graph
+        - Intent system
+        - AI agents
+        - Docs
+        - CI / Tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How should we verify this is complete?
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2

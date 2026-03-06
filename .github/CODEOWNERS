@@ -1,0 +1,21 @@
+# Default owner
+* @hgahub
+
+# Core compiler pipeline
+/src/compiler/ @hgahub
+/src/graph/ @hgahub
+/src/parser/ @hgahub
+
+# CLI and intent system
+/src/cli/ @hgahub
+/src/intent/ @hgahub
+
+# AI agent integrations
+/src/agents/ @hgahub
+
+# Documentation
+/sites/docs/ @hgahub
+/docs/ @hgahub
+
+# GitHub workflows and policy
+/.github/ @hgahub

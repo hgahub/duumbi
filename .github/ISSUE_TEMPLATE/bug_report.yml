@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a defect in DUUMBI behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please include enough detail to reproduce it.
+
+  - type: input
+    id: version
+    attributes:
+      label: DUUMBI version
+      description: Output of `duumbi --version` or commit SHA
+      placeholder: "0.1.0 or abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, compiler toolchain details
+      placeholder: |
+        OS:
+        rustc --version:
+        cc --version:
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Execute ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste stack traces, JSONL error output, or screenshots if relevant
+      render: shell
