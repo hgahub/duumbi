@@ -84,11 +84,13 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
         };
 
         let prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
+        let is_library = matches!(&task.kind, TaskKind::CreateModule { .. });
 
-        let result = orchestrator::mutate_streaming(client, &source, &prompt, 3, |text| {
-            eprint!("{text}");
-        })
-        .await;
+        let result =
+            orchestrator::mutate_streaming(client, &source, &prompt, 3, is_library, |text| {
+                eprint!("{text}");
+            })
+            .await;
 
         eprintln!(); // newline after streamed output
 
