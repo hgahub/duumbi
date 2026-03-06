@@ -1,6 +1,6 @@
 //! Error types, diagnostic codes, and structured JSONL reporting.
 //!
-//! All duumbi errors use error codes E001–E009. The `Diagnostic` struct
+//! All duumbi errors use error codes E001–E012. The `Diagnostic` struct
 //! serializes to JSONL for machine-readable output.
 
 use serde::Serialize;
@@ -30,8 +30,13 @@ pub mod codes {
     /// Schema validation failed (malformed JSON-LD structure).
     pub const E009_SCHEMA_INVALID: &str = "E009";
     /// Unresolved cross-module function reference.
-    #[allow(dead_code)] // Used by graph::program in upcoming phase (#59)
     pub const E010_UNRESOLVED_CROSS_MODULE: &str = "E010";
+    /// Dependency module not found in any resolution layer (workspace, vendor, cache, registry).
+    #[allow(dead_code)] // Used by deps resolution pipeline (Phase 5)
+    pub const E011_DEPENDENCY_NOT_FOUND: &str = "E011";
+    /// Module name conflict: same-scope modules export the same function and resolution is ambiguous.
+    #[allow(dead_code)] // Used by deps resolution pipeline (Phase 5)
+    pub const E012_MODULE_CONFLICT: &str = "E012";
 }
 
 /// Severity level for a diagnostic message.
@@ -183,9 +188,36 @@ mod tests {
             codes::E007_CYCLE,
             codes::E008_LINK_FAILED,
             codes::E009_SCHEMA_INVALID,
+            codes::E010_UNRESOLVED_CROSS_MODULE,
+            codes::E011_DEPENDENCY_NOT_FOUND,
+            codes::E012_MODULE_CONFLICT,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(codes.len(), unique.len(), "Error codes must be unique");
+    }
+
+    #[test]
+    fn e011_dependency_not_found_serializes_correctly() {
+        let diag = Diagnostic::error(
+            codes::E011_DEPENDENCY_NOT_FOUND,
+            "@community/sorting not found",
+        );
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E011");
+    }
+
+    #[test]
+    fn e012_module_conflict_serializes_correctly() {
+        let diag = Diagnostic::error(
+            codes::E012_MODULE_CONFLICT,
+            "Module conflict: 'sort' exported by both @duumbi/sorting and @community/sorting",
+        );
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E012");
     }
 
     #[test]

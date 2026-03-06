@@ -11,6 +11,7 @@ mod compiler;
 mod config;
 mod deps;
 mod errors;
+mod examples;
 mod graph;
 mod parser;
 mod patch;
@@ -197,7 +198,7 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
 
-    let result = orchestrator::mutate(&client, &source, request, 1).await?;
+    let result = orchestrator::mutate(&client, &source, request, 3).await?;
 
     let diff = orchestrator::describe_changes(&source, &result.patched);
     eprintln!(

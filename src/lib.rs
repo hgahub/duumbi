@@ -10,6 +10,7 @@ pub mod compiler;
 pub mod config;
 pub mod deps;
 pub mod errors;
+pub mod examples;
 pub mod graph;
 pub mod parser;
 pub mod patch;

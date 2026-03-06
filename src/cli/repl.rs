@@ -110,13 +110,20 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                     continue;
                 }
                 if input.starts_with('/') {
-                    let should_exit = session.handle_slash(&input).await?;
-                    if should_exit {
-                        eprintln!("Goodbye!");
-                        break;
+                    match session.handle_slash(&input).await {
+                        Ok(true) => {
+                            eprintln!("Goodbye!");
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            eprintln!("Command error: {e:#}");
+                        }
                     }
                 } else {
-                    session.handle_ai_request(&input).await?;
+                    if let Err(e) = session.handle_ai_request(&input).await {
+                        eprintln!("Error: {e:#}");
+                    }
                 }
             }
             Ok(Signal::CtrlC) => {
@@ -127,7 +134,8 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                 break;
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("REPL read error: {e}"));
+                eprintln!("REPL read error: {e}");
+                break;
             }
         }
     }
@@ -346,7 +354,7 @@ impl Session {
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let result = match orchestrator::mutate_streaming(client, &source, &prompt, 1, |text| {
+        let result = match orchestrator::mutate_streaming(client, &source, &prompt, 3, |text| {
             eprint!("{text}");
         })
         .await
