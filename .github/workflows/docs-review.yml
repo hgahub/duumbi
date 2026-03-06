@@ -2,7 +2,7 @@ name: Docs Review (Copilot)
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
     # Trigger on code changes, not just docs, because we want to check if docs NEED update
     paths:
       - 'src/**'
@@ -12,30 +12,15 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
-  copilot-docs-review:
-    name: Copilot Documentation Review
+  docs-ai-update:
+    name: Docs AI Update Request
     runs-on: ubuntu-latest
     steps:
-      - name: Request Copilot review
-        uses: actions/github-script@v7
-        with:
-          script: |
-            try {
-              await github.rest.pulls.requestReviewers({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                reviewers: ["copilot"],
-              });
-              core.info("Copilot reviewer requested.");
-            } catch (error) {
-              core.warning(`Could not request Copilot reviewer: ${error.message}`);
-            }
-
-      - name: Comment docs status
+      - name: Analyze docs impact and request Copilot docs update
         uses: actions/github-script@v7
         with:
           script: |
@@ -62,7 +47,7 @@ jobs:
             } else if (docsChanged) {
               body = `${marker}\n✅ Docs look up-to-date for this change (code + docs were updated together).`;
             } else {
-              body = `${marker}\n⚠️ Code changed without docs updates. Please verify whether docs under \`sites/docs/src/\` need updates (CLI, JSON-LD schema/types/ops, or architecture).`;
+              body = `${marker}\n⚠️ Code changed without docs updates.\n\n@copilot Please update documentation under \`sites/docs/src/\` for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. Commit changes directly to this PR branch if updates are needed.`;
             }
 
             const comments = await github.paginate(github.rest.issues.listComments, {
