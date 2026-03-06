@@ -215,13 +215,20 @@ fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
     let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
     linker::link_multi(&obj_refs, &runtime_o, &binary).map_err(|e| format!("link: {e}"))?;
 
-    // Run binary, capture exit code
+    // Run binary, capture stdout for the printed return value.
+    // Exit codes are unreliable for values outside 0–255 on Unix,
+    // so we parse the printed value from stdout instead.
     let output = Command::new(&binary)
         .output()
         .map_err(|e| format!("run: {e}"))?;
 
-    let exit_code = output.status.code().unwrap_or(-1) as i64;
-    Ok(exit_code)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The wrapper prints the return value as the last (or only) line
+    let last_line = stdout.lines().last().unwrap_or("").trim();
+
+    last_line
+        .parse::<i64>()
+        .map_err(|e| format!("failed to parse stdout '{last_line}' as i64: {e}"))
 }
 
 /// Generates a wrapper `main.jsonld` that calls `tc.function(tc.args...)` and
