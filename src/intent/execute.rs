@@ -95,7 +95,12 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
         eprintln!(); // newline after streamed output
 
         match result {
-            Ok(mutation_result) => {
+            Ok(mut mutation_result) => {
+                // For library modules, ensure all functions are exported
+                if is_library {
+                    ensure_exports(&mut mutation_result.patched);
+                }
+
                 // Write patched graph to the appropriate file
                 let patched_str = serde_json::to_string_pretty(&mutation_result.patched)
                     .context("Serialize patched graph")?;
@@ -179,6 +184,25 @@ pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Re
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Ensures all functions in a library module are listed in `duumbi:exports`.
+///
+/// LLMs frequently forget to populate the exports array even when prompted.
+/// This post-processing step deterministically collects all function names
+/// from `duumbi:functions` and sets them as the exports list.
+fn ensure_exports(module: &mut serde_json::Value) {
+    let function_names: Vec<serde_json::Value> = module["duumbi:functions"]
+        .as_array()
+        .map(|funcs| {
+            funcs
+                .iter()
+                .filter_map(|f| f["duumbi:name"].as_str().map(|s| json!(s)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    module["duumbi:exports"] = serde_json::Value::Array(function_names);
+}
 
 /// Converts a module name like `"calculator/ops"` to a flat filename `"calculator_ops.jsonld"`.
 fn module_name_to_filename(module_name: &str) -> String {
