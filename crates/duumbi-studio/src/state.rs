@@ -107,7 +107,7 @@ pub struct IntentSummary {
 }
 
 /// A node in the C4 graph view, serialized for the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphNode {
     /// Unique identifier (e.g., module name, function id, block label, op id).
     pub id: String,
@@ -200,6 +200,9 @@ pub struct StudioState {
 
     /// Whether the keyboard shortcuts overlay is visible.
     pub shortcuts_visible: RwSignal<bool>,
+
+    /// Whether the Ctrl+K search overlay is visible.
+    pub search_visible: RwSignal<bool>,
 }
 
 impl StudioState {
@@ -222,6 +225,7 @@ impl StudioState {
             intents: RwSignal::new(Vec::new()),
             sidebar_collapsed: RwSignal::new(false),
             shortcuts_visible: RwSignal::new(false),
+            search_visible: RwSignal::new(false),
         }
     }
 }

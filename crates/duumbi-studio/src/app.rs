@@ -10,6 +10,7 @@ use crate::components::breadcrumb::Breadcrumb;
 use crate::components::chat::ChatPanel;
 use crate::components::graph::GraphCanvas;
 use crate::components::inspector::Inspector;
+use crate::components::search_overlay::SearchOverlay;
 use crate::components::shortcuts::ShortcutsOverlay;
 use crate::components::sidebar::Sidebar;
 use crate::components::toast::ToastContainer;
@@ -116,7 +117,8 @@ pub fn App() -> impl IntoView {
                 </div>
                 <div class="header-right">
                     <ThemeToggle />
-                    <button class="header-btn search-btn" title="Search (Ctrl+K)">
+                    <button class="header-btn search-btn" title="Search (Ctrl+K)"
+                        on:click=move |_| state.search_visible.update(|v| *v = !*v)>
                         "Search"
                     </button>
                     <button class="header-btn shortcuts-btn" title="Keyboard shortcuts (?)"
@@ -148,6 +150,9 @@ pub fn App() -> impl IntoView {
 
             // Toast notifications
             <ToastContainer />
+
+            // Search overlay (Ctrl+K)
+            <SearchOverlay />
 
             // Keyboard shortcuts overlay
             <ShortcutsOverlay />

@@ -723,6 +723,92 @@ html, body {
     color: var(--ds-text-primary);
 }
 
+/* --- Search Overlay (Ctrl+K) --- */
+.search-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 2000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 80px;
+}
+
+.search-panel {
+    background: var(--ds-bg-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-lg);
+    width: 480px;
+    box-shadow: var(--ds-shadow-lg);
+    overflow: hidden;
+}
+
+.search-input {
+    width: 100%;
+    padding: var(--ds-space-md);
+    border: none;
+    border-bottom: 1px solid var(--ds-border);
+    background: var(--ds-bg-surface);
+    color: var(--ds-text-primary);
+    font-size: var(--ds-font-size-md);
+    font-family: var(--ds-font-sans);
+    outline: none;
+}
+
+.search-input::placeholder {
+    color: var(--ds-text-muted);
+}
+
+.search-results {
+    list-style: none;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.search-result {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-sm);
+    padding: var(--ds-space-sm) var(--ds-space-md);
+    cursor: pointer;
+    transition: background var(--ds-transition-fast);
+}
+
+.search-result:hover {
+    background: var(--ds-bg-elevated);
+}
+
+.result-type {
+    font-size: var(--ds-font-size-xs);
+    font-family: var(--ds-font-mono);
+    padding: 1px 6px;
+    border-radius: var(--ds-radius-full);
+    background: var(--ds-bg-card);
+    color: var(--ds-text-muted);
+    flex-shrink: 0;
+}
+
+.type-module { color: var(--node-module); }
+.type-function { color: var(--node-function); }
+.type-block { color: var(--node-block); }
+
+.result-label {
+    font-size: var(--ds-font-size-sm);
+    font-family: var(--ds-font-mono);
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.search-empty {
+    padding: var(--ds-space-lg) var(--ds-space-md);
+    text-align: center;
+    color: var(--ds-text-muted);
+    font-size: var(--ds-font-size-sm);
+}
+
 /* --- Scrollbar Styling --- */
 ::-webkit-scrollbar {
     width: 8px;
