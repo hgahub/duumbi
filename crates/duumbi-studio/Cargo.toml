@@ -1,0 +1,29 @@
+[package]
+name = "duumbi-studio"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+duumbi = { path = "../.." }
+leptos = "0.7"
+leptos_axum = { version = "0.7", optional = true }
+leptos_router = "0.7"
+leptos_meta = "0.7"
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "fs"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = { version = "0.9", optional = true }
+toml = { version = "1", optional = true }
+petgraph = { version = "0.8", optional = true }
+tracing = "0.1"
+web-sys = { version = "0.3", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[features]
+default = []
+ssr = ["leptos/ssr", "leptos_axum", "axum", "tokio", "tower-http", "serde_yaml", "toml", "petgraph"]
+hydrate = ["leptos/hydrate"]
