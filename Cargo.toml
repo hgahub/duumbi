@@ -5,30 +5,30 @@ edition = "2024"
 license = "MPL-2.0"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-thiserror = "2"
-petgraph = "0.7"
-cranelift-codegen = "0.129"
-cranelift-frontend = "0.129"
-cranelift-module = "0.129"
-cranelift-object = "0.129"
-target-lexicon = "0.13"
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal"] }
-notify = "7"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["cors"] }
-notify-debouncer-mini = "0.5"
-reedline = "0.37"
-futures-util = "0.3"
-serde_yaml = "0.9"
-tempfile = "3"
+clap = { version = "4.5.60", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+anyhow = "1.0.102"
+thiserror = "2.0.18"
+petgraph = "0.8.3"
+cranelift-codegen = "0.129.1"
+cranelift-frontend = "0.129.1"
+cranelift-module = "0.129.1"
+cranelift-object = "0.129.1"
+target-lexicon = "0.13.5"
+toml = "0.9.12"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal"] }
+notify = "8"
+reqwest = { version = "0.13.2", features = ["json", "stream"] }
+axum = { version = "0.8.8", features = ["ws"] }
+tower-http = { version = "0.6.8", features = ["cors"] }
+notify-debouncer-mini = "0.7.0"
+reedline = "0.46.0"
+futures-util = "0.3.32"
+serde_yaml = "0.9.34"
+tempfile = "3.26.0"
 
 [dev-dependencies]
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.28.0"
