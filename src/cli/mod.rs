@@ -99,6 +99,17 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: IntentSubcommand,
     },
+
+    /// Start the DUUMBI Studio web platform.
+    Studio {
+        /// Port to listen on.
+        #[arg(short, long, default_value_t = 8421)]
+        port: u16,
+
+        /// Enable development mode (hot reload).
+        #[arg(long)]
+        dev: bool,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
