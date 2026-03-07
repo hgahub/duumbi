@@ -10,6 +10,7 @@ use crate::components::breadcrumb::Breadcrumb;
 use crate::components::chat::ChatPanel;
 use crate::components::graph::GraphCanvas;
 use crate::components::inspector::Inspector;
+use crate::components::shortcuts::ShortcutsOverlay;
 use crate::components::sidebar::Sidebar;
 use crate::components::toast::ToastContainer;
 // C4Level, ChatMessage, ChatRole used inside #[cfg(feature = "hydrate")] blocks
@@ -118,7 +119,8 @@ pub fn App() -> impl IntoView {
                     <button class="header-btn search-btn" title="Search (Ctrl+K)">
                         "Search"
                     </button>
-                    <button class="header-btn shortcuts-btn" title="Keyboard shortcuts (?)">
+                    <button class="header-btn shortcuts-btn" title="Keyboard shortcuts (?)"
+                        on:click=move |_| state.shortcuts_visible.update(|v| *v = !*v)>
                         "?"
                     </button>
                 </div>
@@ -146,6 +148,9 @@ pub fn App() -> impl IntoView {
 
             // Toast notifications
             <ToastContainer />
+
+            // Keyboard shortcuts overlay
+            <ShortcutsOverlay />
         </div>
     }
 }

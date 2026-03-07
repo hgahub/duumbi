@@ -197,6 +197,9 @@ pub struct StudioState {
 
     /// Whether the sidebar is collapsed.
     pub sidebar_collapsed: RwSignal<bool>,
+
+    /// Whether the keyboard shortcuts overlay is visible.
+    pub shortcuts_visible: RwSignal<bool>,
 }
 
 impl StudioState {
@@ -218,6 +221,7 @@ impl StudioState {
             theme: RwSignal::new(Theme::Dark),
             intents: RwSignal::new(Vec::new()),
             sidebar_collapsed: RwSignal::new(false),
+            shortcuts_visible: RwSignal::new(false),
         }
     }
 }

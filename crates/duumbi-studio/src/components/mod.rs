@@ -7,5 +7,6 @@ pub mod breadcrumb;
 pub mod chat;
 pub mod graph;
 pub mod inspector;
+pub mod shortcuts;
 pub mod sidebar;
 pub mod toast;
