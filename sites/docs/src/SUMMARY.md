@@ -21,6 +21,7 @@
 - [`duumbi add`](cli/add.md)
 - [`duumbi undo`](cli/undo.md)
 - [`duumbi viz`](cli/viz.md)
+- [`duumbi studio`](cli/studio.md)
 
 # JSON-LD Format
 
