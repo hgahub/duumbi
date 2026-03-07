@@ -917,6 +917,7 @@ dependencies = [
 name = "duumbi-studio"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum 0.8.8",
  "console_error_panic_hook",
  "duumbi",

@@ -124,6 +124,7 @@ async fn run(cli: Cli) -> Result<()> {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
         }
+        Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
 
@@ -307,6 +308,24 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
         config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
         config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
     })
+}
+
+/// Starts the DUUMBI Studio web platform.
+async fn studio(port: u16, _dev: bool) -> Result<()> {
+    let workspace = PathBuf::from(".");
+    if !workspace.join(".duumbi").exists() {
+        anyhow::bail!("No duumbi workspace found. Run `duumbi init` first.");
+    }
+    eprintln!("Starting DUUMBI Studio...");
+    eprintln!("Studio running at http://localhost:{port}");
+    eprintln!("(Studio is under development — full UI coming soon)");
+
+    // For now, fall back to the Phase 3 visualizer with a note
+    let graph_path = resolve_input(None)?;
+    let initial = web::watcher::load_initial_graph(&graph_path);
+    let state = web::server::AppState::new(initial, false);
+    let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
+    web::server::run_server(port, state).await
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.

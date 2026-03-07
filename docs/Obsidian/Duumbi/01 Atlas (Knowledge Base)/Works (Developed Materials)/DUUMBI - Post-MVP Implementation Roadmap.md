@@ -262,7 +262,7 @@ Felhasználói szándék (természetes nyelv vagy chat)
 
 ### Deliverable-ök
 
-- [ ] **M5-INT-01**: Intent spec formátum stabilizálás (YAML)
+- [x] **M5-INT-01**: Intent spec formátum stabilizálás (YAML)
 
 ```yaml
 # .duumbi/intents/calculator.yaml
@@ -290,20 +290,20 @@ test_cases:
 dependencies: []
 ```
 
-- [ ] **M5-INT-02**: `duumbi intent create "<szándék>"` — interaktív spec generálás (LLM segítségével)
-- [ ] **M5-INT-03**: `duumbi intent review` — spec megjelenítés + szerkesztési lehetőség
-- [ ] **M5-INT-04**: `duumbi intent execute` — végrehajtás:
+- [x] **M5-INT-02**: `duumbi intent create "<szándék>"` — interaktív spec generálás (LLM segítségével)
+- [x] **M5-INT-03**: `duumbi intent review` — spec megjelenítés + szerkesztési lehetőség
+- [x] **M5-INT-04**: `duumbi intent execute` — végrehajtás:
   1. Coordinator elemzi a gráfot + spec-et
   2. Task listára bontja (determinisztikus sorrend)
   3. Minden task: AI mutáció → check → build
   4. Tesztesetek futtatása
   5. Diff preview + emberi jóváhagyás
-- [ ] **M5-INT-05**: `duumbi intent status` — végrehajtás állapota (ha több lépéses)
-- [ ] **M5-INT-06**: `/intent` parancs a chat módban (delegálás a CLI parancsokhoz)
-- [ ] **M5-INT-07**: Intent history — `.duumbi/intents/history/` archivált, végrehajtott spec-ek
-- [ ] **M5-INT-08**: Coordinator Agent v1 — task bontás, modul boundary felismerés
-- [ ] **M5-INT-09**: Verifier Agent v1 — teszteset generálás, elfogadási kritérium ellenőrzés
-- [ ] **M5-INT-10**: End-to-end teszt: üres workspace → `duumbi init` → intent execute → multi-modul app fut
+- [x] **M5-INT-05**: `duumbi intent status` — végrehajtás állapota (ha több lépéses)
+- [x] **M5-INT-06**: `/intent` parancs a chat módban (delegálás a CLI parancsokhoz)
+- [x] **M5-INT-07**: Intent history — `.duumbi/intents/history/` archivált, végrehajtott spec-ek
+- [x] **M5-INT-08**: Coordinator Agent v1 — task bontás, modul boundary felismerés
+- [x] **M5-INT-09**: Verifier Agent v1 — teszteset generálás, elfogadási kritérium ellenőrzés
+- [x] **M5-INT-10**: End-to-end teszt: üres workspace → `duumbi init` → intent execute → multi-modul app fut
 
 **A "chat + intent" végcél demonstrálása:**
 

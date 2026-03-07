@@ -18,6 +18,7 @@ serde_json = "1"
 serde_yaml = { version = "0.9", optional = true }
 toml = { version = "1", optional = true }
 petgraph = { version = "0.8", optional = true }
+anyhow = "1"
 tracing = "0.1"
 web-sys = { version = "0.3", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
 wasm-bindgen = "0.2"

@@ -7,7 +7,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{GraphData, IntentSummary};
+use crate::state::{GraphData, GraphEdge, GraphNode, IntentSummary};
 
 /// Server-side workspace context, shared via Leptos context.
 #[derive(Clone)]
@@ -39,7 +39,6 @@ pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
 
-    // Scan for modules: main.jsonld + subdirectories with graph/
     if graph_dir.join("main.jsonld").exists() {
         nodes.push(GraphNode {
             id: "app/main".to_string(),
@@ -53,7 +52,6 @@ pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
         });
     }
 
-    // Check for dependency modules
     let config_path = ws.root.join(".duumbi/config.toml");
     if config_path.exists() {
         if let Ok(content) = fs::read_to_string(&config_path) {
@@ -70,8 +68,6 @@ pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
                             width: 180.0,
                             height: 80.0,
                         });
-
-                        // Add dependency edge from main to this module
                         edges.push(GraphEdge {
                             id: format!("dep:{name}"),
                             source: "app/main".to_string(),
@@ -85,7 +81,6 @@ pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
         }
     }
 
-    // Check stdlib
     let stdlib_dir = ws.root.join(".duumbi/stdlib");
     if stdlib_dir.exists() {
         if let Ok(entries) = fs::read_dir(&stdlib_dir) {
@@ -117,34 +112,43 @@ pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
     Ok(GraphData { nodes, edges })
 }
 
+/// Resolves the graph file path for a module name.
+#[cfg(feature = "ssr")]
+fn resolve_graph_path(root: &std::path::Path, module_name: &str) -> std::path::PathBuf {
+    if module_name == "app/main" {
+        root.join(".duumbi/graph/main.jsonld")
+    } else {
+        let parts: Vec<&str> = module_name.split('/').collect();
+        if parts.first() == Some(&"stdlib") && parts.len() == 2 {
+            root.join(format!(".duumbi/stdlib/{}", parts[1]))
+                .join(".duumbi/graph/main.jsonld")
+        } else {
+            root.join(format!(".duumbi/graph/{module_name}.jsonld"))
+        }
+    }
+}
+
+/// Loads and builds a semantic graph from a module path.
+#[cfg(feature = "ssr")]
+fn load_graph(
+    root: &std::path::Path,
+    module_name: &str,
+) -> Result<duumbi::graph::SemanticGraph, ServerFnError> {
+    let graph_path = resolve_graph_path(root, module_name);
+    let source = std::fs::read_to_string(&graph_path)
+        .map_err(|e| ServerFnError::new(format!("Failed to read {}: {e}", graph_path.display())))?;
+    let ast = duumbi::parser::parse_jsonld(&source)
+        .map_err(|e| ServerFnError::new(format!("Parse error: {e}")))?;
+    duumbi::graph::builder::build_graph(&ast)
+        .map_err(|errors| ServerFnError::new(format!("Graph errors: {errors:?}")))
+}
+
 /// Returns graph data for the Container level (functions within a module).
 #[server]
 pub async fn get_module_detail(module_name: String) -> Result<GraphData, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
-
-    let graph_path = if module_name == "app/main" {
-        ws.root.join(".duumbi/graph/main.jsonld")
-    } else {
-        // Try stdlib or dependency paths
-        let parts: Vec<&str> = module_name.split('/').collect();
-        if parts.first() == Some(&"stdlib") && parts.len() == 2 {
-            ws.root
-                .join(format!(".duumbi/stdlib/{}", parts[1]))
-                .join(".duumbi/graph/main.jsonld")
-        } else {
-            ws.root.join(format!(".duumbi/graph/{module_name}.jsonld"))
-        }
-    };
-
-    let source = std::fs::read_to_string(&graph_path)
-        .map_err(|e| ServerFnError::new(format!("Failed to read {}: {e}", graph_path.display())))?;
-
-    let ast = duumbi::parser::parse_jsonld(&source)
-        .map_err(|e| ServerFnError::new(format!("Parse error: {e}")))?;
-
-    let graph = duumbi::graph::builder::build_graph(&ast)
-        .map_err(|errors| ServerFnError::new(format!("Graph errors: {errors:?}")))?;
+    let graph = load_graph(&ws.root, &module_name)?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -173,7 +177,6 @@ pub async fn get_module_detail(module_name: String) -> Result<GraphData, ServerF
         });
     }
 
-    // Add call edges between functions
     for func in &graph.functions {
         for block in &func.blocks {
             for &node_idx in &block.nodes {
@@ -202,31 +205,12 @@ pub async fn get_function_detail(
 ) -> Result<GraphData, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
-
-    let graph_path = if module_name == "app/main" {
-        ws.root.join(".duumbi/graph/main.jsonld")
-    } else {
-        let parts: Vec<&str> = module_name.split('/').collect();
-        if parts.first() == Some(&"stdlib") && parts.len() == 2 {
-            ws.root
-                .join(format!(".duumbi/stdlib/{}", parts[1]))
-                .join(".duumbi/graph/main.jsonld")
-        } else {
-            ws.root.join(format!(".duumbi/graph/{module_name}.jsonld"))
-        }
-    };
-
-    let source = std::fs::read_to_string(&graph_path)
-        .map_err(|e| ServerFnError::new(format!("Failed to read: {e}")))?;
-    let ast = duumbi::parser::parse_jsonld(&source)
-        .map_err(|e| ServerFnError::new(format!("Parse error: {e}")))?;
-    let graph = duumbi::graph::builder::build_graph(&ast)
-        .map_err(|errors| ServerFnError::new(format!("Graph errors: {errors:?}")))?;
+    let graph = load_graph(&ws.root, &module_name)?;
 
     let func = graph
         .functions
         .iter()
-        .find(|f| f.name.as_ref() == function_name)
+        .find(|f| f.name.0 == function_name)
         .ok_or_else(|| ServerFnError::new(format!("Function '{function_name}' not found")))?;
 
     let mut nodes = Vec::new();
@@ -246,28 +230,24 @@ pub async fn get_function_detail(
     }
 
     // Add branch edges between blocks
-    let branch_targets = &graph.branch_targets;
     for block in &func.blocks {
         for &node_idx in &block.nodes {
-            if let Some(targets) = branch_targets.get(&node_idx) {
-                if let Some(ref true_block) = targets.true_block {
-                    edges.push(GraphEdge {
-                        id: format!("branch:{}:true", block.label),
-                        source: block.label.to_string(),
-                        target: true_block.clone(),
-                        label: "true".to_string(),
-                        edge_type: "branch_true".to_string(),
-                    });
-                }
-                if let Some(ref false_block) = targets.false_block {
-                    edges.push(GraphEdge {
-                        id: format!("branch:{}:false", block.label),
-                        source: block.label.to_string(),
-                        target: false_block.clone(),
-                        label: "false".to_string(),
-                        edge_type: "branch_false".to_string(),
-                    });
-                }
+            let node = &graph.graph[node_idx];
+            if let Some((true_block, false_block)) = graph.branch_targets.get(&node.id) {
+                edges.push(GraphEdge {
+                    id: format!("branch:{}:true", block.label),
+                    source: block.label.to_string(),
+                    target: true_block.clone(),
+                    label: "true".to_string(),
+                    edge_type: "branch_true".to_string(),
+                });
+                edges.push(GraphEdge {
+                    id: format!("branch:{}:false", block.label),
+                    source: block.label.to_string(),
+                    target: false_block.clone(),
+                    label: "false".to_string(),
+                    edge_type: "branch_false".to_string(),
+                });
             }
         }
     }
@@ -284,37 +264,18 @@ pub async fn get_block_ops(
 ) -> Result<GraphData, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
-
-    let graph_path = if module_name == "app/main" {
-        ws.root.join(".duumbi/graph/main.jsonld")
-    } else {
-        let parts: Vec<&str> = module_name.split('/').collect();
-        if parts.first() == Some(&"stdlib") && parts.len() == 2 {
-            ws.root
-                .join(format!(".duumbi/stdlib/{}", parts[1]))
-                .join(".duumbi/graph/main.jsonld")
-        } else {
-            ws.root.join(format!(".duumbi/graph/{module_name}.jsonld"))
-        }
-    };
-
-    let source = std::fs::read_to_string(&graph_path)
-        .map_err(|e| ServerFnError::new(format!("Failed to read: {e}")))?;
-    let ast = duumbi::parser::parse_jsonld(&source)
-        .map_err(|e| ServerFnError::new(format!("Parse error: {e}")))?;
-    let graph = duumbi::graph::builder::build_graph(&ast)
-        .map_err(|errors| ServerFnError::new(format!("Graph errors: {errors:?}")))?;
+    let graph = load_graph(&ws.root, &module_name)?;
 
     let func = graph
         .functions
         .iter()
-        .find(|f| f.name.as_ref() == function_name)
+        .find(|f| f.name.0 == function_name)
         .ok_or_else(|| ServerFnError::new(format!("Function '{function_name}' not found")))?;
 
     let block = func
         .blocks
         .iter()
-        .find(|b| b.label.as_ref() == block_label)
+        .find(|b| b.label.0 == block_label)
         .ok_or_else(|| ServerFnError::new(format!("Block '{block_label}' not found")))?;
 
     let mut nodes = Vec::new();
@@ -338,7 +299,6 @@ pub async fn get_block_ops(
             height: 40.0,
         });
 
-        // Add data flow edges
         use petgraph::visit::EdgeRef;
         for edge_ref in graph
             .graph
@@ -438,7 +398,6 @@ pub async fn get_intents() -> Result<Vec<IntentSummary>, ServerFnError> {
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default();
 
-                        // Parse just the intent and status fields
                         if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
                             let description = value["intent"].as_str().unwrap_or(&slug).to_string();
                             let status = value["status"].as_str().unwrap_or("Unknown").to_string();
@@ -459,6 +418,7 @@ pub async fn get_intents() -> Result<Vec<IntentSummary>, ServerFnError> {
 }
 
 /// Returns the short type name for an Op.
+#[cfg(feature = "ssr")]
 fn op_type_name(op: &duumbi::types::Op) -> &'static str {
     use duumbi::types::Op;
     match op {
@@ -480,6 +440,7 @@ fn op_type_name(op: &duumbi::types::Op) -> &'static str {
 }
 
 /// Returns (label, edge_type) for a graph edge.
+#[cfg(feature = "ssr")]
 fn edge_label_str(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'static str) {
     use duumbi::graph::GraphEdge;
     match edge {
