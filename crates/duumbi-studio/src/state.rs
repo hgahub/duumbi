@@ -151,6 +151,15 @@ pub struct GraphData {
     pub edges: Vec<GraphEdge>,
 }
 
+/// Response from the chat server function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    /// Human-readable summary of what the AI did.
+    pub text: String,
+    /// Node ids that were modified (for highlighting).
+    pub changed_node_ids: Vec<String>,
+}
+
 /// Central Studio state, provided as Leptos context.
 #[derive(Clone)]
 pub struct StudioState {

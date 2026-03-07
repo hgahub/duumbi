@@ -14,29 +14,73 @@ pub fn ChatPanel() -> impl IntoView {
     let state = expect_context::<StudioState>();
     let (input_text, set_input_text) = signal(String::new());
 
-    let on_send = move |_| {
-        let text = input_text.get();
-        if text.trim().is_empty() {
-            return;
-        }
+    let do_send = {
+        let state = state.clone();
+        move || {
+            let text = input_text.get();
+            if text.trim().is_empty() {
+                return;
+            }
 
-        // Add user message
-        state.chat_messages.update(|msgs| {
-            msgs.push(ChatMessage {
-                role: ChatRole::User,
-                content: text.clone(),
+            // Add user message immediately
+            state.chat_messages.update(|msgs| {
+                msgs.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: text.clone(),
+                });
             });
-        });
+            set_input_text.set(String::new());
+            state.chat_streaming.set(true);
 
-        set_input_text.set(String::new());
+            let _state2 = state.clone();
+            #[cfg(feature = "hydrate")]
+            let state2 = _state2;
+            #[cfg(feature = "hydrate")]
+            leptos::task::spawn_local(async move {
+                use crate::server_fns::send_chat_message;
+                match send_chat_message(text).await {
+                    Ok(response) => {
+                        state2.chat_messages.update(|msgs| {
+                            msgs.push(ChatMessage {
+                                role: ChatRole::Assistant,
+                                content: response.text,
+                            });
+                        });
+                        if !response.changed_node_ids.is_empty() {
+                            state2.highlighted_nodes.set(response.changed_node_ids);
+                        }
+                        // Reload graph data after mutation
+                        if let Ok(data) = crate::server_fns::get_graph_context().await {
+                            state2.graph_data.set(data);
+                        }
+                    }
+                    Err(e) => {
+                        state2.chat_messages.update(|msgs| {
+                            msgs.push(ChatMessage {
+                                role: ChatRole::System,
+                                content: format!("Error: {e}"),
+                            });
+                        });
+                    }
+                }
+                state2.chat_streaming.set(false);
+            });
+        }
+    };
+    let do_send = std::rc::Rc::new(do_send);
 
-        // TODO: Send to server function for LLM processing
+    let on_send = {
+        let do_send = do_send.clone();
+        move |_| do_send()
     };
 
-    let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
-        if ev.key() == "Enter" && !ev.shift_key() {
-            ev.prevent_default();
-            on_send(());
+    let on_keydown = {
+        let do_send = do_send.clone();
+        move |ev: leptos::ev::KeyboardEvent| {
+            if ev.key() == "Enter" && !ev.shift_key() {
+                ev.prevent_default();
+                do_send();
+            }
         }
     };
 

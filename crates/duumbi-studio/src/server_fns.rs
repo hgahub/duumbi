@@ -441,6 +441,68 @@ fn op_type_name(op: &duumbi::types::Op) -> &'static str {
     }
 }
 
+/// Sends a chat message to the LLM and applies any graph mutation.
+///
+/// Loads the workspace config, calls `orchestrator::mutate`, applies the patch
+/// if accepted, and returns the AI's response text along with changed node ids.
+#[server]
+pub async fn send_chat_message(
+    message: String,
+) -> Result<crate::state::ChatResponse, ServerFnError> {
+    use std::fs;
+
+    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ws.read().await;
+
+    // Load config
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config error: {e}")))?;
+
+    let llm_cfg = config
+        .llm
+        .ok_or_else(|| ServerFnError::new("No [llm] section in config.toml".to_string()))?;
+
+    let api_key = llm_cfg
+        .resolve_api_key()
+        .map_err(|e| ServerFnError::new(format!("API key error: {e}")))?;
+
+    let client = match llm_cfg.provider {
+        duumbi::config::LlmProvider::Anthropic => {
+            duumbi::agents::LlmClient::anthropic(&llm_cfg.model, api_key)
+        }
+        duumbi::config::LlmProvider::OpenAI => {
+            duumbi::agents::LlmClient::openai(&llm_cfg.model, api_key)
+        }
+    };
+
+    let graph_path = ws.root.join(".duumbi/graph/main.jsonld");
+    let source_str = fs::read_to_string(&graph_path)
+        .map_err(|e| ServerFnError::new(format!("Failed to read graph: {e}")))?;
+    let source: serde_json::Value = serde_json::from_str(&source_str)
+        .map_err(|e| ServerFnError::new(format!("Failed to parse graph: {e}")))?;
+
+    let result = duumbi::agents::orchestrator::mutate(&client, &source, &message, 3)
+        .await
+        .map_err(|e| ServerFnError::new(format!("LLM error: {e}")))?;
+
+    let diff = duumbi::agents::orchestrator::describe_changes(&source, &result.patched);
+
+    // Save snapshot and write patched graph
+    duumbi::snapshot::save_snapshot(&ws.root, &source_str)
+        .map_err(|e| ServerFnError::new(format!("Snapshot error: {e}")))?;
+
+    let patched_str = serde_json::to_string_pretty(&result.patched)
+        .map_err(|e| ServerFnError::new(format!("Serialize error: {e}")))?;
+
+    fs::write(&graph_path, patched_str)
+        .map_err(|e| ServerFnError::new(format!("Write error: {e}")))?;
+
+    Ok(crate::state::ChatResponse {
+        text: format!("Applied {} change(s):\n{}", result.ops_count, diff),
+        changed_node_ids: Vec::new(), // TODO: extract from patched nodes
+    })
+}
+
 /// Returns (label, edge_type) for a graph edge.
 #[cfg(feature = "ssr")]
 fn edge_label_str(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'static str) {

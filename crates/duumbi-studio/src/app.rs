@@ -28,14 +28,17 @@ pub fn App() -> impl IntoView {
     let state = StudioState::new();
     provide_context(state.clone());
 
-    // Load initial workspace status
+    // Load initial workspace status and intents
     #[cfg(feature = "hydrate")]
     {
-        use crate::server_fns::get_workspace_status;
+        use crate::server_fns::{get_intents, get_workspace_status};
         let state_clone = state.clone();
         leptos::task::spawn_local(async move {
             if let Ok(status) = get_workspace_status().await {
                 state_clone.workspace_name.set(status.name);
+            }
+            if let Ok(intents) = get_intents().await {
+                state_clone.intents.set(intents);
             }
         });
     }
