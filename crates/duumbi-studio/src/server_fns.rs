@@ -7,6 +7,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+// GraphNode/GraphEdge are used inside #[server] fn bodies (ssr feature only)
+#[allow(unused_imports)]
 use crate::state::{GraphData, GraphEdge, GraphNode, IntentSummary};
 
 /// Server-side workspace context, shared via Leptos context.

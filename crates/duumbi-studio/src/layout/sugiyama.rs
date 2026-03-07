@@ -149,10 +149,10 @@ fn assign_layers(successors: &[Vec<usize>], predecessors: &[Vec<usize>], n: usiz
 
     // If no sources found (cycle or single disconnected nodes), start from 0
     if queue.is_empty() {
-        for i in 0..n {
-            if !visited[i] {
+        for (i, seen) in visited.iter_mut().enumerate() {
+            if !*seen {
                 queue.push_back(i);
-                visited[i] = true;
+                *seen = true;
             }
         }
     }

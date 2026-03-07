@@ -12,7 +12,9 @@ use crate::components::graph::GraphCanvas;
 use crate::components::inspector::Inspector;
 use crate::components::sidebar::Sidebar;
 use crate::components::toast::ToastContainer;
-use crate::state::StudioState;
+// C4Level, ChatMessage, ChatRole used inside #[cfg(feature = "hydrate")] blocks
+#[allow(unused_imports)]
+use crate::state::{C4Level, ChatMessage, ChatRole, StudioState};
 use crate::theme::ThemeToggle;
 
 /// Root application component.
@@ -35,6 +37,61 @@ pub fn App() -> impl IntoView {
             if let Ok(status) = get_workspace_status().await {
                 state_clone.workspace_name.set(status.name);
             }
+        });
+    }
+
+    // Reactively load graph data whenever C4 level or selection changes.
+    #[cfg(feature = "hydrate")]
+    {
+        use crate::server_fns::{
+            get_block_ops, get_function_detail, get_graph_context, get_module_detail,
+        };
+        let state_for_effect = state.clone();
+        Effect::new(move |_| {
+            let level = state_for_effect.c4_level.get();
+            let module = state_for_effect.selected_module.get();
+            let function = state_for_effect.selected_function.get();
+            let block = state_for_effect.selected_block.get();
+            let state2 = state_for_effect.clone();
+
+            leptos::task::spawn_local(async move {
+                let result = match level {
+                    C4Level::Context => get_graph_context().await,
+                    C4Level::Container => {
+                        if let Some(m) = module {
+                            get_module_detail(m).await
+                        } else {
+                            get_graph_context().await
+                        }
+                    }
+                    C4Level::Component => {
+                        if let (Some(m), Some(f)) = (module, function) {
+                            get_function_detail(m, f).await
+                        } else {
+                            return;
+                        }
+                    }
+                    C4Level::Code => {
+                        if let (Some(m), Some(f), Some(b)) = (module, function, block) {
+                            get_block_ops(m, f, b).await
+                        } else {
+                            return;
+                        }
+                    }
+                };
+
+                match result {
+                    Ok(data) => state2.graph_data.set(data),
+                    Err(e) => {
+                        state2.chat_messages.update(|msgs| {
+                            msgs.push(ChatMessage {
+                                role: ChatRole::System,
+                                content: format!("Error loading graph: {e}"),
+                            });
+                        });
+                    }
+                }
+            });
         });
     }
 

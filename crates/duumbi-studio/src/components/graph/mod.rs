@@ -47,9 +47,9 @@ pub fn GraphCanvas() -> impl IntoView {
 
     // Pan/zoom state
     let interaction_state = interaction::InteractionState::new();
-    let on_wheel = interaction::on_wheel(interaction_state.clone(), set_transform.clone());
+    let on_wheel = interaction::on_wheel(interaction_state.clone(), set_transform);
     let on_mousedown = interaction::on_mousedown(interaction_state.clone());
-    let on_mousemove = interaction::on_mousemove(interaction_state.clone(), set_transform.clone());
+    let on_mousemove = interaction::on_mousemove(interaction_state.clone(), set_transform);
     let on_mouseup = interaction::on_mouseup(interaction_state.clone());
 
     view! {
