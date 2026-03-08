@@ -322,21 +322,20 @@ async fn studio(port: u16, _dev: bool) -> Result<()> {
     }
 
     // Try to find the `studio` binary in the same directory as `duumbi`
-    if let Ok(self_path) = std::env::current_exe() {
-        if let Some(dir) = self_path.parent() {
-            let studio_bin = dir.join("studio");
-            if studio_bin.exists() {
-                let workspace_abs =
-                    fs::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
-                let status = process::Command::new(&studio_bin)
-                    .arg("--workspace")
-                    .arg(&workspace_abs)
-                    .arg("--port")
-                    .arg(port.to_string())
-                    .status()
-                    .with_context(|| format!("Failed to execute '{}'", studio_bin.display()))?;
-                process::exit(status.code().unwrap_or(1));
-            }
+    if let Ok(self_path) = std::env::current_exe()
+        && let Some(dir) = self_path.parent()
+    {
+        let studio_bin = dir.join("studio");
+        if studio_bin.exists() {
+            let workspace_abs = fs::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
+            let status = process::Command::new(&studio_bin)
+                .arg("--workspace")
+                .arg(&workspace_abs)
+                .arg("--port")
+                .arg(port.to_string())
+                .status()
+                .with_context(|| format!("Failed to execute '{}'", studio_bin.display()))?;
+            process::exit(status.code().unwrap_or(1));
         }
     }
 
