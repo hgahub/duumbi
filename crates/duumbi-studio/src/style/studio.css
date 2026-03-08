@@ -42,6 +42,23 @@
     --ds-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
     --ds-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5);
 
+    /* Dark theme colors (default) */
+    --ds-bg-primary: #0d1117;
+    --ds-bg-surface: #161b22;
+    --ds-bg-card: #1c2128;
+    --ds-bg-elevated: #21262d;
+    --ds-border: #30363d;
+    --ds-border-muted: #21262d;
+    --ds-text-primary: #e6edf3;
+    --ds-text-secondary: #8b949e;
+    --ds-text-muted: #6e7681;
+    --ds-accent: #58a6ff;
+    --ds-accent-hover: #79c0ff;
+    --ds-success: #3fb950;
+    --ds-warning: #d29922;
+    --ds-error: #f85149;
+    --ds-info: #58a6ff;
+
     /* Node type colors */
     --node-module: #388bfd;
     --node-function: #a371f7;
@@ -181,13 +198,50 @@ html, body {
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-sm);
     background: var(--ds-bg-surface);
+    color: var(--ds-text-primary);
     cursor: pointer;
-    font-size: var(--ds-font-size-md);
+    font-size: 16px;
+    line-height: 1;
     transition: background var(--ds-transition-fast);
 }
 
 .theme-toggle:hover {
     background: var(--ds-bg-elevated);
+}
+
+/* Panel toggle icons in header (VS Code style) */
+.panel-toggles {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-right: var(--ds-space-sm);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm);
+    overflow: hidden;
+}
+
+.panel-toggle-btn {
+    padding: 4px 8px;
+    border: none;
+    background: var(--ds-bg-surface);
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    transition: all var(--ds-transition-fast);
+}
+
+.panel-toggle-btn:hover {
+    background: var(--ds-bg-elevated);
+    color: var(--ds-text-primary);
+}
+
+.panel-toggle-btn.active {
+    color: var(--ds-text-primary);
+}
+
+.panel-toggle-btn + .panel-toggle-btn {
+    border-left: 1px solid var(--ds-border);
 }
 
 /* --- Body: Sidebar + Main + Inspector --- */
@@ -208,7 +262,6 @@ html, body {
     flex-direction: column;
     flex-shrink: 0;
     overflow-y: auto;
-    transition: width var(--ds-transition-normal);
 }
 
 .studio-sidebar.collapsed {
@@ -353,6 +406,61 @@ html, body {
     position: relative;
     background: var(--ds-bg-primary);
     overflow: hidden;
+    /* IcePanel-style dot grid */
+    background-image: radial-gradient(circle, var(--ds-border) 1.2px, transparent 1.2px);
+    background-size: 24px 24px;
+}
+
+/* Light canvas mode — only the graph area goes light */
+.graph-canvas-container.canvas-light {
+    --ds-bg-primary: #f8f9fa;
+    --ds-bg-card: #ffffff;
+    --ds-border: #d0d7de;
+    --ds-border-muted: #e0e4e8;
+    --ds-text-primary: #1f2328;
+    --ds-text-secondary: #656d76;
+    --ds-text-muted: #8c959f;
+    background-color: #f8f9fa;
+    background-image: radial-gradient(circle, #c8cdd3 1.2px, transparent 1.2px);
+}
+
+/* Layout toolbar — vertical, right side of graph area */
+.layout-toolbar {
+    position: absolute;
+    top: var(--ds-space-md);
+    right: var(--ds-space-md);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--ds-bg-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-md);
+    padding: 3px;
+    z-index: 5;
+}
+
+.layout-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: var(--ds-radius-sm);
+    background: transparent;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    transition: all var(--ds-transition-fast);
+}
+
+.layout-btn:hover {
+    background: var(--ds-bg-elevated);
+    color: var(--ds-text-primary);
+}
+
+.layout-btn.active {
+    background: var(--ds-accent);
+    color: #ffffff;
 }
 
 .graph-canvas {
@@ -457,6 +565,31 @@ html, body {
 .node-Load .node-rect,
 .node-Store .node-rect { stroke: var(--node-memory); }
 .node-Print .node-rect { stroke: var(--node-io); }
+.node-Return .node-rect { stroke: var(--ds-text-muted); stroke-width: 2; }
+
+/* Entry/exit node markers */
+[class*="entry"] .node-rect {
+    stroke-width: 2.5;
+    stroke-dasharray: none;
+}
+[class*="entry"]::before {
+    content: '';
+}
+[class*="exit"] .node-rect {
+    stroke-width: 2.5;
+}
+
+/* Entry indicator: green top border */
+.graph-node[data-entry="true"] .node-rect {
+    stroke: var(--ds-success);
+    stroke-width: 2.5;
+}
+
+/* Exit indicator: red/orange bottom border */
+.graph-node[data-exit="true"] .node-rect {
+    stroke: var(--ds-warning);
+    stroke-width: 2.5;
+}
 
 /* --- SVG Graph Edges --- */
 .edge-path {
@@ -480,6 +613,20 @@ html, body {
 .edge-branch_true .edge-path { stroke: var(--ds-success); }
 .edge-branch_false .edge-path { stroke: var(--ds-error); }
 .edge-dependency .edge-path { stroke: var(--ds-accent); stroke-dasharray: 6 3; }
+.edge-sequence .edge-path { stroke: var(--ds-text-muted); stroke-dasharray: 3 3; opacity: 0.5; }
+
+/* Connection dots at edge endpoints */
+.conn-dot {
+    fill: var(--ds-text-muted);
+    opacity: 0.7;
+}
+
+/* Dragging node visual feedback */
+.graph-node[transform] .node-rect {
+    stroke: var(--ds-accent);
+    stroke-width: 2;
+    stroke-dasharray: 4 2;
+}
 
 /* --- Inspector Panel --- */
 .studio-inspector {
@@ -648,6 +795,61 @@ html, body {
 
 .chat-send:hover {
     background: var(--ds-accent-hover);
+}
+
+/* --- Resizable Panel Dividers --- */
+.resize-handle {
+    position: relative;
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.resize-handle-h {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background var(--ds-transition-fast);
+}
+
+.resize-handle-h:hover,
+.resize-handle-h.active {
+    background: var(--ds-accent);
+}
+
+.resize-handle-v {
+    height: 4px;
+    cursor: row-resize;
+    background: transparent;
+    transition: background var(--ds-transition-fast);
+}
+
+.resize-handle-v:hover,
+.resize-handle-v.active {
+    background: var(--ds-accent);
+}
+
+/* Chat message styles from JS */
+.chat-message {
+    padding: var(--ds-space-xs) var(--ds-space-sm);
+    margin-bottom: var(--ds-space-xs);
+    border-radius: var(--ds-radius-sm);
+    font-size: var(--ds-font-size-sm);
+    font-family: var(--ds-font-mono);
+    line-height: 1.6;
+}
+
+.user-message {
+    background: var(--ds-bg-elevated);
+    color: var(--ds-accent);
+}
+
+.system-message {
+    color: var(--ds-text-muted);
+    font-style: italic;
+}
+
+.assistant-message {
+    color: var(--ds-success);
 }
 
 /* --- Toast Notifications --- */

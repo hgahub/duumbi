@@ -160,6 +160,22 @@ pub struct ChatResponse {
     pub changed_node_ids: Vec<String>,
 }
 
+/// Pre-loaded data for SSR initialization.
+///
+/// Loaded synchronously in `start_server` and provided as context so that
+/// `App` can seed its signals with real data during SSR rendering.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct InitialData {
+    /// Graph data for the Context level.
+    pub graph: GraphData,
+    /// Workspace name.
+    pub workspace_name: String,
+    /// Active intents.
+    pub intents: Vec<IntentSummary>,
+    /// Module list for the sidebar.
+    pub modules: Vec<String>,
+}
+
 /// Central Studio state, provided as Leptos context.
 #[derive(Clone)]
 pub struct StudioState {
@@ -206,6 +222,32 @@ pub struct StudioState {
 }
 
 impl StudioState {
+    /// Creates a new `StudioState` seeded with pre-loaded data.
+    ///
+    /// Used during SSR to populate signals with real workspace data
+    /// so the first render contains actual graph nodes, workspace name, etc.
+    #[must_use]
+    pub fn new_with_data(data: &InitialData) -> Self {
+        Self {
+            c4_level: RwSignal::new(C4Level::Context),
+            selected_module: RwSignal::new(None),
+            selected_function: RwSignal::new(None),
+            selected_block: RwSignal::new(None),
+            selected_node: RwSignal::new(None),
+            graph_data: RwSignal::new(data.graph.clone()),
+            highlighted_nodes: RwSignal::new(Vec::new()),
+            chat_messages: RwSignal::new(Vec::new()),
+            chat_streaming: RwSignal::new(false),
+            workspace_name: RwSignal::new(data.workspace_name.clone()),
+            build_status: RwSignal::new(BuildStatus::Idle),
+            theme: RwSignal::new(Theme::Dark),
+            intents: RwSignal::new(data.intents.clone()),
+            sidebar_collapsed: RwSignal::new(false),
+            shortcuts_visible: RwSignal::new(false),
+            search_visible: RwSignal::new(false),
+        }
+    }
+
     /// Creates a new `StudioState` with default values.
     #[must_use]
     pub fn new() -> Self {

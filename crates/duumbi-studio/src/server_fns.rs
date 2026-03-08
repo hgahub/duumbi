@@ -7,9 +7,9 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// GraphNode/GraphEdge are used inside #[server] fn bodies (ssr feature only)
+// GraphNode/GraphEdge/InitialData are used inside #[server] fn bodies and load_initial_data (ssr feature only)
 #[allow(unused_imports)]
-use crate::state::{GraphData, GraphEdge, GraphNode, IntentSummary};
+use crate::state::{GraphData, GraphEdge, GraphNode, InitialData, IntentSummary};
 
 /// Server-side workspace context, shared via Leptos context.
 #[derive(Clone)]
@@ -285,7 +285,7 @@ pub async fn get_block_ops(
 
     for &node_idx in &block.nodes {
         let node = &graph.graph[node_idx];
-        let op_type = op_type_name(&node.op);
+        let op_type = op_type_name_str(&node.op);
         let result_type = node
             .result_type
             .map_or("void".to_string(), |t| t.to_string());
@@ -307,7 +307,7 @@ pub async fn get_block_ops(
             .edges_directed(node_idx, petgraph::Direction::Incoming)
         {
             let source_node = &graph.graph[edge_ref.source()];
-            let (label, edge_type) = edge_label_str(edge_ref.weight());
+            let (label, edge_type) = edge_label_pair(edge_ref.weight());
 
             edges.push(GraphEdge {
                 id: format!("e:{}:{}", source_node.id, node.id),
@@ -421,7 +421,7 @@ pub async fn get_intents() -> Result<Vec<IntentSummary>, ServerFnError> {
 
 /// Returns the short type name for an Op.
 #[cfg(feature = "ssr")]
-fn op_type_name(op: &duumbi::types::Op) -> &'static str {
+pub fn op_type_name_str(op: &duumbi::types::Op) -> &'static str {
     use duumbi::types::Op;
     match op {
         Op::Const(_) => "Const",
@@ -503,9 +503,105 @@ pub async fn send_chat_message(
     })
 }
 
+/// Synchronously loads initial data for SSR rendering.
+///
+/// Called once at server startup. Returns graph, workspace name, intents, and
+/// module list so the first SSR render has real data (not empty signals).
+#[cfg(feature = "ssr")]
+pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
+    use std::fs;
+
+    let name = workspace
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".to_string());
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut modules = Vec::new();
+
+    let graph_dir = workspace.join(".duumbi/graph");
+    if graph_dir.join("main.jsonld").exists() {
+        nodes.push(GraphNode {
+            id: "app/main".to_string(),
+            label: "app/main".to_string(),
+            node_type: "module".to_string(),
+            badge: None,
+            x: 0.0,
+            y: 0.0,
+            width: 180.0,
+            height: 80.0,
+        });
+        modules.push("app/main".to_string());
+    }
+
+    let stdlib_dir = workspace.join(".duumbi/stdlib");
+    if stdlib_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&stdlib_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    let mod_name = format!("stdlib/{}", entry.file_name().to_string_lossy());
+                    nodes.push(GraphNode {
+                        id: mod_name.clone(),
+                        label: mod_name.clone(),
+                        node_type: "module".to_string(),
+                        badge: None,
+                        x: 0.0,
+                        y: 0.0,
+                        width: 180.0,
+                        height: 80.0,
+                    });
+                    edges.push(GraphEdge {
+                        id: format!("dep:{mod_name}"),
+                        source: "app/main".to_string(),
+                        target: mod_name.clone(),
+                        label: "uses".to_string(),
+                        edge_type: "dependency".to_string(),
+                    });
+                    modules.push(mod_name);
+                }
+            }
+        }
+    }
+
+    let mut intents = Vec::new();
+    let intents_dir = workspace.join(".duumbi/intents");
+    if intents_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&intents_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "yaml") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        let slug = path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                            let description = value["intent"].as_str().unwrap_or(&slug).to_string();
+                            let status = value["status"].as_str().unwrap_or("Unknown").to_string();
+                            intents.push(IntentSummary {
+                                slug,
+                                description,
+                                status,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    InitialData {
+        graph: GraphData { nodes, edges },
+        workspace_name: name,
+        intents,
+        modules,
+    }
+}
+
 /// Returns (label, edge_type) for a graph edge.
 #[cfg(feature = "ssr")]
-fn edge_label_str(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'static str) {
+pub fn edge_label_pair(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'static str) {
     use duumbi::graph::GraphEdge;
     match edge {
         GraphEdge::Left => ("left", "Left"),

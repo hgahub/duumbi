@@ -211,6 +211,105 @@ fn order_by_median(layer_nodes: &mut [Vec<usize>], predecessors: &[Vec<usize>]) 
     }
 }
 
+/// Computes a horizontal (left-to-right) layered layout.
+///
+/// Same Sugiyama algorithm but layers go left→right instead of top→bottom.
+#[must_use]
+pub fn compute_layout_horizontal(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
+    let (mut nodes, _) = compute_layout(data);
+    // Swap x/y coordinates to rotate 90 degrees
+    for node in &mut nodes {
+        std::mem::swap(&mut node.x, &mut node.y);
+        std::mem::swap(&mut node.width, &mut node.height);
+    }
+    let bbox = compute_bbox(&nodes);
+    (nodes, bbox)
+}
+
+/// Computes a radial/circular layout.
+///
+/// Nodes are placed in concentric rings based on their layer assignment.
+/// Layer 0 (roots) go in the center, subsequent layers on larger circles.
+#[must_use]
+pub fn compute_layout_radial(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
+    if data.nodes.is_empty() {
+        return (Vec::new(), BBox::default());
+    }
+
+    // Reuse Sugiyama layer assignment
+    let (layered_nodes, _) = compute_layout(data);
+
+    // Group by layer
+    let max_layer = layered_nodes.iter().map(|n| n.layer).max().unwrap_or(0);
+    let mut by_layer: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    for (i, node) in layered_nodes.iter().enumerate() {
+        by_layer[node.layer].push(i);
+    }
+
+    let ring_spacing = 150.0;
+    let center_x = 400.0;
+    let center_y = 400.0;
+
+    let mut result: Vec<LayoutNode> = layered_nodes;
+
+    for (layer_idx, indices) in by_layer.iter().enumerate() {
+        if layer_idx == 0 && indices.len() == 1 {
+            // Single root node at center
+            result[indices[0]].x = center_x;
+            result[indices[0]].y = center_y;
+            continue;
+        }
+        let radius = if layer_idx == 0 {
+            0.0
+        } else {
+            layer_idx as f64 * ring_spacing
+        };
+        let count = indices.len();
+        for (i, &idx) in indices.iter().enumerate() {
+            let angle =
+                2.0 * std::f64::consts::PI * i as f64 / count as f64 - std::f64::consts::FRAC_PI_2; // start from top
+            result[idx].x = center_x + radius * angle.cos();
+            result[idx].y = center_y + radius * angle.sin();
+        }
+    }
+
+    let bbox = compute_bbox(&result);
+    (result, bbox)
+}
+
+/// Computes the bounding box from positioned nodes.
+fn compute_bbox(nodes: &[LayoutNode]) -> BBox {
+    let mut bbox = BBox {
+        min_x: f64::MAX,
+        min_y: f64::MAX,
+        max_x: f64::MIN,
+        max_y: f64::MIN,
+    };
+    for node in nodes {
+        let left = node.x - node.width / 2.0;
+        let right = node.x + node.width / 2.0;
+        let top = node.y - node.height / 2.0;
+        let bottom = node.y + node.height / 2.0;
+        if left < bbox.min_x {
+            bbox.min_x = left;
+        }
+        if right > bbox.max_x {
+            bbox.max_x = right;
+        }
+        if top < bbox.min_y {
+            bbox.min_y = top;
+        }
+        if bottom > bbox.max_y {
+            bbox.max_y = bottom;
+        }
+    }
+    bbox.min_x -= PADDING;
+    bbox.min_y -= PADDING;
+    bbox.max_x += PADDING;
+    bbox.max_y += PADDING;
+    bbox
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

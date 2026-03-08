@@ -7,5 +7,5 @@ pub mod edge_routing;
 pub mod sugiyama;
 pub mod types;
 
-pub use sugiyama::compute_layout;
+pub use sugiyama::{compute_layout, compute_layout_horizontal, compute_layout_radial};
 pub use types::{LayoutEdge, LayoutNode};
