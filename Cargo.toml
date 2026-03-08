@@ -23,7 +23,7 @@ toml = "1.0.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal"] }
-notify = "8"
+notify = "8.2.0"
 reqwest = { version = "0.13.2", features = ["json", "stream"] }
 axum = { version = "0.8.8", features = ["ws"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
