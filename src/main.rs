@@ -124,6 +124,7 @@ async fn run(cli: Cli) -> Result<()> {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
         }
+        Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
 
@@ -307,6 +308,47 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
         config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
         config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
     })
+}
+
+/// Starts the DUUMBI Studio web platform.
+///
+/// Looks for the `studio` binary next to the running `duumbi` executable
+/// (both are built from the same cargo workspace). If found, execs into it;
+/// otherwise falls back to the Phase 3 visualizer.
+async fn studio(port: u16, _dev: bool) -> Result<()> {
+    let workspace = PathBuf::from(".");
+    if !workspace.join(".duumbi").exists() {
+        anyhow::bail!("No duumbi workspace found. Run `duumbi init` first.");
+    }
+
+    // Try to find the `studio` binary in the same directory as `duumbi`
+    if let Ok(self_path) = std::env::current_exe()
+        && let Some(dir) = self_path.parent()
+    {
+        let studio_bin = dir.join("studio");
+        if studio_bin.exists() {
+            let workspace_abs = fs::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
+            let status = process::Command::new(&studio_bin)
+                .arg("--workspace")
+                .arg(&workspace_abs)
+                .arg("--port")
+                .arg(port.to_string())
+                .status()
+                .with_context(|| format!("Failed to execute '{}'", studio_bin.display()))?;
+            process::exit(status.code().unwrap_or(1));
+        }
+    }
+
+    // Fallback: tell the user how to build, then use Phase 3 viz
+    eprintln!("Note: Full Studio binary not found. Build it with:");
+    eprintln!("  cargo build -p duumbi-studio --features ssr");
+    eprintln!("Falling back to Phase 3 visualizer...\n");
+
+    let graph_path = resolve_input(None)?;
+    let initial = web::watcher::load_initial_graph(&graph_path);
+    let state = web::server::AppState::new(initial, false);
+    let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
+    web::server::run_server(port, state).await
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.
