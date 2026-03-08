@@ -11,18 +11,9 @@ use crate::state::{C4Level, StudioState};
 /// Shows the file explorer (module tree), intent list, and config.
 #[component]
 pub fn Sidebar() -> impl IntoView {
-    let state = expect_context::<StudioState>();
-
-    let is_collapsed = move || state.sidebar_collapsed.get();
-    let toggle = move |_| state.sidebar_collapsed.update(|v| *v = !*v);
-
     view! {
-        <aside class="studio-sidebar" class:collapsed=is_collapsed>
-            <button class="sidebar-toggle" on:click=toggle title="Toggle sidebar">
-                {move || if is_collapsed() { ">" } else { "<" }}
-            </button>
-
-            <div class="sidebar-content" style:display=move || if is_collapsed() { "none" } else { "block" }>
+        <aside class="studio-sidebar">
+            <div class="sidebar-content">
                 // Explorer section
                 <div class="sidebar-section">
                     <h3 class="section-title">"Explorer"</h3>

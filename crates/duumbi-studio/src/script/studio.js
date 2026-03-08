@@ -15,39 +15,64 @@
   function qs(sel, ctx) { return (ctx || document).querySelector(sel); }
   function qsa(sel, ctx) { return (ctx || document).querySelectorAll(sel); }
 
-  // --- Theme toggle (only affects C4 graph area) ---
-  var graphContainer = null;
-  var graphTheme = "dark";
+  // --- Global theme toggle (affects the entire Studio UI) ---
+  var globalTheme = "dark";
   var themeBtn = qs(".theme-toggle");
   if (themeBtn) {
     themeBtn.addEventListener("click", function() {
-      graphContainer = graphContainer || qs(".graph-canvas-container");
-      if (!graphContainer) return;
-      if (graphTheme === "dark") {
-        graphTheme = "light";
-        graphContainer.classList.add("canvas-light");
+      if (globalTheme === "dark") {
+        globalTheme = "light";
+        document.body.classList.remove("theme-dark");
+        document.body.classList.add("theme-light");
         themeBtn.textContent = "\u{1F319}";
-        themeBtn.title = "Dark canvas";
+        themeBtn.title = "Dark mode";
       } else {
-        graphTheme = "dark";
-        graphContainer.classList.remove("canvas-light");
-        themeBtn.textContent = "\u{2600}";
-        themeBtn.title = "Light canvas";
+        globalTheme = "dark";
+        document.body.classList.remove("theme-light");
+        document.body.classList.add("theme-dark");
+        themeBtn.textContent = "\u2600";
+        themeBtn.title = "Light mode";
       }
+      // Canvas follows global theme unless explicitly overridden
+      applyCanvasTheme();
     });
   }
 
-  // --- Sidebar toggle ---
-  const sidebarToggle = qs(".sidebar-toggle");
-  if (sidebarToggle) {
-    sidebarToggle.addEventListener("click", function() {
-      const content = qs(".sidebar-content");
-      if (content) {
-        const hidden = content.style.display === "none";
-        content.style.display = hidden ? "block" : "none";
-        sidebarToggle.textContent = hidden ? "<" : ">";
-      }
-    });
+  // --- Canvas theme toggle (only affects C4 graph area) ---
+  // "auto" means follow global, "light"/"dark" means explicit override.
+  var canvasTheme = "auto";
+
+  function applyCanvasTheme() {
+    var graphContainer = qs(".graph-canvas-container");
+    if (!graphContainer) return;
+    var resolved = canvasTheme === "auto" ? globalTheme : canvasTheme;
+    graphContainer.classList.remove("canvas-light", "canvas-dark");
+    if (resolved === "light") {
+      graphContainer.classList.add("canvas-light");
+    } else {
+      graphContainer.classList.add("canvas-dark");
+    }
+    updateCanvasThemeBtn();
+  }
+
+  function toggleCanvasTheme() {
+    // Cycle: auto → opposite of global → auto
+    var opposite = globalTheme === "dark" ? "light" : "dark";
+    canvasTheme = canvasTheme === "auto" ? opposite : "auto";
+    applyCanvasTheme();
+  }
+
+  function updateCanvasThemeBtn() {
+    var btn = qs(".canvas-theme-btn");
+    if (!btn) return;
+    var resolved = canvasTheme === "auto" ? globalTheme : canvasTheme;
+    if (resolved === "dark") {
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+      btn.title = "Light canvas";
+    } else {
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+      btn.title = "Dark canvas";
+    }
   }
 
   // --- Graph rendering ---
@@ -61,6 +86,10 @@
     // Clear existing content (keep defs)
     g.innerHTML = "";
 
+    // Re-add dot grid background (cleared with g.innerHTML above)
+    ensureDotGridPattern();
+    addDotGridBackground();
+
     // Update viewBox
     if (data.bbox) {
       const b = data.bbox;
@@ -73,6 +102,9 @@
     // Render edges first (paths + labels; connection dots added after nodes)
     if (data.edges) {
       data.edges.forEach(function(edge) {
+        // Skip self-loop edges (e.g. recursive calls)
+        if (edge.source === edge.target) return;
+
         const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
         pathEl.setAttribute("d", edge.path_data);
         pathEl.setAttribute("class", "edge-path edge-" + (edge.edge_type || "default"));
@@ -109,9 +141,13 @@
           group.dataset.exit = "true";
         }
 
+        // Snap initial position to the dot grid
+        var nx = snapToGrid(node.x);
+        var ny = snapToGrid(node.y);
+
         const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        rect.setAttribute("x", node.x - node.width / 2);
-        rect.setAttribute("y", node.y - node.height / 2);
+        rect.setAttribute("x", nx - node.width / 2);
+        rect.setAttribute("y", ny - node.height / 2);
         rect.setAttribute("width", node.width);
         rect.setAttribute("height", node.height);
         rect.setAttribute("rx", "8");
@@ -120,8 +156,8 @@
         group.appendChild(rect);
 
         const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        label.setAttribute("x", node.x);
-        label.setAttribute("y", node.y + 4);
+        label.setAttribute("x", nx);
+        label.setAttribute("y", ny + 4);
         label.setAttribute("text-anchor", "middle");
         label.setAttribute("class", "node-label");
         label.textContent = node.label;
@@ -129,8 +165,8 @@
 
         if (node.badge) {
           var badge = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          badge.setAttribute("x", node.x);
-          badge.setAttribute("y", node.y + node.height / 2 - 6);
+          badge.setAttribute("x", nx);
+          badge.setAttribute("y", ny + node.height / 2 - 6);
           badge.setAttribute("text-anchor", "middle");
           badge.setAttribute("class", "node-badge");
           badge.textContent = node.badge;
@@ -140,15 +176,15 @@
         // Entry/exit markers: small colored indicator
         if (node.node_type && node.node_type.indexOf("entry") !== -1) {
           var marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          marker.setAttribute("cx", node.x - node.width / 2 + 10);
-          marker.setAttribute("cy", node.y - node.height / 2 + 10);
+          marker.setAttribute("cx", nx - node.width / 2 + 10);
+          marker.setAttribute("cy", ny - node.height / 2 + 10);
           marker.setAttribute("r", "5");
           marker.setAttribute("fill", "#3fb950");
           marker.setAttribute("class", "entry-marker");
           group.appendChild(marker);
           var mt = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          mt.setAttribute("x", node.x - node.width / 2 + 20);
-          mt.setAttribute("y", node.y - node.height / 2 + 14);
+          mt.setAttribute("x", nx - node.width / 2 + 20);
+          mt.setAttribute("y", ny - node.height / 2 + 14);
           mt.setAttribute("class", "node-badge");
           mt.setAttribute("fill", "#3fb950");
           mt.setAttribute("font-size", "9");
@@ -157,15 +193,15 @@
         }
         if (node.node_type && node.node_type.indexOf("exit") !== -1) {
           var emarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          emarker.setAttribute("cx", node.x - node.width / 2 + 10);
-          emarker.setAttribute("cy", node.y - node.height / 2 + 10);
+          emarker.setAttribute("cx", nx - node.width / 2 + 10);
+          emarker.setAttribute("cy", ny - node.height / 2 + 10);
           emarker.setAttribute("r", "5");
           emarker.setAttribute("fill", "#d29922");
           emarker.setAttribute("class", "exit-marker");
           group.appendChild(emarker);
           var et = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          et.setAttribute("x", node.x - node.width / 2 + 20);
-          et.setAttribute("y", node.y - node.height / 2 + 14);
+          et.setAttribute("x", nx - node.width / 2 + 20);
+          et.setAttribute("y", ny - node.height / 2 + 14);
           et.setAttribute("class", "node-badge");
           et.setAttribute("fill", "#d29922");
           et.setAttribute("font-size", "9");
@@ -191,24 +227,20 @@
     storeNodePositions();
     updateEdges();
 
-    // Update module list from context data
+    // Update module list from context data and cache for sidebar tree
     if (data.modules) {
-      const moduleList = qs(".module-tree");
-      if (moduleList) {
-        moduleList.innerHTML = "";
-        data.modules.forEach(function(mod) {
-          const li = document.createElement("li");
-          li.className = "module-item";
-          li.innerHTML = '<span class="module-icon">></span><span class="module-name">' +
-            mod + '</span>';
-          li.style.cursor = "pointer";
-          li.addEventListener("click", function() {
-            navigateTo("container", mod);
-          });
-          moduleList.appendChild(li);
-        });
-      }
+      sidebarModules = data.modules;
     }
+    // Cache functions/blocks from current data for sidebar expansion
+    if (currentLevel === "container" && data.nodes) {
+      sidebarFunctions[currentModule] = data.nodes.map(function(n) { return { id: n.id, label: n.label }; });
+    }
+    if (currentLevel === "component" && data.nodes) {
+      var funcKey = currentModule + "/" + currentFunction;
+      sidebarBlocks[funcKey] = data.nodes.map(function(n) { return { id: n.id, label: n.label }; });
+    }
+
+    updateSidebarTree();
   }
 
   // --- Update Inspector panel ---
@@ -244,41 +276,189 @@
     }
   }
 
-  // --- Single click on function/block also drills down (more intuitive) ---
+  // --- Single click — inspector only, no navigation ---
   function onNodeClick(node) {
-    // Update inspector
     updateInspector(node);
+  }
 
-    // Also drill down on single click for navigation
-    if (currentLevel === "context" && node.node_type === "module") {
-      navigateTo("container", node.id);
-    } else if (currentLevel === "container" && node.node_type === "function") {
-      navigateTo("component", currentModule, node.id);
-    } else if (currentLevel === "component" && node.node_type === "block") {
-      navigateTo("code", currentModule, currentFunction, node.id);
-    }
+  // --- Layout persistence across navigation ---
+  // Stores per-view node positions and pan/zoom so manual arrangements survive
+  // level switches. Key format: "context", "container/mod", "component/mod/fn", etc.
+  var savedLayouts = {};
+
+  function viewKey(level, mod, fn, blk) {
+    var parts = [level || currentLevel];
+    if (mod || currentModule) parts.push(mod || currentModule);
+    if (fn  || currentFunction) parts.push(fn  || currentFunction);
+    if (blk || currentBlock)    parts.push(blk || currentBlock);
+    // Include layout type so different layouts have independent saved positions
+    parts.push(currentLayout || "hierarchical");
+    return parts.join("/");
+  }
+
+  function saveCurrentLayout() {
+    var key = viewKey();
+    savedLayouts[key] = {
+      positions: JSON.parse(JSON.stringify(nodePositions)),
+      panX: svgPanX,
+      panY: svgPanY,
+      scale: svgScale
+    };
+  }
+
+  function applyLayoutIfSaved(key) {
+    var saved = savedLayouts[key];
+    if (!saved) return false;
+
+    // Restore pan/zoom
+    svgPanX = saved.panX;
+    svgPanY = saved.panY;
+    svgScale = saved.scale;
+    updateSvgTransform();
+
+    // Restore node positions
+    qsa(".graph-node").forEach(function(group) {
+      var nodeId = group.dataset.nodeId;
+      var pos = saved.positions[nodeId];
+      if (!pos) return;
+      var r = group.querySelector(".node-rect");
+      if (!r) return;
+      var w = pos.w, h = pos.h, cx = pos.cx, cy = pos.cy;
+
+      // Disable transitions for instant restore
+      group.querySelectorAll("*").forEach(function(el) { el.style.transition = "none"; });
+
+      r.setAttribute("x", cx - w / 2);
+      r.setAttribute("y", cy - h / 2);
+      group.querySelectorAll("text").forEach(function(t) {
+        if (t.classList.contains("node-label")) {
+          t.setAttribute("x", cx); t.setAttribute("y", cy + 4);
+        } else if (t.classList.contains("node-badge") && !t.hasAttribute("font-size")) {
+          t.setAttribute("x", cx); t.setAttribute("y", cy + h / 2 - 6);
+        }
+      });
+      group.querySelectorAll("circle").forEach(function(c) {
+        if (c.classList.contains("entry-marker") || c.classList.contains("exit-marker")) {
+          c.setAttribute("cx", cx - w / 2 + 10); c.setAttribute("cy", cy - h / 2 + 10);
+        }
+      });
+      group.querySelectorAll("text[font-size='9']").forEach(function(t) {
+        t.setAttribute("x", cx - w / 2 + 20); t.setAttribute("y", cy - h / 2 + 14);
+      });
+      nodePositions[nodeId] = { cx: cx, cy: cy, w: w, h: h };
+
+      requestAnimationFrame(function() {
+        group.querySelectorAll("*").forEach(function(el) { el.style.transition = ""; });
+      });
+    });
+
+    updateEdges();
+    return true;
+  }
+
+  // --- Sidebar tree state ---
+  var sidebarModules = [];  // cached module names from context level
+  var sidebarFunctions = {}; // moduleId → [{id, label}]
+  var sidebarBlocks = {};    // "moduleId/funcId" → [{id, label}]
+
+  function updateSidebarTree() {
+    var tree = qs(".module-tree");
+    if (!tree) return;
+    tree.innerHTML = "";
+
+    sidebarModules.forEach(function(mod) {
+      var isActiveModule = (currentModule === mod);
+
+      // Module item
+      var li = document.createElement("li");
+      li.className = "module-item" + (isActiveModule ? " tree-active" : "");
+      var arrow = isActiveModule ? "\u25BE" : "\u25B8"; // ▾ or ▸
+      li.innerHTML = '<span class="tree-arrow">' + arrow + '</span>' +
+        '<span class="module-name">' + mod + '</span>';
+      li.style.cursor = "pointer";
+      li.addEventListener("click", function() {
+        navigateTo("container", mod);
+      });
+      tree.appendChild(li);
+
+      // Expanded: show functions if this module is active
+      if (isActiveModule && sidebarFunctions[mod]) {
+        sidebarFunctions[mod].forEach(function(fn) {
+          var isActiveFunc = (currentFunction === fn.id);
+          var fnLi = document.createElement("li");
+          fnLi.className = "module-item tree-child" + (isActiveFunc ? " tree-active" : "");
+          var fnArrow = isActiveFunc ? "\u25BE" : "\u25B8";
+          fnLi.innerHTML = '<span class="tree-arrow">' + fnArrow + '</span>' +
+            '<span class="module-name">' + fn.label + '</span>';
+          fnLi.style.cursor = "pointer";
+          fnLi.addEventListener("click", function() {
+            navigateTo("component", mod, fn.id);
+          });
+          tree.appendChild(fnLi);
+
+          // Expanded: show blocks if this function is active
+          var funcKey = mod + "/" + fn.id;
+          if (isActiveFunc && sidebarBlocks[funcKey]) {
+            sidebarBlocks[funcKey].forEach(function(blk) {
+              var isActiveBlock = (currentBlock === blk.id);
+              var blkLi = document.createElement("li");
+              blkLi.className = "module-item tree-child tree-child-2" + (isActiveBlock ? " tree-active" : "");
+              blkLi.innerHTML = '<span class="tree-arrow">\u25B8</span>' +
+                '<span class="module-name">' + blk.label + '</span>';
+              blkLi.style.cursor = "pointer";
+              blkLi.addEventListener("click", function() {
+                navigateTo("code", mod, fn.id, blk.id);
+              });
+              tree.appendChild(blkLi);
+            });
+          }
+        });
+      }
+    });
   }
 
   // --- Navigation ---
-  function navigateTo(level, module, func, block) {
+  // restoreLayout: true = apply saved positions (level navigation)
+  //                false = always use fresh server data (layout type change)
+  function navigateTo(level, module, func, block, restoreLayout) {
+    if (restoreLayout !== false) {
+      saveCurrentLayout();
+    }
+
     currentLevel = level;
     currentModule = module || null;
     currentFunction = func || null;
     currentBlock = block || null;
 
-    // Update C4 tabs
+    // Update C4 tabs — active state + disabled for unreachable levels
     qsa(".c4-tab").forEach(function(tab) {
-      tab.classList.toggle("active", tab.textContent.toLowerCase() === level);
+      var tabLevel = tab.textContent.toLowerCase();
+      tab.classList.toggle("active", tabLevel === level);
+      var reachable = tabLevel === "context"
+        || (tabLevel === "container" && !!(module || currentModule))
+        || (tabLevel === "component" && !!(func || currentFunction))
+        || (tabLevel === "code" && !!(block || currentBlock));
+      tab.classList.toggle("disabled", !reachable);
+      tab.disabled = !reachable;
     });
 
     // Update breadcrumb
     updateBreadcrumb();
 
-    // Reset zoom/pan on navigation
-    svgScale = 1;
-    svgPanX = 0;
-    svgPanY = 0;
-    updateGrid();
+    var targetKey = viewKey(level, module, func, block);
+
+    // Restore pan/zoom from saved layout (only when doing level navigation)
+    if (restoreLayout !== false) {
+      var saved = savedLayouts[targetKey];
+      if (saved) {
+        svgPanX = saved.panX; svgPanY = saved.panY; svgScale = saved.scale;
+      } else {
+        svgScale = 1; svgPanX = 0; svgPanY = 0;
+      }
+    } else {
+      svgScale = 1; svgPanX = 0; svgPanY = 0;
+    }
+    updateSvgTransform();
 
     // Fetch data
     var url = "/api/graph/" + level;
@@ -292,11 +472,12 @@
     fetch(url)
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (data.error) {
-          console.error("API error:", data.error);
-          return;
-        }
+        if (data.error) { console.error("API error:", data.error); return; }
         renderGraph(data);
+        // Apply saved positions only for level navigation (not layout type change)
+        if (restoreLayout !== false) { applyLayoutIfSaved(targetKey); }
+        storeNodePositions();
+        updateEdges();
       })
       .catch(function(e) { console.error("Fetch error:", e); });
   }
@@ -417,21 +598,58 @@
   });
 
   // --- Grid size constant ---
-  var GRID_BASE = 24;
+  var GRID_BASE = 12; // dot grid spacing — doubled density vs. original 24px
+  var SNAP_STEP = GRID_BASE; // snap exactly to each dot
 
-  // Snap value to nearest grid point
+  // Snap value to nearest snap point
   function snapToGrid(val) {
-    return Math.round(val / GRID_BASE) * GRID_BASE;
+    return Math.round(val / SNAP_STEP) * SNAP_STEP;
   }
 
-  // Update CSS dot grid to match zoom + pan
-  function updateGrid() {
-    var container = qs(".graph-canvas-container");
-    if (!container) return;
-    var gSize = GRID_BASE * svgScale;
-    container.style.backgroundSize = gSize + "px " + gSize + "px";
-    container.style.backgroundPosition = svgPanX + "px " + svgPanY + "px";
+  // Inject SVG dot-grid pattern into <defs> if not already present.
+  // The pattern lives in SVG coordinate space inside the <g> element,
+  // so it automatically follows pan/zoom without any extra updates.
+  function ensureDotGridPattern() {
+    if (!svgCanvas) return;
+    var defs = svgCanvas.querySelector("defs");
+    if (!defs) return;
+    if (defs.querySelector("#dot-grid-pattern")) return;
+    var ns = "http://www.w3.org/2000/svg";
+    var pattern = document.createElementNS(ns, "pattern");
+    pattern.setAttribute("id", "dot-grid-pattern");
+    pattern.setAttribute("width", GRID_BASE);
+    pattern.setAttribute("height", GRID_BASE);
+    pattern.setAttribute("patternUnits", "userSpaceOnUse");
+    var dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", GRID_BASE / 2);
+    dot.setAttribute("cy", GRID_BASE / 2);
+    dot.setAttribute("r", "0.8");
+    dot.setAttribute("class", "dot-grid-dot");
+    pattern.appendChild(dot);
+    defs.appendChild(pattern);
   }
+
+  // Add/refresh the background rect that renders the dot grid inside <g>.
+  // Must be called after every renderGraph() call that clears g.innerHTML.
+  function addDotGridBackground() {
+    if (!svgCanvas) return;
+    var g = svgCanvas.querySelector("g");
+    if (!g) return;
+    if (g.querySelector(".dot-grid-bg")) return;
+    var ns = "http://www.w3.org/2000/svg";
+    var rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("class", "dot-grid-bg");
+    rect.setAttribute("x", "-50000");
+    rect.setAttribute("y", "-50000");
+    rect.setAttribute("width", "100000");
+    rect.setAttribute("height", "100000");
+    rect.setAttribute("fill", "url(#dot-grid-pattern)");
+    rect.setAttribute("pointer-events", "none");
+    g.insertBefore(rect, g.firstChild);
+  }
+
+  // No-op: grid alignment is now handled by the SVG pattern (no CSS needed)
+  function updateGrid() {}
 
   // --- SVG Pan/Zoom ---
   var svgCanvas = qs(".graph-canvas");
@@ -447,20 +665,43 @@
     updateGrid();
   }
 
+  // Convert screen (client) coordinates to SVG viewBox coordinates
+  function screenToSvg(clientX, clientY) {
+    var ctm = svgCanvas.getScreenCTM();
+    if (ctm) {
+      var inv = ctm.inverse();
+      return { x: inv.a * clientX + inv.c * clientY + inv.e,
+               y: inv.b * clientX + inv.d * clientY + inv.f };
+    }
+    var rect = svgCanvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
   if (svgCanvas) {
     svgCanvas.addEventListener("wheel", function(e) {
       e.preventDefault();
-      var factor = 1 + Math.min(Math.abs(e.deltaY), 50) * 0.002;
+
+      // macOS trackpad: ctrlKey=true for pinch-to-zoom, false for two-finger scroll
+      if (!e.ctrlKey) {
+        // Two-finger scroll → pan
+        var pt1 = screenToSvg(0, 0);
+        var pt2 = screenToSvg(e.deltaX, e.deltaY);
+        svgPanX -= (pt2.x - pt1.x);
+        svgPanY -= (pt2.y - pt1.y);
+        updateSvgTransform();
+        return;
+      }
+
+      // Pinch-to-zoom or ctrl+scroll → zoom
+      var factor = 1 + Math.min(Math.abs(e.deltaY), 50) * 0.01;
       var delta = e.deltaY > 0 ? 1 / factor : factor;
       var newScale = svgScale * delta;
       newScale = Math.max(0.2, Math.min(4, newScale));
 
-      // Zoom toward mouse position
-      var rect = svgCanvas.getBoundingClientRect();
-      var mx = e.clientX - rect.left;
-      var my = e.clientY - rect.top;
-      svgPanX = mx - (mx - svgPanX) * (newScale / svgScale);
-      svgPanY = my - (my - svgPanY) * (newScale / svgScale);
+      // Zoom toward mouse position using accurate SVG coordinate conversion
+      var mx = screenToSvg(e.clientX, e.clientY);
+      svgPanX = mx.x - (mx.x - svgPanX) * (newScale / svgScale);
+      svgPanY = mx.y - (mx.y - svgPanY) * (newScale / svgScale);
       svgScale = newScale;
       updateSvgTransform();
     }, { passive: false });
@@ -474,8 +715,11 @@
 
     svgCanvas.addEventListener("mousemove", function(e) {
       if (!svgDragging) return;
-      svgPanX += (e.clientX - svgLastX);
-      svgPanY += (e.clientY - svgLastY);
+      // Convert screen pixel delta to viewBox coordinate delta
+      var pt1 = screenToSvg(svgLastX, svgLastY);
+      var pt2 = screenToSvg(e.clientX, e.clientY);
+      svgPanX += (pt2.x - pt1.x);
+      svgPanY += (pt2.y - pt1.y);
       svgLastX = e.clientX;
       svgLastY = e.clientY;
       updateSvgTransform();
@@ -505,21 +749,38 @@
     });
   }
 
-  // Compute connection point on the border of a node rect toward a target point.
-  function borderPoint(nodePos, tx, ty) {
+  // Determine which side of a node rect faces toward a target point.
+  // Returns "top", "bottom", "left", or "right".
+  function borderSide(nodePos, tx, ty) {
+    var dx = tx - nodePos.cx, dy = ty - nodePos.cy;
+    var hw = nodePos.w / 2, hh = nodePos.h / 2;
+    if (dx === 0 && dy === 0) return "bottom";
+    var absDx = Math.abs(dx), absDy = Math.abs(dy);
+    if (absDx * hh > absDy * hw) {
+      return dx > 0 ? "right" : "left";
+    } else {
+      return dy > 0 ? "bottom" : "top";
+    }
+  }
+
+  // Compute an evenly-distributed connection point on a node's side.
+  // `index` is the 0-based slot, `count` is the total edges on that side.
+  function distributedBorderPoint(nodePos, side, index, count) {
     var cx = nodePos.cx, cy = nodePos.cy;
     var hw = nodePos.w / 2, hh = nodePos.h / 2;
-    var dx = tx - cx, dy = ty - cy;
-    if (dx === 0 && dy === 0) return { x: cx, y: cy + hh };
-    // Find intersection with rect border
-    var absDx = Math.abs(dx), absDy = Math.abs(dy);
-    var scale;
-    if (absDx * hh > absDy * hw) {
-      scale = hw / absDx;
-    } else {
-      scale = hh / absDy;
+    var frac = (index + 1) / (count + 1); // e.g. 1 edge → 1/2, 2 edges → 1/3, 2/3
+    switch (side) {
+      case "top":
+        return { x: cx - hw + nodePos.w * frac, y: cy - hh };
+      case "bottom":
+        return { x: cx - hw + nodePos.w * frac, y: cy + hh };
+      case "left":
+        return { x: cx - hw, y: cy - hh + nodePos.h * frac };
+      case "right":
+        return { x: cx + hw, y: cy - hh + nodePos.h * frac };
+      default:
+        return { x: cx, y: cy + hh };
     }
-    return { x: cx + dx * scale, y: cy + dy * scale };
   }
 
   // Recompute all edge paths and connection dots from current node positions.
@@ -530,16 +791,57 @@
     // Remove old connection dots
     g.querySelectorAll(".conn-dot").forEach(function(d) { d.remove(); });
 
-    g.querySelectorAll(".edge-path").forEach(function(pathEl) {
+    // Collect all edge-path elements
+    var edgePaths = Array.prototype.slice.call(g.querySelectorAll(".edge-path"));
+
+    // First pass: count edges per (node, side) so we can distribute them.
+    // Key: "nodeId:side", value: array of edge indices
+    var portMap = {};
+    var edgeInfo = []; // parallel to edgePaths
+
+    edgePaths.forEach(function(pathEl, i) {
       var srcId = pathEl.dataset.edgeSrc;
       var tgtId = pathEl.dataset.edgeTgt;
+      // Hide self-loop edges (e.g. recursive calls)
+      if (srcId === tgtId) {
+        pathEl.style.display = "none";
+        edgeInfo.push(null);
+        return;
+      }
       var src = nodePositions[srcId];
       var tgt = nodePositions[tgtId];
-      if (!src || !tgt) return;
+      if (!src || !tgt) {
+        edgeInfo.push(null);
+        return;
+      }
 
-      // Connection points on borders
-      var sp = borderPoint(src, tgt.cx, tgt.cy);
-      var tp = borderPoint(tgt, src.cx, src.cy);
+      var srcSide = borderSide(src, tgt.cx, tgt.cy);
+      var tgtSide = borderSide(tgt, src.cx, src.cy);
+
+      var srcKey = srcId + ":" + srcSide;
+      var tgtKey = tgtId + ":" + tgtSide;
+      if (!portMap[srcKey]) portMap[srcKey] = [];
+      if (!portMap[tgtKey]) portMap[tgtKey] = [];
+      portMap[srcKey].push(i);
+      portMap[tgtKey].push(i);
+
+      edgeInfo.push({ srcId: srcId, tgtId: tgtId, srcSide: srcSide, tgtSide: tgtSide, srcKey: srcKey, tgtKey: tgtKey });
+    });
+
+    // Second pass: compute positions and draw paths + dots
+    edgePaths.forEach(function(pathEl, i) {
+      var info = edgeInfo[i];
+      if (!info) return;
+      var src = nodePositions[info.srcId];
+      var tgt = nodePositions[info.tgtId];
+
+      var srcSlots = portMap[info.srcKey];
+      var tgtSlots = portMap[info.tgtKey];
+      var srcIdx = srcSlots.indexOf(i);
+      var tgtIdx = tgtSlots.indexOf(i);
+
+      var sp = distributedBorderPoint(src, info.srcSide, srcIdx, srcSlots.length);
+      var tp = distributedBorderPoint(tgt, info.tgtSide, tgtIdx, tgtSlots.length);
 
       // Orthogonal path
       var midY = (sp.y + tp.y) / 2;
@@ -556,19 +858,20 @@
         labelEl.setAttribute("y", midY - 4);
       }
 
-      // Connection dots
+      // Source dot (origin) — larger
       var dot1 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       dot1.setAttribute("cx", sp.x);
       dot1.setAttribute("cy", sp.y);
-      dot1.setAttribute("r", "3");
-      dot1.setAttribute("class", "conn-dot");
+      dot1.setAttribute("r", "5");
+      dot1.setAttribute("class", "conn-dot conn-dot-src");
       g.appendChild(dot1);
 
+      // Target dot (destination)
       var dot2 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       dot2.setAttribute("cx", tp.x);
       dot2.setAttribute("cy", tp.y);
       dot2.setAttribute("r", "3");
-      dot2.setAttribute("class", "conn-dot");
+      dot2.setAttribute("class", "conn-dot conn-dot-tgt");
       g.appendChild(dot2);
     });
   }
@@ -577,6 +880,8 @@
   var dragNode = null;
   var dragStartX = 0, dragStartY = 0;
   var dragOffsetX = 0, dragOffsetY = 0;
+  var dragMoved = false;
+  var DRAG_THRESHOLD = 4; // px in SVG coords before drag is considered "real"
 
   function enableNodeDrag() {
     if (!svgCanvas) return;
@@ -586,6 +891,7 @@
       if (!nodeGroup) return;
       e.stopPropagation();
       dragNode = nodeGroup;
+      dragMoved = false;
 
       // Convert screen coords to SVG coords
       var pt = svgCanvas.createSVGPoint();
@@ -618,6 +924,10 @@
 
       dragOffsetX = svgPt.x - dragStartX;
       dragOffsetY = svgPt.y - dragStartY;
+
+      if (!dragMoved && (Math.abs(dragOffsetX) > DRAG_THRESHOLD || Math.abs(dragOffsetY) > DRAG_THRESHOLD)) {
+        dragMoved = true;
+      }
 
       // Move the entire group via transform — all children move together
       dragNode.setAttribute("transform", "translate(" + dragOffsetX + "," + dragOffsetY + ")");
@@ -655,8 +965,11 @@
         var newCx = snapToGrid(ox + w / 2 + dragOffsetX);
         var newCy = snapToGrid(oy + h / 2 + dragOffsetY);
 
-        // Remove group transform and update child attributes directly
-        dragNode.removeAttribute("transform");
+        // Disable transitions on all children to prevent snap-back animation,
+        // then update coordinates and remove transform atomically.
+        dragNode.querySelectorAll("*").forEach(function(el) {
+          el.style.transition = "none";
+        });
 
         r.setAttribute("x", newCx - w / 2);
         r.setAttribute("y", newCy - h / 2);
@@ -686,6 +999,17 @@
           t.setAttribute("y", newCy - h / 2 + 14);
         });
 
+        // Remove group transform now that attributes are already at final position
+        dragNode.removeAttribute("transform");
+
+        // Re-enable transitions after the browser has committed the new layout
+        var nodeGroupRef = dragNode;
+        requestAnimationFrame(function() {
+          nodeGroupRef.querySelectorAll("*").forEach(function(el) {
+            el.style.transition = "";
+          });
+        });
+
         // Update stored position
         var nodeId = dragNode.dataset.nodeId;
         nodePositions[nodeId] = { cx: newCx, cy: newCy, w: w, h: h };
@@ -693,11 +1017,32 @@
 
       updateEdges();
       dragNode.style.opacity = "";
+
+      // If the node was dragged, suppress the next click event so it doesn't trigger navigation
+      if (dragMoved) {
+        svgCanvas.addEventListener("click", function suppressClick(e) {
+          e.stopPropagation();
+          svgCanvas.removeEventListener("click", suppressClick, true);
+        }, true);
+      }
+
       dragNode = null;
+      dragMoved = false;
     });
   }
 
   enableNodeDrag();
+
+  // --- Viewport actions ---
+
+  // Fit all nodes into the current canvas viewport.
+  function fitContents() {
+    // Reset to initial state — the viewBox already fits the content perfectly.
+    svgScale = 1;
+    svgPanX = 0;
+    svgPanY = 0;
+    updateSvgTransform();
+  }
 
   // --- Layout Toolbar (right side of graph area) ---
   var currentLayout = "hierarchical";
@@ -734,20 +1079,49 @@
       btn.title = l.title;
       btn.dataset.layout = l.id;
       btn.addEventListener("click", function() {
+        // Save current arrangement under old layout key before switching
+        saveCurrentLayout();
         currentLayout = l.id;
         qsa(".layout-btn").forEach(function(b) { b.classList.remove("active"); });
         btn.classList.add("active");
-        // Re-fetch with layout param
+        // Re-fetch with new layout — navigateTo will use new key, no stale positions
         reloadCurrentView();
       });
       toolbar.appendChild(btn);
     });
 
+    // Separator
+    var sep = document.createElement("div");
+    sep.className = "layout-toolbar-sep";
+    toolbar.appendChild(sep);
+
+    // Fit to screen button
+    var fitBtn = document.createElement("button");
+    fitBtn.className = "layout-btn";
+    fitBtn.title = "Fit to screen";
+    fitBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="3"/><rect x="6" y="8" width="10" height="8" rx="1.5"/><polyline points="6 8 2 4"/><polyline points="16 8 20 4"/></svg>';
+    fitBtn.addEventListener("click", fitContents);
+    toolbar.appendChild(fitBtn);
+
+    // Separator
+    var sep2 = document.createElement("div");
+    sep2.className = "layout-toolbar-sep";
+    toolbar.appendChild(sep2);
+
+    // Canvas-only theme toggle button
+    var canvasBtn = document.createElement("button");
+    canvasBtn.className = "layout-btn canvas-theme-btn";
+    canvasBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+    canvasBtn.title = "Light canvas";
+    canvasBtn.addEventListener("click", toggleCanvasTheme);
+    toolbar.appendChild(canvasBtn);
+
     container.appendChild(toolbar);
   }
 
   function reloadCurrentView() {
-    navigateTo(currentLevel, currentModule, currentFunction, currentBlock);
+    // Layout type changed — always use fresh server data, don't restore saved positions
+    navigateTo(currentLevel, currentModule, currentFunction, currentBlock, false);
   }
 
   addLayoutToolbar();

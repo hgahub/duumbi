@@ -264,29 +264,6 @@ html, body {
     overflow-y: auto;
 }
 
-.studio-sidebar.collapsed {
-    width: 48px;
-}
-
-.sidebar-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 32px;
-    border: none;
-    background: var(--ds-bg-surface);
-    color: var(--ds-text-muted);
-    cursor: pointer;
-    font-size: var(--ds-font-size-lg);
-    border-bottom: 1px solid var(--ds-border-muted);
-}
-
-.sidebar-toggle:hover {
-    background: var(--ds-bg-elevated);
-    color: var(--ds-text-primary);
-}
-
 .sidebar-content {
     padding: var(--ds-space-sm);
 }
@@ -330,6 +307,28 @@ html, body {
     color: var(--ds-text-muted);
     font-family: var(--ds-font-mono);
     font-size: var(--ds-font-size-xs);
+}
+
+/* Sidebar tree structure */
+.tree-arrow {
+    color: var(--ds-text-muted);
+    font-size: var(--ds-font-size-xs);
+    width: 12px;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.tree-child {
+    padding-left: calc(var(--ds-space-sm) + 14px);
+}
+
+.tree-child-2 {
+    padding-left: calc(var(--ds-space-sm) + 28px);
+}
+
+.module-item.tree-active {
+    color: var(--ds-text-primary);
+    background: var(--ds-bg-elevated);
 }
 
 .intent-list {
@@ -406,12 +405,16 @@ html, body {
     position: relative;
     background: var(--ds-bg-primary);
     overflow: hidden;
-    /* IcePanel-style dot grid */
-    background-image: radial-gradient(circle, var(--ds-border) 1.2px, transparent 1.2px);
-    background-size: 24px 24px;
+    /* Dot grid is now rendered as an SVG pattern inside the canvas
+       so it moves/scales correctly with pan and zoom. */
 }
 
-/* Light canvas mode — only the graph area goes light */
+/* SVG dot-grid dots — colour follows CSS custom properties */
+.dot-grid-dot {
+    fill: var(--ds-border);
+}
+
+/* Light canvas mode — overrides global theme, always light */
 .graph-canvas-container.canvas-light {
     --ds-bg-primary: #f8f9fa;
     --ds-bg-card: #ffffff;
@@ -421,7 +424,18 @@ html, body {
     --ds-text-secondary: #656d76;
     --ds-text-muted: #8c959f;
     background-color: #f8f9fa;
-    background-image: radial-gradient(circle, #c8cdd3 1.2px, transparent 1.2px);
+}
+
+/* Dark canvas mode — overrides global theme, always dark */
+.graph-canvas-container.canvas-dark {
+    --ds-bg-primary: #0d1117;
+    --ds-bg-card: #1c2128;
+    --ds-border: #30363d;
+    --ds-border-muted: #21262d;
+    --ds-text-primary: #e6edf3;
+    --ds-text-secondary: #8b949e;
+    --ds-text-muted: #6e7681;
+    background-color: #0d1117;
 }
 
 /* Layout toolbar — vertical, right side of graph area */
@@ -463,6 +477,12 @@ html, body {
     color: #ffffff;
 }
 
+.layout-toolbar-sep {
+    height: 1px;
+    background: var(--ds-border);
+    margin: 3px 2px;
+}
+
 .graph-canvas {
     width: 100%;
     height: 100%;
@@ -502,6 +522,12 @@ html, body {
 .c4-tab.active {
     background: var(--ds-accent);
     color: #ffffff;
+}
+
+.c4-tab.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
 }
 
 /* --- SVG Graph Nodes --- */
@@ -618,7 +644,14 @@ html, body {
 /* Connection dots at edge endpoints */
 .conn-dot {
     fill: var(--ds-text-muted);
-    opacity: 0.7;
+}
+
+.conn-dot-src {
+    opacity: 0.9;
+}
+
+.conn-dot-tgt {
+    opacity: 0.5;
 }
 
 /* Dragging node visual feedback */

@@ -213,17 +213,87 @@ fn order_by_median(layer_nodes: &mut [Vec<usize>], predecessors: &[Vec<usize>]) 
 
 /// Computes a horizontal (left-to-right) layered layout.
 ///
-/// Same Sugiyama algorithm but layers go left→right instead of top→bottom.
+/// Layers progress along the x-axis; nodes within a layer are spread on the y-axis.
+/// Node width/height are preserved — only positions change.
 #[must_use]
 pub fn compute_layout_horizontal(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
-    let (mut nodes, _) = compute_layout(data);
-    // Swap x/y coordinates to rotate 90 degrees
-    for node in &mut nodes {
-        std::mem::swap(&mut node.x, &mut node.y);
-        std::mem::swap(&mut node.width, &mut node.height);
+    if data.nodes.is_empty() {
+        return (Vec::new(), BBox::default());
     }
-    let bbox = compute_bbox(&nodes);
-    (nodes, bbox)
+
+    // Reuse layer assignment and ordering from the vertical algorithm.
+    let node_ids: Vec<&str> = data.nodes.iter().map(|n| n.id.as_str()).collect();
+    let id_to_idx: std::collections::HashMap<&str, usize> = node_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i))
+        .collect();
+
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); data.nodes.len()];
+    let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); data.nodes.len()];
+    for edge in &data.edges {
+        if let (Some(&src), Some(&tgt)) = (
+            id_to_idx.get(edge.source.as_str()),
+            id_to_idx.get(edge.target.as_str()),
+        ) {
+            successors[src].push(tgt);
+            predecessors[tgt].push(src);
+        }
+    }
+
+    let layers = assign_layers(&successors, &predecessors, data.nodes.len());
+    let max_layer = layers.iter().copied().max().unwrap_or(0);
+    let mut layer_nodes: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    for (idx, &layer) in layers.iter().enumerate() {
+        layer_nodes[layer].push(idx);
+    }
+    order_by_median(&mut layer_nodes, &predecessors);
+
+    // Horizontal spacing: layers along x, nodes within layer along y.
+    // Use node width to determine column spacing, node height for row spacing.
+    let col_spacing = 200.0_f64; // x gap between layer centres
+    let row_spacing = 80.0_f64; // y gap between nodes in the same layer
+
+    let mut layout_nodes: Vec<LayoutNode> = data
+        .nodes
+        .iter()
+        .map(|n| LayoutNode {
+            id: n.id.clone(),
+            label: n.label.clone(),
+            node_type: n.node_type.clone(),
+            badge: n.badge.clone(),
+            x: 0.0,
+            y: 0.0,
+            width: n.width,
+            height: n.height,
+            layer: 0,
+            order: 0,
+        })
+        .collect();
+
+    for (layer_idx, nodes_in_layer) in layer_nodes.iter().enumerate() {
+        let x = PADDING + layer_idx as f64 * col_spacing;
+
+        // Total height of this column
+        let total_h: f64 = nodes_in_layer
+            .iter()
+            .map(|&i| data.nodes[i].height)
+            .sum::<f64>()
+            + (nodes_in_layer.len().saturating_sub(1)) as f64 * row_spacing;
+
+        let mut y = PADDING - total_h / 2.0 + 300.0; // centre around 300 px
+
+        for &idx in nodes_in_layer {
+            let h = data.nodes[idx].height;
+            layout_nodes[idx].x = x;
+            layout_nodes[idx].y = y + h / 2.0;
+            layout_nodes[idx].layer = layer_idx;
+            y += h + row_spacing;
+        }
+    }
+
+    let bbox = compute_bbox(&layout_nodes);
+    (layout_nodes, bbox)
 }
 
 /// Computes a radial/circular layout.

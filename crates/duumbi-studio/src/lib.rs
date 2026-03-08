@@ -365,8 +365,6 @@ fn load_block_ops_with(
         .map(|&idx| graph.graph[idx].id.to_string())
         .collect();
 
-    let mut has_incoming: std::collections::HashSet<String> = std::collections::HashSet::new();
-
     for &node_idx in &block.nodes {
         let node = &graph.graph[node_idx];
         let result_type = node
@@ -395,38 +393,47 @@ fn load_block_ops_with(
             height: 45.0,
         });
 
+        // Branch nodes get TrueBlock/FalseBlock edges to show execution paths.
+        // All other data-dependency edges (Left, Right, Operand, Arg) are
+        // intentionally omitted — this view shows execution flow, not data flow.
+        use duumbi::graph::GraphEdge as GE;
         use petgraph::visit::EdgeRef;
         for edge_ref in graph
             .graph
-            .edges_directed(node_idx, petgraph::Direction::Incoming)
+            .edges_directed(node_idx, petgraph::Direction::Outgoing)
         {
-            let source_node = &graph.graph[edge_ref.source()];
-            if block_node_ids.contains(&source_node.id.to_string()) {
-                let (label, edge_type) = server_fns::edge_label_pair(edge_ref.weight());
-                edges.push(state::GraphEdge {
-                    id: format!("e:{}:{}", source_node.id, node.id),
-                    source: source_node.id.to_string(),
-                    target: node.id.to_string(),
-                    label: label.to_string(),
-                    edge_type: edge_type.to_string(),
-                });
-                has_incoming.insert(node.id.to_string());
+            let target_node = &graph.graph[edge_ref.target()];
+            let target_id = target_node.id.to_string();
+            match edge_ref.weight() {
+                GE::TrueBlock | GE::FalseBlock => {
+                    let (label, edge_type) = server_fns::edge_label_pair(edge_ref.weight());
+                    if block_node_ids.contains(&target_id) {
+                        edges.push(state::GraphEdge {
+                            id: format!("e:{}:{}", node.id, target_id),
+                            source: node.id.to_string(),
+                            target: target_id,
+                            label: label.to_string(),
+                            edge_type: edge_type.to_string(),
+                        });
+                    }
+                }
+                _ => {} // data-dependency edges hidden in execution-flow view
             }
         }
     }
 
-    for i in 1..block_node_ids.len() {
-        let cur_id = &block_node_ids[i];
-        if !has_incoming.contains(cur_id) {
-            let prev_id = &block_node_ids[i - 1];
-            edges.push(state::GraphEdge {
-                id: format!("seq:{prev_id}:{cur_id}"),
-                source: prev_id.clone(),
-                target: cur_id.clone(),
-                label: "seq".to_string(),
-                edge_type: "sequence".to_string(),
-            });
-        }
+    // Sequential execution edges between consecutive ops in the block.
+    // This represents the normal "fall-through" execution order.
+    for i in 0..block_node_ids.len().saturating_sub(1) {
+        let src = &block_node_ids[i];
+        let tgt = &block_node_ids[i + 1];
+        edges.push(state::GraphEdge {
+            id: format!("seq:{src}:{tgt}"),
+            source: src.clone(),
+            target: tgt.clone(),
+            label: String::new(),
+            edge_type: "sequence".to_string(),
+        });
     }
 
     let gd = state::GraphData { nodes, edges };

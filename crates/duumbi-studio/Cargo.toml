@@ -26,6 +26,11 @@ web-sys = { version = "0.3.91", features = ["WheelEvent", "MouseEvent", "HtmlInp
 wasm-bindgen = "0.2.114"
 console_error_panic_hook = "0.1.7"
 
+[[bin]]
+name = "studio"
+path = "src/bin/studio.rs"
+required-features = ["ssr"]
+
 [features]
 default = []
 ssr = ["leptos/ssr", "leptos_axum", "axum", "tokio", "tower-http", "serde_yaml", "toml", "petgraph", "tracing-subscriber"]
