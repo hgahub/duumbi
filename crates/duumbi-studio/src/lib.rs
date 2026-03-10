@@ -58,6 +58,17 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))
+        // JSON API for raw JSON-LD source (used by code view toggle)
+        .route(
+            "/api/source",
+            get({
+                let ws = api_ws.clone();
+                move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    let ws = ws.clone();
+                    async move { api_source(ws, query.0).await }
+                }
+            }),
+        )
         // JSON API for graph data (used by client JS)
         .route(
             "/api/graph/{level}",
@@ -181,6 +192,39 @@ async fn api_graph(
             http::StatusCode::BAD_REQUEST,
             [(http::header::CONTENT_TYPE, "application/json")],
             serde_json::json!({"error": e}).to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// JSON API handler for raw JSON-LD source of a module.
+///
+/// `GET /api/source?module=app/main` → `{"source": "<raw json-ld>", "path": "app/main"}`
+#[cfg(feature = "ssr")]
+async fn api_source(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    params: std::collections::HashMap<String, String>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let module = params
+        .get("module")
+        .cloned()
+        .unwrap_or("app/main".to_string());
+
+    let path = resolve_module_path(&ws.root, &module);
+    match std::fs::read_to_string(&path) {
+        Ok(source) => (
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"source": source, "path": module}).to_string(),
+        )
+            .into_response(),
+        Err(e) => (
+            http::StatusCode::BAD_REQUEST,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Read {}: {e}", path.display())}).to_string(),
         )
             .into_response(),
     }

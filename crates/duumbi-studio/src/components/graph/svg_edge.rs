@@ -26,6 +26,7 @@ pub fn SvgEdge(edge: LayoutEdge) -> impl IntoView {
                         x=edge.label_x
                         y=edge.label_y
                         text-anchor="middle"
+                        dominant-baseline="central"
                         class="edge-label"
                     >
                         {edge.label.clone()}

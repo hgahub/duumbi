@@ -11,6 +11,20 @@
   let currentFunction = null;
   let currentBlock = null;
 
+  // Code view state
+  var codeViewActive = false;
+  var lastGraphData = null;
+
+  // Filter state
+  var activeFilters = {};
+  var filterPopupVisible = false;
+  var TYPE_COLORS = {
+    person: "#58a6ff", system: "#388bfd", external: "#8b949e",
+    container: "#a371f7", component: "#3fb950", boundary: "#30363d",
+    module: "#388bfd", "function": "#a371f7", block: "#3fb950",
+    "component-dead": "#6e7681", "component-sub": "#d2a8ff"
+  };
+
   // --- Helpers ---
   function qs(sel, ctx) { return (ctx || document).querySelector(sel); }
   function qsa(sel, ctx) { return (ctx || document).querySelectorAll(sel); }
@@ -173,6 +187,7 @@
 
   // --- Graph rendering ---
   function renderGraph(data) {
+    lastGraphData = data;
     const svg = qs(".graph-canvas");
     if (!svg) return;
 
@@ -212,8 +227,9 @@
         if (edge.label && edge.label_x) {
           const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
           text.setAttribute("x", edge.label_x);
-          text.setAttribute("y", edge.label_y - 4);
+          text.setAttribute("y", edge.label_y);
           text.setAttribute("text-anchor", "middle");
+          text.setAttribute("dominant-baseline", "central");
           text.setAttribute("class", "edge-label");
           text.textContent = edge.label;
           g.appendChild(text);
@@ -248,7 +264,7 @@
       });
 
       // Compute bounding box of children
-      var pad = 30;
+      var pad = 40;
       var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       childIds.forEach(function(cid) {
         var el = qs('[data-node-id="' + cid + '"]');
@@ -271,11 +287,11 @@
         return;
       }
 
-      // Compute boundary rect around children
+      // Compute boundary rect around children (extra 28px top for title)
       var bx = minX - pad;
-      var by = minY - pad;
+      var by = minY - pad - 28;
       var bw = maxX - minX + 2 * pad;
-      var bh = maxY - minY + 2 * pad;
+      var bh = maxY - minY + 2 * pad + 28;
 
       var group = document.createElementNS("http://www.w3.org/2000/svg", "g");
       group.setAttribute("class", "graph-node node-boundary");
@@ -294,12 +310,12 @@
       rect.setAttribute("class", "node-rect");
       group.appendChild(rect);
 
-      // Label at top-right of boundary
+      // Label at top-left of boundary
       var lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      lbl.setAttribute("x", bx + bw - 10);
+      lbl.setAttribute("x", bx + 16);
       lbl.setAttribute("y", by + 20);
-      lbl.setAttribute("text-anchor", "end");
-      lbl.setAttribute("class", "node-label");
+      lbl.setAttribute("text-anchor", "start");
+      lbl.setAttribute("class", "node-label boundary-label");
       lbl.textContent = bNode.label;
       group.appendChild(lbl);
 
@@ -318,6 +334,58 @@
       nodePositions[bNode.id] = {
         cx: bx + bw / 2, cy: by + bh / 2, w: bw, h: bh
       };
+    });
+
+    // Push external nodes away from boundary rects to ensure spacing
+    boundaryNodes.forEach(function(bNode) {
+      var bEl = qs('[data-node-id="' + bNode.id + '"]');
+      if (!bEl) return;
+      var bRect = bEl.querySelector(".node-rect");
+      if (!bRect) return;
+      var bbx = parseFloat(bRect.getAttribute("x"));
+      var bby = parseFloat(bRect.getAttribute("y"));
+      var bbw = parseFloat(bRect.getAttribute("width"));
+      var bbh = parseFloat(bRect.getAttribute("height"));
+      var MARGIN = 30;
+
+      regularNodes.forEach(function(n) {
+        if (n.node_type === "container") return;
+        var nEl = qs('[data-node-id="' + n.id + '"]');
+        if (!nEl) return;
+        var nRect = nEl.querySelector(".node-rect");
+        if (!nRect) return;
+        var nx = parseFloat(nRect.getAttribute("x"));
+        var ny = parseFloat(nRect.getAttribute("y"));
+        var nw = parseFloat(nRect.getAttribute("width"));
+        var nh = parseFloat(nRect.getAttribute("height"));
+
+        // Check horizontal overlap
+        var hOverlap = nx < bbx + bbw && nx + nw > bbx;
+        if (!hOverlap) return;
+
+        // Node is above boundary — push up if too close
+        if (ny + nh > bby - MARGIN && ny + nh <= bby + bbh / 2) {
+          var shiftY = (bby - MARGIN) - (ny + nh);
+          nRect.setAttribute("y", ny + shiftY);
+          // Move labels too
+          var labels = nEl.querySelectorAll("text");
+          labels.forEach(function(lbl) {
+            var ly = parseFloat(lbl.getAttribute("y"));
+            lbl.setAttribute("y", ly + shiftY);
+          });
+        }
+        // Node is below boundary — push down if too close
+        if (ny < bby + bbh + MARGIN && ny >= bby + bbh / 2) {
+          var newY = bby + bbh + MARGIN;
+          var shiftY2 = newY - ny;
+          nRect.setAttribute("y", ny + shiftY2);
+          var labels2 = nEl.querySelectorAll("text");
+          labels2.forEach(function(lbl2) {
+            var ly2 = parseFloat(lbl2.getAttribute("y"));
+            lbl2.setAttribute("y", ly2 + shiftY2);
+          });
+        }
+      });
     });
 
     // Store positions and compute proper edge routing with connection dots
@@ -356,6 +424,7 @@
     }
 
     updateSidebarTree();
+    applyFilters();
   }
 
   // --- Update Inspector panel ---
@@ -454,8 +523,8 @@
       group.querySelectorAll("text").forEach(function(t) {
         if (t.classList.contains("node-label")) {
           if (isBnd) {
-            // Boundary label stays at top-right
-            t.setAttribute("x", cx + w / 2 - 10);
+            // Boundary label stays at top-left
+            t.setAttribute("x", cx - w / 2 + 16);
             t.setAttribute("y", cy - h / 2 + 20);
           } else {
             t.setAttribute("x", cx);
@@ -505,12 +574,17 @@
     }
   }
 
-  function sidebarItem(label, type, depth, isActive, onClick) {
+  var chevronRight = '<svg viewBox="0 0 16 16"><polyline points="6 4 10 8 6 12"/></svg>';
+  var chevronDown  = '<svg viewBox="0 0 16 16"><polyline points="4 6 8 10 12 6"/></svg>';
+
+  function sidebarItem(label, type, depth, isActive, onClick, expandable) {
     var li = document.createElement("li");
     var depthClass = depth === 1 ? " tree-child" : depth === 2 ? " tree-child tree-child-2" : depth === 3 ? " tree-child tree-child-2 tree-child-3" : "";
     li.className = "module-item" + depthClass + (isActive ? " tree-active" : "");
     var ic = c4Icon(type);
-    li.innerHTML = '<span class="tree-icon" style="color:' + ic.color + '">' + ic.icon + '</span>' +
+    var arrowHtml = expandable ? '<span class="tree-arrow">' + (isActive ? chevronDown : chevronRight) + '</span>' : "";
+    li.innerHTML = arrowHtml +
+      '<span class="tree-icon" style="color:' + ic.color + '">' + ic.icon + '</span>' +
       '<span class="module-name">' + label + '</span>';
     if (onClick) {
       li.style.cursor = "pointer";
@@ -533,12 +607,18 @@
 
       var li = document.createElement("li");
       li.className = "module-item" + (isActiveModule ? " tree-active" : "");
-      var arrow = isExpanded ? "\u25BE" : "\u25B8";
+      var arrow = isExpanded ? chevronDown : chevronRight;
       li.innerHTML = '<span class="tree-arrow">' + arrow + '</span>' +
+        '<span class="tree-icon" style="color:#5b9bd5">\u2B22</span>' +
         '<span class="module-name">' + mod + '</span>';
       li.style.cursor = "pointer";
       li.addEventListener("click", function() {
-        navigateTo("container", mod);
+        // Toggle: if already expanded at container level, collapse back to context
+        if (isExpanded && currentLevel === "container") {
+          navigateTo("context", mod);
+        } else {
+          navigateTo("container", mod);
+        }
       });
       tree.appendChild(li);
 
@@ -548,31 +628,40 @@
       var containers = sidebarContainers[mod] || [];
       var contextNodes = sidebarContextNodes[mod] || [];
 
-      // Show containers first, then context-level items
+      // Show only drillable containers (skip non-clickable items)
       containers.forEach(function(ct) {
         var isDrillable = (ct.id === "container:binary");
-        var isActiveCt = isDrillable && (currentLevel === "component" || currentLevel === "code");
+        if (!isDrillable) return; // hide non-clickable containers
 
-        var onClick = isDrillable ? function() { navigateTo("component", mod, "main"); } : null;
-        tree.appendChild(sidebarItem(ct.label, ct.type, 1, isActiveCt, onClick));
+        var isActiveCt = (currentLevel === "component" || currentLevel === "code");
 
-        // Level 2: Components/functions (visible when inside binary container)
+        tree.appendChild(sidebarItem(ct.label, ct.type, 1, isActiveCt, function() {
+          // Toggle: if already expanded at component level, collapse back to container
+          if (isActiveCt && currentLevel === "component") {
+            navigateTo("container", mod);
+          } else {
+            navigateTo("component", mod, "main");
+          }
+        }, true)); // expandable
+
+        // Level 2: Only show main() — the entry point that has a Code view
         if (isActiveCt && sidebarComponents[mod]) {
-          sidebarComponents[mod].forEach(function(comp) {
-            var fnName = comp.id.replace(/^component:/, "");
-            var isActiveComp = (currentLevel === "code" && currentFunction === fnName);
-            var compType = comp.type === "component:dead" ? "component:dead" : "component";
+          sidebarComponents[mod]
+            .filter(function(comp) { return comp.id === "component:main"; })
+            .forEach(function(comp) {
+              var fnName = comp.id.replace(/^component:/, "");
+              var isActiveComp = (currentLevel === "code" && currentFunction === fnName);
 
-            tree.appendChild(sidebarItem(comp.label, compType, 2, isActiveComp, function() {
-              navigateTo("code", mod, fnName, "entry");
-            }));
-          });
+              tree.appendChild(sidebarItem(comp.label, "component", 2, isActiveComp, function() {
+                // Toggle: if already at code level for this function, collapse back to component
+                if (isActiveComp) {
+                  navigateTo("component", mod, "main");
+                } else {
+                  navigateTo("code", mod, fnName, "entry");
+                }
+              }, false));
+            });
         }
-      });
-
-      // Context-level items (person, external) shown after containers
-      contextNodes.forEach(function(cn) {
-        tree.appendChild(sidebarItem(cn.label, cn.type, 1, false, null));
       });
     });
   }
@@ -659,6 +748,16 @@
       html += ' <span class="breadcrumb-sep">&gt;</span> ';
       html += '<span class="breadcrumb-item active">' + currentBlock + '</span>';
     }
+
+    // Add code/graph toggle at code level
+    if (currentLevel === "code" && currentBlock) {
+      var toggleIcon = codeViewActive
+        ? '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><line x1="3" y1="3" x2="5.5" y2="5.5"/><line x1="13" y1="3" x2="10.5" y2="5.5"/><line x1="3" y1="13" x2="5.5" y2="10.5"/><line x1="13" y1="13" x2="10.5" y2="10.5"/></svg>'
+        : '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="5,3 1,8 5,13"/><polyline points="11,3 15,8 11,13"/><line x1="10" y1="2" x2="6" y2="14"/></svg>';
+      var toggleTitle = codeViewActive ? "Switch to graph view" : "Switch to code view";
+      html += '<button class="breadcrumb-view-toggle" onclick="window.__studio.toggleCode()" title="' + toggleTitle + '">' + toggleIcon + '</button>';
+    }
+
     nav.innerHTML = html;
   }
 
@@ -1015,7 +1114,7 @@
       var labelEl = pathEl.nextElementSibling;
       if (labelEl && labelEl.classList.contains("edge-label")) {
         labelEl.setAttribute("x", (sp.x + tp.x) / 2);
-        labelEl.setAttribute("y", midY - 4);
+        labelEl.setAttribute("y", midY);
       }
 
       // Source dot (origin) — larger
@@ -1164,8 +1263,8 @@
         texts.forEach(function(t) {
           if (t.classList.contains("node-label")) {
             if (isBoundary) {
-              // Boundary label at top-right
-              t.setAttribute("x", newCx + w / 2 - 10);
+              // Boundary label at top-left
+              t.setAttribute("x", newCx - w / 2 + 16);
               t.setAttribute("y", newCy - h / 2 + 20);
             } else {
               t.setAttribute("x", newCx);
@@ -1272,6 +1371,115 @@
     updateSvgTransform();
   }
 
+  // --- Filter Functions ---
+  function toggleFilterPopup() {
+    var existing = qs(".filter-popup");
+    if (existing) {
+      existing.remove();
+      filterPopupVisible = false;
+      return;
+    }
+    filterPopupVisible = true;
+
+    // Collect unique node types from current DOM
+    var types = {};
+    qsa(".graph-node").forEach(function(el) {
+      var t = el.dataset.nodeType;
+      if (t) types[t] = true;
+    });
+
+    var container = qs(".graph-canvas-container");
+    if (!container) return;
+
+    var popup = document.createElement("div");
+    popup.className = "filter-popup";
+
+    var title = document.createElement("div");
+    title.className = "filter-popup-title";
+    title.textContent = "Filter by type";
+    popup.appendChild(title);
+
+    Object.keys(types).sort().forEach(function(t) {
+      var row = document.createElement("label");
+      row.className = "filter-row";
+
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !activeFilters[t];
+      cb.addEventListener("change", function() {
+        if (cb.checked) {
+          delete activeFilters[t];
+        } else {
+          activeFilters[t] = true;
+        }
+        applyFilters();
+      });
+
+      var dot = document.createElement("span");
+      dot.className = "filter-dot";
+      dot.style.background = TYPE_COLORS[t] || "#8b949e";
+
+      var lbl = document.createElement("span");
+      lbl.className = "filter-type-label";
+      lbl.textContent = t;
+
+      row.appendChild(cb);
+      row.appendChild(dot);
+      row.appendChild(lbl);
+      popup.appendChild(row);
+    });
+
+    container.appendChild(popup);
+  }
+
+  function applyFilters() {
+    var hasFilters = Object.keys(activeFilters).length > 0;
+    if (!hasFilters) {
+      // Remove all filter classes
+      qsa(".node-filtered").forEach(function(el) { el.classList.remove("node-filtered"); });
+      qsa(".edge-filtered").forEach(function(el) { el.classList.remove("edge-filtered"); });
+      return;
+    }
+
+    // Filter nodes
+    qsa(".graph-node").forEach(function(el) {
+      var t = el.dataset.nodeType;
+      if (t && activeFilters[t]) {
+        el.classList.add("node-filtered");
+      } else {
+        el.classList.remove("node-filtered");
+      }
+    });
+
+    // Filter edges: if source OR target is filtered, dim the edge
+    var filteredIds = {};
+    qsa(".graph-node.node-filtered").forEach(function(el) {
+      filteredIds[el.dataset.nodeId] = true;
+    });
+    qsa(".graph-edge").forEach(function(edgeG) {
+      var path = edgeG.querySelector(".edge-path");
+      if (!path) return;
+      var src = path.dataset.edgeSrc;
+      var tgt = path.dataset.edgeTgt;
+      if (filteredIds[src] || filteredIds[tgt]) {
+        edgeG.classList.add("edge-filtered");
+      } else {
+        edgeG.classList.remove("edge-filtered");
+      }
+    });
+  }
+
+  // Close filter popup on document click
+  document.addEventListener("click", function(e) {
+    if (!filterPopupVisible) return;
+    var popup = qs(".filter-popup");
+    var btn = qs(".filter-toggle-btn");
+    if (popup && !popup.contains(e.target) && btn && !btn.contains(e.target)) {
+      popup.remove();
+      filterPopupVisible = false;
+    }
+  });
+
   // --- Layout Toolbar (right side of graph area) ---
   var currentLayout = "hierarchical";
 
@@ -1292,11 +1500,6 @@
         id: "horizontal",
         title: "Horizontal (left-right)",
         icon: '<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><rect x="1" y="7" width="4" height="6" rx="1" /><rect x="9" y="1" width="4" height="6" rx="1" /><rect x="9" y="13" width="4" height="6" rx="1" /><line x1="5" y1="10" x2="9" y2="4" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="10" x2="9" y2="16" stroke="currentColor" stroke-width="1.2"/></svg>'
-      },
-      {
-        id: "radial",
-        title: "Radial",
-        icon: '<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><circle cx="10" cy="10" r="3" /><circle cx="10" cy="2" r="2" /><circle cx="17" cy="14" r="2" /><circle cx="3" cy="14" r="2" /><line x1="10" y1="7" x2="10" y2="4" stroke="currentColor" stroke-width="1.2"/><line x1="12.5" y1="12" x2="15.5" y2="13" stroke="currentColor" stroke-width="1.2"/><line x1="7.5" y1="12" x2="4.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>'
       }
     ];
 
@@ -1330,6 +1533,22 @@
     fitBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="3"/><rect x="6" y="8" width="10" height="8" rx="1.5"/><polyline points="6 8 2 4"/><polyline points="16 8 20 4"/></svg>';
     fitBtn.addEventListener("click", fitContents);
     toolbar.appendChild(fitBtn);
+
+    // Separator
+    var sepFilter = document.createElement("div");
+    sepFilter.className = "layout-toolbar-sep";
+    toolbar.appendChild(sepFilter);
+
+    // Filter button
+    var filterBtn = document.createElement("button");
+    filterBtn.className = "layout-btn filter-toggle-btn";
+    filterBtn.title = "Filter by type";
+    filterBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>';
+    filterBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      toggleFilterPopup();
+    });
+    toolbar.appendChild(filterBtn);
 
     // Separator
     var sep2 = document.createElement("div");
@@ -1473,10 +1692,213 @@
 
   addPanelToggles();
 
+  // --- Extract block ops from parsed JSON-LD for code view filtering ---
+  function extractBlockOps(parsed, functionName, blockLabel) {
+    var functions = parsed["duumbi:functions"];
+    if (!Array.isArray(functions)) return parsed;
+    for (var i = 0; i < functions.length; i++) {
+      var fn = functions[i];
+      if (fn["duumbi:name"] !== functionName) continue;
+      var blocks = fn["duumbi:blocks"];
+      if (!Array.isArray(blocks)) return parsed;
+      for (var j = 0; j < blocks.length; j++) {
+        var block = blocks[j];
+        if (block["duumbi:label"] === blockLabel) {
+          return block;
+        }
+      }
+    }
+    return parsed;
+  }
+
+  // --- Code View Toggle ---
+  function toggleCodeView() {
+    if (codeViewActive) {
+      // Switch back to graph view
+      codeViewActive = false;
+      var container = qs(".graph-canvas-container");
+      // Remove code view, restore SVG canvas
+      var codeView = qs(".code-view");
+      if (codeView) codeView.remove();
+      var svg = qs(".graph-canvas");
+      if (svg) svg.style.display = "";
+      // Show C4 tabs and layout toolbar
+      var tabs = qs(".c4-tabs");
+      if (tabs) tabs.style.display = "";
+      var toolbar = qs(".layout-toolbar");
+      if (toolbar) toolbar.style.display = "";
+      // Re-render graph
+      if (lastGraphData) renderGraph(lastGraphData);
+      updateBreadcrumb();
+    } else {
+      // Switch to code view
+      codeViewActive = true;
+      updateBreadcrumb();
+      var module = currentModule || "app/main";
+      fetch("/api/source?module=" + encodeURIComponent(module))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) { console.error("Source API error:", data.error); return; }
+          var displaySource = data.source;
+          if (currentLevel === "code" && currentFunction && currentBlock) {
+            try {
+              var parsed = JSON.parse(data.source);
+              var blockObj = extractBlockOps(parsed, currentFunction, currentBlock);
+              displaySource = JSON.stringify(blockObj, null, 2);
+            } catch(e) {
+              // fallback: show full source
+            }
+          }
+          renderCodeView(displaySource);
+        })
+        .catch(function(e) { console.error("Source fetch error:", e); });
+    }
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function renderCodeView(source) {
+    // Hide C4 tabs and layout toolbar
+    var tabs = qs(".c4-tabs");
+    if (tabs) tabs.style.display = "none";
+    var toolbar = qs(".layout-toolbar");
+    if (toolbar) toolbar.style.display = "none";
+
+    // Hide SVG canvas
+    var svg = qs(".graph-canvas");
+    if (svg) svg.style.display = "none";
+
+    // Remove existing code view
+    var existing = qs(".code-view");
+    if (existing) existing.remove();
+
+    // Pretty-print JSON
+    var pretty;
+    try {
+      pretty = JSON.stringify(JSON.parse(source), null, 2);
+    } catch(e) {
+      pretty = source;
+    }
+
+    var lines = pretty.split("\n");
+    var html = '';
+
+    // Build foldable line map: for each line with { or [, find its closing pair
+    var foldTargets = {}; // lineIndex -> closingLineIndex
+    for (var i = 0; i < lines.length; i++) {
+      var trimmed = lines[i].trimEnd();
+      var lastChar = trimmed[trimmed.length - 1];
+      // Check for opening bracket (possibly after a key)
+      if (lastChar === '{' || lastChar === '[') {
+        var openChar = lastChar;
+        var closeChar = openChar === '{' ? '}' : ']';
+        var depth = 1;
+        for (var j = i + 1; j < lines.length; j++) {
+          var lt = lines[j].trimStart();
+          for (var c = 0; c < lt.length; c++) {
+            if (lt[c] === openChar) depth++;
+            else if (lt[c] === closeChar) {
+              depth--;
+              if (depth === 0) {
+                if (j > i + 1) foldTargets[i] = j;
+                break;
+              }
+            }
+          }
+          if (depth === 0) break;
+        }
+      }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var lineNum = i + 1;
+      var hasFold = foldTargets.hasOwnProperty(i);
+      var foldAttr = hasFold
+        ? ' data-fold-start="' + i + '" data-fold-end="' + foldTargets[i] + '"'
+        : '';
+      var foldMarker = hasFold
+        ? '<span class="code-fold-marker" data-fold="' + i + '">&#9660;</span>'
+        : '<span class="code-fold-marker-spacer"></span>';
+
+      // Syntax highlighting
+      var highlighted = highlightJson(escapeHtml(line));
+
+      html += '<div class="code-line" data-line="' + i + '"' + foldAttr + '>'
+        + '<span class="line-number">' + lineNum + '</span>'
+        + foldMarker
+        + '<span class="line-content">' + highlighted + '</span>'
+        + '</div>';
+    }
+
+    var container = qs(".graph-canvas-container");
+    var codeDiv = document.createElement("div");
+    codeDiv.className = "code-view";
+    codeDiv.innerHTML = html;
+    container.appendChild(codeDiv);
+
+    // Fold/unfold click handlers
+    codeDiv.addEventListener("click", function(e) {
+      var marker = e.target.closest(".code-fold-marker");
+      if (!marker) return;
+      var foldIdx = parseInt(marker.dataset.fold);
+      var startLine = foldIdx;
+      var endLine = foldTargets[foldIdx];
+      if (endLine === undefined) return;
+
+      var isCollapsed = marker.classList.contains("collapsed");
+      for (var k = startLine + 1; k < endLine; k++) {
+        var lineEl = codeDiv.querySelector('.code-line[data-line="' + k + '"]');
+        if (lineEl) lineEl.style.display = isCollapsed ? "" : "none";
+      }
+      marker.classList.toggle("collapsed");
+      marker.innerHTML = isCollapsed ? "&#9660;" : "&#9654;";
+    });
+  }
+
+  function highlightJson(escaped) {
+    // Keywords (before string matching, only standalone values after colon, not inside words)
+    escaped = escaped.replace(/:\s*(null|true|false)(?!\w)/g, ': <span class="code-keyword">$1</span>');
+    // Numbers (standalone values after colon)
+    escaped = escaped.replace(/:\s*(-?\d+\.?\d*)(\s*[,\r\n]?)/g, ': <span class="code-number">$1</span>$2');
+    // Keys: "something": — entire quoted string before colon
+    escaped = escaped.replace(/(&quot;)((?:@[\w:]+|[\w:@\-./]+))(&quot;)\s*:/g,
+      '<span class="code-key">$1$2$3</span>:');
+    // String values (after colon): "..."
+    escaped = escaped.replace(/:\s*(&quot;)(.*?)(&quot;)/g,
+      ': <span class="code-string">$1$2$3</span>');
+    // Remaining quoted strings (in arrays, not already wrapped in a span)
+    escaped = escaped.replace(/(&quot;)((?!<\/span>).*?)(&quot;)(?![^<]*<\/span>)/g,
+      '<span class="code-string">$1$2$3</span>');
+    return escaped;
+  }
+
+  // Reset code view when navigating away from code level
+  var _origNavigateTo = navigateTo;
+  navigateTo = function(level, module, func, block, restoreLayout) {
+    if (codeViewActive && level !== "code") {
+      codeViewActive = false;
+      var codeView = qs(".code-view");
+      if (codeView) codeView.remove();
+      var svg = qs(".graph-canvas");
+      if (svg) svg.style.display = "";
+      var tabs = qs(".c4-tabs");
+      if (tabs) tabs.style.display = "";
+      var toolbar = qs(".layout-toolbar");
+      if (toolbar) toolbar.style.display = "";
+    }
+    _origNavigateTo(level, module, func, block, restoreLayout);
+  };
+
   // --- Expose navigation for breadcrumb onclick ---
   window.__studio = {
     nav: function(level, module, func, block) {
       navigateTo(level, module, func, block);
+    },
+    toggleCode: function() {
+      toggleCodeView();
     }
   };
 

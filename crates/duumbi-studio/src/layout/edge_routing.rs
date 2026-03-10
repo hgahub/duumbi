@@ -135,13 +135,13 @@ fn orthogonal_path_xy(sx: f64, sy: f64, tx: f64, ty: f64) -> (String, f64, f64) 
         let mid_y = (sy + ty) / 2.0;
         let path = format!("M {sx} {sy} L {sx} {mid_y} L {tx} {mid_y} L {tx} {ty}",);
         let label_x = (sx + tx) / 2.0;
-        let label_y = mid_y - 8.0;
+        let label_y = mid_y;
         (path, label_x, label_y)
     } else {
         // Nearly same Y — horizontal line
         let path = format!("M {sx} {sy} L {tx} {ty}");
         let label_x = (sx + tx) / 2.0;
-        let label_y = sy - 8.0;
+        let label_y = sy;
         (path, label_x, label_y)
     }
 }

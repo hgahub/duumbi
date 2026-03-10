@@ -46,7 +46,8 @@ fn ModuleTree() -> impl IntoView {
                 let mid = module_id.clone();
                 view! {
                     <li class="module-item">
-                        <span class="tree-arrow">"\u{25B8}"</span>
+                        <span class="tree-arrow" inner_html="<svg viewBox='0 0 16 16'><polyline points='6 4 10 8 6 12'/></svg>"></span>
+                        <span class="tree-icon" style="color:#5b9bd5">"\u{2B22}"</span>
                         <span class="module-name">{mid}</span>
                     </li>
                 }
