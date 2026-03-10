@@ -29,89 +29,85 @@ pub struct WorkspaceStatus {
     pub modules: Vec<String>,
 }
 
-/// Returns the graph data for the Context level (modules overview).
+/// Returns the graph data for the C4 Context level.
+///
+/// Shows the application as a software system with the user (person)
+/// and stdout (external system). Derives data from the main module graph.
 #[server]
 pub async fn get_graph_context() -> Result<GraphData, ServerFnError> {
-    use std::fs;
-
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
-    let graph_dir = ws.root.join(".duumbi/graph");
+    let graph = load_graph(&ws.root, "app/main")?;
+    Ok(build_c4_context(&graph))
+}
 
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
+/// Builds C4 Context level graph data from a SemanticGraph.
+#[cfg(feature = "ssr")]
+fn build_c4_context(graph: &duumbi::graph::SemanticGraph) -> GraphData {
+    let app_name = graph.module_name.0.as_str();
+    let entry_return = graph
+        .functions
+        .iter()
+        .find(|f| f.name.0 == "main")
+        .map(|f| f.return_type.to_string())
+        .unwrap_or_else(|| "void".to_string());
 
-    if graph_dir.join("main.jsonld").exists() {
-        nodes.push(GraphNode {
-            id: "app/main".to_string(),
-            label: "app/main".to_string(),
-            node_type: "module".to_string(),
-            badge: None,
+    // Uniform node size for C4 Context level
+    let c4_w = 200.0;
+    let c4_h = 80.0;
+
+    let mut nodes = vec![
+        GraphNode {
+            id: "person:user".to_string(),
+            label: "Felhasználó".to_string(),
+            node_type: "person".to_string(),
+            badge: Some("Futtatja a programot".to_string()),
             x: 0.0,
             y: 0.0,
-            width: 180.0,
-            height: 80.0,
+            width: c4_w,
+            height: c4_h,
+        },
+        GraphNode {
+            id: "system:app".to_string(),
+            label: app_name.to_string(),
+            node_type: "system".to_string(),
+            badge: Some(format!("[Software System] main() → {entry_return}")),
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        },
+    ];
+
+    let mut edges = vec![GraphEdge {
+        id: "e0".to_string(),
+        source: "person:user".to_string(),
+        target: "system:app".to_string(),
+        label: "Futtatja".to_string(),
+        edge_type: "uses".to_string(),
+    }];
+
+    if has_print_op(graph) {
+        nodes.push(GraphNode {
+            id: "external:stdout".to_string(),
+            label: "stdout".to_string(),
+            node_type: "external".to_string(),
+            badge: Some("[Külső: Terminal I/O]".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        });
+        edges.push(GraphEdge {
+            id: "e1".to_string(),
+            source: "system:app".to_string(),
+            target: "external:stdout".to_string(),
+            label: "Kiírja az eredményt".to_string(),
+            edge_type: "output".to_string(),
         });
     }
 
-    let config_path = ws.root.join(".duumbi/config.toml");
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(config) = content.parse::<toml::Table>() {
-                if let Some(deps) = config.get("dependencies").and_then(|v| v.as_table()) {
-                    for (name, _) in deps {
-                        nodes.push(GraphNode {
-                            id: name.clone(),
-                            label: name.clone(),
-                            node_type: "module".to_string(),
-                            badge: None,
-                            x: 0.0,
-                            y: 0.0,
-                            width: 180.0,
-                            height: 80.0,
-                        });
-                        edges.push(GraphEdge {
-                            id: format!("dep:{name}"),
-                            source: "app/main".to_string(),
-                            target: name.clone(),
-                            label: "depends on".to_string(),
-                            edge_type: "dependency".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let stdlib_dir = ws.root.join(".duumbi/stdlib");
-    if stdlib_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&stdlib_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    let name = format!("stdlib/{}", entry.file_name().to_string_lossy());
-                    nodes.push(GraphNode {
-                        id: name.clone(),
-                        label: name.clone(),
-                        node_type: "module".to_string(),
-                        badge: None,
-                        x: 0.0,
-                        y: 0.0,
-                        width: 180.0,
-                        height: 80.0,
-                    });
-                    edges.push(GraphEdge {
-                        id: format!("dep:{name}"),
-                        source: "app/main".to_string(),
-                        target: name,
-                        label: "uses".to_string(),
-                        edge_type: "dependency".to_string(),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(GraphData { nodes, edges })
+    GraphData { nodes, edges }
 }
 
 /// Resolves the graph file path for a module name.
@@ -145,116 +141,317 @@ fn load_graph(
         .map_err(|errors| ServerFnError::new(format!("Graph errors: {errors:?}")))
 }
 
-/// Returns graph data for the Container level (functions within a module).
+/// Returns graph data for the C4 Container level (binary + runtime shim).
+///
+/// Shows the native binary and runtime shim containers within the
+/// software system boundary.
 #[server]
 pub async fn get_module_detail(module_name: String) -> Result<GraphData, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
     let graph = load_graph(&ws.root, &module_name)?;
+    Ok(build_c4_container(&graph))
+}
+
+/// Builds C4 Container level graph data.
+#[cfg(feature = "ssr")]
+fn build_c4_container(graph: &duumbi::graph::SemanticGraph) -> GraphData {
+    let app_name = graph.module_name.0.as_str();
+    let has_io = has_print_op(graph);
+
+    let c4_w = 200.0;
+    let c4_h = 80.0;
+
+    let mut nodes = vec![
+        GraphNode {
+            id: "person:user".to_string(),
+            label: "Felhasználó".to_string(),
+            node_type: "person".to_string(),
+            badge: None,
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        },
+        GraphNode {
+            id: "boundary:app".to_string(),
+            label: format!("{app_name} [Software System]"),
+            node_type: "boundary".to_string(),
+            badge: None,
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 200.0,
+        },
+        GraphNode {
+            id: "container:binary".to_string(),
+            label: "Natív Bináris".to_string(),
+            node_type: "container".to_string(),
+            badge: Some("[Cranelift compiled]".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        },
+    ];
+
+    let mut edges = vec![GraphEdge {
+        id: "e0".to_string(),
+        source: "person:user".to_string(),
+        target: "container:binary".to_string(),
+        label: "Futtatja".to_string(),
+        edge_type: "uses".to_string(),
+    }];
+
+    if has_io {
+        nodes.push(GraphNode {
+            id: "container:runtime".to_string(),
+            label: "Runtime Shim".to_string(),
+            node_type: "container".to_string(),
+            badge: Some("[duumbi_runtime.c]".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        });
+        nodes.push(GraphNode {
+            id: "external:stdout".to_string(),
+            label: "stdout".to_string(),
+            node_type: "external".to_string(),
+            badge: Some("[Terminal I/O]".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: c4_w,
+            height: c4_h,
+        });
+        edges.push(GraphEdge {
+            id: "e1".to_string(),
+            source: "container:binary".to_string(),
+            target: "container:runtime".to_string(),
+            label: "hívja".to_string(),
+            edge_type: "call".to_string(),
+        });
+        edges.push(GraphEdge {
+            id: "e2".to_string(),
+            source: "container:runtime".to_string(),
+            target: "external:stdout".to_string(),
+            label: "printf → stdout".to_string(),
+            edge_type: "output".to_string(),
+        });
+    }
+
+    GraphData { nodes, edges }
+}
+
+/// Returns graph data for the C4 Component level (active vs dead code).
+///
+/// Shows functions as components, separated into active (reachable from main)
+/// and dead code groups. Also adds sub-component nodes for op categories.
+#[server]
+pub async fn get_function_detail(
+    module_name: String,
+    #[allow(unused_variables)] _function_name: String,
+) -> Result<GraphData, ServerFnError> {
+    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ws.read().await;
+    let graph = load_graph(&ws.root, &module_name)?;
+    Ok(build_c4_component(&graph))
+}
+
+/// Builds C4 Component level graph data.
+#[cfg(feature = "ssr")]
+fn build_c4_component(graph: &duumbi::graph::SemanticGraph) -> GraphData {
+    let reachable = reachable_fns(graph);
+    let has_io = has_print_op(graph);
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
+    let mut edge_counter: usize = 0;
+
+    // Classify ops across active functions
+    let mut has_arithmetic = false;
+    let mut has_io_ops = false;
+    let mut has_control_flow = false;
 
     for func in &graph.functions {
+        let fn_name = &func.name.0;
+        let is_active = reachable.contains(fn_name.as_str());
+
+        if is_active {
+            for block in &func.blocks {
+                for &node_idx in &block.nodes {
+                    match &graph.graph[node_idx].op {
+                        duumbi::types::Op::Add
+                        | duumbi::types::Op::Sub
+                        | duumbi::types::Op::Mul
+                        | duumbi::types::Op::Div => has_arithmetic = true,
+                        duumbi::types::Op::Print => has_io_ops = true,
+                        duumbi::types::Op::Compare(_) | duumbi::types::Op::Branch => {
+                            has_control_flow = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         let params: Vec<String> = func
             .params
             .iter()
             .map(|p| format!("{}: {}", p.name, p.param_type))
             .collect();
+        let label = if params.is_empty() {
+            format!("{}()", fn_name)
+        } else {
+            format!("{}({})", fn_name, params.join(", "))
+        };
+        let total_ops: usize = func.blocks.iter().map(|b| b.nodes.len()).sum();
 
-        nodes.push(GraphNode {
-            id: func.name.to_string(),
-            label: format!(
-                "{}({}) -> {}",
-                func.name,
-                params.join(", "),
-                func.return_type
-            ),
-            node_type: "function".to_string(),
-            badge: Some(format!("{} blocks", func.blocks.len())),
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 60.0,
-        });
-    }
-
-    for func in &graph.functions {
-        for block in &func.blocks {
-            for &node_idx in &block.nodes {
-                let node = &graph.graph[node_idx];
-                if let duumbi::types::Op::Call { function, .. } = &node.op {
-                    edges.push(GraphEdge {
-                        id: format!("call:{}:{}", func.name, node.id),
-                        source: func.name.to_string(),
-                        target: function.to_string(),
-                        label: "calls".to_string(),
-                        edge_type: "call".to_string(),
-                    });
-                }
-            }
+        if is_active {
+            let meta = if fn_name == "main" {
+                format!("→ {} | entry point", func.return_type)
+            } else {
+                format!(
+                    "→ {} | {} blocks, {} ops",
+                    func.return_type,
+                    func.blocks.len(),
+                    total_ops
+                )
+            };
+            nodes.push(GraphNode {
+                id: format!("component:{fn_name}"),
+                label,
+                node_type: "component".to_string(),
+                badge: Some(meta),
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 60.0,
+            });
+        } else {
+            let meta = format!(
+                "→ {} | {} blocks, {} ops",
+                func.return_type,
+                func.blocks.len(),
+                total_ops
+            );
+            nodes.push(GraphNode {
+                id: format!("component:{fn_name}"),
+                label,
+                node_type: "component-dead".to_string(),
+                badge: Some(meta),
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 60.0,
+            });
         }
     }
 
-    Ok(GraphData { nodes, edges })
-}
-
-/// Returns graph data for the Component level (blocks within a function).
-#[server]
-pub async fn get_function_detail(
-    module_name: String,
-    function_name: String,
-) -> Result<GraphData, ServerFnError> {
-    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
-    let ws = ws.read().await;
-    let graph = load_graph(&ws.root, &module_name)?;
-
-    let func = graph
-        .functions
-        .iter()
-        .find(|f| f.name.0 == function_name)
-        .ok_or_else(|| ServerFnError::new(format!("Function '{function_name}' not found")))?;
-
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-
-    for block in &func.blocks {
+    // Sub-component nodes
+    if has_arithmetic {
         nodes.push(GraphNode {
-            id: block.label.to_string(),
-            label: block.label.to_string(),
-            node_type: "block".to_string(),
-            badge: Some(format!("{} ops", block.nodes.len())),
+            id: "component:math".to_string(),
+            label: "Aritmetika".to_string(),
+            node_type: "component-sub".to_string(),
+            badge: Some("Add/Sub/Mul/Div".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: 140.0,
+            height: 50.0,
+        });
+        edges.push(GraphEdge {
+            id: format!("e{edge_counter}"),
+            source: "component:main".to_string(),
+            target: "component:math".to_string(),
+            label: "használ".to_string(),
+            edge_type: "uses".to_string(),
+        });
+        edge_counter += 1;
+    }
+
+    if has_io_ops {
+        nodes.push(GraphNode {
+            id: "component:io".to_string(),
+            label: "I/O".to_string(),
+            node_type: "component-sub".to_string(),
+            badge: Some("Print".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: 140.0,
+            height: 50.0,
+        });
+        edges.push(GraphEdge {
+            id: format!("e{edge_counter}"),
+            source: "component:main".to_string(),
+            target: "component:io".to_string(),
+            label: "használ".to_string(),
+            edge_type: "uses".to_string(),
+        });
+        edge_counter += 1;
+    }
+
+    if has_control_flow {
+        nodes.push(GraphNode {
+            id: "component:control".to_string(),
+            label: "Control Flow".to_string(),
+            node_type: "component-sub".to_string(),
+            badge: Some("Compare/Branch".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: 140.0,
+            height: 50.0,
+        });
+        edges.push(GraphEdge {
+            id: format!("e{edge_counter}"),
+            source: "component:main".to_string(),
+            target: "component:control".to_string(),
+            label: "használ".to_string(),
+            edge_type: "uses".to_string(),
+        });
+        edge_counter += 1;
+    }
+
+    // External dependencies
+    if has_io {
+        nodes.push(GraphNode {
+            id: "external:runtime".to_string(),
+            label: "Runtime Shim".to_string(),
+            node_type: "external".to_string(),
+            badge: Some("[duumbi_print_i64]".to_string()),
             x: 0.0,
             y: 0.0,
             width: 160.0,
+            height: 60.0,
+        });
+        nodes.push(GraphNode {
+            id: "external:stdout".to_string(),
+            label: "stdout".to_string(),
+            node_type: "external".to_string(),
+            badge: Some("[Terminal]".to_string()),
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
             height: 50.0,
+        });
+        edges.push(GraphEdge {
+            id: format!("e{edge_counter}"),
+            source: "component:io".to_string(),
+            target: "external:runtime".to_string(),
+            label: "hívja".to_string(),
+            edge_type: "call".to_string(),
+        });
+        edge_counter += 1;
+        edges.push(GraphEdge {
+            id: format!("e{edge_counter}"),
+            source: "external:runtime".to_string(),
+            target: "external:stdout".to_string(),
+            label: "→ stdout".to_string(),
+            edge_type: "output".to_string(),
         });
     }
 
-    // Add branch edges between blocks
-    for block in &func.blocks {
-        for &node_idx in &block.nodes {
-            let node = &graph.graph[node_idx];
-            if let Some((true_block, false_block)) = graph.branch_targets.get(&node.id) {
-                edges.push(GraphEdge {
-                    id: format!("branch:{}:true", block.label),
-                    source: block.label.to_string(),
-                    target: true_block.clone(),
-                    label: "true".to_string(),
-                    edge_type: "branch_true".to_string(),
-                });
-                edges.push(GraphEdge {
-                    id: format!("branch:{}:false", block.label),
-                    source: block.label.to_string(),
-                    target: false_block.clone(),
-                    label: "false".to_string(),
-                    edge_type: "branch_false".to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(GraphData { nodes, edges })
+    GraphData { nodes, edges }
 }
 
 /// Returns graph data for the Code level (ops within a block).
@@ -341,12 +538,12 @@ pub async fn get_workspace_status() -> Result<WorkspaceStatus, ServerFnError> {
     }
 
     let stdlib_dir = ws.root.join(".duumbi/stdlib");
-    if stdlib_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&stdlib_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
-                }
+    if stdlib_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&stdlib_dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
             }
         }
     }
@@ -389,28 +586,28 @@ pub async fn get_intents() -> Result<Vec<IntentSummary>, ServerFnError> {
     let mut intents = Vec::new();
 
     let intents_dir = ws.root.join(".duumbi/intents");
-    if intents_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&intents_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "yaml") {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let slug = path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default();
+    if intents_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&intents_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "yaml")
+                && let Ok(content) = std::fs::read_to_string(&path)
+            {
+                let slug = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
 
-                        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                            let description = value["intent"].as_str().unwrap_or(&slug).to_string();
-                            let status = value["status"].as_str().unwrap_or("Unknown").to_string();
+                if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                    let description = value["intent"].as_str().unwrap_or(&slug).to_string();
+                    let status = value["status"].as_str().unwrap_or("Unknown").to_string();
 
-                            intents.push(IntentSummary {
-                                slug,
-                                description,
-                                status,
-                            });
-                        }
-                    }
+                    intents.push(IntentSummary {
+                        slug,
+                        description,
+                        status,
+                    });
                 }
             }
         }
@@ -505,8 +702,8 @@ pub async fn send_chat_message(
 
 /// Synchronously loads initial data for SSR rendering.
 ///
-/// Called once at server startup. Returns graph, workspace name, intents, and
-/// module list so the first SSR render has real data (not empty signals).
+/// Called once at server startup. Returns C4 Context level graph, workspace
+/// name, intents, and module list so the first SSR render has real data.
 #[cfg(feature = "ssr")]
 pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
     use std::fs;
@@ -516,74 +713,92 @@ pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "workspace".to_string());
 
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    let mut modules = Vec::new();
+    // Build C4 Context graph from main module
+    let graph = if workspace.join(".duumbi/graph/main.jsonld").exists() {
+        match load_graph(workspace, "app/main") {
+            Ok(sg) => build_c4_context(&sg),
+            Err(_) => GraphData {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            },
+        }
+    } else {
+        GraphData {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }
+    };
 
-    let graph_dir = workspace.join(".duumbi/graph");
-    if graph_dir.join("main.jsonld").exists() {
-        nodes.push(GraphNode {
-            id: "app/main".to_string(),
-            label: "app/main".to_string(),
-            node_type: "module".to_string(),
-            badge: None,
-            x: 0.0,
-            y: 0.0,
-            width: 180.0,
-            height: 80.0,
-        });
+    // Collect module list
+    let mut modules = Vec::new();
+    if workspace.join(".duumbi/graph/main.jsonld").exists() {
         modules.push("app/main".to_string());
     }
-
     let stdlib_dir = workspace.join(".duumbi/stdlib");
-    if stdlib_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&stdlib_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    let mod_name = format!("stdlib/{}", entry.file_name().to_string_lossy());
-                    nodes.push(GraphNode {
-                        id: mod_name.clone(),
-                        label: mod_name.clone(),
-                        node_type: "module".to_string(),
-                        badge: None,
-                        x: 0.0,
-                        y: 0.0,
-                        width: 180.0,
-                        height: 80.0,
+    if stdlib_dir.exists()
+        && let Ok(entries) = fs::read_dir(&stdlib_dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+    }
+
+    // Collect intents
+    let mut intents = Vec::new();
+    let intents_dir = workspace.join(".duumbi/intents");
+    if intents_dir.exists()
+        && let Ok(entries) = fs::read_dir(&intents_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "yaml")
+                && let Ok(content) = fs::read_to_string(&path)
+            {
+                let slug = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                    let description = value["intent"].as_str().unwrap_or(&slug).to_string();
+                    let status = value["status"].as_str().unwrap_or("Unknown").to_string();
+                    intents.push(IntentSummary {
+                        slug,
+                        description,
+                        status,
                     });
-                    edges.push(GraphEdge {
-                        id: format!("dep:{mod_name}"),
-                        source: "app/main".to_string(),
-                        target: mod_name.clone(),
-                        label: "uses".to_string(),
-                        edge_type: "dependency".to_string(),
-                    });
-                    modules.push(mod_name);
                 }
             }
         }
     }
 
-    let mut intents = Vec::new();
-    let intents_dir = workspace.join(".duumbi/intents");
-    if intents_dir.exists() {
-        if let Ok(entries) = fs::read_dir(&intents_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "yaml") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        let slug = path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                            let description = value["intent"].as_str().unwrap_or(&slug).to_string();
-                            let status = value["status"].as_str().unwrap_or("Unknown").to_string();
-                            intents.push(IntentSummary {
-                                slug,
-                                description,
-                                status,
-                            });
+    InitialData {
+        graph,
+        workspace_name: name,
+        intents,
+        modules,
+    }
+}
+
+/// Computes the set of function names reachable from `main()` via Call ops (BFS).
+#[cfg(feature = "ssr")]
+fn reachable_fns(graph: &duumbi::graph::SemanticGraph) -> std::collections::HashSet<String> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back("main".to_string());
+    visited.insert("main".to_string());
+
+    while let Some(fn_name) = queue.pop_front() {
+        if let Some(func) = graph.functions.iter().find(|f| f.name.0 == fn_name) {
+            for block in &func.blocks {
+                for &node_idx in &block.nodes {
+                    if let duumbi::types::Op::Call { function, .. } = &graph.graph[node_idx].op {
+                        let callee = function.to_string();
+                        if visited.insert(callee.clone()) {
+                            queue.push_back(callee);
                         }
                     }
                 }
@@ -591,12 +806,32 @@ pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
         }
     }
 
-    InitialData {
-        graph: GraphData { nodes, edges },
-        workspace_name: name,
-        intents,
-        modules,
-    }
+    visited
+}
+
+/// Returns `true` if any function in the graph contains a Print op.
+#[cfg(feature = "ssr")]
+fn has_print_op(graph: &duumbi::graph::SemanticGraph) -> bool {
+    graph.functions.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            block
+                .nodes
+                .iter()
+                .any(|&idx| matches!(graph.graph[idx].op, duumbi::types::Op::Print))
+        })
+    })
+}
+
+/// Public wrapper for `build_c4_container` (used by API routes in lib.rs).
+#[cfg(feature = "ssr")]
+pub fn build_c4_container_pub(graph: &duumbi::graph::SemanticGraph) -> GraphData {
+    build_c4_container(graph)
+}
+
+/// Public wrapper for `build_c4_component` (used by API routes in lib.rs).
+#[cfg(feature = "ssr")]
+pub fn build_c4_component_pub(graph: &duumbi::graph::SemanticGraph) -> GraphData {
+    build_c4_component(graph)
 }
 
 /// Returns (label, edge_type) for a graph edge.

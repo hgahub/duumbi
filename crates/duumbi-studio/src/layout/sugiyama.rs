@@ -11,10 +11,24 @@ use crate::state::GraphData;
 
 use super::types::{BBox, LayoutNode};
 
-/// Spacing constants for the layout.
-const LAYER_SPACING: f64 = 120.0;
-const NODE_SPACING: f64 = 40.0;
-const PADDING: f64 = 60.0;
+/// Minimum spacing constants for the layout.
+/// Actual spacing is derived from node dimensions to keep
+/// small nodes (code-level ops) tighter and large nodes (C4) more spacious.
+const MIN_LAYER_SPACING: f64 = 100.0;
+const MIN_NODE_SPACING: f64 = 40.0;
+const MIN_PADDING: f64 = 40.0;
+
+/// Derives layout spacing from the maximum node dimensions in the graph.
+fn derive_spacing(data: &GraphData) -> (f64, f64, f64) {
+    let max_h = data.nodes.iter().map(|n| n.height).fold(0.0_f64, f64::max);
+    let max_w = data.nodes.iter().map(|n| n.width).fold(0.0_f64, f64::max);
+    // Layer spacing: node height + gap (at least 60% of height)
+    let layer_sp = (max_h * 1.6).max(MIN_LAYER_SPACING);
+    // Node spacing: at least 40% of max width
+    let node_sp = (max_w * 0.4).max(MIN_NODE_SPACING);
+    let padding = (max_w * 0.4).max(MIN_PADDING);
+    (layer_sp, node_sp, padding)
+}
 
 /// Computes a layered layout for the given graph data.
 ///
@@ -60,7 +74,9 @@ pub fn compute_layout(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
     // Step 3: Order nodes within layers (median heuristic, one pass)
     order_by_median(&mut layer_nodes, &predecessors);
 
-    // Step 4: Assign coordinates
+    // Step 4: Assign coordinates — spacing adapts to node sizes
+    let (layer_spacing, node_spacing, padding) = derive_spacing(data);
+
     let mut layout_nodes = Vec::with_capacity(data.nodes.len());
     let mut bbox = BBox {
         min_x: f64::MAX,
@@ -70,16 +86,16 @@ pub fn compute_layout(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
     };
 
     for (layer_idx, nodes_in_layer) in layer_nodes.iter().enumerate() {
-        let y = PADDING + layer_idx as f64 * LAYER_SPACING;
+        let y = padding + layer_idx as f64 * layer_spacing;
         let total_width: f64 = nodes_in_layer
             .iter()
             .map(|&idx| data.nodes[idx].width)
             .sum::<f64>()
-            + (nodes_in_layer.len().saturating_sub(1)) as f64 * NODE_SPACING;
+            + (nodes_in_layer.len().saturating_sub(1)) as f64 * node_spacing;
 
-        let mut x = PADDING + (500.0 - total_width) / 2.0; // Center in a 500px viewport
-        if x < PADDING {
-            x = PADDING;
+        let mut x = padding + (500.0 - total_width) / 2.0; // Center in a 500px viewport
+        if x < padding {
+            x = padding;
         }
 
         for (order, &idx) in nodes_in_layer.iter().enumerate() {
@@ -119,15 +135,15 @@ pub fn compute_layout(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
                 bbox.max_y = bottom;
             }
 
-            x += node.width + NODE_SPACING;
+            x += node.width + node_spacing;
         }
     }
 
     // Add padding to bounding box
-    bbox.min_x -= PADDING;
-    bbox.min_y -= PADDING;
-    bbox.max_x += PADDING;
-    bbox.max_y += PADDING;
+    bbox.min_x -= padding;
+    bbox.min_y -= padding;
+    bbox.max_x += padding;
+    bbox.max_y += padding;
 
     (layout_nodes, bbox)
 }
@@ -250,9 +266,12 @@ pub fn compute_layout_horizontal(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
     order_by_median(&mut layer_nodes, &predecessors);
 
     // Horizontal spacing: layers along x, nodes within layer along y.
-    // Use node width to determine column spacing, node height for row spacing.
-    let col_spacing = 200.0_f64; // x gap between layer centres
-    let row_spacing = 80.0_f64; // y gap between nodes in the same layer
+    // Derive from node dimensions — wider nodes get more column spacing.
+    let (_, _, padding) = derive_spacing(data);
+    let max_w = data.nodes.iter().map(|n| n.width).fold(0.0_f64, f64::max);
+    let max_h = data.nodes.iter().map(|n| n.height).fold(0.0_f64, f64::max);
+    let col_spacing = (max_w * 1.4).max(200.0); // x gap between layer centres
+    let row_spacing = (max_h * 1.4).max(70.0); // y gap between nodes in the same layer
 
     let mut layout_nodes: Vec<LayoutNode> = data
         .nodes
@@ -272,7 +291,7 @@ pub fn compute_layout_horizontal(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
         .collect();
 
     for (layer_idx, nodes_in_layer) in layer_nodes.iter().enumerate() {
-        let x = PADDING + layer_idx as f64 * col_spacing;
+        let x = padding + layer_idx as f64 * col_spacing;
 
         // Total height of this column
         let total_h: f64 = nodes_in_layer
@@ -281,7 +300,7 @@ pub fn compute_layout_horizontal(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
             .sum::<f64>()
             + (nodes_in_layer.len().saturating_sub(1)) as f64 * row_spacing;
 
-        let mut y = PADDING - total_h / 2.0 + 300.0; // centre around 300 px
+        let mut y = padding - total_h / 2.0 + 300.0; // centre around 300 px
 
         for &idx in nodes_in_layer {
             let h = data.nodes[idx].height;
@@ -373,10 +392,10 @@ fn compute_bbox(nodes: &[LayoutNode]) -> BBox {
             bbox.max_y = bottom;
         }
     }
-    bbox.min_x -= PADDING;
-    bbox.min_y -= PADDING;
-    bbox.max_x += PADDING;
-    bbox.max_y += PADDING;
+    bbox.min_x -= MIN_PADDING;
+    bbox.min_y -= MIN_PADDING;
+    bbox.max_x += MIN_PADDING;
+    bbox.max_y += MIN_PADDING;
     bbox
 }
 

@@ -20,7 +20,6 @@ mod patch;
 mod snapshot;
 mod tools;
 mod types;
-mod web;
 
 use std::fs;
 use std::io::{self, IsTerminal as _, Write as _};
@@ -107,7 +106,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
-        Commands::Viz { port, dev, input } => viz(port, dev, input).await,
         Commands::Deps { subcommand } => {
             let workspace = PathBuf::from(".");
             match subcommand {
@@ -242,17 +240,6 @@ async fn add(request: &str, yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// Starts the web visualizer server.
-async fn viz(port: u16, dev: bool, input: Option<PathBuf>) -> Result<()> {
-    let graph_path = resolve_input(input.as_deref())?;
-
-    let initial = web::watcher::load_initial_graph(&graph_path);
-    let state = web::server::AppState::new(initial, dev);
-    let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
-
-    web::server::run_server(port, state).await
-}
-
 /// Dispatches `duumbi intent` subcommands.
 async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Result<()> {
     match subcommand {
@@ -339,16 +326,9 @@ async fn studio(port: u16, _dev: bool) -> Result<()> {
         }
     }
 
-    // Fallback: tell the user how to build, then use Phase 3 viz
-    eprintln!("Note: Full Studio binary not found. Build it with:");
-    eprintln!("  cargo build -p duumbi-studio --features ssr");
-    eprintln!("Falling back to Phase 3 visualizer...\n");
-
-    let graph_path = resolve_input(None)?;
-    let initial = web::watcher::load_initial_graph(&graph_path);
-    let state = web::server::AppState::new(initial, false);
-    let _watcher = web::watcher::spawn_watcher(graph_path, state.clone());
-    web::server::run_server(port, state).await
+    anyhow::bail!(
+        "Studio binary not found. Build with: cargo build -p duumbi-studio --features ssr"
+    )
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.

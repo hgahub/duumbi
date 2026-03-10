@@ -75,6 +75,102 @@
     }
   }
 
+  // --- Render a single graph node into the SVG group ---
+  function renderSingleNode(g, node) {
+    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    group.setAttribute("class", "graph-node node-" + (node.node_type || "default"));
+    group.style.cursor = "pointer";
+    group.dataset.nodeId = node.id;
+    group.dataset.nodeType = node.node_type;
+    if (node.node_type && node.node_type.indexOf("entry") !== -1) {
+      group.dataset.entry = "true";
+    }
+    if (node.node_type && node.node_type.indexOf("exit") !== -1) {
+      group.dataset.exit = "true";
+    }
+
+    var nx = snapToGrid(node.x);
+    var ny = snapToGrid(node.y);
+
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", nx - node.width / 2);
+    rect.setAttribute("y", ny - node.height / 2);
+    rect.setAttribute("width", node.width);
+    rect.setAttribute("height", node.height);
+    var rx = "8";
+    switch (node.node_type) {
+      case "person": rx = String(node.width / 2); break;
+      case "system": case "container": case "component": rx = "12"; break;
+      case "boundary": rx = "16"; break;
+      case "external": rx = "2"; break;
+      case "component-dead": case "component-sub": rx = "8"; break;
+      case "block": rx = "4"; break;
+      case "Const": case "ConstF64": case "ConstBool": rx = String(node.width / 2); break;
+    }
+    rect.setAttribute("rx", rx);
+    rect.setAttribute("ry", rx);
+    rect.setAttribute("class", "node-rect");
+    group.appendChild(rect);
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", nx);
+    label.setAttribute("y", node.badge ? ny - 4 : ny + 4);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("class", "node-label");
+    label.textContent = node.label;
+    group.appendChild(label);
+
+    if (node.badge) {
+      var badge = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      badge.setAttribute("x", nx);
+      badge.setAttribute("y", ny + 14);
+      badge.setAttribute("text-anchor", "middle");
+      badge.setAttribute("class", "node-badge");
+      badge.textContent = node.badge;
+      group.appendChild(badge);
+    }
+
+    if (node.node_type && node.node_type.indexOf("entry") !== -1) {
+      var marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      marker.setAttribute("cx", nx - node.width / 2 + 10);
+      marker.setAttribute("cy", ny - node.height / 2 + 10);
+      marker.setAttribute("r", "5");
+      marker.setAttribute("fill", "#3fb950");
+      marker.setAttribute("class", "entry-marker");
+      group.appendChild(marker);
+      var mt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      mt.setAttribute("x", nx - node.width / 2 + 20);
+      mt.setAttribute("y", ny - node.height / 2 + 14);
+      mt.setAttribute("class", "node-badge");
+      mt.setAttribute("fill", "#3fb950");
+      mt.setAttribute("font-size", "9");
+      mt.textContent = "IN";
+      group.appendChild(mt);
+    }
+    if (node.node_type && node.node_type.indexOf("exit") !== -1) {
+      var emarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      emarker.setAttribute("cx", nx - node.width / 2 + 10);
+      emarker.setAttribute("cy", ny - node.height / 2 + 10);
+      emarker.setAttribute("r", "5");
+      emarker.setAttribute("fill", "#d29922");
+      emarker.setAttribute("class", "exit-marker");
+      group.appendChild(emarker);
+      var et = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      et.setAttribute("x", nx - node.width / 2 + 20);
+      et.setAttribute("y", ny - node.height / 2 + 14);
+      et.setAttribute("class", "node-badge");
+      et.setAttribute("fill", "#d29922");
+      et.setAttribute("font-size", "9");
+      et.textContent = "OUT";
+      group.appendChild(et);
+    }
+
+    group.addEventListener("click", function() { onNodeClick(node); });
+    group.addEventListener("dblclick", function() { onNodeDblClick(node); });
+
+    g.appendChild(group);
+  }
+
   // --- Graph rendering ---
   function renderGraph(data) {
     const svg = qs(".graph-canvas");
@@ -125,119 +221,138 @@
       });
     }
 
-    // Render nodes
+    // Separate boundary nodes from regular nodes
+    var boundaryNodes = [];
+    var regularNodes = [];
     if (data.nodes) {
       data.nodes.forEach(function(node) {
-        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        group.setAttribute("class", "graph-node node-" + (node.node_type || "default"));
-        group.style.cursor = "pointer";
-        group.dataset.nodeId = node.id;
-        group.dataset.nodeType = node.node_type;
-        // Mark entry/exit nodes
-        if (node.node_type && node.node_type.indexOf("entry") !== -1) {
-          group.dataset.entry = "true";
+        if (node.node_type === "boundary") {
+          boundaryNodes.push(node);
+        } else {
+          regularNodes.push(node);
         }
-        if (node.node_type && node.node_type.indexOf("exit") !== -1) {
-          group.dataset.exit = "true";
-        }
-
-        // Snap initial position to the dot grid
-        var nx = snapToGrid(node.x);
-        var ny = snapToGrid(node.y);
-
-        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        rect.setAttribute("x", nx - node.width / 2);
-        rect.setAttribute("y", ny - node.height / 2);
-        rect.setAttribute("width", node.width);
-        rect.setAttribute("height", node.height);
-        rect.setAttribute("rx", "8");
-        rect.setAttribute("ry", "8");
-        rect.setAttribute("class", "node-rect");
-        group.appendChild(rect);
-
-        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        label.setAttribute("x", nx);
-        label.setAttribute("y", ny + 4);
-        label.setAttribute("text-anchor", "middle");
-        label.setAttribute("class", "node-label");
-        label.textContent = node.label;
-        group.appendChild(label);
-
-        if (node.badge) {
-          var badge = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          badge.setAttribute("x", nx);
-          badge.setAttribute("y", ny + node.height / 2 - 6);
-          badge.setAttribute("text-anchor", "middle");
-          badge.setAttribute("class", "node-badge");
-          badge.textContent = node.badge;
-          group.appendChild(badge);
-        }
-
-        // Entry/exit markers: small colored indicator
-        if (node.node_type && node.node_type.indexOf("entry") !== -1) {
-          var marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          marker.setAttribute("cx", nx - node.width / 2 + 10);
-          marker.setAttribute("cy", ny - node.height / 2 + 10);
-          marker.setAttribute("r", "5");
-          marker.setAttribute("fill", "#3fb950");
-          marker.setAttribute("class", "entry-marker");
-          group.appendChild(marker);
-          var mt = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          mt.setAttribute("x", nx - node.width / 2 + 20);
-          mt.setAttribute("y", ny - node.height / 2 + 14);
-          mt.setAttribute("class", "node-badge");
-          mt.setAttribute("fill", "#3fb950");
-          mt.setAttribute("font-size", "9");
-          mt.textContent = "IN";
-          group.appendChild(mt);
-        }
-        if (node.node_type && node.node_type.indexOf("exit") !== -1) {
-          var emarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          emarker.setAttribute("cx", nx - node.width / 2 + 10);
-          emarker.setAttribute("cy", ny - node.height / 2 + 10);
-          emarker.setAttribute("r", "5");
-          emarker.setAttribute("fill", "#d29922");
-          emarker.setAttribute("class", "exit-marker");
-          group.appendChild(emarker);
-          var et = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          et.setAttribute("x", nx - node.width / 2 + 20);
-          et.setAttribute("y", ny - node.height / 2 + 14);
-          et.setAttribute("class", "node-badge");
-          et.setAttribute("fill", "#d29922");
-          et.setAttribute("font-size", "9");
-          et.textContent = "OUT";
-          group.appendChild(et);
-        }
-
-        // Click handler — drill down
-        group.addEventListener("click", function() {
-          onNodeClick(node);
-        });
-
-        // Double-click — drill down deeper
-        group.addEventListener("dblclick", function() {
-          onNodeDblClick(node);
-        });
-
-        g.appendChild(group);
       });
     }
+
+    // Render regular nodes first
+    regularNodes.forEach(function(node) {
+      renderSingleNode(g, node);
+    });
+
+    // Render boundary nodes AFTER regular nodes, sized to enclose their children
+    boundaryNodes.forEach(function(bNode) {
+      // Find child nodes: containers that are "inside" this boundary
+      var childIds = [];
+      regularNodes.forEach(function(n) {
+        if (n.node_type === "container") childIds.push(n.id);
+      });
+
+      // Compute bounding box of children
+      var pad = 30;
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      childIds.forEach(function(cid) {
+        var el = qs('[data-node-id="' + cid + '"]');
+        if (!el) return;
+        var r = el.querySelector(".node-rect");
+        if (!r) return;
+        var rx = parseFloat(r.getAttribute("x"));
+        var ry = parseFloat(r.getAttribute("y"));
+        var rw = parseFloat(r.getAttribute("width"));
+        var rh = parseFloat(r.getAttribute("height"));
+        if (rx < minX) minX = rx;
+        if (ry < minY) minY = ry;
+        if (rx + rw > maxX) maxX = rx + rw;
+        if (ry + rh > maxY) maxY = ry + rh;
+      });
+
+      if (minX === Infinity) {
+        // No children found — render as normal node
+        renderSingleNode(g, bNode);
+        return;
+      }
+
+      // Compute boundary rect around children
+      var bx = minX - pad;
+      var by = minY - pad;
+      var bw = maxX - minX + 2 * pad;
+      var bh = maxY - minY + 2 * pad;
+
+      var group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      group.setAttribute("class", "graph-node node-boundary");
+      group.style.cursor = "pointer";
+      group.dataset.nodeId = bNode.id;
+      group.dataset.nodeType = "boundary";
+      group.dataset.children = childIds.join(",");
+
+      var rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", bx);
+      rect.setAttribute("y", by);
+      rect.setAttribute("width", bw);
+      rect.setAttribute("height", bh);
+      rect.setAttribute("rx", "16");
+      rect.setAttribute("ry", "16");
+      rect.setAttribute("class", "node-rect");
+      group.appendChild(rect);
+
+      // Label at top-right of boundary
+      var lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      lbl.setAttribute("x", bx + bw - 10);
+      lbl.setAttribute("y", by + 20);
+      lbl.setAttribute("text-anchor", "end");
+      lbl.setAttribute("class", "node-label");
+      lbl.textContent = bNode.label;
+      group.appendChild(lbl);
+
+      group.addEventListener("click", function() { onNodeClick(bNode); });
+      group.addEventListener("dblclick", function() { onNodeDblClick(bNode); });
+
+      // Insert boundary BEFORE the child nodes so it renders behind them
+      var firstChild = qs('[data-node-id="' + childIds[0] + '"]');
+      if (firstChild) {
+        g.insertBefore(group, firstChild);
+      } else {
+        g.appendChild(group);
+      }
+
+      // Store boundary position
+      nodePositions[bNode.id] = {
+        cx: bx + bw / 2, cy: by + bh / 2, w: bw, h: bh
+      };
+    });
 
     // Store positions and compute proper edge routing with connection dots
     storeNodePositions();
     updateEdges();
 
-    // Update module list from context data and cache for sidebar tree
+    // Cache C4 hierarchy data for sidebar tree
     if (data.modules) {
       sidebarModules = data.modules;
     }
-    // Cache functions/blocks from current data for sidebar expansion
+    if (currentLevel === "context" && data.nodes) {
+      // Cache context-level nodes (person, system, external) per module
+      sidebarModules.forEach(function(mod) {
+        sidebarContextNodes[mod] = data.nodes
+          .filter(function(n) { return n.node_type !== "boundary" && n.node_type !== "system"; })
+          .map(function(n) { return { id: n.id, label: n.label, type: n.node_type }; });
+      });
+    }
     if (currentLevel === "container" && data.nodes) {
-      sidebarFunctions[currentModule] = data.nodes.map(function(n) { return { id: n.id, label: n.label }; });
+      // Cache containers (skip boundary nodes)
+      sidebarContainers[currentModule] = data.nodes
+        .filter(function(n) { return n.node_type !== "boundary"; })
+        .map(function(n) { return { id: n.id, label: n.label, type: n.node_type }; });
     }
     if (currentLevel === "component" && data.nodes) {
-      var funcKey = currentModule + "/" + currentFunction;
-      sidebarBlocks[funcKey] = data.nodes.map(function(n) { return { id: n.id, label: n.label }; });
+      // Cache components (active/dead functions, skip boundaries)
+      sidebarComponents[currentModule] = data.nodes
+        .filter(function(n) { return n.node_type !== "boundary"; })
+        .map(function(n) { return { id: n.id, label: n.label, type: n.node_type }; });
+    }
+    if (currentLevel === "code" && data.nodes) {
+      // Cache code-level ops for potential future expansion
+      var codeKey = currentModule + "/" + currentFunction + "/" + currentBlock;
+      sidebarCodeOps[codeKey] = data.nodes
+        .map(function(n) { return { id: n.id, label: n.label }; });
     }
 
     updateSidebarTree();
@@ -265,14 +380,19 @@
 
   // --- Node double-click → Drill down ---
   function onNodeDblClick(node) {
-    if (currentLevel === "context" && node.node_type === "module") {
-      navigateTo("container", node.id);
+    // C4 Context → Container (click on software system)
+    if (currentLevel === "context" && (node.node_type === "system" || node.node_type === "module")) {
+      navigateTo("container", "app/main");
+    // C4 Container → Component (only the native binary drills down)
+    } else if (currentLevel === "container" && node.id === "container:binary") {
+      navigateTo("component", currentModule || "app/main", "main");
     } else if (currentLevel === "container" && node.node_type === "function") {
-      // Function id may include params in label, use just the name part
-      var funcName = node.id;
-      navigateTo("component", currentModule, funcName);
-    } else if (currentLevel === "component" && node.node_type === "block") {
-      navigateTo("code", currentModule, currentFunction, node.id);
+      navigateTo("component", currentModule || "app/main", node.id);
+    // C4 Component → Code (click on active component/function)
+    } else if (currentLevel === "component" && (node.node_type === "component" || node.node_type === "block")) {
+      // Extract function name from id: "component:main" → "main"
+      var fnName = node.id.replace(/^component:/, "");
+      navigateTo("code", currentModule || "app/main", fnName, "entry");
     }
   }
 
@@ -330,11 +450,19 @@
 
       r.setAttribute("x", cx - w / 2);
       r.setAttribute("y", cy - h / 2);
+      var isBnd = group.dataset.nodeType === "boundary";
       group.querySelectorAll("text").forEach(function(t) {
         if (t.classList.contains("node-label")) {
-          t.setAttribute("x", cx); t.setAttribute("y", cy + 4);
+          if (isBnd) {
+            // Boundary label stays at top-right
+            t.setAttribute("x", cx + w / 2 - 10);
+            t.setAttribute("y", cy - h / 2 + 20);
+          } else {
+            t.setAttribute("x", cx);
+            t.setAttribute("y", cy - 4);
+          }
         } else if (t.classList.contains("node-badge") && !t.hasAttribute("font-size")) {
-          t.setAttribute("x", cx); t.setAttribute("y", cy + h / 2 - 6);
+          t.setAttribute("x", cx); t.setAttribute("y", cy + 14);
         }
       });
       group.querySelectorAll("circle").forEach(function(c) {
@@ -357,22 +485,55 @@
   }
 
   // --- Sidebar tree state ---
-  var sidebarModules = [];  // cached module names from context level
-  var sidebarFunctions = {}; // moduleId → [{id, label}]
-  var sidebarBlocks = {};    // "moduleId/funcId" → [{id, label}]
+  var sidebarModules = [];       // cached module names from context level
+  var sidebarContextNodes = {};  // moduleId → [{id, label, type}] from context level (person, external, etc.)
+  var sidebarContainers = {};    // moduleId → [{id, label, type}] from container level
+  var sidebarComponents = {};    // moduleId → [{id, label, type}] from component level
+  var sidebarCodeOps = {};       // "mod/fn/block" → [{id, label}] from code level
+
+  // C4 icon+color map for sidebar items
+  function c4Icon(type) {
+    switch (type) {
+      case "person":          return { icon: "\uD83D\uDC64", color: "#5b9bd5" }; // 👤 blue
+      case "system":          return { icon: "\u2B22",   color: "#5b9bd5" }; // ⬢ blue
+      case "external":        return { icon: "\u2B21",   color: "#999" };    // ⬡ grey
+      case "container:binary":return { icon: "\u25A0",   color: "#2ecc71" }; // ■ green
+      case "container":       return { icon: "\u25A1",   color: "#7f8c8d" }; // □ grey
+      case "component":       return { icon: "\u25C6",   color: "#3498db" }; // ◆ blue
+      case "component:dead":  return { icon: "\u25C7",   color: "#666" };    // ◇ dim
+      default:                return { icon: "\u25B8",   color: "#888" };    // ▸ fallback
+    }
+  }
+
+  function sidebarItem(label, type, depth, isActive, onClick) {
+    var li = document.createElement("li");
+    var depthClass = depth === 1 ? " tree-child" : depth === 2 ? " tree-child tree-child-2" : depth === 3 ? " tree-child tree-child-2 tree-child-3" : "";
+    li.className = "module-item" + depthClass + (isActive ? " tree-active" : "");
+    var ic = c4Icon(type);
+    li.innerHTML = '<span class="tree-icon" style="color:' + ic.color + '">' + ic.icon + '</span>' +
+      '<span class="module-name">' + label + '</span>';
+    if (onClick) {
+      li.style.cursor = "pointer";
+      li.addEventListener("click", onClick);
+    } else {
+      li.style.opacity = "0.5";
+    }
+    return li;
+  }
 
   function updateSidebarTree() {
     var tree = qs(".module-tree");
     if (!tree) return;
     tree.innerHTML = "";
 
+    // Level 0: Modules (always visible)
     sidebarModules.forEach(function(mod) {
       var isActiveModule = (currentModule === mod);
+      var isExpanded = isActiveModule && currentLevel !== "context";
 
-      // Module item
       var li = document.createElement("li");
       li.className = "module-item" + (isActiveModule ? " tree-active" : "");
-      var arrow = isActiveModule ? "\u25BE" : "\u25B8"; // ▾ or ▸
+      var arrow = isExpanded ? "\u25BE" : "\u25B8";
       li.innerHTML = '<span class="tree-arrow">' + arrow + '</span>' +
         '<span class="module-name">' + mod + '</span>';
       li.style.cursor = "pointer";
@@ -381,39 +542,38 @@
       });
       tree.appendChild(li);
 
-      // Expanded: show functions if this module is active
-      if (isActiveModule && sidebarFunctions[mod]) {
-        sidebarFunctions[mod].forEach(function(fn) {
-          var isActiveFunc = (currentFunction === fn.id);
-          var fnLi = document.createElement("li");
-          fnLi.className = "module-item tree-child" + (isActiveFunc ? " tree-active" : "");
-          var fnArrow = isActiveFunc ? "\u25BE" : "\u25B8";
-          fnLi.innerHTML = '<span class="tree-arrow">' + fnArrow + '</span>' +
-            '<span class="module-name">' + fn.label + '</span>';
-          fnLi.style.cursor = "pointer";
-          fnLi.addEventListener("click", function() {
-            navigateTo("component", mod, fn.id);
-          });
-          tree.appendChild(fnLi);
+      if (!isExpanded) return;
 
-          // Expanded: show blocks if this function is active
-          var funcKey = mod + "/" + fn.id;
-          if (isActiveFunc && sidebarBlocks[funcKey]) {
-            sidebarBlocks[funcKey].forEach(function(blk) {
-              var isActiveBlock = (currentBlock === blk.id);
-              var blkLi = document.createElement("li");
-              blkLi.className = "module-item tree-child tree-child-2" + (isActiveBlock ? " tree-active" : "");
-              blkLi.innerHTML = '<span class="tree-arrow">\u25B8</span>' +
-                '<span class="module-name">' + blk.label + '</span>';
-              blkLi.style.cursor = "pointer";
-              blkLi.addEventListener("click", function() {
-                navigateTo("code", mod, fn.id, blk.id);
-              });
-              tree.appendChild(blkLi);
-            });
-          }
-        });
-      }
+      // Level 1: Containers + context nodes (visible when drilled into a module)
+      var containers = sidebarContainers[mod] || [];
+      var contextNodes = sidebarContextNodes[mod] || [];
+
+      // Show containers first, then context-level items
+      containers.forEach(function(ct) {
+        var isDrillable = (ct.id === "container:binary");
+        var isActiveCt = isDrillable && (currentLevel === "component" || currentLevel === "code");
+
+        var onClick = isDrillable ? function() { navigateTo("component", mod, "main"); } : null;
+        tree.appendChild(sidebarItem(ct.label, ct.type, 1, isActiveCt, onClick));
+
+        // Level 2: Components/functions (visible when inside binary container)
+        if (isActiveCt && sidebarComponents[mod]) {
+          sidebarComponents[mod].forEach(function(comp) {
+            var fnName = comp.id.replace(/^component:/, "");
+            var isActiveComp = (currentLevel === "code" && currentFunction === fnName);
+            var compType = comp.type === "component:dead" ? "component:dead" : "component";
+
+            tree.appendChild(sidebarItem(comp.label, compType, 2, isActiveComp, function() {
+              navigateTo("code", mod, fnName, "entry");
+            }));
+          });
+        }
+      });
+
+      // Context-level items (person, external) shown after containers
+      contextNodes.forEach(function(cn) {
+        tree.appendChild(sidebarItem(cn.label, cn.type, 1, false, null));
+      });
     });
   }
 
@@ -932,6 +1092,31 @@
       // Move the entire group via transform — all children move together
       dragNode.setAttribute("transform", "translate(" + dragOffsetX + "," + dragOffsetY + ")");
 
+      // If this is a boundary node, also move its child nodes
+      if (dragNode.dataset.children) {
+        var childIds = dragNode.dataset.children.split(",");
+        childIds.forEach(function(cid) {
+          var childEl = qs('[data-node-id="' + cid + '"]');
+          if (childEl && childEl !== dragNode) {
+            childEl.setAttribute("transform", "translate(" + dragOffsetX + "," + dragOffsetY + ")");
+            // Update child tracked position
+            if (nodePositions[cid]) {
+              var co = nodePositions[cid];
+              var cb = {
+                cx: co._baseCx !== undefined ? co._baseCx : co.cx,
+                cy: co._baseCy !== undefined ? co._baseCy : co.cy,
+                w: co.w, h: co.h
+              };
+              nodePositions[cid] = {
+                cx: cb.cx + dragOffsetX, cy: cb.cy + dragOffsetY,
+                w: cb.w, h: cb.h,
+                _baseCx: cb.cx, _baseCy: cb.cy
+              };
+            }
+          }
+        });
+      }
+
       // Update tracked position for edge routing
       var nodeId = dragNode.dataset.nodeId;
       var r = dragNode.querySelector(".node-rect");
@@ -975,13 +1160,20 @@
         r.setAttribute("y", newCy - h / 2);
 
         var texts = dragNode.querySelectorAll("text");
+        var isBoundary = dragNode.dataset.nodeType === "boundary";
         texts.forEach(function(t) {
           if (t.classList.contains("node-label")) {
-            t.setAttribute("x", newCx);
-            t.setAttribute("y", newCy + 4);
+            if (isBoundary) {
+              // Boundary label at top-right
+              t.setAttribute("x", newCx + w / 2 - 10);
+              t.setAttribute("y", newCy - h / 2 + 20);
+            } else {
+              t.setAttribute("x", newCx);
+              t.setAttribute("y", newCy - 4);
+            }
           } else if (t.classList.contains("node-badge") && !t.hasAttribute("font-size")) {
             t.setAttribute("x", newCx);
-            t.setAttribute("y", newCy + h / 2 - 6);
+            t.setAttribute("y", newCy + 14);
           }
         });
 
@@ -1013,6 +1205,42 @@
         // Update stored position
         var nodeId = dragNode.dataset.nodeId;
         nodePositions[nodeId] = { cx: newCx, cy: newCy, w: w, h: h };
+
+        // If boundary, also bake transforms into child nodes
+        if (dragNode.dataset.children) {
+          var childIds = dragNode.dataset.children.split(",");
+          childIds.forEach(function(cid) {
+            var childEl = qs('[data-node-id="' + cid + '"]');
+            if (!childEl || childEl === dragNode) return;
+            var cr = childEl.querySelector(".node-rect");
+            if (!cr) return;
+            var cw = parseFloat(cr.getAttribute("width"));
+            var ch = parseFloat(cr.getAttribute("height"));
+            var cox = parseFloat(cr.getAttribute("x"));
+            var coy = parseFloat(cr.getAttribute("y"));
+            var cnx = snapToGrid(cox + cw / 2 + dragOffsetX);
+            var cny = snapToGrid(coy + ch / 2 + dragOffsetY);
+
+            childEl.querySelectorAll("*").forEach(function(el) { el.style.transition = "none"; });
+            cr.setAttribute("x", cnx - cw / 2);
+            cr.setAttribute("y", cny - ch / 2);
+            var cTexts = childEl.querySelectorAll("text");
+            cTexts.forEach(function(t) {
+              if (t.classList.contains("node-label")) {
+                t.setAttribute("x", cnx);
+                t.setAttribute("y", t.getAttribute("y") ? parseFloat(t.getAttribute("y")) + dragOffsetY : cny - 4);
+              } else if (t.classList.contains("node-badge") && !t.hasAttribute("font-size")) {
+                t.setAttribute("x", cnx);
+                t.setAttribute("y", cny + 14);
+              }
+            });
+            childEl.removeAttribute("transform");
+            nodePositions[cid] = { cx: cnx, cy: cny, w: cw, h: ch };
+            requestAnimationFrame(function() {
+              childEl.querySelectorAll("*").forEach(function(el) { el.style.transition = ""; });
+            });
+          });
+        }
       }
 
       updateEdges();

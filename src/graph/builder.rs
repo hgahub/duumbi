@@ -225,6 +225,7 @@ fn build_graph_impl(
             node_map,
             functions,
             branch_targets,
+            module_name: module.name.clone(),
         })
     } else {
         Err(errors)

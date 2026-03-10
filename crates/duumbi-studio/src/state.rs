@@ -9,14 +9,14 @@ use serde::{Deserialize, Serialize};
 /// C4 zoom level for the graph explorer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum C4Level {
-    /// Top-level: modules and their dependencies.
+    /// C4 Context: software system + person + external systems.
     #[default]
     Context,
-    /// Inside a module: functions and call edges.
+    /// C4 Container: native binary + runtime shim within system boundary.
     Container,
-    /// Inside a function: blocks and control flow.
+    /// C4 Component: active vs dead code functions + sub-components.
     Component,
-    /// Inside a block: individual operations and data flow.
+    /// C4 Code: individual operations and data flow within a block.
     Code,
 }
 

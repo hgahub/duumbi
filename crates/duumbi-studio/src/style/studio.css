@@ -70,6 +70,16 @@
     --node-call: #ff7b72;
     --node-memory: #7ee787;
     --node-io: #f778ba;
+
+    /* C4 node type colors */
+    --node-person: #58a6ff;
+    --node-system: #388bfd;
+    --node-external: #8b949e;
+    --node-boundary: #30363d;
+    --node-container: #a371f7;
+    --node-component: #3fb950;
+    --node-component-dead: #6e7681;
+    --node-component-sub: #d2a8ff;
 }
 
 /* ===== Dark Theme (Default) ===== */
@@ -318,6 +328,15 @@ html, body {
     flex-shrink: 0;
 }
 
+.tree-icon {
+    font-size: 11px;
+    width: 16px;
+    display: inline-block;
+    flex-shrink: 0;
+    text-align: center;
+    margin-right: 4px;
+}
+
 .tree-child {
     padding-left: calc(var(--ds-space-sm) + 14px);
 }
@@ -329,6 +348,15 @@ html, body {
 .module-item.tree-active {
     color: var(--ds-text-primary);
     background: var(--ds-bg-elevated);
+}
+
+.module-item.tree-dead .module-name {
+    font-style: italic;
+    opacity: 0.5;
+}
+
+.tree-child-3 {
+    padding-left: calc(var(--ds-space-sm) + 42px);
 }
 
 .intent-list {
@@ -535,29 +563,26 @@ html, body {
     fill: var(--ds-bg-card);
     stroke: var(--ds-border);
     stroke-width: 1.5;
-    transition: all var(--ds-transition-fast);
+    transition: stroke var(--ds-transition-fast), filter var(--ds-transition-fast);
 }
 
 .graph-node:hover .node-rect {
     stroke: var(--ds-accent);
-    stroke-width: 2;
 }
 
 .graph-node.selected .node-rect {
     stroke: var(--ds-accent);
-    stroke-width: 2.5;
     filter: drop-shadow(0 0 4px var(--ds-accent));
 }
 
 .graph-node.highlighted .node-rect {
     stroke: var(--ds-success);
-    stroke-width: 2.5;
     animation: pulse 1.5s ease-in-out 2;
 }
 
 @keyframes pulse {
-    0%, 100% { stroke-width: 2.5; }
-    50% { stroke-width: 4; filter: drop-shadow(0 0 8px var(--ds-success)); }
+    0%, 100% { filter: none; }
+    50% { filter: drop-shadow(0 0 8px var(--ds-success)); }
 }
 
 .node-label {
@@ -592,6 +617,61 @@ html, body {
 .node-Store .node-rect { stroke: var(--node-memory); }
 .node-Print .node-rect { stroke: var(--node-io); }
 .node-Return .node-rect { stroke: var(--ds-text-muted); stroke-width: 2; }
+
+/* C4 node types */
+.node-person .node-rect {
+    stroke: var(--node-person);
+    stroke-width: 2;
+    fill: color-mix(in srgb, var(--node-person) 15%, var(--ds-bg-card));
+}
+.node-system .node-rect {
+    stroke: var(--node-system);
+    stroke-width: 2.5;
+    fill: color-mix(in srgb, var(--node-system) 20%, var(--ds-bg-card));
+}
+.node-external .node-rect {
+    stroke: var(--node-external);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 3;
+    fill: color-mix(in srgb, var(--node-external) 10%, var(--ds-bg-card));
+}
+.node-boundary .node-rect {
+    stroke: var(--node-boundary);
+    stroke-width: 1;
+    stroke-dasharray: 8 4;
+    fill: none;
+}
+.node-container .node-rect {
+    stroke: var(--node-container);
+    stroke-width: 2;
+    fill: color-mix(in srgb, var(--node-container) 15%, var(--ds-bg-card));
+}
+.node-component .node-rect {
+    stroke: var(--node-component);
+    stroke-width: 2;
+    fill: color-mix(in srgb, var(--node-component) 15%, var(--ds-bg-card));
+}
+.node-component-dead .node-rect {
+    stroke: var(--node-component-dead);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    fill: color-mix(in srgb, var(--node-component-dead) 8%, var(--ds-bg-card));
+    opacity: 0.7;
+}
+.node-component-sub .node-rect {
+    stroke: var(--node-component-sub);
+    stroke-width: 1.5;
+    fill: color-mix(in srgb, var(--node-component-sub) 10%, var(--ds-bg-card));
+}
+
+/* C4 node labels */
+.node-person .node-label { fill: var(--node-person); }
+.node-system .node-label { fill: var(--ds-text-primary); font-weight: 600; }
+.node-external .node-label { fill: var(--node-external); }
+.node-container .node-label { fill: var(--ds-text-primary); }
+.node-component .node-label { fill: var(--ds-text-primary); }
+.node-component-dead .node-label { fill: var(--node-component-dead); font-style: italic; }
+.node-component-sub .node-label { fill: var(--node-component-sub); }
 
 /* Entry/exit node markers */
 [class*="entry"] .node-rect {
