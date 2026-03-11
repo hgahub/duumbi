@@ -301,7 +301,7 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
 ///
 /// Looks for the `studio` binary next to the running `duumbi` executable
 /// (both are built from the same cargo workspace). If found, execs into it;
-/// otherwise falls back to the Phase 3 visualizer.
+/// otherwise bails with build instructions.
 async fn studio(port: u16, _dev: bool) -> Result<()> {
     let workspace = PathBuf::from(".");
     if !workspace.join(".duumbi").exists() {

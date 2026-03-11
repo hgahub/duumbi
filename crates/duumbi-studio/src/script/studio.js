@@ -1324,10 +1324,14 @@
             cr.setAttribute("x", cnx - cw / 2);
             cr.setAttribute("y", cny - ch / 2);
             var cTexts = childEl.querySelectorAll("text");
+            var childHasBadge = Array.prototype.some.call(cTexts, function(t) {
+              return t.classList.contains("node-badge");
+            });
             cTexts.forEach(function(t) {
               if (t.classList.contains("node-label")) {
                 t.setAttribute("x", cnx);
-                t.setAttribute("y", t.getAttribute("y") ? parseFloat(t.getAttribute("y")) + dragOffsetY : cny - 4);
+                // Recompute label Y from the snapped center (matching renderSingleNode rules)
+                t.setAttribute("y", childHasBadge ? cny - 4 : cny + 4);
               } else if (t.classList.contains("node-badge") && !t.hasAttribute("font-size")) {
                 t.setAttribute("x", cnx);
                 t.setAttribute("y", cny + 14);
@@ -1456,15 +1460,26 @@
     qsa(".graph-node.node-filtered").forEach(function(el) {
       filteredIds[el.dataset.nodeId] = true;
     });
-    qsa(".graph-edge").forEach(function(edgeG) {
-      var path = edgeG.querySelector(".edge-path");
-      if (!path) return;
-      var src = path.dataset.edgeSrc;
-      var tgt = path.dataset.edgeTgt;
+    // Edges are rendered as standalone .edge-path / .edge-label elements
+    // (no .graph-edge wrapper), so target them directly.
+    qsa(".edge-path").forEach(function(edgeEl) {
+      var src = edgeEl.dataset.edgeSrc;
+      var tgt = edgeEl.dataset.edgeTgt;
+      if (!src || !tgt) return;
       if (filteredIds[src] || filteredIds[tgt]) {
-        edgeG.classList.add("edge-filtered");
+        edgeEl.classList.add("edge-filtered");
       } else {
-        edgeG.classList.remove("edge-filtered");
+        edgeEl.classList.remove("edge-filtered");
+      }
+    });
+    qsa(".edge-label").forEach(function(labelEl) {
+      var src = labelEl.dataset.edgeSrc;
+      var tgt = labelEl.dataset.edgeTgt;
+      if (!src || !tgt) return;
+      if (filteredIds[src] || filteredIds[tgt]) {
+        labelEl.classList.add("edge-filtered");
+      } else {
+        labelEl.classList.remove("edge-filtered");
       }
     });
   }

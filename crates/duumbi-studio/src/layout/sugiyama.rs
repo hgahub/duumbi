@@ -367,6 +367,9 @@ pub fn compute_layout_radial(data: &GraphData) -> (Vec<LayoutNode>, BBox) {
 }
 
 /// Computes the bounding box from positioned nodes.
+///
+/// Derives padding from node dimensions (consistent with `derive_spacing`)
+/// so large C4 nodes get adequate padding and small code-level nodes stay tight.
 fn compute_bbox(nodes: &[LayoutNode]) -> BBox {
     let mut bbox = BBox {
         min_x: f64::MAX,
@@ -392,10 +395,12 @@ fn compute_bbox(nodes: &[LayoutNode]) -> BBox {
             bbox.max_y = bottom;
         }
     }
-    bbox.min_x -= MIN_PADDING;
-    bbox.min_y -= MIN_PADDING;
-    bbox.max_x += MIN_PADDING;
-    bbox.max_y += MIN_PADDING;
+    let max_w = nodes.iter().map(|n| n.width).fold(0.0_f64, f64::max);
+    let padding = (max_w * 0.4).max(MIN_PADDING);
+    bbox.min_x -= padding;
+    bbox.min_y -= padding;
+    bbox.max_x += padding;
+    bbox.max_y += padding;
     bbox
 }
 

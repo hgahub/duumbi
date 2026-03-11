@@ -61,8 +61,8 @@ pub fn SvgNode(node: LayoutNode) -> impl IntoView {
                     state.selected_module.set(Some("app/main".to_string()));
                     state.c4_level.set(C4Level::Container);
                 }
-                // C4 Container → Component drill-down (click on binary/runtime)
-                "container" => {
+                // C4 Container → Component drill-down (only for the binary container)
+                "container" if node_id_dblclick == "container:binary" => {
                     state.selected_module.set(Some("app/main".to_string()));
                     state.c4_level.set(C4Level::Component);
                 }

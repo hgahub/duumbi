@@ -231,8 +231,22 @@ async fn api_source(
 }
 
 /// Resolves graph file path for a module name.
+///
+/// Validates the module name to prevent path traversal attacks — only
+/// alphanumeric characters, `/`, `-`, and `_` are allowed.
 #[cfg(feature = "ssr")]
 fn resolve_module_path(root: &std::path::Path, module_name: &str) -> std::path::PathBuf {
+    // Reject path traversal attempts and invalid characters
+    if module_name.contains("..")
+        || module_name.contains('\\')
+        || !module_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '/' || c == '-' || c == '_')
+    {
+        // Return a path that won't exist, causing a clean "file not found" error
+        return root.join(".duumbi/graph/__invalid__");
+    }
+
     if module_name == "app/main" {
         root.join(".duumbi/graph/main.jsonld")
     } else {
@@ -306,10 +320,10 @@ fn layout_to_json_with(gd: &state::GraphData, layout_type: &str) -> serde_json::
         });
     }
 
-    // Snap nodes to 24px grid
+    // Snap nodes to 12px grid (matching client-side GRID_BASE)
     for node in &mut layout_nodes {
-        node.x = (node.x / 24.0).round() * 24.0;
-        node.y = (node.y / 24.0).round() * 24.0;
+        node.x = (node.x / 12.0).round() * 12.0;
+        node.y = (node.y / 12.0).round() * 12.0;
     }
 
     let layout_edges = layout::edge_routing::route_edges(&gd.edges, &layout_nodes);

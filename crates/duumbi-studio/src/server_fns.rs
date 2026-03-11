@@ -412,7 +412,7 @@ fn build_c4_component(graph: &duumbi::graph::SemanticGraph) -> GraphData {
         edge_counter += 1;
     }
 
-    // External dependencies
+    // External dependencies — only add edges from component:io when the node exists
     if has_io {
         nodes.push(GraphNode {
             id: "external:runtime".to_string(),
@@ -434,14 +434,16 @@ fn build_c4_component(graph: &duumbi::graph::SemanticGraph) -> GraphData {
             width: 120.0,
             height: 50.0,
         });
-        edges.push(GraphEdge {
-            id: format!("e{edge_counter}"),
-            source: "component:io".to_string(),
-            target: "external:runtime".to_string(),
-            label: "hívja".to_string(),
-            edge_type: "call".to_string(),
-        });
-        edge_counter += 1;
+        if has_io_ops {
+            edges.push(GraphEdge {
+                id: format!("e{edge_counter}"),
+                source: "component:io".to_string(),
+                target: "external:runtime".to_string(),
+                label: "hívja".to_string(),
+                edge_type: "call".to_string(),
+            });
+            edge_counter += 1;
+        }
         edges.push(GraphEdge {
             id: format!("e{edge_counter}"),
             source: "external:runtime".to_string(),
