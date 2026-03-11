@@ -78,10 +78,17 @@ async fn run(cli: Cli) -> Result<()> {
             };
             cli::init::run_init(&base)
         }
-        Commands::Build { input, output } => {
+        Commands::Build {
+            input,
+            output,
+            offline,
+        } => {
+            if offline {
+                eprintln!("Building in offline mode (vendor + workspace only)...");
+            }
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            cli::commands::build(&input_path, &output_path)
+            cli::commands::build_with_opts(&input_path, &output_path, offline)
         }
         Commands::Run { args } => {
             let binary = resolve_output(None)?;

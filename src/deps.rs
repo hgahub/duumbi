@@ -232,6 +232,8 @@ fn try_read_manifest(graph_dir: &Path) -> Option<ModuleManifest> {
 /// Resolution order: vendor → cache → `E011 NotFound`.
 /// (Workspace layer is handled separately by `load_program_with_deps`.)
 ///
+/// When `offline` is `true`, the cache layer is skipped — only vendor is checked.
+///
 /// # Errors
 ///
 /// Returns [`DepsError::NotFound`] if the module is not present in any layer.
@@ -239,6 +241,18 @@ pub fn resolve_module(
     workspace: &Path,
     module_key: &str,
     version: &str,
+) -> Result<ResolvedModule, DepsError> {
+    resolve_module_with_opts(workspace, module_key, version, false)
+}
+
+/// Resolves a version-pinned dependency with offline mode control.
+///
+/// When `offline` is `true`, only the vendor layer is checked (cache is skipped).
+pub fn resolve_module_with_opts(
+    workspace: &Path,
+    module_key: &str,
+    version: &str,
+    offline: bool,
 ) -> Result<ResolvedModule, DepsError> {
     if let Some((scope, name)) = parse_scoped_name(module_key) {
         // 1. Vendor layer
@@ -252,15 +266,17 @@ pub fn resolve_module(
             });
         }
 
-        // 2. Cache layer
-        let cache_dir = cache_entry_graph_dir(workspace, scope, name, version);
-        if cache_dir.exists() {
-            return Ok(ResolvedModule {
-                name: module_key.to_string(),
-                source: ModuleSource::Cache,
-                manifest: try_read_manifest(&cache_dir),
-                graph_dir: cache_dir,
-            });
+        // 2. Cache layer (skipped in offline mode)
+        if !offline {
+            let cache_dir = cache_entry_graph_dir(workspace, scope, name, version);
+            if cache_dir.exists() {
+                return Ok(ResolvedModule {
+                    name: module_key.to_string(),
+                    source: ModuleSource::Cache,
+                    manifest: try_read_manifest(&cache_dir),
+                    graph_dir: cache_dir,
+                });
+            }
         }
     }
 
@@ -583,9 +599,21 @@ fn validate_dep_workspace(dep_path: &Path, name: &str) -> Result<(), DepsError> 
 /// On success, also generates/updates the lockfile.
 #[must_use = "program load errors should be handled"]
 pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
+    load_program_with_deps_opts(workspace, false)
+}
+
+/// Loads a [`Program`] from a workspace with offline mode control.
+///
+/// When `offline` is `true`, dependency resolution is restricted to
+/// workspace and vendor layers only — cache is skipped, producing
+/// a clear error if any dep is only available there.
+#[must_use = "program load errors should be handled"]
+pub fn load_program_with_deps_opts(workspace: &Path, offline: bool) -> Result<Program, DepsError> {
     let config = config::load_config(workspace).unwrap_or_default();
 
-    generate_lockfile(workspace, &config)?;
+    if !offline {
+        generate_lockfile(workspace, &config)?;
+    }
 
     let mut graph_dirs: Vec<PathBuf> = Vec::new();
     let workspace_graph = workspace.join(".duumbi").join("graph");
@@ -602,7 +630,7 @@ pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
             }
             DependencyConfig::Version(version)
             | DependencyConfig::VersionWithRegistry { version, .. } => {
-                let resolved = resolve_module(workspace, name, version)?;
+                let resolved = resolve_module_with_opts(workspace, name, version, offline)?;
                 resolved.graph_dir
             }
         };
@@ -1416,6 +1444,64 @@ hash = "0123456789abcdef"
             ModuleSource::Vendor,
             "must resolve from vendor"
         );
+    }
+
+    #[test]
+    fn offline_resolve_skips_cache() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Normal resolve finds it in cache
+        let resolved = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", false)
+            .expect("must resolve online");
+        assert_eq!(resolved.source, ModuleSource::Cache);
+
+        // Offline resolve fails (not vendored)
+        let result = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", true);
+        assert!(
+            matches!(result, Err(DepsError::NotFound { .. })),
+            "offline must skip cache"
+        );
+    }
+
+    #[test]
+    fn offline_resolve_finds_vendored() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Vendor it first
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+        vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+
+        // Offline resolve finds it in vendor
+        let resolved = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", true)
+            .expect("must resolve offline from vendor");
+        assert_eq!(resolved.source, ModuleSource::Vendor);
+    }
+
+    #[test]
+    fn offline_load_program_fails_for_cache_only_dep() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        // Offline load should fail — dep only in cache
+        let result = load_program_with_deps_opts(ws.path(), true);
+        assert!(result.is_err(), "offline must fail for cache-only dep");
     }
 
     #[test]

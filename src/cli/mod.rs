@@ -38,6 +38,11 @@ pub enum Commands {
         /// Path for the output binary (default: `output`).
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Restrict dependency resolution to workspace and vendor layers only.
+        /// Fails if any dependency is only available in the cache.
+        #[arg(long)]
+        offline: bool,
     },
 
     /// Build and run the compiled binary.

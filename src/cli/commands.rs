@@ -74,8 +74,15 @@ pub(crate) fn parse_and_validate(input: &Path) -> Result<graph::SemanticGraph> {
 ///
 /// Runs the full pipeline: parse → validate → Cranelift IR → object file → link.
 pub(crate) fn build(input: &Path, output: &Path) -> Result<()> {
+    build_with_opts(input, output, false)
+}
+
+/// Builds a program with optional offline mode.
+///
+/// When `offline` is `true`, dependency resolution skips the cache layer.
+pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Result<()> {
     if let Some(workspace_root) = workspace_root_for_graph_input(input) {
-        return build_workspace_program(&workspace_root, output);
+        return build_workspace_program(&workspace_root, output, offline);
     }
 
     let semantic_graph = parse_and_validate(input)?;
@@ -106,8 +113,8 @@ pub(crate) fn build(input: &Path, output: &Path) -> Result<()> {
 }
 
 /// Compiles all modules in a workspace (including declared dependencies) and links them.
-fn build_workspace_program(workspace_root: &Path, output: &Path) -> Result<()> {
-    let program = deps::load_program_with_deps(workspace_root).map_err(|e| {
+fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) -> Result<()> {
+    let program = deps::load_program_with_deps_opts(workspace_root, offline).map_err(|e| {
         emit_program_error_diagnostics(&e);
         anyhow::anyhow!("Graph construction failed: {e}")
     })?;
