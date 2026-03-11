@@ -13,6 +13,7 @@ mod deps;
 mod errors;
 mod examples;
 mod graph;
+mod hash;
 mod intent;
 mod manifest;
 mod parser;
