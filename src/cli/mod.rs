@@ -7,6 +7,7 @@ pub mod deps;
 pub mod describe;
 pub mod init;
 pub mod repl;
+pub mod upgrade;
 
 use std::path::PathBuf;
 
@@ -90,6 +91,9 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: IntentSubcommand,
     },
+
+    /// Migrate a Phase 4-5 workspace to Phase 7 format.
+    Upgrade,
 
     /// Start the DUUMBI Studio web platform.
     Studio {
