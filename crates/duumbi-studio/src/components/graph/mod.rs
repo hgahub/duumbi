@@ -14,6 +14,7 @@ pub mod svg_node;
 use leptos::prelude::*;
 
 use crate::layout;
+use crate::server_fns;
 use crate::state::{C4Level, StudioState};
 
 /// Main graph canvas component.
@@ -25,6 +26,36 @@ pub fn GraphCanvas() -> impl IntoView {
     let state = expect_context::<StudioState>();
     let (view_box, set_view_box) = signal("0 0 800 600".to_string());
     let (transform, set_transform) = signal("translate(0,0) scale(1)".to_string());
+
+    // Reload graph data whenever C4 level or selection changes
+    Effect::new(move |_| {
+        let level = state.c4_level.get();
+        let module = state
+            .selected_module
+            .get()
+            .unwrap_or_else(|| "app/main".to_string());
+        let function = state
+            .selected_function
+            .get()
+            .unwrap_or_else(|| "main".to_string());
+        let block = state
+            .selected_block
+            .get()
+            .unwrap_or_else(|| "entry".to_string());
+
+        let graph_data = state.graph_data;
+        leptos::task::spawn_local(async move {
+            let result = match level {
+                C4Level::Context => server_fns::get_graph_context().await,
+                C4Level::Container => server_fns::get_module_detail(module).await,
+                C4Level::Component => server_fns::get_function_detail(module, function).await,
+                C4Level::Code => server_fns::get_block_ops(module, function, block).await,
+            };
+            if let Ok(data) = result {
+                graph_data.set(data);
+            }
+        });
+    });
 
     // Compute layout whenever graph data changes
     let layout_data = Memo::new(move |_| {

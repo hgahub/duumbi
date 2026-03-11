@@ -318,6 +318,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -359,6 +360,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -393,6 +395,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -436,6 +439,7 @@ mod tests {
                 }],
             }],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -469,6 +473,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -502,6 +507,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -524,6 +530,7 @@ mod tests {
                 blocks: vec![], // no blocks!
             }],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -551,6 +558,7 @@ mod tests {
                 }],
             }],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -586,6 +594,7 @@ mod tests {
                 }],
             }],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -627,6 +636,7 @@ mod tests {
                 }],
             }],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);
@@ -671,6 +681,7 @@ mod tests {
             node_map: std::collections::HashMap::new(),
             functions: vec![],
             branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let diags = validate(&sg);

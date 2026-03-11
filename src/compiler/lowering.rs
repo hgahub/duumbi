@@ -829,6 +829,7 @@ mod tests {
                 }],
             }],
             branch_targets: HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
@@ -886,6 +887,7 @@ mod tests {
                 }],
             }],
             branch_targets: HashMap::new(),
+            module_name: ModuleName("test".to_string()),
         };
 
         let obj_bytes = compile_to_object(&sg).expect("f64 compilation should succeed");

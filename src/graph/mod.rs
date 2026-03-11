@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use thiserror::Error;
 
-use crate::types::{BlockLabel, DuumbiType, FunctionName, NodeId, Op};
+use crate::types::{BlockLabel, DuumbiType, FunctionName, ModuleName, NodeId, Op};
 
 /// Errors that can occur during graph construction.
 #[derive(Debug, Error)]
@@ -143,4 +143,6 @@ pub struct SemanticGraph {
     pub functions: Vec<FunctionInfo>,
     /// Branch target labels: NodeId → (true_block_label, false_block_label).
     pub branch_targets: HashMap<NodeId, (String, String)>,
+    /// Module name from the JSON-LD `duumbi:name` field.
+    pub module_name: ModuleName,
 }

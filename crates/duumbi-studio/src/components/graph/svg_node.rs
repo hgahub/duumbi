@@ -56,6 +56,26 @@ pub fn SvgNode(node: LayoutNode) -> impl IntoView {
         move |_| {
             use crate::state::C4Level;
             match node_type.as_str() {
+                // C4 Context → Container drill-down (click on software system)
+                "system" => {
+                    state.selected_module.set(Some("app/main".to_string()));
+                    state.c4_level.set(C4Level::Container);
+                }
+                // C4 Container → Component drill-down (only for the binary container)
+                "container" if node_id_dblclick == "container:binary" => {
+                    state.selected_module.set(Some("app/main".to_string()));
+                    state.c4_level.set(C4Level::Component);
+                }
+                // C4 Component → Code drill-down (click on active function)
+                "component" => {
+                    // Extract function name from id: "component:main" → "main"
+                    let fn_name = node_id_dblclick
+                        .strip_prefix("component:")
+                        .unwrap_or(&node_id_dblclick);
+                    state.selected_function.set(Some(fn_name.to_string()));
+                    state.c4_level.set(C4Level::Code);
+                }
+                // Legacy node types (still used at Code level)
                 "module" => {
                     state.selected_module.set(Some(node_id_dblclick.clone()));
                     state.c4_level.set(C4Level::Container);
@@ -76,17 +96,31 @@ pub fn SvgNode(node: LayoutNode) -> impl IntoView {
     let x = node.x - node.width / 2.0;
     let y = node.y - node.height / 2.0;
     let rx = match node.node_type.as_str() {
+        "person" => node.width / 2.0,                 // oval for person
+        "system" | "container" | "component" => 12.0, // rounded rect
+        "boundary" => 16.0,                           // large rounding
+        "external" => 2.0,                            // sharp corners
+        "component-dead" | "component-sub" => 8.0,    // slightly rounded
         "module" | "function" => 8.0,
         "block" => 4.0,
         "Const" | "ConstF64" | "ConstBool" => node.width / 2.0, // circle-ish
         _ => 6.0,
     };
 
+    let has_badge = node.badge.is_some();
+    // Label shifts up when badge is present so both fit in the box
+    let label_y = if has_badge {
+        node.y - 4.0
+    } else {
+        node.y + 4.0
+    };
+
     let badge_view = node.badge.clone().map(|badge| {
         view! {
             <text
-                x=node.x + node.width / 2.0 - 5.0
-                y=node.y - node.height / 2.0 + 12.0
+                x=node.x
+                y=node.y + 14.0
+                text-anchor="middle"
                 class="node-badge"
             >
                 {badge}
@@ -112,7 +146,7 @@ pub fn SvgNode(node: LayoutNode) -> impl IntoView {
             />
             <text
                 x=node.x
-                y=node.y + 4.0
+                y=label_y
                 text-anchor="middle"
                 class="node-label"
             >

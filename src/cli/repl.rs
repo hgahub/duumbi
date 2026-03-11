@@ -254,16 +254,6 @@ impl Session {
                 }
             }
 
-            "/viz" => {
-                let port: u16 = arg.parse().unwrap_or(8420);
-                eprintln!("Starting visualizer at http://localhost:{port} — press Ctrl+C to stop.");
-                let initial = crate::web::watcher::load_initial_graph(&graph_path);
-                let state = crate::web::server::AppState::new(initial, false);
-                let _watcher =
-                    crate::web::watcher::spawn_watcher(graph_path.clone(), state.clone());
-                crate::web::server::run_server(port, state).await?;
-            }
-
             "/status" => {
                 self.print_status();
             }
@@ -570,7 +560,6 @@ Slash commands:
   /check              Validate the graph without compiling
   /describe           Print human-readable pseudocode of the graph
   /undo               Restore the previous graph snapshot
-  /viz [port]         Open the web visualizer (default port: 8420)
   /status             Show workspace, model, and session information
   /history            Show session conversation history (sent as context to LLM)
   /model              Show the current LLM model

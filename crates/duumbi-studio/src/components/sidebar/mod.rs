@@ -4,25 +4,16 @@
 
 use leptos::prelude::*;
 
-use crate::state::{C4Level, StudioState};
+use crate::state::StudioState;
 
 /// Left sidebar component.
 ///
 /// Shows the file explorer (module tree), intent list, and config.
 #[component]
 pub fn Sidebar() -> impl IntoView {
-    let state = expect_context::<StudioState>();
-
-    let is_collapsed = move || state.sidebar_collapsed.get();
-    let toggle = move |_| state.sidebar_collapsed.update(|v| *v = !*v);
-
     view! {
-        <aside class="studio-sidebar" class:collapsed=is_collapsed>
-            <button class="sidebar-toggle" on:click=toggle title="Toggle sidebar">
-                {move || if is_collapsed() { ">" } else { "<" }}
-            </button>
-
-            <div class="sidebar-content" style:display=move || if is_collapsed() { "none" } else { "block" }>
+        <aside class="studio-sidebar">
+            <div class="sidebar-content">
                 // Explorer section
                 <div class="sidebar-section">
                     <h3 class="section-title">"Explorer"</h3>
@@ -40,32 +31,24 @@ pub fn Sidebar() -> impl IntoView {
 }
 
 /// Module tree showing workspace structure.
+///
+/// SSR renders the initial module list from `InitialData`. The JS
+/// `updateSidebarTree()` rebuilds this on every C4 navigation.
 #[component]
 fn ModuleTree() -> impl IntoView {
-    let state = expect_context::<StudioState>();
-
-    // Use graph_data to show modules (from Context level data)
-    let modules = move || {
-        let data = state.graph_data.get();
-        data.nodes
-            .iter()
-            .filter(|n| n.node_type == "module")
-            .map(|n| n.id.clone())
-            .collect::<Vec<_>>()
-    };
+    let modules = use_context::<crate::state::InitialData>()
+        .map(|d| d.modules.clone())
+        .unwrap_or_default();
 
     view! {
         <ul class="module-tree">
-            {move || modules().into_iter().map(|module_id| {
+            {modules.into_iter().map(|module_id| {
                 let mid = module_id.clone();
-                let on_click = move |_| {
-                    state.selected_module.set(Some(mid.clone()));
-                    state.c4_level.set(C4Level::Container);
-                };
                 view! {
-                    <li class="module-item" on:click=on_click>
-                        <span class="module-icon">">"</span>
-                        <span class="module-name">{module_id}</span>
+                    <li class="module-item">
+                        <span class="tree-arrow" inner_html="<svg viewBox='0 0 16 16'><polyline points='6 4 10 8 6 12'/></svg>"></span>
+                        <span class="tree-icon" style="color:#5b9bd5">"\u{2B22}"</span>
+                        <span class="module-name">{mid}</span>
                     </li>
                 }
             }).collect::<Vec<_>>()}

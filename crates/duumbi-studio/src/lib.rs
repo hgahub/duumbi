@@ -58,6 +58,17 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))
+        // JSON API for raw JSON-LD source (used by code view toggle)
+        .route(
+            "/api/source",
+            get({
+                let ws = api_ws.clone();
+                move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    let ws = ws.clone();
+                    async move { api_source(ws, query.0).await }
+                }
+            }),
+        )
         // JSON API for graph data (used by client JS)
         .route(
             "/api/graph/{level}",
@@ -109,10 +120,10 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
 
 /// JSON API handler for graph data at various C4 levels.
 ///
-/// `GET /api/graph/context` → modules overview
-/// `GET /api/graph/container?module=app/main` → functions in a module
-/// `GET /api/graph/component?module=app/main&function=main` → blocks in a function
-/// `GET /api/graph/code?module=app/main&function=main&block=entry` → ops in a block
+/// `GET /api/graph/context` → C4 Context (person + software system + stdout)
+/// `GET /api/graph/container?module=app/main` → C4 Container (binary + runtime shim)
+/// `GET /api/graph/component?module=app/main&function=main` → C4 Component (active vs dead code)
+/// `GET /api/graph/code?module=app/main&function=main&block=entry` → Code level (ops)
 #[cfg(feature = "ssr")]
 async fn api_graph(
     ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
@@ -137,13 +148,30 @@ async fn api_graph(
             Ok(obj)
         }
         "container" => {
-            let module = params.get("module").cloned().unwrap_or_default();
-            load_module_graph_with(&ws.root, &module, layout_type)
+            let module = params
+                .get("module")
+                .cloned()
+                .unwrap_or("app/main".to_string());
+            match parse_module(&ws.root, &module) {
+                Ok(graph) => {
+                    let gd = server_fns::build_c4_container_pub(&graph);
+                    Ok(layout_to_json_with(&gd, layout_type))
+                }
+                Err(e) => Err(e),
+            }
         }
         "component" => {
-            let module = params.get("module").cloned().unwrap_or_default();
-            let function = params.get("function").cloned().unwrap_or_default();
-            load_function_blocks_with(&ws.root, &module, &function, layout_type)
+            let module = params
+                .get("module")
+                .cloned()
+                .unwrap_or("app/main".to_string());
+            match parse_module(&ws.root, &module) {
+                Ok(graph) => {
+                    let gd = server_fns::build_c4_component_pub(&graph);
+                    Ok(layout_to_json_with(&gd, layout_type))
+                }
+                Err(e) => Err(e),
+            }
         }
         "code" => {
             let module = params.get("module").cloned().unwrap_or_default();
@@ -169,9 +197,56 @@ async fn api_graph(
     }
 }
 
+/// JSON API handler for raw JSON-LD source of a module.
+///
+/// `GET /api/source?module=app/main` → `{"source": "<raw json-ld>", "path": "app/main"}`
+#[cfg(feature = "ssr")]
+async fn api_source(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    params: std::collections::HashMap<String, String>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let module = params
+        .get("module")
+        .cloned()
+        .unwrap_or("app/main".to_string());
+
+    let path = resolve_module_path(&ws.root, &module);
+    match std::fs::read_to_string(&path) {
+        Ok(source) => (
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"source": source, "path": module}).to_string(),
+        )
+            .into_response(),
+        Err(e) => (
+            http::StatusCode::BAD_REQUEST,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Read {}: {e}", path.display())}).to_string(),
+        )
+            .into_response(),
+    }
+}
+
 /// Resolves graph file path for a module name.
+///
+/// Validates the module name to prevent path traversal attacks — only
+/// alphanumeric characters, `/`, `-`, and `_` are allowed.
 #[cfg(feature = "ssr")]
 fn resolve_module_path(root: &std::path::Path, module_name: &str) -> std::path::PathBuf {
+    // Reject path traversal attempts and invalid characters
+    if module_name.contains("..")
+        || module_name.contains('\\')
+        || !module_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '/' || c == '-' || c == '_')
+    {
+        // Return a path that won't exist, causing a clean "file not found" error
+        return root.join(".duumbi/graph/__invalid__");
+    }
+
     if module_name == "app/main" {
         root.join(".duumbi/graph/main.jsonld")
     } else {
@@ -200,18 +275,55 @@ fn parse_module(
 
 /// Runs layout on graph data and returns JSON with nodes, edges, bbox.
 /// `layout_type`: "hierarchical" (default), "horizontal", "radial"
+///
+/// Boundary nodes are excluded from the layout algorithm (they are purely
+/// visual containers whose position is computed client-side from their
+/// children). They are re-added to the output with zero position.
 #[cfg(feature = "ssr")]
 fn layout_to_json_with(gd: &state::GraphData, layout_type: &str) -> serde_json::Value {
-    let (mut layout_nodes, bbox) = match layout_type {
-        "horizontal" => layout::compute_layout_horizontal(gd),
-        "radial" => layout::compute_layout_radial(gd),
-        _ => layout::compute_layout(gd),
+    // Separate boundary nodes from layout-eligible nodes
+    let boundary_nodes: Vec<_> = gd
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == "boundary")
+        .cloned()
+        .collect();
+    let filtered = state::GraphData {
+        nodes: gd
+            .nodes
+            .iter()
+            .filter(|n| n.node_type != "boundary")
+            .cloned()
+            .collect(),
+        edges: gd.edges.clone(),
     };
 
-    // Snap nodes to 24px grid
+    let (mut layout_nodes, bbox) = match layout_type {
+        "horizontal" => layout::compute_layout_horizontal(&filtered),
+        "radial" => layout::compute_layout_radial(&filtered),
+        _ => layout::compute_layout(&filtered),
+    };
+
+    // Add boundary nodes back with zero position (JS recomputes from children)
+    for bn in &boundary_nodes {
+        layout_nodes.push(layout::LayoutNode {
+            id: bn.id.clone(),
+            label: bn.label.clone(),
+            node_type: bn.node_type.clone(),
+            badge: bn.badge.clone(),
+            x: 0.0,
+            y: 0.0,
+            width: bn.width,
+            height: bn.height,
+            layer: 0,
+            order: 0,
+        });
+    }
+
+    // Snap nodes to 12px grid (matching client-side GRID_BASE)
     for node in &mut layout_nodes {
-        node.x = (node.x / 24.0).round() * 24.0;
-        node.y = (node.y / 24.0).round() * 24.0;
+        node.x = (node.x / 12.0).round() * 12.0;
+        node.y = (node.y / 12.0).round() * 12.0;
     }
 
     let layout_edges = layout::edge_routing::route_edges(&gd.edges, &layout_nodes);
@@ -220,119 +332,6 @@ fn layout_to_json_with(gd: &state::GraphData, layout_type: &str) -> serde_json::
         "edges": layout_edges,
         "bbox": { "min_x": bbox.min_x, "min_y": bbox.min_y, "max_x": bbox.max_x, "max_y": bbox.max_y }
     })
-}
-
-/// Loads a module's function graph with a specific layout type.
-#[cfg(feature = "ssr")]
-fn load_module_graph_with(
-    root: &std::path::Path,
-    module_name: &str,
-    layout_type: &str,
-) -> Result<serde_json::Value, String> {
-    let graph = parse_module(root, module_name)?;
-
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-
-    for func in &graph.functions {
-        let params: Vec<String> = func
-            .params
-            .iter()
-            .map(|p| format!("{}: {}", p.name, p.param_type))
-            .collect();
-        nodes.push(state::GraphNode {
-            id: func.name.to_string(),
-            label: format!(
-                "{}({}) -> {}",
-                func.name,
-                params.join(", "),
-                func.return_type
-            ),
-            node_type: "function".to_string(),
-            badge: Some(format!("{} blocks", func.blocks.len())),
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 60.0,
-        });
-    }
-
-    for func in &graph.functions {
-        for block in &func.blocks {
-            for &node_idx in &block.nodes {
-                let node = &graph.graph[node_idx];
-                if let duumbi::types::Op::Call { function, .. } = &node.op {
-                    edges.push(state::GraphEdge {
-                        id: format!("call:{}:{}", func.name, node.id),
-                        source: func.name.to_string(),
-                        target: function.to_string(),
-                        label: "calls".to_string(),
-                        edge_type: "call".to_string(),
-                    });
-                }
-            }
-        }
-    }
-
-    let gd = state::GraphData { nodes, edges };
-    Ok(layout_to_json_with(&gd, layout_type))
-}
-
-/// Loads blocks within a function with a specific layout type.
-#[cfg(feature = "ssr")]
-fn load_function_blocks_with(
-    root: &std::path::Path,
-    module_name: &str,
-    function_name: &str,
-    layout_type: &str,
-) -> Result<serde_json::Value, String> {
-    let graph = parse_module(root, module_name)?;
-    let func = graph
-        .functions
-        .iter()
-        .find(|f| f.name.0 == function_name)
-        .ok_or_else(|| format!("Function '{function_name}' not found"))?;
-
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-
-    for block in &func.blocks {
-        nodes.push(state::GraphNode {
-            id: block.label.to_string(),
-            label: block.label.to_string(),
-            node_type: "block".to_string(),
-            badge: Some(format!("{} ops", block.nodes.len())),
-            x: 0.0,
-            y: 0.0,
-            width: 160.0,
-            height: 50.0,
-        });
-    }
-
-    for block in &func.blocks {
-        for &node_idx in &block.nodes {
-            let node = &graph.graph[node_idx];
-            if let Some((true_block, false_block)) = graph.branch_targets.get(&node.id) {
-                edges.push(state::GraphEdge {
-                    id: format!("branch:{}:true", block.label),
-                    source: block.label.to_string(),
-                    target: true_block.clone(),
-                    label: "true".to_string(),
-                    edge_type: "branch_true".to_string(),
-                });
-                edges.push(state::GraphEdge {
-                    id: format!("branch:{}:false", block.label),
-                    source: block.label.to_string(),
-                    target: false_block.clone(),
-                    label: "false".to_string(),
-                    edge_type: "branch_false".to_string(),
-                });
-            }
-        }
-    }
-
-    let gd = state::GraphData { nodes, edges };
-    Ok(layout_to_json_with(&gd, layout_type))
 }
 
 /// Loads ops within a block with a specific layout type.
@@ -365,8 +364,6 @@ fn load_block_ops_with(
         .map(|&idx| graph.graph[idx].id.to_string())
         .collect();
 
-    let mut has_incoming: std::collections::HashSet<String> = std::collections::HashSet::new();
-
     for &node_idx in &block.nodes {
         let node = &graph.graph[node_idx];
         let result_type = node
@@ -395,38 +392,47 @@ fn load_block_ops_with(
             height: 45.0,
         });
 
+        // Branch nodes get TrueBlock/FalseBlock edges to show execution paths.
+        // All other data-dependency edges (Left, Right, Operand, Arg) are
+        // intentionally omitted — this view shows execution flow, not data flow.
+        use duumbi::graph::GraphEdge as GE;
         use petgraph::visit::EdgeRef;
         for edge_ref in graph
             .graph
-            .edges_directed(node_idx, petgraph::Direction::Incoming)
+            .edges_directed(node_idx, petgraph::Direction::Outgoing)
         {
-            let source_node = &graph.graph[edge_ref.source()];
-            if block_node_ids.contains(&source_node.id.to_string()) {
-                let (label, edge_type) = server_fns::edge_label_pair(edge_ref.weight());
-                edges.push(state::GraphEdge {
-                    id: format!("e:{}:{}", source_node.id, node.id),
-                    source: source_node.id.to_string(),
-                    target: node.id.to_string(),
-                    label: label.to_string(),
-                    edge_type: edge_type.to_string(),
-                });
-                has_incoming.insert(node.id.to_string());
+            let target_node = &graph.graph[edge_ref.target()];
+            let target_id = target_node.id.to_string();
+            match edge_ref.weight() {
+                GE::TrueBlock | GE::FalseBlock => {
+                    let (label, edge_type) = server_fns::edge_label_pair(edge_ref.weight());
+                    if block_node_ids.contains(&target_id) {
+                        edges.push(state::GraphEdge {
+                            id: format!("e:{}:{}", node.id, target_id),
+                            source: node.id.to_string(),
+                            target: target_id,
+                            label: label.to_string(),
+                            edge_type: edge_type.to_string(),
+                        });
+                    }
+                }
+                _ => {} // data-dependency edges hidden in execution-flow view
             }
         }
     }
 
-    for i in 1..block_node_ids.len() {
-        let cur_id = &block_node_ids[i];
-        if !has_incoming.contains(cur_id) {
-            let prev_id = &block_node_ids[i - 1];
-            edges.push(state::GraphEdge {
-                id: format!("seq:{prev_id}:{cur_id}"),
-                source: prev_id.clone(),
-                target: cur_id.clone(),
-                label: "seq".to_string(),
-                edge_type: "sequence".to_string(),
-            });
-        }
+    // Sequential execution edges between consecutive ops in the block.
+    // This represents the normal "fall-through" execution order.
+    for i in 0..block_node_ids.len().saturating_sub(1) {
+        let src = &block_node_ids[i];
+        let tgt = &block_node_ids[i + 1];
+        edges.push(state::GraphEdge {
+            id: format!("seq:{src}:{tgt}"),
+            source: src.clone(),
+            target: tgt.clone(),
+            label: String::new(),
+            edge_type: "sequence".to_string(),
+        });
     }
 
     let gd = state::GraphData { nodes, edges };
