@@ -133,6 +133,7 @@ async fn run(cli: Cli) -> Result<()> {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
         }
+        Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
         Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
