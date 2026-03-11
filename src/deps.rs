@@ -685,6 +685,163 @@ pub fn list_dependencies(workspace: &Path) -> Result<Vec<DepEntry>, DepsError> {
 }
 
 // ---------------------------------------------------------------------------
+// Vendor operations (#158)
+// ---------------------------------------------------------------------------
+
+/// Result of vendoring a single dependency.
+#[derive(Debug, Clone)]
+pub struct VendorResult {
+    /// Module name that was vendored.
+    pub name: String,
+    /// Source path (cache) the module was copied from.
+    pub source: PathBuf,
+    /// Destination path (vendor) the module was copied to.
+    pub destination: PathBuf,
+}
+
+/// Copies cached dependencies into `.duumbi/vendor/` for offline builds.
+///
+/// `mode` controls which deps are vendored:
+/// - `VendorMode::All` — vendor every version-based dependency
+/// - `VendorMode::ConfigRules` — use `[vendor]` section from config.toml
+/// - `VendorMode::Include(pattern)` — vendor deps matching a glob pattern
+///
+/// Path-based dependencies are skipped (they're already local).
+#[must_use = "vendor errors should be handled"]
+pub fn vendor_dependencies(
+    workspace: &Path,
+    mode: &VendorMode,
+) -> Result<Vec<VendorResult>, DepsError> {
+    let config = config::load_config(workspace).unwrap_or_default();
+    let mut results = Vec::new();
+
+    for (name, dep) in &config.dependencies {
+        let version = match dep.version() {
+            Some(v) => v,
+            None => continue, // skip path deps
+        };
+
+        if !should_vendor(name, mode, &config) {
+            continue;
+        }
+
+        let Some((scope, mod_name)) = parse_scoped_name(name) else {
+            continue; // unscoped deps can't be vendored from cache
+        };
+
+        let cache_graph = cache_entry_graph_dir(workspace, scope, mod_name, version);
+        if !cache_graph.exists() {
+            return Err(DepsError::NotFound {
+                name: name.clone(),
+                version: version.to_string(),
+            });
+        }
+
+        let vendor_graph = vendor_entry_graph_dir(workspace, scope, mod_name);
+        fs::create_dir_all(&vendor_graph).map_err(|e| DepsError::Io {
+            path: vendor_graph.display().to_string(),
+            source: e,
+        })?;
+
+        // Copy all files from cache graph dir to vendor graph dir
+        copy_dir_contents(&cache_graph, &vendor_graph)?;
+
+        // Copy manifest if present
+        let cache_root = cache_graph
+            .parent()
+            .expect("invariant: graph dir always has parent");
+        let cache_manifest = cache_root.join("manifest.toml");
+        if cache_manifest.exists() {
+            let vendor_root = vendor_graph
+                .parent()
+                .expect("invariant: graph dir always has parent");
+            fs::copy(&cache_manifest, vendor_root.join("manifest.toml")).map_err(|e| {
+                DepsError::Io {
+                    path: cache_manifest.display().to_string(),
+                    source: e,
+                }
+            })?;
+        }
+
+        results.push(VendorResult {
+            name: name.clone(),
+            source: cache_graph,
+            destination: vendor_graph,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Controls which dependencies are vendored.
+#[derive(Debug, Clone)]
+pub enum VendorMode {
+    /// Vendor all version-based dependencies.
+    All,
+    /// Use the `[vendor]` section from config.toml.
+    ConfigRules,
+    /// Vendor deps matching a glob pattern (e.g. `"@company/*"`).
+    Include(String),
+}
+
+/// Determines whether a dependency should be vendored based on the mode.
+fn should_vendor(name: &str, mode: &VendorMode, config: &config::DuumbiConfig) -> bool {
+    match mode {
+        VendorMode::All => true,
+        VendorMode::Include(pattern) => glob_matches(pattern, name),
+        VendorMode::ConfigRules => {
+            let vendor = config.vendor.as_ref();
+            match vendor.map(|v| &v.strategy) {
+                Some(config::VendorStrategy::All) => true,
+                Some(config::VendorStrategy::Selective) => {
+                    let includes = vendor.map(|v| &v.include).cloned().unwrap_or_default();
+                    includes.iter().any(|p| glob_matches(p, name))
+                }
+                _ => false, // None or VendorStrategy::None
+            }
+        }
+    }
+}
+
+/// Simple glob matching for scope patterns like `"@company/*"`.
+///
+/// Supports `*` as a wildcard that matches any sequence of characters.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return text.starts_with(prefix);
+    }
+    pattern == text
+}
+
+/// Copies all files (non-recursive) from `src` to `dst`.
+fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), DepsError> {
+    for entry in fs::read_dir(src).map_err(|e| DepsError::Io {
+        path: src.display().to_string(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| DepsError::Io {
+            path: src.display().to_string(),
+            source: e,
+        })?;
+        let file_type = entry.file_type().map_err(|e| DepsError::Io {
+            path: entry.path().display().to_string(),
+            source: e,
+        })?;
+        if file_type.is_file() {
+            let dest_file = dst.join(entry.file_name());
+            fs::copy(entry.path(), &dest_file).map_err(|e| DepsError::Io {
+                path: entry.path().display().to_string(),
+                source: e,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1120,6 +1277,155 @@ hash = "0123456789abcdef"
 
         assert_eq!(entry.version.as_deref(), Some("1.0.0"));
         assert_eq!(entry.source.as_deref(), Some("cache"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Vendor tests (#158)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn vendor_all_copies_cache_to_vendor() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@duumbi/stdlib-math");
+
+        // Verify files exist in vendor
+        let vendor_graph = vendor_entry_graph_dir(ws.path(), "@duumbi", "stdlib-math");
+        assert!(vendor_graph.exists(), "vendor graph dir must exist");
+        assert!(
+            vendor_graph.join("stdlib-math.jsonld").exists(),
+            "vendored jsonld must exist"
+        );
+    }
+
+    #[test]
+    fn vendor_include_pattern_filters() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+        make_cache_module(ws.path(), "@company", "auth", "2.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        cfg.dependencies.insert(
+            "@company/auth".to_string(),
+            DependencyConfig::Version("2.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results =
+            vendor_dependencies(ws.path(), &VendorMode::Include("@company/*".to_string()))
+                .expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@company/auth");
+
+        // @duumbi should NOT be vendored
+        let duumbi_vendor = vendor_entry_graph_dir(ws.path(), "@duumbi", "stdlib-math");
+        assert!(!duumbi_vendor.exists(), "duumbi should not be vendored");
+    }
+
+    #[test]
+    fn vendor_config_rules_selective() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@company", "auth", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@company/auth".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        cfg.vendor = Some(config::VendorSection {
+            strategy: config::VendorStrategy::Selective,
+            include: vec!["@company/*".to_string()],
+        });
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::ConfigRules).expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@company/auth");
+    }
+
+    #[test]
+    fn vendor_config_rules_none_skips_all() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        // No vendor section = strategy None
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::ConfigRules).expect("vendor");
+        assert!(results.is_empty(), "no vendor rules = no vendoring");
+    }
+
+    #[test]
+    fn vendor_skips_path_deps() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+        assert!(results.is_empty(), "path deps must be skipped");
+    }
+
+    #[test]
+    fn vendor_resolves_from_vendor_layer() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        // Vendor it
+        vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+
+        // Now resolve — should find it in vendor layer
+        let resolved =
+            resolve_module(ws.path(), "@duumbi/stdlib-math", "1.0.0").expect("must resolve");
+        assert_eq!(
+            resolved.source,
+            ModuleSource::Vendor,
+            "must resolve from vendor"
+        );
+    }
+
+    #[test]
+    fn glob_matches_patterns() {
+        assert!(glob_matches("@company/*", "@company/auth"));
+        assert!(glob_matches("@company/*", "@company/billing"));
+        assert!(!glob_matches("@company/*", "@duumbi/stdlib-math"));
+        assert!(glob_matches("*", "@anything/here"));
+        assert!(glob_matches("@duumbi/stdlib-math", "@duumbi/stdlib-math"));
+        assert!(!glob_matches("@duumbi/stdlib-math", "@duumbi/stdlib-io"));
     }
 
     #[test]

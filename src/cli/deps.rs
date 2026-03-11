@@ -49,3 +49,28 @@ pub fn run_deps_remove(workspace: &Path, name: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// Vendors cached dependencies into `.duumbi/vendor/` for offline builds.
+pub fn run_deps_vendor(workspace: &Path, all: bool, include: Option<&str>) -> Result<()> {
+    let mode = if all {
+        deps::VendorMode::All
+    } else if let Some(pattern) = include {
+        deps::VendorMode::Include(pattern.to_string())
+    } else {
+        deps::VendorMode::ConfigRules
+    };
+
+    let results =
+        deps::vendor_dependencies(workspace, &mode).context("Failed to vendor dependencies")?;
+
+    if results.is_empty() {
+        eprintln!("No dependencies to vendor.");
+    } else {
+        for r in &results {
+            eprintln!("  Vendored {} → {}", r.name, r.destination.display());
+        }
+        eprintln!("Vendored {} dependencies.", results.len());
+    }
+
+    Ok(())
+}

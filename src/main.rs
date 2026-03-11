@@ -117,6 +117,9 @@ async fn run(cli: Cli) -> Result<()> {
                 cli::DepsSubcommand::Remove { name } => {
                     cli::deps::run_deps_remove(&workspace, &name)
                 }
+                cli::DepsSubcommand::Vendor { all, include } => {
+                    cli::deps::run_deps_vendor(&workspace, all, include.as_deref())
+                }
             }
         }
         Commands::Intent { subcommand } => {

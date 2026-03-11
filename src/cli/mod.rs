@@ -117,6 +117,16 @@ pub enum DepsSubcommand {
         /// Dependency name to remove.
         name: String,
     },
+
+    /// Copy cached dependencies into `.duumbi/vendor/` for offline builds.
+    Vendor {
+        /// Vendor all dependencies regardless of config.toml [vendor] rules.
+        #[arg(long)]
+        all: bool,
+        /// Glob pattern to match scoped module names (e.g. `"@company/*"`).
+        #[arg(long)]
+        include: Option<String>,
+    },
 }
 
 /// Subcommands for `duumbi intent`.
