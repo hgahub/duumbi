@@ -370,7 +370,8 @@ fn integrity_hash(graph_dir: &Path) -> Result<String, DepsError> {
 fn dep_source_string(dep: &DependencyConfig, source: &ModuleSource) -> String {
     match dep {
         DependencyConfig::Path { path } => format!("path+{path}"),
-        DependencyConfig::Version(_) => match source {
+        DependencyConfig::Version(_) | DependencyConfig::VersionWithRegistry { .. } => match source
+        {
             ModuleSource::Vendor => "vendor".to_string(),
             ModuleSource::Cache => "cache".to_string(),
             ModuleSource::Workspace => "workspace".to_string(),
@@ -380,10 +381,7 @@ fn dep_source_string(dep: &DependencyConfig, source: &ModuleSource) -> String {
 
 /// Extracts the version string from a dependency config.
 fn dep_version_string(dep: &DependencyConfig) -> Option<String> {
-    match dep {
-        DependencyConfig::Path { .. } => None,
-        DependencyConfig::Version(v) => Some(v.clone()),
-    }
+    dep.version().map(|v| v.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +423,8 @@ pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<Deps
                     ModuleSource::Workspace,
                 )
             }
-            DependencyConfig::Version(version) => {
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
                 let resolved = resolve_module(workspace, name, version)?;
                 let source = resolved.source;
                 (resolved.graph_dir, source)
@@ -601,7 +600,8 @@ pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
                 validate_dep_workspace(&dep_path, name)?;
                 dep_path.join(".duumbi").join("graph")
             }
-            DependencyConfig::Version(version) => {
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
                 let resolved = resolve_module(workspace, name, version)?;
                 resolved.graph_dir
             }
@@ -669,7 +669,8 @@ pub fn list_dependencies(workspace: &Path) -> Result<Vec<DepEntry>, DepsError> {
                     .map_err(|e| e.to_string());
                 (path.clone(), res)
             }
-            DependencyConfig::Version(version) => {
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
                 let res = resolve_module(workspace, name, version)
                     .map(|r| r.graph_dir)
                     .map_err(|e| e.to_string());
