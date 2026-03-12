@@ -297,6 +297,62 @@ pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -
     Ok(())
 }
 
+/// Displays the dependency tree as ASCII art.
+///
+/// Reads the lockfile for resolved entries and config for workspace identity.
+/// The `_max_depth` parameter is reserved for future nested dependency support.
+pub fn run_deps_tree(workspace: &Path, _max_depth: u32) -> Result<()> {
+    let cfg = config::load_config(workspace).unwrap_or_default();
+    let lock = deps::load_lockfile(workspace).context("Failed to read lockfile")?;
+
+    // Workspace root name
+    let ws_name = cfg
+        .workspace
+        .as_ref()
+        .and_then(|ws| {
+            if ws.name.is_empty() {
+                None
+            } else {
+                Some(ws.name.as_str())
+            }
+        })
+        .unwrap_or("(workspace)");
+
+    eprintln!("{ws_name}");
+
+    if lock.dependencies.is_empty() {
+        eprintln!("  (no dependencies)");
+        return Ok(());
+    }
+
+    let total = lock.dependencies.len();
+    for (i, entry) in lock.dependencies.iter().enumerate() {
+        let is_last = i == total - 1;
+        let connector = if is_last { "└── " } else { "├── " };
+
+        let version = entry.version.as_deref().unwrap_or("?");
+        let source = format_source(entry);
+
+        eprintln!("{connector}{} v{version} ({source})", entry.name);
+    }
+
+    Ok(())
+}
+
+/// Formats the source/provenance of a lock entry for display.
+fn format_source(entry: &deps::LockEntry) -> String {
+    if entry.vendored {
+        return "vendored".to_string();
+    }
+    if let Some(ref src) = entry.source {
+        return src.clone();
+    }
+    if let Some(ref path) = entry.effective_path() {
+        return format!("path: {path}");
+    }
+    "unknown".to_string()
+}
+
 /// Removes a dependency from `config.toml`.
 pub fn run_deps_remove(workspace: &Path, name: &str) -> Result<()> {
     let removed = deps::remove_dependency(workspace, name)

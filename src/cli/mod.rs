@@ -142,6 +142,13 @@ pub enum DepsSubcommand {
         name: String,
     },
 
+    /// Display the dependency tree.
+    Tree {
+        /// Maximum tree depth to display.
+        #[arg(long, default_value_t = 10)]
+        depth: u32,
+    },
+
     /// Update dependencies to latest compatible versions from registries.
     Update {
         /// Specific dependency to update (omit to update all).
