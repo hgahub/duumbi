@@ -427,6 +427,27 @@ pub fn load_lockfile(workspace: &Path) -> Result<DepsLock, DepsError> {
 /// Output is deterministic — entries are sorted by name, hashes are stable.
 #[must_use = "lockfile generation errors should be handled"]
 pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<DepsLock, DepsError> {
+    let (lock, contents) = build_lockfile(workspace, config)?;
+
+    let lock_path = workspace.join(".duumbi").join("deps.lock");
+    fs::write(&lock_path, contents).map_err(|e| DepsError::Io {
+        path: lock_path.display().to_string(),
+        source: e,
+    })?;
+
+    Ok(lock)
+}
+
+/// Builds a lockfile in memory without writing to disk.
+///
+/// Returns the `DepsLock` structure and its serialized TOML representation.
+/// Use this when you need to compare lockfile content before deciding whether
+/// to write (e.g. `--frozen` checks).
+#[must_use = "lockfile generation errors should be handled"]
+pub fn build_lockfile(
+    workspace: &Path,
+    config: &DuumbiConfig,
+) -> Result<(DepsLock, String), DepsError> {
     let mut entries = Vec::new();
 
     for (name, dep) in &config.dependencies {
@@ -481,12 +502,8 @@ pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<Deps
         path: lock_path.display().to_string(),
         source: std::io::Error::other(e.to_string()),
     })?;
-    fs::write(&lock_path, contents).map_err(|e| DepsError::Io {
-        path: lock_path.display().to_string(),
-        source: e,
-    })?;
 
-    Ok(lock)
+    Ok((lock, contents))
 }
 
 /// Verifies that all lockfile entries match the current state on disk.

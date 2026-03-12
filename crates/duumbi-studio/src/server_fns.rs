@@ -881,23 +881,41 @@ pub async fn search_registry(query: String) -> Result<Vec<RegistrySearchHit>, Se
 }
 
 /// Installs a module by adding it as a dependency and downloading to cache.
+///
+/// First runs `duumbi deps add <module_name>` to register the dependency
+/// in config.toml, then `duumbi deps install` to download and lock it.
 #[server]
 pub async fn install_module(module_name: String) -> Result<String, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
 
-    // Run duumbi deps install via subprocess (cleanest integration)
-    let output = tokio::process::Command::new("cargo")
+    // Step 1: Add the module as a dependency in config.toml
+    let add_output = tokio::process::Command::new("cargo")
+        .args(["run", "--quiet", "--", "deps", "add", &module_name])
+        .current_dir(&ws.root)
+        .output()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to run deps add: {e}")))?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        return Err(ServerFnError::new(format!(
+            "Failed to add dependency: {stderr}"
+        )));
+    }
+
+    // Step 2: Install (download + lock) the dependency
+    let install_output = tokio::process::Command::new("cargo")
         .args(["run", "--quiet", "--", "deps", "install"])
         .current_dir(&ws.root)
         .output()
         .await
         .map_err(|e| ServerFnError::new(format!("Failed to run deps install: {e}")))?;
 
-    if output.status.success() {
+    if install_output.status.success() {
         Ok(format!("Installed {module_name} successfully"))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
         Err(ServerFnError::new(format!("Install failed: {stderr}")))
     }
 }
@@ -929,14 +947,30 @@ pub async fn get_installed_deps() -> Result<Vec<InstalledDep>, ServerFnError> {
         });
     }
 
-    // Also check vendor dir
+    // Also check vendor dir — supports both `vendor/pkg` and `vendor/@scope/pkg`
     let vendor_dir = ws.root.join(".duumbi/vendor");
     if vendor_dir.exists()
         && let Ok(entries) = std::fs::read_dir(&vendor_dir)
     {
         for entry in entries.flatten() {
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            if !deps.iter().any(|d| d.name == dir_name) {
+            if dir_name.starts_with('@') {
+                // Scoped package: walk children (e.g. `@scope/name`)
+                let scope_dir = entry.path();
+                if let Ok(children) = std::fs::read_dir(&scope_dir) {
+                    for child in children.flatten() {
+                        let child_name = child.file_name().to_string_lossy().to_string();
+                        let full_name = format!("{dir_name}/{child_name}");
+                        if !deps.iter().any(|d| d.name == full_name) {
+                            deps.push(InstalledDep {
+                                name: full_name,
+                                version: "vendored".to_string(),
+                                source: "vendor".to_string(),
+                            });
+                        }
+                    }
+                }
+            } else if !deps.iter().any(|d| d.name == dir_name) {
                 deps.push(InstalledDep {
                     name: dir_name,
                     version: "vendored".to_string(),

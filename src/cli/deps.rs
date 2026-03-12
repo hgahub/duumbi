@@ -92,15 +92,16 @@ pub async fn run_deps_add(
         manifest.exports.functions.join(", ")
     );
 
-    // Update config.toml
+    // Update config.toml — store the exact resolved version so that cache
+    // paths (`name@1.2.3`) match the version string in config.
     let mut config = config::load_config(workspace).unwrap_or_default();
     let dep_config = if registry.is_some() {
         DependencyConfig::VersionWithRegistry {
-            version: format!("^{version_str}"),
+            version: version_str.clone(),
             registry: registry_name.clone(),
         }
     } else {
-        DependencyConfig::Version(format!("^{version_str}"))
+        DependencyConfig::Version(version_str.clone())
     };
 
     config
@@ -108,7 +109,7 @@ pub async fn run_deps_add(
         .insert(module_name.to_string(), dep_config);
     config::save_config(workspace, &config).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    eprintln!("Added '{module_name}' = \"^{version_str}\" to config.toml");
+    eprintln!("Added '{module_name}' = \"{version_str}\" to config.toml");
     Ok(())
 }
 
@@ -442,6 +443,7 @@ pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
     let mut downloaded = 0u32;
     let mut cached = 0u32;
     let mut path_count = 0u32;
+    let mut failed: Vec<String> = Vec::new();
 
     // Download registry deps
     if !version_deps.is_empty() {
@@ -457,6 +459,7 @@ pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("  {dep_name}: could not resolve registry — {e}");
+                        failed.push(dep_name.clone());
                         continue;
                     }
                 };
@@ -496,6 +499,15 @@ pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
         }
     }
 
+    // Abort before writing lockfile if any dependencies failed to resolve
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "Failed to resolve {} dependencies: {}",
+            failed.len(),
+            failed.join(", ")
+        );
+    }
+
     // Count path deps
     for dep in cfg.dependencies.values() {
         if dep.path().is_some() {
@@ -503,16 +515,15 @@ pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
         }
     }
 
-    // Generate/update lockfile
-    let lock = deps::generate_lockfile(workspace, &cfg).context("Failed to generate lockfile")?;
+    // Build lockfile content in memory first (for --frozen comparison)
+    let (lock, lock_content) =
+        deps::build_lockfile(workspace, &cfg).context("Failed to generate lockfile")?;
 
-    // --frozen check: compare new lockfile with existing
+    // --frozen check: compare in-memory lockfile with existing on disk
     if frozen {
-        let new_lock_str = std::fs::read_to_string(workspace.join(".duumbi/deps.lock"))
-            .context("Failed to read generated deps.lock")?;
         let existing = existing_lock_str.expect("invariant: loaded when frozen=true");
 
-        if new_lock_str != existing {
+        if lock_content != existing {
             anyhow::bail!(
                 "--frozen: lockfile would change ({} dependencies resolved).\n\
                  Run `duumbi deps install` without --frozen to update deps.lock.",
@@ -520,6 +531,10 @@ pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
             );
         }
     }
+
+    // Write lockfile to disk (only reached if not --frozen or content matches)
+    let lock_path = workspace.join(".duumbi").join("deps.lock");
+    std::fs::write(&lock_path, &lock_content).context("Failed to write deps.lock")?;
 
     // Summary
     let total = downloaded + cached + path_count;

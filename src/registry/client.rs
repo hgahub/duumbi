@@ -170,9 +170,13 @@ impl RegistryClient {
             ))
         })?;
 
-        // Store integrity hash alongside the manifest
+        // Store integrity hash alongside the manifest.
+        // This file is read by `deps audit` for offline integrity verification.
         let integrity_path = target_dir.join(".integrity");
-        let _ = std::fs::write(&integrity_path, &integrity);
+        std::fs::write(&integrity_path, &integrity).map_err(|e| RegistryError::Unpack {
+            module: module.to_string(),
+            source: e,
+        })?;
 
         Ok(manifest)
     }
@@ -187,7 +191,18 @@ impl RegistryClient {
         query: &str,
     ) -> Result<SearchResponse, RegistryError> {
         let base = self.registry_url(registry)?;
-        let url = format!("{base}/api/v1/search?q={query}");
+        // Percent-encode the query to handle spaces and special characters
+        let encoded_query: String = query
+            .bytes()
+            .flat_map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    vec![b as char]
+                }
+                b' ' => vec!['+'],
+                _ => format!("%{b:02X}").chars().collect(),
+            })
+            .collect();
+        let url = format!("{base}/api/v1/search?q={encoded_query}");
 
         let resp = self.get_with_retry(registry, &url).await?;
         Self::check_auth_error(resp.status(), registry)?;
@@ -426,7 +441,7 @@ mod tests {
     #[allow(unused_imports)]
     use std::io::Write as _;
     use tempfile::TempDir;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Helper: create a client pointing at a wiremock server.
@@ -618,6 +633,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/v1/search"))
+            .and(query_param("q", "example"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&server)
             .await;
