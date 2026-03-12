@@ -8,6 +8,8 @@
 pub mod client;
 pub mod credentials;
 #[allow(dead_code)]
+pub mod package;
+#[allow(dead_code)]
 pub mod types;
 
 #[allow(unused_imports)]
