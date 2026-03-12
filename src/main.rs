@@ -115,6 +115,10 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
+        Commands::Search { query, registry } => {
+            let workspace = PathBuf::from(".");
+            cli::deps::run_search(&workspace, &query, registry.as_deref()).await
+        }
         Commands::Deps { subcommand } => {
             let workspace = PathBuf::from(".");
             match subcommand {

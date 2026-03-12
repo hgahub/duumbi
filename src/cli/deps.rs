@@ -234,6 +234,69 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
     Ok(())
 }
 
+/// Searches for modules across configured registries.
+///
+/// If `registry` is specified, searches only that registry. Otherwise searches
+/// all configured registries.
+pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -> Result<()> {
+    let cfg = config::load_config(workspace).unwrap_or_default();
+    let client = build_registry_client(&cfg, workspace)?;
+
+    let registries_to_search: Vec<String> = match registry {
+        Some(r) => vec![r.to_string()],
+        None => cfg.registries.keys().cloned().collect(),
+    };
+
+    let mut found_any = false;
+
+    for reg_name in &registries_to_search {
+        let result = client
+            .search(reg_name, query)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        if result.results.is_empty() {
+            continue;
+        }
+
+        found_any = true;
+
+        if registries_to_search.len() > 1 {
+            eprintln!("Registry: {reg_name}");
+        }
+
+        // Table header
+        eprintln!("{:<40} {:<12} {}", "NAME", "VERSION", "DESCRIPTION");
+        eprintln!("{}", "─".repeat(72));
+
+        for hit in &result.results {
+            let desc = hit.description.as_deref().unwrap_or("");
+            let truncated = if desc.len() > 40 {
+                format!("{}…", &desc[..39])
+            } else {
+                desc.to_string()
+            };
+            eprintln!("{:<40} {:<12} {truncated}", hit.name, hit.latest_version);
+        }
+
+        if result.total > result.results.len() as u64 {
+            eprintln!(
+                "\n  ({} of {} results shown)",
+                result.results.len(),
+                result.total
+            );
+        }
+
+        eprintln!();
+    }
+
+    if !found_any {
+        eprintln!("No modules found matching '{query}'.");
+    }
+
+    Ok(())
+}
+
 /// Removes a dependency from `config.toml`.
 pub fn run_deps_remove(workspace: &Path, name: &str) -> Result<()> {
     let removed = deps::remove_dependency(workspace, name)

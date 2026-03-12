@@ -85,6 +85,15 @@ pub enum Commands {
         subcommand: DepsSubcommand,
     },
 
+    /// Search for modules in configured registries.
+    Search {
+        /// Search query (text-based).
+        query: String,
+        /// Limit search to a specific registry.
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
     /// Create, review, and execute intent-driven development specs.
     Intent {
         /// Intent subcommand.
