@@ -28,7 +28,7 @@ pub fn App() -> impl IntoView {
     // Seed state with pre-loaded data from SSR context (if available).
     let initial = use_context::<InitialData>().unwrap_or_default();
     let state = StudioState::new_with_data(&initial);
-    provide_context(state.clone());
+    provide_context(state);
 
     let theme_class = move || state.theme.get().css_class();
 

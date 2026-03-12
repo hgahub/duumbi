@@ -84,10 +84,14 @@ Phase 5 (implemented):
 | `core.schema.json` | JSON Schema for Op node validation | `.duumbi/schema/` |
 | `.o` | Cranelift object file output | `.duumbi/build/` |
 | `traces.jsonl` | Runtime traceId → nodeId mapping | `.duumbi/telemetry/` |
-| `config.toml` | LLM provider, model, API key env ref | `.duumbi/` |
+| `config.toml` | Workspace, LLM, registries, dependencies, vendor | `.duumbi/` |
+| `deps.lock` | Lockfile v1 with integrity hashes | `.duumbi/` |
+| `manifest.toml` | Module metadata (name, version, exports) | cache/vendor entries |
 | `{N:06}.jsonld` | Undo history snapshots | `.duumbi/history/` |
 | `<slug>.yaml` | Active intent specs | `.duumbi/intents/` |
 | `<slug>.yaml` | Archived completed/failed intents | `.duumbi/intents/history/` |
+| `credentials.toml` | Registry auth tokens (0600 perms) | `~/.duumbi/` |
+| `.tar.gz` | Packaged module archive | publish pipeline |
 
 **JSON-LD namespace:** `https://duumbi.dev/ns/core#` (prefix: `duumbi:`)
 
@@ -188,7 +192,10 @@ and removes it (LIFO stack). `snapshot_count()` reports remaining undo depth.
 
 Error codes: E001 type mismatch · E002 unknown Op · E003 missing field ·
 E004 orphan reference · E005 duplicate @id · E006 no entry function ·
-E007 cycle · E008 link failed · E009 schema invalid
+E007 cycle · E008 link failed · E009 schema invalid ·
+E010 unresolved cross-module ref · E011 dependency not found ·
+E012 module conflict · E013 registry unreachable · E014 auth failed ·
+E015 integrity mismatch · E016 version not found
 
 ---
 
@@ -202,6 +209,8 @@ E007 cycle · E008 link failed · E009 schema invalid
 | 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD ✓ |
 | 4 | Interactive CLI + module system | `abs(-7) = 7` (init → 2-module → binary) ✓ |
 | 5 | Intent-Driven Development | Verifier passes `double(21)=42` via intent pipeline ✓ |
+| 6 | DUUMBI Studio | Leptos SSR web platform with graph visualization ✓ |
+| 7 | Registry & Distribution | Module packaging, publish, install, lockfile v1 (in progress) |
 
 Phases beyond MVP (A–D): Knowledge base, Agent swarm, Self-healing, IDE.
 
@@ -237,3 +246,87 @@ test_cases:
 
 **Verifier strategy:** generates a temp `main.jsonld` that calls the target function,
 compiles the full workspace, runs the binary, checks exit code against `expected_return`.
+
+## Registry & Distribution (Phase 7)
+
+**Architecture:** Registry server is a separate project (`duumbi-registry` repo),
+infrastructure lives in `duumbi-infra`. This repo contains the **client-side** only:
+packaging, publishing, downloading, authentication, and dependency resolution.
+
+```
+config.toml [registries]           ~/.duumbi/credentials.toml
+         │                                   │
+         ▼                                   ▼
+  RegistryClient (reqwest + retry)  ←─── Bearer token
+         │
+    ┌────┴─────┬──────────┬──────────┐
+    ▼          ▼          ▼          ▼
+  search    publish     yank     download
+    │          │          │          │
+    │     pack_module()   │    .tar.gz → cache
+    │     .tar.gz+hash    │          │
+    ▼          ▼          ▼          ▼
+  stdout   registry    registry   .duumbi/cache/@scope/name@ver/
+           API POST    API DEL        │
+                                      ▼
+                               deps.lock (lockfile v1)
+```
+
+**config.toml v2 format:**
+```toml
+[workspace]
+name = "myapp"
+namespace = "myapp"
+default-registry = "duumbi"
+
+[registries]
+duumbi = "https://registry.duumbi.dev"
+company = "https://registry.acme.com"
+
+[dependencies]
+"@duumbi/stdlib-math" = "^1.0"
+"@company/auth" = { version = "^3.0", registry = "company" }
+"local-utils" = { path = "../shared/utils" }
+
+[vendor]
+strategy = "selective"
+include = ["@company/*"]
+```
+
+**Dependency resolution pipeline (3-layer priority):**
+1. **Workspace** — `.duumbi/graph/` (own source, highest priority)
+2. **Vendor** — `.duumbi/vendor/@scope/name/graph/` (pinned, audited copies)
+3. **Cache** — `.duumbi/cache/@scope/name@version/graph/` (downloaded)
+4. Not found → E011
+
+**Lockfile v1 (`deps.lock`):**
+```toml
+version = 1
+
+[[dependencies]]
+name = "@duumbi/stdlib-math"
+version = "1.0.0"
+source = "cache"
+semantic_hash = "abc..."   # SHA-256 of canonicalized graph (id-independent)
+integrity = "sha256-def..."  # SHA-256 of raw file bytes
+resolved_path = ".duumbi/cache/@duumbi/stdlib-math@1.0.0/graph"
+vendored = false
+```
+
+**Module package (.tar.gz) contents:**
+- `manifest.toml` — name, version, description, exports.functions
+- `graph/*.jsonld` — module graph files
+- `CHECKSUM` — SHA-256 of each file
+
+**Scope-level registry routing:**
+`@scope/name` → registry named `scope` (e.g. `@company/auth` → `company` registry).
+`@duumbi/*` always routes to `duumbi` registry. Falls back to `default-registry`.
+
+**CLI commands:**
+- `duumbi publish` — validate graph → pack .tar.gz → compute hash → upload
+- `duumbi yank @scope/name@version` — mark version as yanked (still downloadable by lockfile)
+- `duumbi deps install [--frozen]` — resolve + download → cache → lockfile
+- `duumbi search <query>` — text search across configured registries
+
+**Authentication:** Bearer tokens stored in `~/.duumbi/credentials.toml` (0600 perms).
+`duumbi registry login <name>` prompts for token or accepts `--token` for CI.

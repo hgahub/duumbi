@@ -15,7 +15,6 @@ pub fn ChatPanel() -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
 
     let do_send = {
-        let state = state.clone();
         move || {
             let text = input_text.get();
             if text.trim().is_empty() {
@@ -32,7 +31,7 @@ pub fn ChatPanel() -> impl IntoView {
             set_input_text.set(String::new());
             state.chat_streaming.set(true);
 
-            let _state2 = state.clone();
+            let _state2 = state;
             #[cfg(feature = "hydrate")]
             let state2 = _state2;
             #[cfg(feature = "hydrate")]

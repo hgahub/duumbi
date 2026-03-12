@@ -7,7 +7,7 @@
 
 ## Error handling
 
-**Library code** (`src/parser/`, `src/graph/`, `src/compiler/`):
+**Library code** (`src/parser/`, `src/graph/`, `src/compiler/`, `src/registry/`):
 - Return `Result<T, DuumbiError>` with module-specific error types via `thiserror`
 - Propagate with `?`; add `.context("what failed")` at module boundaries
 - `.unwrap()` is **forbidden** — CI clippy will reject it
@@ -140,8 +140,42 @@ pub fn validate(graph: &SemanticGraph) -> Vec<ValidationError> { ... }
 - Unit tests: in the same file as the code (`#[cfg(test)] mod tests`)
 - Integration tests: in `tests/` with real `.jsonld` fixtures
 - No mocking libraries — use trait objects for LLM provider seams
-- Every error code (E001–E009) must have at least one test that triggers it
+- Every error code (E001–E016) must have at least one test that triggers it
 - AI agent tests use hardcoded mock LLM responses — no live API calls in CI
+- Registry integration tests: use `TempDir` for isolated workspaces, no live
+  registry calls in CI — test local resolution (workspace/vendor/cache) only
+- Lockfile tests: verify determinism (same input → same output) and integrity
+  (tampered files → error)
+
+---
+
+## Registry client patterns
+
+- `RegistryClient` owns all HTTP communication with registries — never call
+  `reqwest` directly outside `src/registry/client.rs`
+- Retry policy: exponential backoff with jitter (3 attempts, configurable)
+- All registry errors map to `RegistryError` variants (`thiserror`), converted
+  to `anyhow` at CLI boundary only
+- Bearer tokens: loaded from `~/.duumbi/credentials.toml` at client creation;
+  never logged, never included in error messages
+- Credentials file must have `0600` permissions — warn on wider access
+
+```rust
+// ✅ correct — use RegistryClient for all registry HTTP
+let client = RegistryClient::new(&config)?;
+let versions = client.resolve_version("@duumbi/stdlib-math", "^1.0").await?;
+
+// ❌ forbidden — raw reqwest outside registry module
+let resp = reqwest::get("https://registry.duumbi.dev/api/...").await?;
+```
+
+**Scope-based routing:** `@scope/name` routes to registry named `scope`.
+`@duumbi/*` always routes to the `duumbi` registry. Unscoped names use
+`default-registry` from config.
+
+**Integrity verification:** every downloaded module is verified against its
+`sha256` integrity hash before being placed in cache. Use `src/hash.rs`
+utilities — never compute hashes inline.
 
 ---
 
@@ -153,3 +187,5 @@ pub fn validate(graph: &SemanticGraph) -> Vec<ValidationError> { ... }
 - Write `println!` for debug output — use `tracing::debug!` / `tracing::info!`
 - Store raw `String` where a newtype (`NodeId`, `FunctionName`) should be used
 - Add `#[allow(clippy::...)]` without a comment explaining why
+- Log or display credentials/tokens in error messages or debug output
+- Call `reqwest` directly outside `src/registry/client.rs`

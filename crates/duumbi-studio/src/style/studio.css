@@ -985,6 +985,227 @@ html, body {
     display: flex;
     flex-direction: column;
     gap: var(--ds-space-sm);
+    pointer-events: none;
+}
+
+.toast-item {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-sm);
+    padding: var(--ds-space-sm) var(--ds-space-md);
+    border-radius: var(--ds-radius-md);
+    background: var(--ds-bg-elevated);
+    border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-md);
+    font-size: var(--ds-font-size-sm);
+    color: var(--ds-text-primary);
+    pointer-events: auto;
+    animation: toast-in 200ms ease;
+    min-width: 240px;
+    max-width: 400px;
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+.toast-success { border-left: 3px solid var(--ds-success); }
+.toast-error { border-left: 3px solid var(--ds-error); }
+.toast-info { border-left: 3px solid var(--ds-info); }
+
+.toast-text {
+    flex: 1;
+}
+
+.toast-close {
+    background: none;
+    border: none;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    font-size: var(--ds-font-size-sm);
+    padding: 2px;
+}
+
+.toast-close:hover {
+    color: var(--ds-text-primary);
+}
+
+/* --- Sidebar Tabs --- */
+.sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--ds-border);
+    background: var(--ds-bg-surface);
+    flex-shrink: 0;
+}
+
+.sidebar-tab {
+    flex: 1;
+    padding: var(--ds-space-xs) var(--ds-space-sm);
+    border: none;
+    background: none;
+    color: var(--ds-text-muted);
+    font-size: var(--ds-font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    border-bottom: 2px solid transparent;
+    transition: color var(--ds-transition-fast), border-color var(--ds-transition-fast);
+}
+
+.sidebar-tab:hover {
+    color: var(--ds-text-secondary);
+}
+
+.sidebar-tab.active {
+    color: var(--ds-accent);
+    border-bottom-color: var(--ds-accent);
+}
+
+/* --- Registry Panel --- */
+.registry-panel {
+    padding: var(--ds-space-xs) 0;
+}
+
+.registry-search {
+    display: flex;
+    gap: var(--ds-space-xs);
+    padding: 0 var(--ds-space-sm);
+    margin-bottom: var(--ds-space-sm);
+}
+
+.registry-search-input {
+    flex: 1;
+    background: var(--ds-bg-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm);
+    color: var(--ds-text-primary);
+    font-size: var(--ds-font-size-sm);
+    padding: var(--ds-space-xs) var(--ds-space-sm);
+    outline: none;
+}
+
+.registry-search-input:focus {
+    border-color: var(--ds-accent);
+}
+
+.registry-search-input::placeholder {
+    color: var(--ds-text-muted);
+}
+
+.registry-search-btn {
+    background: var(--ds-bg-elevated);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-sm);
+    color: var(--ds-text-secondary);
+    cursor: pointer;
+    padding: var(--ds-space-xs) var(--ds-space-sm);
+    font-size: var(--ds-font-size-sm);
+}
+
+.registry-search-btn:hover {
+    background: var(--ds-bg-card);
+    color: var(--ds-text-primary);
+}
+
+.registry-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.registry-result-item {
+    padding: var(--ds-space-sm);
+    border-bottom: 1px solid var(--ds-border-muted);
+}
+
+.registry-result-item:hover {
+    background: var(--ds-bg-elevated);
+}
+
+.registry-result-info {
+    display: flex;
+    align-items: baseline;
+    gap: var(--ds-space-sm);
+    margin-bottom: 2px;
+}
+
+.registry-result-name {
+    font-size: var(--ds-font-size-sm);
+    font-weight: 600;
+    color: var(--ds-accent);
+}
+
+.registry-result-version {
+    font-size: var(--ds-font-size-xs);
+    color: var(--ds-text-muted);
+    font-family: var(--ds-font-mono);
+}
+
+.registry-result-desc {
+    font-size: var(--ds-font-size-xs);
+    color: var(--ds-text-secondary);
+    margin-bottom: var(--ds-space-xs);
+}
+
+.registry-install-btn {
+    background: var(--ds-accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--ds-radius-sm);
+    padding: 2px var(--ds-space-sm);
+    font-size: var(--ds-font-size-xs);
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.registry-install-btn:hover {
+    background: var(--ds-accent-hover);
+}
+
+.registry-empty {
+    padding: var(--ds-space-sm);
+    color: var(--ds-text-muted);
+    font-size: var(--ds-font-size-xs);
+    font-style: italic;
+}
+
+.registry-deps-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.registry-dep-item {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-sm);
+    padding: var(--ds-space-xs) var(--ds-space-sm);
+    font-size: var(--ds-font-size-sm);
+    color: var(--ds-text-secondary);
+}
+
+.registry-dep-name {
+    color: var(--ds-text-primary);
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.registry-dep-version {
+    font-family: var(--ds-font-mono);
+    font-size: var(--ds-font-size-xs);
+    color: var(--ds-text-muted);
+}
+
+.registry-dep-source {
+    font-size: var(--ds-font-size-xs);
+    color: var(--ds-text-muted);
+    font-style: italic;
 }
 
 /* --- C4 Drill-Down Transition --- */

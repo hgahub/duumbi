@@ -77,12 +77,14 @@ const SKELETON_MAIN: &str = r#"{
 }
 "#;
 
-/// Default `config.toml` template (M5 format with scope-based stdlib deps).
-const DEFAULT_CONFIG: &str = r#"[compiler]
-version = "0.1"
+/// Default `config.toml` template (M7 format with registries and scope-based deps).
+const DEFAULT_CONFIG: &str = r#"[workspace]
+name = "myapp"
+namespace = "myapp"
+default-registry = "duumbi"
 
-[build]
-output_dir = "build"
+[registries]
+duumbi = "https://registry.duumbi.dev"
 
 # Standard library modules (created in .duumbi/cache/@duumbi/ by duumbi init).
 # The cache directory is excluded from version control (.gitignore).
@@ -302,6 +304,25 @@ mod tests {
         assert_eq!(
             config.dependencies["@duumbi/stdlib-math"].version(),
             Some("1.0.0")
+        );
+    }
+
+    #[test]
+    fn init_config_has_registry_section() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        assert_eq!(
+            config.registries.get("duumbi").map(|s| s.as_str()),
+            Some("https://registry.duumbi.dev"),
+            "config must have duumbi registry"
+        );
+        let ws = config.workspace.expect("workspace section must exist");
+        assert_eq!(
+            ws.default_registry.as_deref(),
+            Some("duumbi"),
+            "default-registry must be duumbi"
         );
     }
 

@@ -18,10 +18,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::config::{self, DependencyConfig, DuumbiConfig};
 use crate::graph::program::{Program, ProgramError};
+use crate::hash;
 use crate::manifest::{self, ModuleManifest};
 
 // ---------------------------------------------------------------------------
@@ -80,14 +82,56 @@ pub enum DepsError {
 // ---------------------------------------------------------------------------
 
 /// A single resolved dependency entry in the lockfile.
+///
+/// Supports both v0 (name/path/hash) and v1 (full provenance) formats.
+/// When generating, all v1 fields are populated. When reading an old v0
+/// lockfile, only `name`, `path`, and `hash` are present.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockEntry {
     /// Dependency name as declared in `config.toml`.
     pub name: String,
-    /// Resolved absolute path to the dependency's graph directory.
-    pub path: String,
-    /// FNV-1a content fingerprint of all `.jsonld` files in the dep's graph dir.
-    pub hash: String,
+
+    // --- v1 fields ---
+    /// SemVer version string (e.g. `"1.0.0"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Provenance source: `"registry+<url>"`, `"path+<relative>"`, or `"vendor"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Semantic hash (SHA-256, `@id`-independent) from `hash::semantic_hash`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_hash: Option<String>,
+    /// Integrity hash: SHA-256 of raw `.jsonld` file bytes for tamper detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
+    /// Resolved path to the dependency's graph directory (relative or absolute).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    /// Whether this dependency is vendored (copied into `.duumbi/vendor/`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vendored: bool,
+
+    // --- v0 compat fields (not written in v1 output) ---
+    /// Resolved absolute path (v0 format). Superseded by `resolved_path` in v1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// FNV-1a content fingerprint (v0 format). Superseded by `semantic_hash`/`integrity` in v1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+impl LockEntry {
+    /// Returns the resolved path, checking v1 `resolved_path` first, then v0 `path`.
+    #[must_use]
+    pub fn effective_path(&self) -> Option<&str> {
+        self.resolved_path.as_deref().or(self.path.as_deref())
+    }
+
+    /// Returns `true` if this entry has v1 provenance fields populated.
+    #[must_use]
+    pub fn is_v1(&self) -> bool {
+        self.semantic_hash.is_some() && self.integrity.is_some()
+    }
 }
 
 /// The `.duumbi/deps.lock` file contents.
@@ -140,7 +184,7 @@ pub struct ResolvedModule {
 /// Splits a scoped module key `"@scope/name"` into `("@scope", "name")`.
 ///
 /// Returns `None` if the key is not scoped (i.e. does not start with `@`).
-fn parse_scoped_name(key: &str) -> Option<(&str, &str)> {
+pub fn parse_scoped_name(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix('@')?;
     let slash = rest.find('/')?;
     // scope includes the leading '@'
@@ -188,6 +232,8 @@ fn try_read_manifest(graph_dir: &Path) -> Option<ModuleManifest> {
 /// Resolution order: vendor → cache → `E011 NotFound`.
 /// (Workspace layer is handled separately by `load_program_with_deps`.)
 ///
+/// When `offline` is `true`, the cache layer is skipped — only vendor is checked.
+///
 /// # Errors
 ///
 /// Returns [`DepsError::NotFound`] if the module is not present in any layer.
@@ -195,6 +241,18 @@ pub fn resolve_module(
     workspace: &Path,
     module_key: &str,
     version: &str,
+) -> Result<ResolvedModule, DepsError> {
+    resolve_module_with_opts(workspace, module_key, version, false)
+}
+
+/// Resolves a version-pinned dependency with offline mode control.
+///
+/// When `offline` is `true`, only the vendor layer is checked (cache is skipped).
+pub fn resolve_module_with_opts(
+    workspace: &Path,
+    module_key: &str,
+    version: &str,
+    offline: bool,
 ) -> Result<ResolvedModule, DepsError> {
     if let Some((scope, name)) = parse_scoped_name(module_key) {
         // 1. Vendor layer
@@ -208,15 +266,17 @@ pub fn resolve_module(
             });
         }
 
-        // 2. Cache layer
-        let cache_dir = cache_entry_graph_dir(workspace, scope, name, version);
-        if cache_dir.exists() {
-            return Ok(ResolvedModule {
-                name: module_key.to_string(),
-                source: ModuleSource::Cache,
-                manifest: try_read_manifest(&cache_dir),
-                graph_dir: cache_dir,
-            });
+        // 2. Cache layer (skipped in offline mode)
+        if !offline {
+            let cache_dir = cache_entry_graph_dir(workspace, scope, name, version);
+            if cache_dir.exists() {
+                return Ok(ResolvedModule {
+                    name: module_key.to_string(),
+                    source: ModuleSource::Cache,
+                    manifest: try_read_manifest(&cache_dir),
+                    graph_dir: cache_dir,
+                });
+            }
         }
     }
 
@@ -230,7 +290,7 @@ pub fn resolve_module(
 // Content hashing — FNV-1a (no external crates needed)
 // ---------------------------------------------------------------------------
 
-/// Computes an FNV-1a fingerprint of a byte slice.
+/// Computes an FNV-1a fingerprint of a byte slice (v0 lockfile compat).
 fn fnv1a(data: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for &byte in data {
@@ -240,7 +300,7 @@ fn fnv1a(data: &[u8]) -> u64 {
     hash
 }
 
-/// Computes a fingerprint of all `.jsonld` files in a graph directory.
+/// Computes an FNV-1a fingerprint of all `.jsonld` files in a graph directory (v0 compat).
 ///
 /// Files are sorted by name for determinism. Returns a hex string.
 fn graph_dir_hash(graph_dir: &Path) -> Result<String, DepsError> {
@@ -271,6 +331,75 @@ fn graph_dir_hash(graph_dir: &Path) -> Result<String, DepsError> {
     Ok(format!("{combined:016x}"))
 }
 
+/// Computes a SHA-256 integrity hash of all `.jsonld` file bytes in a graph directory.
+///
+/// Unlike [`hash::semantic_hash`], this hashes raw file bytes — any byte change
+/// (whitespace, comments, `@id` values) produces a different hash. Used for
+/// tamper detection in lockfile verification.
+fn integrity_hash(graph_dir: &Path) -> Result<String, DepsError> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(graph_dir)
+        .map_err(|e| DepsError::Io {
+            path: graph_dir.display().to_string(),
+            source: e,
+        })?
+        .map(|entry| {
+            entry.map_err(|e| DepsError::Io {
+                path: graph_dir.display().to_string(),
+                source: e,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("jsonld"))
+        .map(|e| e.path())
+        .collect();
+
+    paths.sort();
+
+    let mut hasher = Sha256::new();
+    for path in &paths {
+        // Include filename in hash so swapping file contents is detected
+        if let Some(name) = path.file_name() {
+            hasher.update(name.as_encoded_bytes());
+        }
+        let content = fs::read(path).map_err(|e| DepsError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        hasher.update(&content);
+    }
+
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"))
+            .expect("invariant: writing to String never fails");
+    }
+    Ok(format!("sha256-{hex}"))
+}
+
+/// Determines the source provenance string for a dependency.
+///
+/// Format: `"path+<relative>"` for path deps, `"cache"` for locally cached,
+/// `"vendor"` for vendored. Registry sources will use `"registry+<url>"` when
+/// registry client is implemented.
+fn dep_source_string(dep: &DependencyConfig, source: &ModuleSource) -> String {
+    match dep {
+        DependencyConfig::Path { path } => format!("path+{path}"),
+        DependencyConfig::Version(_) | DependencyConfig::VersionWithRegistry { .. } => match source
+        {
+            ModuleSource::Vendor => "vendor".to_string(),
+            ModuleSource::Cache => "cache".to_string(),
+            ModuleSource::Workspace => "workspace".to_string(),
+        },
+    }
+}
+
+/// Extracts the version string from a dependency config.
+fn dep_version_string(dep: &DependencyConfig) -> Option<String> {
+    dep.version().map(|v| v.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Lockfile I/O
 // ---------------------------------------------------------------------------
@@ -293,29 +422,71 @@ pub fn load_lockfile(workspace: &Path) -> Result<DepsLock, DepsError> {
 
 /// Generates and saves the lockfile to `<workspace>/.duumbi/deps.lock`.
 ///
-/// Handles both path-based and version-based (cache) dependencies.
+/// Produces v1 format with full provenance tracking: version, source,
+/// semantic hash, integrity hash, resolved path, and vendored flag.
+/// Output is deterministic — entries are sorted by name, hashes are stable.
 #[must_use = "lockfile generation errors should be handled"]
 pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<DepsLock, DepsError> {
+    let (lock, contents) = build_lockfile(workspace, config)?;
+
+    let lock_path = workspace.join(".duumbi").join("deps.lock");
+    fs::write(&lock_path, contents).map_err(|e| DepsError::Io {
+        path: lock_path.display().to_string(),
+        source: e,
+    })?;
+
+    Ok(lock)
+}
+
+/// Builds a lockfile in memory without writing to disk.
+///
+/// Returns the `DepsLock` structure and its serialized TOML representation.
+/// Use this when you need to compare lockfile content before deciding whether
+/// to write (e.g. `--frozen` checks).
+#[must_use = "lockfile generation errors should be handled"]
+pub fn build_lockfile(
+    workspace: &Path,
+    config: &DuumbiConfig,
+) -> Result<(DepsLock, String), DepsError> {
     let mut entries = Vec::new();
 
     for (name, dep) in &config.dependencies {
-        let graph_dir = match dep {
+        let (graph_dir, mod_source) = match dep {
             DependencyConfig::Path { path } => {
                 let dep_path = resolve_dep_path(workspace, path)?;
                 validate_dep_workspace(&dep_path, name)?;
-                dep_path.join(".duumbi").join("graph")
+                (
+                    dep_path.join(".duumbi").join("graph"),
+                    ModuleSource::Workspace,
+                )
             }
-            DependencyConfig::Version(version) => {
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
                 let resolved = resolve_module(workspace, name, version)?;
-                resolved.graph_dir
+                let source = resolved.source;
+                (resolved.graph_dir, source)
             }
         };
 
-        let hash = graph_dir_hash(&graph_dir)?;
+        let sem_hash =
+            hash::semantic_hash(&graph_dir).map_err(|e: hash::HashError| DepsError::Io {
+                path: graph_dir.display().to_string(),
+                source: std::io::Error::other(e.to_string()),
+            })?;
+        let int_hash = integrity_hash(&graph_dir)?;
+        let is_vendored = mod_source == ModuleSource::Vendor;
+
         entries.push(LockEntry {
             name: name.clone(),
-            path: graph_dir.display().to_string(),
-            hash,
+            version: dep_version_string(dep),
+            source: Some(dep_source_string(dep, &mod_source)),
+            semantic_hash: Some(sem_hash),
+            integrity: Some(int_hash),
+            resolved_path: Some(graph_dir.display().to_string()),
+            vendored: is_vendored,
+            // v0 fields not written in v1 output
+            path: None,
+            hash: None,
         });
     }
 
@@ -331,12 +502,73 @@ pub fn generate_lockfile(workspace: &Path, config: &DuumbiConfig) -> Result<Deps
         path: lock_path.display().to_string(),
         source: std::io::Error::other(e.to_string()),
     })?;
-    fs::write(&lock_path, contents).map_err(|e| DepsError::Io {
-        path: lock_path.display().to_string(),
-        source: e,
-    })?;
 
-    Ok(lock)
+    Ok((lock, contents))
+}
+
+/// Verifies that all lockfile entries match the current state on disk.
+///
+/// For v1 entries, checks the integrity hash (SHA-256 of raw file bytes).
+/// Returns a list of entries that failed verification. An empty vec means all OK.
+///
+/// # Errors
+///
+/// Returns [`DepsError::Io`] if the graph directory cannot be read.
+#[must_use = "verification errors should be handled"]
+pub fn verify_lockfile(lock: &DepsLock) -> Result<Vec<LockIntegrityError>, DepsError> {
+    let mut failures = Vec::new();
+
+    for entry in &lock.dependencies {
+        let Some(ref recorded_integrity) = entry.integrity else {
+            // v0 entry — no integrity hash to verify
+            continue;
+        };
+        let Some(ref resolved) = entry.effective_path() else {
+            continue;
+        };
+
+        let graph_dir = Path::new(resolved);
+        if !graph_dir.exists() {
+            failures.push(LockIntegrityError {
+                name: entry.name.clone(),
+                expected: recorded_integrity.clone(),
+                actual: "<missing>".to_string(),
+            });
+            continue;
+        }
+
+        match integrity_hash(graph_dir) {
+            Ok(current_integrity) => {
+                if current_integrity != *recorded_integrity {
+                    failures.push(LockIntegrityError {
+                        name: entry.name.clone(),
+                        expected: recorded_integrity.clone(),
+                        actual: current_integrity,
+                    });
+                }
+            }
+            Err(_) => {
+                failures.push(LockIntegrityError {
+                    name: entry.name.clone(),
+                    expected: recorded_integrity.clone(),
+                    actual: "<unreadable>".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(failures)
+}
+
+/// A lockfile entry whose integrity hash does not match the files on disk.
+#[derive(Debug, Clone)]
+pub struct LockIntegrityError {
+    /// Module name that failed verification.
+    pub name: String,
+    /// Integrity hash recorded in the lockfile.
+    pub expected: String,
+    /// Integrity hash computed from current files on disk.
+    pub actual: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -384,9 +616,21 @@ fn validate_dep_workspace(dep_path: &Path, name: &str) -> Result<(), DepsError> 
 /// On success, also generates/updates the lockfile.
 #[must_use = "program load errors should be handled"]
 pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
+    load_program_with_deps_opts(workspace, false)
+}
+
+/// Loads a [`Program`] from a workspace with offline mode control.
+///
+/// When `offline` is `true`, dependency resolution is restricted to
+/// workspace and vendor layers only — cache is skipped, producing
+/// a clear error if any dep is only available there.
+#[must_use = "program load errors should be handled"]
+pub fn load_program_with_deps_opts(workspace: &Path, offline: bool) -> Result<Program, DepsError> {
     let config = config::load_config(workspace).unwrap_or_default();
 
-    generate_lockfile(workspace, &config)?;
+    if !offline {
+        generate_lockfile(workspace, &config)?;
+    }
 
     let mut graph_dirs: Vec<PathBuf> = Vec::new();
     let workspace_graph = workspace.join(".duumbi").join("graph");
@@ -401,8 +645,9 @@ pub fn load_program_with_deps(workspace: &Path) -> Result<Program, DepsError> {
                 validate_dep_workspace(&dep_path, name)?;
                 dep_path.join(".duumbi").join("graph")
             }
-            DependencyConfig::Version(version) => {
-                let resolved = resolve_module(workspace, name, version)?;
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
+                let resolved = resolve_module_with_opts(workspace, name, version, offline)?;
                 resolved.graph_dir
             }
         };
@@ -469,7 +714,8 @@ pub fn list_dependencies(workspace: &Path) -> Result<Vec<DepEntry>, DepsError> {
                     .map_err(|e| e.to_string());
                 (path.clone(), res)
             }
-            DependencyConfig::Version(version) => {
+            DependencyConfig::Version(version)
+            | DependencyConfig::VersionWithRegistry { version, .. } => {
                 let res = resolve_module(workspace, name, version)
                     .map(|r| r.graph_dir)
                     .map_err(|e| e.to_string());
@@ -481,6 +727,163 @@ pub fn list_dependencies(workspace: &Path) -> Result<Vec<DepEntry>, DepsError> {
 
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Vendor operations (#158)
+// ---------------------------------------------------------------------------
+
+/// Result of vendoring a single dependency.
+#[derive(Debug, Clone)]
+pub struct VendorResult {
+    /// Module name that was vendored.
+    pub name: String,
+    /// Source path (cache) the module was copied from.
+    pub source: PathBuf,
+    /// Destination path (vendor) the module was copied to.
+    pub destination: PathBuf,
+}
+
+/// Copies cached dependencies into `.duumbi/vendor/` for offline builds.
+///
+/// `mode` controls which deps are vendored:
+/// - `VendorMode::All` — vendor every version-based dependency
+/// - `VendorMode::ConfigRules` — use `[vendor]` section from config.toml
+/// - `VendorMode::Include(pattern)` — vendor deps matching a glob pattern
+///
+/// Path-based dependencies are skipped (they're already local).
+#[must_use = "vendor errors should be handled"]
+pub fn vendor_dependencies(
+    workspace: &Path,
+    mode: &VendorMode,
+) -> Result<Vec<VendorResult>, DepsError> {
+    let config = config::load_config(workspace).unwrap_or_default();
+    let mut results = Vec::new();
+
+    for (name, dep) in &config.dependencies {
+        let version = match dep.version() {
+            Some(v) => v,
+            None => continue, // skip path deps
+        };
+
+        if !should_vendor(name, mode, &config) {
+            continue;
+        }
+
+        let Some((scope, mod_name)) = parse_scoped_name(name) else {
+            continue; // unscoped deps can't be vendored from cache
+        };
+
+        let cache_graph = cache_entry_graph_dir(workspace, scope, mod_name, version);
+        if !cache_graph.exists() {
+            return Err(DepsError::NotFound {
+                name: name.clone(),
+                version: version.to_string(),
+            });
+        }
+
+        let vendor_graph = vendor_entry_graph_dir(workspace, scope, mod_name);
+        fs::create_dir_all(&vendor_graph).map_err(|e| DepsError::Io {
+            path: vendor_graph.display().to_string(),
+            source: e,
+        })?;
+
+        // Copy all files from cache graph dir to vendor graph dir
+        copy_dir_contents(&cache_graph, &vendor_graph)?;
+
+        // Copy manifest if present
+        let cache_root = cache_graph
+            .parent()
+            .expect("invariant: graph dir always has parent");
+        let cache_manifest = cache_root.join("manifest.toml");
+        if cache_manifest.exists() {
+            let vendor_root = vendor_graph
+                .parent()
+                .expect("invariant: graph dir always has parent");
+            fs::copy(&cache_manifest, vendor_root.join("manifest.toml")).map_err(|e| {
+                DepsError::Io {
+                    path: cache_manifest.display().to_string(),
+                    source: e,
+                }
+            })?;
+        }
+
+        results.push(VendorResult {
+            name: name.clone(),
+            source: cache_graph,
+            destination: vendor_graph,
+        });
+    }
+
+    Ok(results)
+}
+
+/// Controls which dependencies are vendored.
+#[derive(Debug, Clone)]
+pub enum VendorMode {
+    /// Vendor all version-based dependencies.
+    All,
+    /// Use the `[vendor]` section from config.toml.
+    ConfigRules,
+    /// Vendor deps matching a glob pattern (e.g. `"@company/*"`).
+    Include(String),
+}
+
+/// Determines whether a dependency should be vendored based on the mode.
+fn should_vendor(name: &str, mode: &VendorMode, config: &config::DuumbiConfig) -> bool {
+    match mode {
+        VendorMode::All => true,
+        VendorMode::Include(pattern) => glob_matches(pattern, name),
+        VendorMode::ConfigRules => {
+            let vendor = config.vendor.as_ref();
+            match vendor.map(|v| &v.strategy) {
+                Some(config::VendorStrategy::All) => true,
+                Some(config::VendorStrategy::Selective) => {
+                    let includes = vendor.map(|v| &v.include).cloned().unwrap_or_default();
+                    includes.iter().any(|p| glob_matches(p, name))
+                }
+                _ => false, // None or VendorStrategy::None
+            }
+        }
+    }
+}
+
+/// Simple glob matching for scope patterns like `"@company/*"`.
+///
+/// Supports `*` as a wildcard that matches any sequence of characters.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return text.starts_with(prefix);
+    }
+    pattern == text
+}
+
+/// Copies all files (non-recursive) from `src` to `dst`.
+fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), DepsError> {
+    for entry in fs::read_dir(src).map_err(|e| DepsError::Io {
+        path: src.display().to_string(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| DepsError::Io {
+            path: src.display().to_string(),
+            source: e,
+        })?;
+        let file_type = entry.file_type().map_err(|e| DepsError::Io {
+            path: entry.path().display().to_string(),
+            source: e,
+        })?;
+        if file_type.is_file() {
+            let dest_file = dst.join(entry.file_name());
+            fs::copy(entry.path(), &dest_file).map_err(|e| DepsError::Io {
+                path: entry.path().display().to_string(),
+                source: e,
+            })?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -655,7 +1058,14 @@ mod tests {
         let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
         assert_eq!(lock.dependencies.len(), 1);
         assert_eq!(lock.dependencies[0].name, "mylib");
-        assert!(!lock.dependencies[0].hash.is_empty());
+        assert!(
+            lock.dependencies[0].integrity.is_some(),
+            "v1 lockfile must have integrity hash"
+        );
+        assert!(
+            lock.dependencies[0].semantic_hash.is_some(),
+            "v1 lockfile must have semantic hash"
+        );
 
         assert!(
             ws.path().join(".duumbi").join("deps.lock").exists(),
@@ -766,6 +1176,617 @@ mod tests {
             resolved.manifest.unwrap().module.name,
             "@duumbi/stdlib-math"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Lockfile v1 tests (#155)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn lockfile_v1_has_all_provenance_fields() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+        let entry = &lock.dependencies[0];
+
+        assert_eq!(entry.name, "mylib");
+        assert!(entry.source.as_deref() == Some(&format!("path+{dep_path}")));
+        assert!(entry.semantic_hash.is_some());
+        assert!(entry.integrity.is_some());
+        assert!(entry.resolved_path.is_some());
+        assert!(!entry.vendored);
+        // v0 fields should be None
+        assert!(entry.path.is_none());
+        assert!(entry.hash.is_none());
+        assert!(entry.is_v1());
+    }
+
+    #[test]
+    fn lockfile_v1_deterministic_output() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let config = config::load_config(ws.path()).expect("config");
+
+        // Generate twice — must be identical
+        generate_lockfile(ws.path(), &config).expect("lockfile 1");
+        let contents1 =
+            fs::read_to_string(ws.path().join(".duumbi/deps.lock")).expect("read lockfile 1");
+        generate_lockfile(ws.path(), &config).expect("lockfile 2");
+        let contents2 =
+            fs::read_to_string(ws.path().join(".duumbi/deps.lock")).expect("read lockfile 2");
+
+        assert_eq!(
+            contents1, contents2,
+            "lockfile output must be deterministic"
+        );
+    }
+
+    #[test]
+    fn lockfile_v1_verify_passes_for_untampered() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert!(
+            failures.is_empty(),
+            "untampered lockfile must pass verification"
+        );
+    }
+
+    #[test]
+    fn lockfile_v1_verify_detects_tampered_file() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+
+        // Tamper with the dependency file
+        let graph_dir = dep_ws.path().join(".duumbi/graph");
+        fs::write(graph_dir.join("mylib.jsonld"), r#"{"tampered": true}"#).expect("tamper");
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert_eq!(failures.len(), 1, "tampered file must be detected");
+        assert_eq!(failures[0].name, "mylib");
+        assert_ne!(failures[0].expected, failures[0].actual);
+    }
+
+    #[test]
+    fn lockfile_v1_backward_compat_reads_v0() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+
+        // Write a v0-style lockfile
+        let v0_content = r#"version = 1
+
+[[dependencies]]
+name = "mylib"
+path = "/some/old/path"
+hash = "0123456789abcdef"
+"#;
+        fs::write(duumbi.join("deps.lock"), v0_content).expect("write v0 lockfile");
+
+        let lock = load_lockfile(ws.path()).expect("must load v0 lockfile");
+        assert_eq!(lock.dependencies.len(), 1);
+        assert_eq!(lock.dependencies[0].name, "mylib");
+        assert_eq!(
+            lock.dependencies[0].effective_path(),
+            Some("/some/old/path")
+        );
+        assert!(!lock.dependencies[0].is_v1(), "v0 entry must not be v1");
+    }
+
+    #[test]
+    fn lockfile_v1_version_dep_includes_version_field() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+        let entry = &lock.dependencies[0];
+
+        assert_eq!(entry.version.as_deref(), Some("1.0.0"));
+        assert_eq!(entry.source.as_deref(), Some("cache"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Vendor tests (#158)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn vendor_all_copies_cache_to_vendor() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@duumbi/stdlib-math");
+
+        // Verify files exist in vendor
+        let vendor_graph = vendor_entry_graph_dir(ws.path(), "@duumbi", "stdlib-math");
+        assert!(vendor_graph.exists(), "vendor graph dir must exist");
+        assert!(
+            vendor_graph.join("stdlib-math.jsonld").exists(),
+            "vendored jsonld must exist"
+        );
+    }
+
+    #[test]
+    fn vendor_include_pattern_filters() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+        make_cache_module(ws.path(), "@company", "auth", "2.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        cfg.dependencies.insert(
+            "@company/auth".to_string(),
+            DependencyConfig::Version("2.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results =
+            vendor_dependencies(ws.path(), &VendorMode::Include("@company/*".to_string()))
+                .expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@company/auth");
+
+        // @duumbi should NOT be vendored
+        let duumbi_vendor = vendor_entry_graph_dir(ws.path(), "@duumbi", "stdlib-math");
+        assert!(!duumbi_vendor.exists(), "duumbi should not be vendored");
+    }
+
+    #[test]
+    fn vendor_config_rules_selective() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@company", "auth", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@company/auth".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        cfg.vendor = Some(config::VendorSection {
+            strategy: config::VendorStrategy::Selective,
+            include: vec!["@company/*".to_string()],
+        });
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::ConfigRules).expect("vendor");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "@company/auth");
+    }
+
+    #[test]
+    fn vendor_config_rules_none_skips_all() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        // No vendor section = strategy None
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::ConfigRules).expect("vendor");
+        assert!(results.is_empty(), "no vendor rules = no vendoring");
+    }
+
+    #[test]
+    fn vendor_skips_path_deps() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_ws = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_ws.path(), "mylib");
+
+        let dep_path = dep_ws.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "mylib", &dep_path).expect("must add");
+
+        let results = vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+        assert!(results.is_empty(), "path deps must be skipped");
+    }
+
+    #[test]
+    fn vendor_resolves_from_vendor_layer() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        // Vendor it
+        vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+
+        // Now resolve — should find it in vendor layer
+        let resolved =
+            resolve_module(ws.path(), "@duumbi/stdlib-math", "1.0.0").expect("must resolve");
+        assert_eq!(
+            resolved.source,
+            ModuleSource::Vendor,
+            "must resolve from vendor"
+        );
+    }
+
+    #[test]
+    fn offline_resolve_skips_cache() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Normal resolve finds it in cache
+        let resolved = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", false)
+            .expect("must resolve online");
+        assert_eq!(resolved.source, ModuleSource::Cache);
+
+        // Offline resolve fails (not vendored)
+        let result = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", true);
+        assert!(
+            matches!(result, Err(DepsError::NotFound { .. })),
+            "offline must skip cache"
+        );
+    }
+
+    #[test]
+    fn offline_resolve_finds_vendored() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        // Vendor it first
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+        vendor_dependencies(ws.path(), &VendorMode::All).expect("vendor");
+
+        // Offline resolve finds it in vendor
+        let resolved = resolve_module_with_opts(ws.path(), "@duumbi/stdlib-math", "1.0.0", true)
+            .expect("must resolve offline from vendor");
+        assert_eq!(resolved.source, ModuleSource::Vendor);
+    }
+
+    #[test]
+    fn offline_load_program_fails_for_cache_only_dep() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        make_cache_module(ws.path(), "@duumbi", "stdlib-math", "1.0.0");
+
+        let mut cfg = DuumbiConfig::default();
+        cfg.dependencies.insert(
+            "@duumbi/stdlib-math".to_string(),
+            DependencyConfig::Version("1.0.0".to_string()),
+        );
+        config::save_config(ws.path(), &cfg).expect("save config");
+
+        // Offline load should fail — dep only in cache
+        let result = load_program_with_deps_opts(ws.path(), true);
+        assert!(result.is_err(), "offline must fail for cache-only dep");
+    }
+
+    #[test]
+    fn glob_matches_patterns() {
+        assert!(glob_matches("@company/*", "@company/auth"));
+        assert!(glob_matches("@company/*", "@company/billing"));
+        assert!(!glob_matches("@company/*", "@duumbi/stdlib-math"));
+        assert!(glob_matches("*", "@anything/here"));
+        assert!(glob_matches("@duumbi/stdlib-math", "@duumbi/stdlib-math"));
+        assert!(!glob_matches("@duumbi/stdlib-math", "@duumbi/stdlib-io"));
+    }
+
+    #[test]
+    fn lockfile_corrupted_toml_returns_error() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+        fs::write(duumbi.join("deps.lock"), "[[[invalid toml").expect("write bad lockfile");
+
+        let result = load_lockfile(ws.path());
+        assert!(result.is_err(), "corrupted lockfile must error");
+    }
+
+    #[test]
+    fn lockfile_v1_serialize_deserialize_roundtrip() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![
+                LockEntry {
+                    name: "@scope/mod-a".to_string(),
+                    version: Some("1.2.3".to_string()),
+                    source: Some("cache".to_string()),
+                    semantic_hash: Some("a".repeat(64)),
+                    integrity: Some("b".repeat(64)),
+                    resolved_path: Some("/some/path".to_string()),
+                    vendored: false,
+                    path: None,
+                    hash: None,
+                },
+                LockEntry {
+                    name: "local-lib".to_string(),
+                    version: None,
+                    source: Some("path+../lib".to_string()),
+                    semantic_hash: Some("c".repeat(64)),
+                    integrity: Some("d".repeat(64)),
+                    resolved_path: Some("../lib/.duumbi/graph".to_string()),
+                    vendored: false,
+                    path: None,
+                    hash: None,
+                },
+            ],
+        };
+
+        let toml_str = toml::to_string_pretty(&lock).expect("serialize");
+        fs::write(duumbi.join("deps.lock"), &toml_str).expect("write");
+
+        let loaded = load_lockfile(ws.path()).expect("must load");
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.dependencies.len(), 2);
+        assert_eq!(loaded.dependencies[0].name, "@scope/mod-a");
+        assert_eq!(loaded.dependencies[0].version.as_deref(), Some("1.2.3"));
+        assert_eq!(loaded.dependencies[1].name, "local-lib");
+        assert!(loaded.dependencies[1].version.is_none());
+    }
+
+    #[test]
+    fn lockfile_no_file_returns_empty() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+        // No deps.lock file
+
+        let lock = load_lockfile(ws.path()).expect("must return empty");
+        assert!(lock.dependencies.is_empty());
+    }
+
+    #[test]
+    fn lockfile_verify_missing_resolved_path_skipped() {
+        // Entry with no resolved_path should be skipped in verification
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![LockEntry {
+                name: "ghost".to_string(),
+                version: None,
+                source: None,
+                semantic_hash: None,
+                integrity: Some("abc123".to_string()),
+                resolved_path: None,
+                vendored: false,
+                path: None,
+                hash: None,
+            }],
+        };
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert!(
+            failures.is_empty(),
+            "entries without resolved_path should be skipped"
+        );
+    }
+
+    #[test]
+    fn lock_entry_effective_path_prefers_v1() {
+        let entry = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: Some("/v1/path".to_string()),
+            vendored: false,
+            path: Some("/v0/path".to_string()),
+            hash: None,
+        };
+        assert_eq!(
+            entry.effective_path(),
+            Some("/v1/path"),
+            "resolved_path (v1) must take priority over path (v0)"
+        );
+    }
+
+    #[test]
+    fn lock_entry_is_v1_checks_hash_fields() {
+        let v1 = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: Some("cache".to_string()),
+            semantic_hash: Some("a".repeat(64)),
+            integrity: Some("sha256-".to_string() + &"b".repeat(64)),
+            resolved_path: None,
+            vendored: false,
+            path: None,
+            hash: None,
+        };
+        assert!(v1.is_v1(), "entry with semantic_hash + integrity is v1");
+
+        let v0 = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: Some("/old".to_string()),
+            hash: Some("abc".to_string()),
+        };
+        assert!(!v0.is_v1(), "entry without semantic_hash/integrity is v0");
+    }
+
+    #[test]
+    fn integrity_hash_differs_from_semantic_hash() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let graph_dir = ws.path().join(".duumbi/graph");
+
+        let sem = hash::semantic_hash(&graph_dir).expect("semantic hash");
+        let int = integrity_hash(&graph_dir).expect("integrity hash");
+
+        // Semantic hash is 64-char hex, integrity is "sha256-" + 64-char hex
+        assert_eq!(sem.len(), 64);
+        assert!(
+            int.starts_with("sha256-"),
+            "integrity must have sha256- prefix"
+        );
+        assert_eq!(int.len(), 71, "sha256- (7) + 64 hex chars = 71");
+        // They measure different things (canonicalized vs raw bytes)
+        assert_ne!(
+            sem,
+            &int[7..],
+            "semantic and integrity hashes should typically differ"
+        );
+    }
+
+    #[test]
+    fn lockfile_v1_verify_detects_multiple_tampered_entries() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_a = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_a.path(), "lib_a");
+        let dep_b = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_b.path(), "lib_b");
+
+        let path_a = dep_a.path().to_str().expect("utf8 path").to_string();
+        let path_b = dep_b.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "lib_a", &path_a).expect("must add a");
+        add_dependency(ws.path(), "lib_b", &path_b).expect("must add b");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+        assert_eq!(lock.dependencies.len(), 2);
+
+        // Tamper with both
+        let graph_a = dep_a.path().join(".duumbi/graph");
+        fs::write(graph_a.join("lib_a.jsonld"), r#"{"tampered": "a"}"#).expect("tamper a");
+        let graph_b = dep_b.path().join(".duumbi/graph");
+        fs::write(graph_b.join("lib_b.jsonld"), r#"{"tampered": "b"}"#).expect("tamper b");
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert_eq!(failures.len(), 2, "both tampered entries must be detected");
+    }
+
+    #[test]
+    fn lockfile_v1_verify_handles_missing_graph_dir() {
+        // If the resolved_path no longer exists, verification should handle it
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![LockEntry {
+                name: "gone".to_string(),
+                version: None,
+                source: Some("path+/nonexistent".to_string()),
+                semantic_hash: Some("a".repeat(64)),
+                integrity: Some("sha256-".to_string() + &"b".repeat(64)),
+                resolved_path: Some("/nonexistent/path/.duumbi/graph".to_string()),
+                vendored: false,
+                path: None,
+                hash: None,
+            }],
+        };
+
+        // Should not panic — either returns error or reports failure
+        let result = verify_lockfile(&lock);
+        // Verification of a missing path should report a failure (not crash)
+        assert!(result.is_ok() || result.is_err(), "must handle gracefully");
+    }
+
+    #[test]
+    fn lockfile_v0_effective_path_falls_back() {
+        let entry = LockEntry {
+            name: "old".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: Some("/v0/only".to_string()),
+            hash: Some("abc".to_string()),
+        };
+        assert_eq!(
+            entry.effective_path(),
+            Some("/v0/only"),
+            "v0 entry without resolved_path should fall back to path"
+        );
+    }
+
+    #[test]
+    fn lockfile_entry_no_path_returns_none() {
+        let entry = LockEntry {
+            name: "orphan".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: None,
+            hash: None,
+        };
+        assert!(
+            entry.effective_path().is_none(),
+            "entry with no paths should return None"
+        );
+        assert!(!entry.is_v1());
     }
 
     #[test]

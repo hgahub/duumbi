@@ -1,6 +1,6 @@
 //! Error types, diagnostic codes, and structured JSONL reporting.
 //!
-//! All duumbi errors use error codes E001–E012. The `Diagnostic` struct
+//! All duumbi errors use error codes E001–E016. The `Diagnostic` struct
 //! serializes to JSONL for machine-readable output.
 
 use serde::Serialize;
@@ -37,6 +37,18 @@ pub mod codes {
     /// Module name conflict: same-scope modules export the same function and resolution is ambiguous.
     #[allow(dead_code)] // Used by deps resolution pipeline (Phase 5)
     pub const E012_MODULE_CONFLICT: &str = "E012";
+    /// Registry server is unreachable (network error, DNS failure, timeout).
+    #[allow(dead_code)] // Used by registry client (Phase 7)
+    pub const E013_REGISTRY_UNREACHABLE: &str = "E013";
+    /// Authentication failed (invalid, expired, or missing token).
+    #[allow(dead_code)] // Used by registry client (Phase 7)
+    pub const E014_AUTH_FAILED: &str = "E014";
+    /// Integrity mismatch: downloaded content SHA-256 does not match lockfile.
+    #[allow(dead_code)] // Used by registry client (Phase 7)
+    pub const E015_INTEGRITY_MISMATCH: &str = "E015";
+    /// Requested version not found in the registry.
+    #[allow(dead_code)] // Used by registry client (Phase 7)
+    pub const E016_VERSION_NOT_FOUND: &str = "E016";
 }
 
 /// Severity level for a diagnostic message.
@@ -191,6 +203,10 @@ mod tests {
             codes::E010_UNRESOLVED_CROSS_MODULE,
             codes::E011_DEPENDENCY_NOT_FOUND,
             codes::E012_MODULE_CONFLICT,
+            codes::E013_REGISTRY_UNREACHABLE,
+            codes::E014_AUTH_FAILED,
+            codes::E015_INTEGRITY_MISMATCH,
+            codes::E016_VERSION_NOT_FOUND,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(codes.len(), unique.len(), "Error codes must be unique");
@@ -218,6 +234,164 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json)
             .expect("invariant: diagnostic must serialize to valid JSON");
         assert_eq!(parsed["code"], "E012");
+    }
+
+    #[test]
+    fn e013_registry_unreachable_with_url() {
+        let mut details = HashMap::new();
+        details.insert(
+            "registry_url".to_string(),
+            "https://registry.duumbi.dev".to_string(),
+        );
+        let diag = Diagnostic::error(
+            codes::E013_REGISTRY_UNREACHABLE,
+            "Cannot connect to registry: connection timed out",
+        )
+        .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E013");
+        assert_eq!(
+            parsed["details"]["registry_url"],
+            "https://registry.duumbi.dev"
+        );
+    }
+
+    #[test]
+    fn e014_auth_failed_with_url() {
+        let mut details = HashMap::new();
+        details.insert(
+            "registry_url".to_string(),
+            "https://registry.duumbi.dev".to_string(),
+        );
+        let diag = Diagnostic::error(
+            codes::E014_AUTH_FAILED,
+            "Authentication failed: token expired",
+        )
+        .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E014");
+        assert_eq!(
+            parsed["details"]["registry_url"],
+            "https://registry.duumbi.dev"
+        );
+    }
+
+    #[test]
+    fn e015_integrity_mismatch_with_details() {
+        let mut details = HashMap::new();
+        details.insert("module".to_string(), "@duumbi/stdlib-math".to_string());
+        details.insert("expected".to_string(), "sha256:abc123".to_string());
+        details.insert("found".to_string(), "sha256:def456".to_string());
+        let diag = Diagnostic::error(
+            codes::E015_INTEGRITY_MISMATCH,
+            "Integrity check failed: SHA-256 hash does not match lockfile",
+        )
+        .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E015");
+        assert_eq!(parsed["details"]["module"], "@duumbi/stdlib-math");
+        assert_eq!(parsed["details"]["expected"], "sha256:abc123");
+    }
+
+    #[test]
+    fn e016_version_not_found_with_details() {
+        let mut details = HashMap::new();
+        details.insert("module".to_string(), "@community/sorting".to_string());
+        details.insert("version".to_string(), "^2.0.0".to_string());
+        details.insert(
+            "registry_url".to_string(),
+            "https://registry.duumbi.dev".to_string(),
+        );
+        let diag = Diagnostic::error(
+            codes::E016_VERSION_NOT_FOUND,
+            "Version ^2.0.0 of @community/sorting not found in registry",
+        )
+        .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E016");
+        assert_eq!(parsed["details"]["module"], "@community/sorting");
+        assert_eq!(parsed["details"]["version"], "^2.0.0");
+    }
+
+    #[test]
+    fn diagnostic_display_format() {
+        let diag = Diagnostic::error(codes::E013_REGISTRY_UNREACHABLE, "Cannot connect")
+            .with_node(&NodeId("duumbi:main/main/entry/0".to_string()));
+
+        let display = diag.to_string();
+        assert!(display.contains("[E013]"));
+        assert!(display.contains("error"));
+        assert!(display.contains("Cannot connect"));
+        assert!(display.contains("duumbi:main/main/entry/0"));
+    }
+
+    #[test]
+    fn diagnostic_display_without_node() {
+        let diag = Diagnostic::error(codes::E016_VERSION_NOT_FOUND, "Version not found");
+        let display = diag.to_string();
+        assert!(display.contains("[E016]"));
+        assert!(!display.contains("(at"));
+    }
+
+    #[test]
+    fn all_e013_e016_codes_serialize_with_details() {
+        let test_cases = [
+            (codes::E013_REGISTRY_UNREACHABLE, "E013"),
+            (codes::E014_AUTH_FAILED, "E014"),
+            (codes::E015_INTEGRITY_MISMATCH, "E015"),
+            (codes::E016_VERSION_NOT_FOUND, "E016"),
+        ];
+
+        for (code, expected) in test_cases {
+            let mut details = HashMap::new();
+            details.insert("key".to_string(), "value".to_string());
+            let diag = Diagnostic::error(code, format!("Test message for {expected}"))
+                .with_node(&NodeId("duumbi:test/node".to_string()))
+                .with_file("test.jsonld")
+                .with_details(details);
+
+            let json = diag.to_jsonl();
+            let parsed: serde_json::Value = serde_json::from_str(&json)
+                .expect("invariant: diagnostic must serialize to valid JSON");
+
+            assert_eq!(parsed["code"], expected);
+            assert_eq!(parsed["level"], "error");
+            assert!(parsed["message"].as_str().is_some());
+            assert_eq!(parsed["nodeId"], "duumbi:test/node");
+            assert_eq!(parsed["file"], "test.jsonld");
+            assert_eq!(parsed["details"]["key"], "value");
+        }
+    }
+
+    #[test]
+    fn diagnostic_level_display() {
+        assert_eq!(DiagnosticLevel::Error.to_string(), "error");
+        assert_eq!(DiagnosticLevel::Warning.to_string(), "warning");
+    }
+
+    #[test]
+    fn diagnostic_warning_level() {
+        let diag = Diagnostic {
+            level: DiagnosticLevel::Warning,
+            code: codes::E015_INTEGRITY_MISMATCH.to_string(),
+            message: "Hash mismatch (non-fatal)".to_string(),
+            node_id: None,
+            file: None,
+            details: None,
+        };
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["level"], "warning");
+        assert!(diag.to_string().contains("warning"));
     }
 
     #[test]

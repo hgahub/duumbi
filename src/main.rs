@@ -13,10 +13,12 @@ mod deps;
 mod errors;
 mod examples;
 mod graph;
+mod hash;
 mod intent;
 mod manifest;
 mod parser;
 mod patch;
+mod registry;
 mod snapshot;
 mod tools;
 mod types;
@@ -77,10 +79,17 @@ async fn run(cli: Cli) -> Result<()> {
             };
             cli::init::run_init(&base)
         }
-        Commands::Build { input, output } => {
+        Commands::Build {
+            input,
+            output,
+            offline,
+        } => {
+            if offline {
+                eprintln!("Building in offline mode (vendor + workspace only)...");
+            }
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            cli::commands::build(&input_path, &output_path)
+            cli::commands::build_with_opts(&input_path, &output_path, offline)
         }
         Commands::Run { args } => {
             let binary = resolve_output(None)?;
@@ -106,22 +115,63 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Add { request, yes } => add(&request, yes).await,
         Commands::Undo => undo(),
+        Commands::Search { query, registry } => {
+            let workspace = PathBuf::from(".");
+            cli::deps::run_search(&workspace, &query, registry.as_deref()).await
+        }
         Commands::Deps { subcommand } => {
             let workspace = PathBuf::from(".");
             match subcommand {
                 cli::DepsSubcommand::List => cli::deps::run_deps_list(&workspace),
-                cli::DepsSubcommand::Add { name, path } => {
-                    cli::deps::run_deps_add(&workspace, &name, &path)
+                cli::DepsSubcommand::Add {
+                    name,
+                    path,
+                    registry,
+                } => {
+                    cli::deps::run_deps_add(&workspace, &name, path.as_deref(), registry.as_deref())
+                        .await
                 }
                 cli::DepsSubcommand::Remove { name } => {
                     cli::deps::run_deps_remove(&workspace, &name)
                 }
+                cli::DepsSubcommand::Audit => cli::deps::run_deps_audit(&workspace),
+                cli::DepsSubcommand::Tree { depth } => cli::deps::run_deps_tree(&workspace, depth),
+                cli::DepsSubcommand::Update { name } => {
+                    cli::deps::run_deps_update(&workspace, name.as_deref()).await
+                }
+                cli::DepsSubcommand::Install { frozen } => {
+                    cli::deps::run_deps_install(&workspace, frozen).await
+                }
+                cli::DepsSubcommand::Vendor { all, include } => {
+                    cli::deps::run_deps_vendor(&workspace, all, include.as_deref())
+                }
             }
+        }
+        Commands::Publish {
+            registry,
+            dry_run,
+            yes,
+        } => {
+            let workspace = PathBuf::from(".");
+            cli::publish::run_publish(&workspace, registry.as_deref(), dry_run, yes).await
+        }
+        Commands::Registry { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_registry(subcommand, &workspace).await
         }
         Commands::Intent { subcommand } => {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
         }
+        Commands::Yank {
+            specifier,
+            registry,
+            yes,
+        } => {
+            let workspace = PathBuf::from(".");
+            cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await
+        }
+        Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
         Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
@@ -273,6 +323,28 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             Some(ref slug) => intent::status::print_status_detail(&workspace, slug)
                 .map_err(|e| anyhow::anyhow!("{e}")),
         },
+    }
+}
+
+/// Dispatches `duumbi registry` subcommands.
+async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> Result<()> {
+    match subcommand {
+        cli::RegistrySubcommand::Add { name, url } => {
+            cli::registry::run_registry_add(workspace, &name, &url)
+        }
+        cli::RegistrySubcommand::List => cli::registry::run_registry_list(workspace),
+        cli::RegistrySubcommand::Remove { name } => {
+            cli::registry::run_registry_remove(workspace, &name)
+        }
+        cli::RegistrySubcommand::Default { name } => {
+            cli::registry::run_registry_default(workspace, &name)
+        }
+        cli::RegistrySubcommand::Login { registry, token } => {
+            cli::registry::run_registry_login(workspace, &registry, token.as_deref()).await
+        }
+        cli::RegistrySubcommand::Logout { registry } => {
+            cli::registry::run_registry_logout(registry.as_deref())
+        }
     }
 }
 

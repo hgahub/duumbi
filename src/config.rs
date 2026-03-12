@@ -1,7 +1,8 @@
 //! Configuration loader for `.duumbi/config.toml`.
 //!
-//! Reads LLM provider settings used by `duumbi add` and related AI commands.
-//! The actual API key is **never** stored — only the name of the env var.
+//! Reads LLM provider settings, dependency declarations, registry endpoints,
+//! and vendor configuration. The actual API key is **never** stored — only
+//! the name of the env var.
 
 use std::fmt;
 use std::fs;
@@ -96,11 +97,14 @@ impl LlmConfig {
 
 /// A dependency declared in the `[dependencies]` section of `config.toml`.
 ///
-/// Two syntactic forms are supported:
+/// Three syntactic forms are supported:
 ///
 /// ```toml
-/// # Version-pinned (scope-based, M5+): value is a bare version string
-/// "@duumbi/stdlib-math" = "1.0.0"
+/// # Version-pinned (scope-based, M5+): bare version string or SemVer range
+/// "@duumbi/stdlib-math" = "^1.0"
+///
+/// # Version with explicit registry selection
+/// "@company/auth-core" = { version = "^3.0", registry = "company" }
 ///
 /// # Local path dependency (all phases): value is a table with `path`
 /// mylib = { path = "../mylib" }
@@ -108,23 +112,30 @@ impl LlmConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum DependencyConfig {
-    /// Cache/registry-resolved dependency — value is the version string.
-    ///
-    /// The module is resolved from `.duumbi/cache/@scope/name@version/`.
-    Version(String),
+    /// Version with explicit registry — table with `version` and `registry` keys.
+    VersionWithRegistry {
+        /// SemVer version requirement (e.g. `"^1.0"`, `"~2.1"`, `">=3.0.0"`).
+        version: String,
+        /// Registry name key from the `[registries]` table.
+        registry: String,
+    },
     /// Local path dependency — resolved relative to the workspace root.
     Path {
         /// Relative or absolute path to the dependency workspace.
         path: String,
     },
+    /// Cache/registry-resolved dependency — value is a SemVer version requirement string.
+    ///
+    /// Uses the default registry. Resolved from `.duumbi/cache/@scope/name@version/`.
+    Version(String),
 }
 
 #[allow(dead_code)] // Methods called progressively as pipeline is integrated
 impl DependencyConfig {
-    /// Returns the version string if this is a `Version` variant.
+    /// Returns the version string regardless of variant.
     pub fn version(&self) -> Option<&str> {
         match self {
-            Self::Version(v) => Some(v.as_str()),
+            Self::Version(v) | Self::VersionWithRegistry { version: v, .. } => Some(v.as_str()),
             Self::Path { .. } => None,
         }
     }
@@ -133,8 +144,30 @@ impl DependencyConfig {
     pub fn path(&self) -> Option<&str> {
         match self {
             Self::Path { path } => Some(path.as_str()),
-            Self::Version(_) => None,
+            _ => None,
         }
+    }
+
+    /// Returns the explicit registry name, if specified.
+    pub fn registry(&self) -> Option<&str> {
+        match self {
+            Self::VersionWithRegistry { registry, .. } => Some(registry.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Validates the version string as a SemVer requirement.
+    ///
+    /// Returns `Ok(())` if the version parses as a valid `semver::VersionReq`,
+    /// or an error with the parse failure details.
+    pub fn validate_version(&self) -> Result<(), ConfigError> {
+        if let Some(v) = self.version() {
+            semver::VersionReq::parse(v).map_err(|e| ConfigError::Invalid {
+                field: "version".to_string(),
+                reason: format!("Invalid SemVer range '{v}': {e}"),
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -147,6 +180,16 @@ pub struct WorkspaceSection {
     /// Local module namespace prefix (used by the resolver).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub namespace: String,
+    /// Default registry name for dependencies without an explicit `registry` key.
+    ///
+    /// Must match a key in the `[registries]` table. If omitted, falls back to
+    /// the first entry in `[registries]` or local-only resolution.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "default-registry"
+    )]
+    pub default_registry: Option<String>,
 }
 
 /// Vendoring strategy for the optional `[vendor]` section.
@@ -168,13 +211,18 @@ pub struct VendorSection {
     /// Vendoring strategy applied during `duumbi deps vendor`.
     #[serde(default)]
     pub strategy: VendorStrategy,
+    /// Glob patterns for selective vendoring (only used when `strategy = "selective"`).
+    ///
+    /// Example: `["@company/*"]` vendors all modules in the `@company` scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
 }
 
 /// Top-level duumbi workspace configuration.
 #[allow(dead_code)] // Used in Issue #31 orchestrator
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DuumbiConfig {
-    /// Workspace identity settings (name, namespace).
+    /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
 
     /// LLM provider settings — required for `duumbi add` / AI commands.
@@ -183,10 +231,23 @@ pub struct DuumbiConfig {
     /// when an AI command is invoked without LLM config.
     pub llm: Option<LlmConfig>,
 
+    /// Named registry endpoints.
+    ///
+    /// Keys are short names used in `DependencyConfig::VersionWithRegistry`,
+    /// values are HTTPS base URLs.
+    ///
+    /// ```toml
+    /// [registries]
+    /// duumbi = "https://registry.duumbi.dev"
+    /// company = "https://registry.acme.com"
+    /// ```
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub registries: HashMap<String, String>,
+
     /// Dependencies declared for this workspace.
     ///
     /// Keys are either scoped module names (`@scope/name`) or plain dep names.
-    /// Values are either a bare version string or a `{ path = "..." }` table.
+    /// Values are a bare version string, `{ version, registry }` table, or `{ path }` table.
     #[serde(default)]
     pub dependencies: HashMap<String, DependencyConfig>,
 
@@ -375,5 +436,382 @@ api_key_env = "COHERE_KEY"
     fn llm_provider_display() {
         assert_eq!(LlmProvider::Anthropic.to_string(), "anthropic");
         assert_eq!(LlmProvider::OpenAI.to_string(), "openai");
+    }
+
+    // -------------------------------------------------------------------------
+    // Config v2 tests (#156)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn config_v2_registries_and_default_registry() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[workspace]
+name = "myapp"
+namespace = "myapp"
+default-registry = "duumbi"
+
+[registries]
+duumbi = "https://registry.duumbi.dev"
+company = "https://registry.acme.com"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let ws = cfg.workspace.expect("workspace section must exist");
+        assert_eq!(ws.default_registry.as_deref(), Some("duumbi"));
+        assert_eq!(cfg.registries.len(), 2);
+        assert_eq!(cfg.registries["duumbi"], "https://registry.duumbi.dev");
+        assert_eq!(cfg.registries["company"], "https://registry.acme.com");
+    }
+
+    #[test]
+    fn config_v2_version_with_registry_dep() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"@company/auth" = { version = "^3.0", registry = "company" }
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let dep = &cfg.dependencies["@company/auth"];
+        assert_eq!(dep.version(), Some("^3.0"));
+        assert_eq!(dep.registry(), Some("company"));
+    }
+
+    #[test]
+    fn config_v2_bare_version_dep() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"@duumbi/stdlib-math" = "^1.0"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let dep = &cfg.dependencies["@duumbi/stdlib-math"];
+        assert_eq!(dep.version(), Some("^1.0"));
+        assert!(dep.registry().is_none());
+    }
+
+    #[test]
+    fn config_v2_path_dep_unchanged() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"local-utils" = { path = "../shared/utils" }
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let dep = &cfg.dependencies["local-utils"];
+        assert_eq!(dep.path(), Some("../shared/utils"));
+        assert!(dep.version().is_none());
+    }
+
+    #[test]
+    fn config_v2_mixed_deps() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"@duumbi/stdlib-math" = "^1.0"
+"@company/auth-core" = { version = "^3.0", registry = "company" }
+"local-utils" = { path = "../shared/utils" }
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        assert_eq!(cfg.dependencies.len(), 3);
+
+        assert!(matches!(
+            cfg.dependencies["@duumbi/stdlib-math"],
+            DependencyConfig::Version(_)
+        ));
+        assert!(matches!(
+            cfg.dependencies["@company/auth-core"],
+            DependencyConfig::VersionWithRegistry { .. }
+        ));
+        assert!(matches!(
+            cfg.dependencies["local-utils"],
+            DependencyConfig::Path { .. }
+        ));
+    }
+
+    #[test]
+    fn config_v2_vendor_selective_with_include() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[vendor]
+strategy = "selective"
+include = ["@company/*"]
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let vendor = cfg.vendor.expect("vendor section must exist");
+        assert_eq!(vendor.strategy, VendorStrategy::Selective);
+        assert_eq!(vendor.include, vec!["@company/*"]);
+    }
+
+    #[test]
+    fn config_v2_backward_compat_no_registries() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[dependencies]
+"@duumbi/stdlib-math" = "1.0.0"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("v1 config must still parse");
+        assert!(cfg.registries.is_empty());
+        assert!(cfg.workspace.is_none());
+        assert_eq!(cfg.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn semver_range_valid_patterns() {
+        for range in ["^1.0", "~2.1", ">=3.0.0", "=1.2.3", "*", "1.0.0"] {
+            let dep = DependencyConfig::Version(range.to_string());
+            dep.validate_version()
+                .unwrap_or_else(|_| panic!("'{range}' must be a valid SemVer range"));
+        }
+    }
+
+    #[test]
+    fn semver_range_invalid_returns_error() {
+        let dep = DependencyConfig::Version("not-a-version".to_string());
+        let err = dep
+            .validate_version()
+            .expect_err("invalid range must error");
+        assert!(matches!(err, ConfigError::Invalid { .. }));
+    }
+
+    #[test]
+    fn semver_range_version_with_registry_validates() {
+        let dep = DependencyConfig::VersionWithRegistry {
+            version: "^3.0".to_string(),
+            registry: "company".to_string(),
+        };
+        dep.validate_version().expect("^3.0 must be valid");
+    }
+
+    #[test]
+    fn semver_range_edge_cases_valid() {
+        // Additional valid SemVer patterns not covered by semver_range_valid_patterns
+        for range in ["0.0.0", ">=1.0.0, <2.0.0", "1.2.3-alpha.1"] {
+            let dep = DependencyConfig::Version(range.to_string());
+            dep.validate_version()
+                .unwrap_or_else(|_| panic!("'{range}' must be a valid SemVer range"));
+        }
+    }
+
+    #[test]
+    fn path_dep_validate_version_always_ok() {
+        let dep = DependencyConfig::Path {
+            path: "../some/path".to_string(),
+        };
+        dep.validate_version()
+            .expect("path dep has no version to validate — must always be Ok");
+    }
+
+    #[test]
+    fn dependency_config_accessor_methods() {
+        let version = DependencyConfig::Version("^1.0".to_string());
+        assert_eq!(version.version(), Some("^1.0"));
+        assert!(version.path().is_none());
+        assert!(version.registry().is_none());
+
+        let with_reg = DependencyConfig::VersionWithRegistry {
+            version: "~2.0".to_string(),
+            registry: "company".to_string(),
+        };
+        assert_eq!(with_reg.version(), Some("~2.0"));
+        assert!(with_reg.path().is_none());
+        assert_eq!(with_reg.registry(), Some("company"));
+
+        let path = DependencyConfig::Path {
+            path: "../lib".to_string(),
+        };
+        assert!(path.version().is_none());
+        assert_eq!(path.path(), Some("../lib"));
+        assert!(path.registry().is_none());
+    }
+
+    #[test]
+    fn config_empty_dependencies_map() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        assert!(cfg.dependencies.is_empty());
+    }
+
+    #[test]
+    fn config_all_sections_populated() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[workspace]
+name = "full-app"
+namespace = "fullapp"
+default-registry = "duumbi"
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[registries]
+duumbi = "https://registry.duumbi.dev"
+private = "https://registry.example.com"
+
+[dependencies]
+"@duumbi/stdlib-math" = "^1.0"
+"@private/auth" = { version = "^2.0", registry = "private" }
+"local-utils" = { path = "../utils" }
+
+[vendor]
+strategy = "all"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        assert!(cfg.workspace.is_some());
+        assert!(cfg.llm.is_some());
+        assert_eq!(cfg.registries.len(), 2);
+        assert_eq!(cfg.dependencies.len(), 3);
+        let vendor = cfg.vendor.expect("vendor section");
+        assert_eq!(vendor.strategy, VendorStrategy::All);
+    }
+
+    #[test]
+    fn vendor_strategy_none_is_default() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[vendor]
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let vendor = cfg.vendor.expect("vendor section");
+        assert_eq!(vendor.strategy, VendorStrategy::None);
+        assert!(vendor.include.is_empty());
+    }
+
+    #[test]
+    fn save_config_creates_duumbi_dir() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        // No .duumbi dir exists yet
+        assert!(!tmp.path().join(".duumbi").exists());
+
+        let cfg = DuumbiConfig::default();
+        save_config(tmp.path(), &cfg).expect("save must create dir");
+
+        assert!(tmp.path().join(".duumbi").exists());
+        assert!(tmp.path().join(".duumbi/config.toml").exists());
+    }
+
+    #[test]
+    fn config_workspace_name_roundtrip() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let cfg = DuumbiConfig {
+            workspace: Some(WorkspaceSection {
+                name: "my-app".to_string(),
+                namespace: "myapp".to_string(),
+                default_registry: Some("duumbi".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        save_config(tmp.path(), &cfg).expect("save must succeed");
+        let loaded = load_config(tmp.path()).expect("load must succeed");
+
+        let ws = loaded.workspace.expect("workspace section");
+        assert_eq!(ws.name, "my-app");
+        assert_eq!(ws.namespace, "myapp");
+        assert_eq!(ws.default_registry.as_deref(), Some("duumbi"));
+    }
+
+    #[test]
+    fn config_empty_workspace_name_omitted_in_toml() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let cfg = DuumbiConfig {
+            workspace: Some(WorkspaceSection {
+                name: String::new(),
+                namespace: String::new(),
+                default_registry: None,
+            }),
+            ..Default::default()
+        };
+
+        save_config(tmp.path(), &cfg).expect("save must succeed");
+        let contents = fs::read_to_string(tmp.path().join(".duumbi/config.toml")).expect("read");
+        // Empty strings should be skipped by skip_serializing_if
+        assert!(
+            !contents.contains("name = \"\""),
+            "empty name should not appear"
+        );
+    }
+
+    #[test]
+    fn config_v2_roundtrip_save_load() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let mut cfg = DuumbiConfig::default();
+        cfg.registries.insert(
+            "duumbi".to_string(),
+            "https://registry.duumbi.dev".to_string(),
+        );
+        cfg.dependencies.insert(
+            "@company/auth".to_string(),
+            DependencyConfig::VersionWithRegistry {
+                version: "^3.0".to_string(),
+                registry: "company".to_string(),
+            },
+        );
+        cfg.vendor = Some(VendorSection {
+            strategy: VendorStrategy::Selective,
+            include: vec!["@company/*".to_string()],
+        });
+
+        save_config(tmp.path(), &cfg).expect("save must succeed");
+        let loaded = load_config(tmp.path()).expect("reload must succeed");
+
+        assert_eq!(loaded.registries["duumbi"], "https://registry.duumbi.dev");
+        assert_eq!(loaded.dependencies["@company/auth"].version(), Some("^3.0"));
+        assert_eq!(
+            loaded.dependencies["@company/auth"].registry(),
+            Some("company")
+        );
+        let vendor = loaded.vendor.expect("vendor section");
+        assert_eq!(vendor.strategy, VendorStrategy::Selective);
+        assert_eq!(vendor.include, vec!["@company/*"]);
     }
 }
