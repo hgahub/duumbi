@@ -297,6 +297,62 @@ pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -
     Ok(())
 }
 
+/// Verifies integrity of all dependencies against lockfile hashes.
+///
+/// Recomputes integrity hashes for each resolved dependency and compares
+/// against the values recorded in `deps.lock`. Reports E015 on mismatch.
+/// Returns `Ok(())` if all pass, or bails with an error if mismatches found.
+pub fn run_deps_audit(workspace: &Path) -> Result<()> {
+    let lock = deps::load_lockfile(workspace).context("Failed to read lockfile")?;
+
+    if lock.dependencies.is_empty() {
+        eprintln!("No dependencies to audit.");
+        return Ok(());
+    }
+
+    let failures = deps::verify_lockfile(&lock).context("Failed to verify lockfile integrity")?;
+
+    // Report results for each dependency
+    let passed_count = lock.dependencies.len() - failures.len();
+    let failure_names: std::collections::HashSet<&str> =
+        failures.iter().map(|f| f.name.as_str()).collect();
+
+    for entry in &lock.dependencies {
+        let version = entry.version.as_deref().unwrap_or("?");
+        if failure_names.contains(entry.name.as_str()) {
+            eprintln!(
+                "  \u{2717} {} v{version} — INTEGRITY MISMATCH (E015)",
+                entry.name
+            );
+        } else if entry.integrity.is_some() {
+            eprintln!("  \u{2713} {} v{version} — integrity OK", entry.name);
+        } else {
+            eprintln!(
+                "  - {} v{version} — no integrity hash (v0 entry)",
+                entry.name
+            );
+        }
+    }
+
+    if !failures.is_empty() {
+        eprintln!();
+        for f in &failures {
+            eprintln!(
+                "  E015: {}: expected {}, got {}",
+                f.name, f.expected, f.actual
+            );
+        }
+        anyhow::bail!(
+            "Integrity audit failed: {}/{} dependencies have mismatches",
+            failures.len(),
+            lock.dependencies.len()
+        );
+    }
+
+    eprintln!("\nAll {passed_count} dependencies passed integrity verification.");
+    Ok(())
+}
+
 /// Displays the dependency tree as ASCII art.
 ///
 /// Reads the lockfile for resolved entries and config for workspace identity.

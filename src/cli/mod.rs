@@ -142,6 +142,9 @@ pub enum DepsSubcommand {
         name: String,
     },
 
+    /// Verify integrity of all dependencies against lockfile hashes.
+    Audit,
+
     /// Display the dependency tree.
     Tree {
         /// Maximum tree depth to display.
