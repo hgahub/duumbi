@@ -119,8 +119,13 @@ async fn run(cli: Cli) -> Result<()> {
             let workspace = PathBuf::from(".");
             match subcommand {
                 cli::DepsSubcommand::List => cli::deps::run_deps_list(&workspace),
-                cli::DepsSubcommand::Add { name, path } => {
-                    cli::deps::run_deps_add(&workspace, &name, &path)
+                cli::DepsSubcommand::Add {
+                    name,
+                    path,
+                    registry,
+                } => {
+                    cli::deps::run_deps_add(&workspace, &name, path.as_deref(), registry.as_deref())
+                        .await
                 }
                 cli::DepsSubcommand::Remove { name } => {
                     cli::deps::run_deps_remove(&workspace, &name)

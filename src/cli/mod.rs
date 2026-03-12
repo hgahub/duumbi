@@ -113,12 +113,18 @@ pub enum DepsSubcommand {
     /// List all declared dependencies.
     List,
 
-    /// Add a local path dependency.
+    /// Add a dependency (local path or from registry).
+    ///
+    /// For local: `duumbi deps add mymod ./path`
+    /// For registry: `duumbi deps add @scope/name[@version]`
     Add {
-        /// Dependency name (used as module identifier).
+        /// Module name or `@scope/name[@version]` specifier.
         name: String,
-        /// Relative or absolute path to the dependency workspace.
-        path: String,
+        /// Local path to dependency workspace (omit for registry deps).
+        path: Option<String>,
+        /// Registry to fetch from (overrides default-registry).
+        #[arg(long)]
+        registry: Option<String>,
     },
 
     /// Remove a declared dependency.
