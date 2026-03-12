@@ -17,6 +17,7 @@ pub mod intent;
 pub mod manifest;
 pub mod parser;
 pub mod patch;
+pub mod registry;
 pub mod snapshot;
 pub mod tools;
 pub mod types;

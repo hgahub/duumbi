@@ -18,6 +18,7 @@ mod intent;
 mod manifest;
 mod parser;
 mod patch;
+mod registry;
 mod snapshot;
 mod tools;
 mod types;
