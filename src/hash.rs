@@ -89,6 +89,7 @@ pub fn semantic_hash(graph_dir: &Path) -> Result<String, HashError> {
 ///
 /// The input should be a single module object (not an array of modules).
 #[must_use]
+#[allow(dead_code)] // Used by lockfile pipeline; called from deps.rs at resolution time
 pub fn semantic_hash_value(value: &serde_json::Value) -> String {
     let canonical = canonicalize(value, true);
     let json_bytes = canonical_json(&canonical);

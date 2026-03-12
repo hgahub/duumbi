@@ -145,11 +145,11 @@ fn upgrade_config(workspace: &Path) -> Result<bool> {
             default_registry: Some("duumbi".to_string()),
         });
         changed = true;
-    } else if let Some(ref mut ws) = config.workspace {
-        if ws.default_registry.is_none() {
-            ws.default_registry = Some("duumbi".to_string());
-            changed = true;
-        }
+    } else if let Some(ref mut ws) = config.workspace
+        && ws.default_registry.is_none()
+    {
+        ws.default_registry = Some("duumbi".to_string());
+        changed = true;
     }
 
     if changed {

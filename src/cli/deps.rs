@@ -167,15 +167,12 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
             Ok(resolved) => {
                 let version_str = resolved.to_string();
                 // Check if we already have this version cached
-                let cached = cache_dir
-                    .join(dep_name.replace('/', "/"))
-                    .parent()
-                    .map(|scope| {
-                        scope.join(format!(
-                            "{}@{version_str}",
-                            dep_name.split('/').last().unwrap_or(dep_name)
-                        ))
-                    });
+                let cached = cache_dir.join(dep_name).parent().map(|scope| {
+                    scope.join(format!(
+                        "{}@{version_str}",
+                        dep_name.split('/').next_back().unwrap_or(dep_name)
+                    ))
+                });
 
                 let already_cached = cached.as_ref().is_some_and(|p| p.exists());
 
