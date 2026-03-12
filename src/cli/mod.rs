@@ -133,6 +133,12 @@ pub enum DepsSubcommand {
         name: String,
     },
 
+    /// Update dependencies to latest compatible versions from registries.
+    Update {
+        /// Specific dependency to update (omit to update all).
+        name: Option<String>,
+    },
+
     /// Copy cached dependencies into `.duumbi/vendor/` for offline builds.
     Vendor {
         /// Vendor all dependencies regardless of config.toml [vendor] rules.

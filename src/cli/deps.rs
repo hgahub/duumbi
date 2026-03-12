@@ -125,7 +125,116 @@ pub async fn run_deps_add(
     Ok(())
 }
 
-/// Removes a local path dependency from `config.toml`.
+/// Updates dependencies to their latest compatible versions from registries.
+///
+/// If `name` is provided, only that dependency is updated. Otherwise all
+/// version-based dependencies are checked for updates.
+pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()> {
+    let cfg = config::load_config(workspace).unwrap_or_default();
+    let client = build_registry_client(&cfg, workspace)?;
+    let cache_dir = workspace.join(".duumbi").join("cache");
+
+    let default_registry = cfg
+        .workspace
+        .as_ref()
+        .and_then(|ws| ws.default_registry.clone());
+
+    let mut updates = Vec::new();
+
+    let deps_to_check: Vec<(String, DependencyConfig)> = match name {
+        Some(n) => {
+            let dep = cfg
+                .dependencies
+                .get(n)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Dependency '{n}' not found in config.toml"))?;
+            vec![(n.to_string(), dep)]
+        }
+        None => cfg.dependencies.clone().into_iter().collect(),
+    };
+
+    for (dep_name, dep_config) in &deps_to_check {
+        let (version_req_str, registry_name) = match dep_config {
+            DependencyConfig::Version(v) => (v.as_str(), default_registry.as_deref()),
+            DependencyConfig::VersionWithRegistry { version, registry } => {
+                (version.as_str(), Some(registry.as_str()))
+            }
+            DependencyConfig::Path { .. } => {
+                if name.is_some() {
+                    eprintln!("  {dep_name}: local path dependency — skipped");
+                }
+                continue;
+            }
+        };
+
+        let registry = registry_name.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No registry for '{dep_name}': no default-registry configured.\n\
+                 Set default-registry in [workspace] or use VersionWithRegistry."
+            )
+        })?;
+
+        let version_req = semver::VersionReq::parse(version_req_str).with_context(|| {
+            format!("Invalid version range for '{dep_name}': {version_req_str}")
+        })?;
+
+        match client
+            .resolve_version(registry, dep_name, &version_req)
+            .await
+        {
+            Ok(resolved) => {
+                let version_str = resolved.to_string();
+                // Check if we already have this version cached
+                let cached = cache_dir
+                    .join(dep_name.replace('/', "/"))
+                    .parent()
+                    .map(|scope| {
+                        scope.join(format!(
+                            "{}@{version_str}",
+                            dep_name.split('/').last().unwrap_or(dep_name)
+                        ))
+                    });
+
+                let already_cached = cached.as_ref().is_some_and(|p| p.exists());
+
+                if !already_cached {
+                    eprintln!("  {dep_name}: downloading {version_str}…");
+                    client
+                        .download_module(registry, dep_name, &version_str, &cache_dir)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+
+                updates.push((dep_name.clone(), version_req_str.to_string(), version_str));
+            }
+            Err(e) => {
+                eprintln!("  {dep_name}: could not resolve — {e}");
+            }
+        }
+    }
+
+    if updates.is_empty() {
+        eprintln!("All dependencies are up to date.");
+        return Ok(());
+    }
+
+    // Show version diff
+    for (dep_name, old_req, new_ver) in &updates {
+        eprintln!("  {dep_name}: {old_req} → {new_ver} (latest compatible)");
+    }
+
+    // Regenerate lockfile
+    let config = config::load_config(workspace).unwrap_or_default();
+    match deps::generate_lockfile(workspace, &config) {
+        Ok(_) => eprintln!("Lockfile updated."),
+        Err(e) => eprintln!("  Warning: could not regenerate lockfile: {e}"),
+    }
+
+    eprintln!("Updated {} dependencies.", updates.len());
+    Ok(())
+}
+
+/// Removes a dependency from `config.toml`.
 pub fn run_deps_remove(workspace: &Path, name: &str) -> Result<()> {
     let removed = deps::remove_dependency(workspace, name)
         .with_context(|| format!("Failed to remove dependency '{name}'"))?;

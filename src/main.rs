@@ -130,6 +130,9 @@ async fn run(cli: Cli) -> Result<()> {
                 cli::DepsSubcommand::Remove { name } => {
                     cli::deps::run_deps_remove(&workspace, &name)
                 }
+                cli::DepsSubcommand::Update { name } => {
+                    cli::deps::run_deps_update(&workspace, name.as_deref()).await
+                }
                 cli::DepsSubcommand::Vendor { all, include } => {
                     cli::deps::run_deps_vendor(&workspace, all, include.as_deref())
                 }
