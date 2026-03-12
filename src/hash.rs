@@ -605,9 +605,8 @@ mod tests {
 
     #[test]
     fn nonexistent_directory_returns_io_error() {
-        let result = semantic_hash(Path::new("/nonexistent/path/that/does/not/exist"));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = semantic_hash(Path::new("/nonexistent/path/that/does/not/exist"))
+            .expect_err("nonexistent path must error");
         assert!(
             matches!(err, HashError::Io { .. }),
             "expected HashError::Io, got: {err}"
@@ -619,12 +618,181 @@ mod tests {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         write_jsonld(dir.path(), "bad.jsonld", "{ this is not valid json }");
 
-        let result = semantic_hash(dir.path());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = semantic_hash(dir.path()).expect_err("malformed JSON must error");
         assert!(
             matches!(err, HashError::JsonParse { .. }),
             "expected HashError::JsonParse, got: {err}"
+        );
+    }
+
+    #[test]
+    fn single_function_empty_ops_produces_valid_hash() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(
+            dir.path(),
+            "main.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:main",
+                "duumbi:name": "main",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:main/fn",
+                    "duumbi:name": "empty_fn", "duumbi:returnType": "void",
+                    "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:main/fn/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": []
+                    }]
+                }]
+            }"#,
+        );
+
+        let hash = semantic_hash(dir.path()).expect("must succeed");
+        assert_eq!(hash.len(), 64);
+
+        // Different from empty dir
+        let empty = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let empty_hash = semantic_hash(empty.path()).expect("must succeed");
+        assert_ne!(hash, empty_hash);
+    }
+
+    #[test]
+    fn non_jsonld_files_are_ignored() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(
+            dir.path(),
+            "main.jsonld",
+            r#"{"@type": "duumbi:Module", "duumbi:name": "main", "duumbi:functions": []}"#,
+        );
+        // Write a non-jsonld file that should be ignored
+        fs::write(dir.path().join("README.md"), "# Not a module").expect("write");
+        fs::write(dir.path().join("data.json"), "{}").expect("write");
+
+        let hash_with_extra = semantic_hash(dir.path()).expect("must succeed");
+
+        // Compare with a dir that has only the jsonld file
+        let dir2 = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(
+            dir2.path(),
+            "main.jsonld",
+            r#"{"@type": "duumbi:Module", "duumbi:name": "main", "duumbi:functions": []}"#,
+        );
+
+        let hash_clean = semantic_hash(dir2.path()).expect("must succeed");
+        assert_eq!(
+            hash_with_extra, hash_clean,
+            "non-.jsonld files must not affect the hash"
+        );
+    }
+
+    #[test]
+    fn reference_without_duumbi_prefix_normalizes() {
+        // Edge case: reference without "duumbi:" prefix
+        let result = normalize_reference("some/path/to/3");
+        assert_eq!(result, serde_json::json!({"_ref": 3}));
+
+        let result = normalize_reference("just_a_name");
+        assert_eq!(result, serde_json::json!({"_ref": "just_a_name"}));
+    }
+
+    #[test]
+    fn hash_output_is_lowercase_hex_64_chars() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(dir.path(), "a.jsonld", r#"{"duumbi:value": 42}"#);
+
+        let hash = semantic_hash(dir.path()).expect("must succeed");
+        assert_eq!(hash.len(), 64);
+        assert!(
+            hash.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "hash must be lowercase hex"
+        );
+    }
+
+    #[test]
+    fn key_ordering_does_not_affect_hash() {
+        let dir_a = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let dir_b = TempDir::new().expect("invariant: temp dir creation must succeed");
+
+        // Same keys, different order in JSON source
+        write_jsonld(
+            dir_a.path(),
+            "main.jsonld",
+            r#"{"@type": "duumbi:Module", "duumbi:name": "test", "duumbi:functions": []}"#,
+        );
+        write_jsonld(
+            dir_b.path(),
+            "main.jsonld",
+            r#"{"duumbi:functions": [], "duumbi:name": "test", "@type": "duumbi:Module"}"#,
+        );
+
+        let hash_a = semantic_hash(dir_a.path()).expect("must succeed");
+        let hash_b = semantic_hash(dir_b.path()).expect("must succeed");
+        assert_eq!(
+            hash_a, hash_b,
+            "key ordering must not affect hash (BTreeMap sorts)"
+        );
+    }
+
+    #[test]
+    fn ops_array_order_affects_hash() {
+        let dir_a = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let dir_b = TempDir::new().expect("invariant: temp dir creation must succeed");
+
+        // Module A: Const(1), Const(2)
+        write_jsonld(
+            dir_a.path(),
+            "main.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:m",
+                "duumbi:name": "main",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:m/main",
+                    "duumbi:name": "main", "duumbi:returnType": "i64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:m/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:m/main/entry/0",
+                             "duumbi:value": 1, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Const", "@id": "duumbi:m/main/entry/1",
+                             "duumbi:value": 2, "duumbi:resultType": "i64"}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+
+        // Module B: Const(2), Const(1) — reversed order
+        write_jsonld(
+            dir_b.path(),
+            "main.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:m",
+                "duumbi:name": "main",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:m/main",
+                    "duumbi:name": "main", "duumbi:returnType": "i64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:m/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:m/main/entry/0",
+                             "duumbi:value": 2, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Const", "@id": "duumbi:m/main/entry/1",
+                             "duumbi:value": 1, "duumbi:resultType": "i64"}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+
+        let hash_a = semantic_hash(dir_a.path()).expect("hash A should succeed");
+        let hash_b = semantic_hash(dir_b.path()).expect("hash B should succeed");
+
+        assert_ne!(
+            hash_a, hash_b,
+            "different op ordering must produce different hashes (execution order matters)"
         );
     }
 

@@ -616,6 +616,117 @@ api_key_env = "ANTHROPIC_API_KEY"
     }
 
     #[test]
+    fn semver_range_edge_cases_valid() {
+        // Additional valid SemVer patterns not covered by semver_range_valid_patterns
+        for range in ["0.0.0", ">=1.0.0, <2.0.0", "1.2.3-alpha.1"] {
+            let dep = DependencyConfig::Version(range.to_string());
+            dep.validate_version()
+                .unwrap_or_else(|_| panic!("'{range}' must be a valid SemVer range"));
+        }
+    }
+
+    #[test]
+    fn path_dep_validate_version_always_ok() {
+        let dep = DependencyConfig::Path {
+            path: "../some/path".to_string(),
+        };
+        dep.validate_version()
+            .expect("path dep has no version to validate — must always be Ok");
+    }
+
+    #[test]
+    fn dependency_config_accessor_methods() {
+        let version = DependencyConfig::Version("^1.0".to_string());
+        assert_eq!(version.version(), Some("^1.0"));
+        assert!(version.path().is_none());
+        assert!(version.registry().is_none());
+
+        let with_reg = DependencyConfig::VersionWithRegistry {
+            version: "~2.0".to_string(),
+            registry: "company".to_string(),
+        };
+        assert_eq!(with_reg.version(), Some("~2.0"));
+        assert!(with_reg.path().is_none());
+        assert_eq!(with_reg.registry(), Some("company"));
+
+        let path = DependencyConfig::Path {
+            path: "../lib".to_string(),
+        };
+        assert!(path.version().is_none());
+        assert_eq!(path.path(), Some("../lib"));
+        assert!(path.registry().is_none());
+    }
+
+    #[test]
+    fn config_empty_dependencies_map() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[dependencies]
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        assert!(cfg.dependencies.is_empty());
+    }
+
+    #[test]
+    fn config_all_sections_populated() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[workspace]
+name = "full-app"
+namespace = "fullapp"
+default-registry = "duumbi"
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[registries]
+duumbi = "https://registry.duumbi.dev"
+private = "https://registry.example.com"
+
+[dependencies]
+"@duumbi/stdlib-math" = "^1.0"
+"@private/auth" = { version = "^2.0", registry = "private" }
+"local-utils" = { path = "../utils" }
+
+[vendor]
+strategy = "all"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        assert!(cfg.workspace.is_some());
+        assert!(cfg.llm.is_some());
+        assert_eq!(cfg.registries.len(), 2);
+        assert_eq!(cfg.dependencies.len(), 3);
+        let vendor = cfg.vendor.expect("vendor section");
+        assert_eq!(vendor.strategy, VendorStrategy::All);
+    }
+
+    #[test]
+    fn vendor_strategy_none_is_default() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[vendor]
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let vendor = cfg.vendor.expect("vendor section");
+        assert_eq!(vendor.strategy, VendorStrategy::None);
+        assert!(vendor.include.is_empty());
+    }
+
+    #[test]
     fn config_v2_roundtrip_save_load() {
         let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
         let mut cfg = DuumbiConfig::default();

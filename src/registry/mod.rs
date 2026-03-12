@@ -6,6 +6,7 @@
 
 #[allow(dead_code)]
 pub mod client;
+pub mod credentials;
 #[allow(dead_code)]
 pub mod types;
 
@@ -112,5 +113,81 @@ impl RegistryError {
                 codes::E013_REGISTRY_UNREACHABLE
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_error_display_messages() {
+        let err = RegistryError::AuthFailed {
+            registry: "duumbi".to_string(),
+            reason: "token expired".to_string(),
+        };
+        assert!(err.to_string().contains("duumbi"));
+        assert!(err.to_string().contains("token expired"));
+
+        let err = RegistryError::VersionNotFound {
+            module: "@test/mod".to_string(),
+            version: "^2.0".to_string(),
+            registry: "main".to_string(),
+        };
+        assert!(err.to_string().contains("@test/mod"));
+        assert!(err.to_string().contains("^2.0"));
+
+        let err = RegistryError::IntegrityMismatch {
+            module: "@test/mod".to_string(),
+            expected: "sha256:aaa".to_string(),
+            actual: "sha256:bbb".to_string(),
+        };
+        assert!(err.to_string().contains("sha256:aaa"));
+        assert!(err.to_string().contains("sha256:bbb"));
+
+        let err = RegistryError::RetriesExhausted {
+            url: "https://registry.duumbi.dev/api/v1/modules/test".to_string(),
+            max_retries: 3,
+        };
+        assert!(err.to_string().contains("3"));
+
+        let err = RegistryError::ApiError {
+            status: 500,
+            body: "Internal Server Error".to_string(),
+        };
+        assert!(err.to_string().contains("500"));
+
+        let err = RegistryError::Parse("bad json".to_string());
+        assert!(err.to_string().contains("bad json"));
+    }
+
+    #[test]
+    fn api_error_and_parse_map_to_e013() {
+        let err = RegistryError::ApiError {
+            status: 500,
+            body: "error".to_string(),
+        };
+        assert_eq!(err.error_code(), "E013");
+
+        let err = RegistryError::Parse("bad".to_string());
+        assert_eq!(err.error_code(), "E013");
+    }
+
+    #[test]
+    fn retries_exhausted_maps_to_e013() {
+        let err = RegistryError::RetriesExhausted {
+            url: "https://registry.duumbi.dev".to_string(),
+            max_retries: 3,
+        };
+        assert_eq!(err.error_code(), "E013");
+    }
+
+    #[test]
+    fn unpack_error_maps_to_e013() {
+        let err = RegistryError::Unpack {
+            module: "test".to_string(),
+            source: std::io::Error::other("test"),
+        };
+        assert_eq!(err.error_code(), "E013");
     }
 }

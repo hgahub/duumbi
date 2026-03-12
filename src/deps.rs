@@ -1515,6 +1515,172 @@ hash = "0123456789abcdef"
     }
 
     #[test]
+    fn lockfile_corrupted_toml_returns_error() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+        fs::write(duumbi.join("deps.lock"), "[[[invalid toml").expect("write bad lockfile");
+
+        let result = load_lockfile(ws.path());
+        assert!(result.is_err(), "corrupted lockfile must error");
+    }
+
+    #[test]
+    fn lockfile_v1_serialize_deserialize_roundtrip() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![
+                LockEntry {
+                    name: "@scope/mod-a".to_string(),
+                    version: Some("1.2.3".to_string()),
+                    source: Some("cache".to_string()),
+                    semantic_hash: Some("a".repeat(64)),
+                    integrity: Some("b".repeat(64)),
+                    resolved_path: Some("/some/path".to_string()),
+                    vendored: false,
+                    path: None,
+                    hash: None,
+                },
+                LockEntry {
+                    name: "local-lib".to_string(),
+                    version: None,
+                    source: Some("path+../lib".to_string()),
+                    semantic_hash: Some("c".repeat(64)),
+                    integrity: Some("d".repeat(64)),
+                    resolved_path: Some("../lib/.duumbi/graph".to_string()),
+                    vendored: false,
+                    path: None,
+                    hash: None,
+                },
+            ],
+        };
+
+        let toml_str = toml::to_string_pretty(&lock).expect("serialize");
+        fs::write(duumbi.join("deps.lock"), &toml_str).expect("write");
+
+        let loaded = load_lockfile(ws.path()).expect("must load");
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.dependencies.len(), 2);
+        assert_eq!(loaded.dependencies[0].name, "@scope/mod-a");
+        assert_eq!(loaded.dependencies[0].version.as_deref(), Some("1.2.3"));
+        assert_eq!(loaded.dependencies[1].name, "local-lib");
+        assert!(loaded.dependencies[1].version.is_none());
+    }
+
+    #[test]
+    fn lockfile_no_file_returns_empty() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        let duumbi = ws.path().join(".duumbi");
+        fs::create_dir_all(&duumbi).expect("create .duumbi");
+        // No deps.lock file
+
+        let lock = load_lockfile(ws.path()).expect("must return empty");
+        assert!(lock.dependencies.is_empty());
+    }
+
+    #[test]
+    fn lockfile_verify_missing_resolved_path_skipped() {
+        // Entry with no resolved_path should be skipped in verification
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![LockEntry {
+                name: "ghost".to_string(),
+                version: None,
+                source: None,
+                semantic_hash: None,
+                integrity: Some("abc123".to_string()),
+                resolved_path: None,
+                vendored: false,
+                path: None,
+                hash: None,
+            }],
+        };
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert!(
+            failures.is_empty(),
+            "entries without resolved_path should be skipped"
+        );
+    }
+
+    #[test]
+    fn lock_entry_effective_path_prefers_v1() {
+        let entry = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: Some("/v1/path".to_string()),
+            vendored: false,
+            path: Some("/v0/path".to_string()),
+            hash: None,
+        };
+        assert_eq!(
+            entry.effective_path(),
+            Some("/v1/path"),
+            "resolved_path (v1) must take priority over path (v0)"
+        );
+    }
+
+    #[test]
+    fn lock_entry_is_v1_checks_hash_fields() {
+        let v1 = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: Some("cache".to_string()),
+            semantic_hash: Some("a".repeat(64)),
+            integrity: Some("sha256-".to_string() + &"b".repeat(64)),
+            resolved_path: None,
+            vendored: false,
+            path: None,
+            hash: None,
+        };
+        assert!(v1.is_v1(), "entry with semantic_hash + integrity is v1");
+
+        let v0 = LockEntry {
+            name: "test".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: Some("/old".to_string()),
+            hash: Some("abc".to_string()),
+        };
+        assert!(!v0.is_v1(), "entry without semantic_hash/integrity is v0");
+    }
+
+    #[test]
+    fn integrity_hash_differs_from_semantic_hash() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let graph_dir = ws.path().join(".duumbi/graph");
+
+        let sem = hash::semantic_hash(&graph_dir).expect("semantic hash");
+        let int = integrity_hash(&graph_dir).expect("integrity hash");
+
+        // Semantic hash is 64-char hex, integrity is "sha256-" + 64-char hex
+        assert_eq!(sem.len(), 64);
+        assert!(
+            int.starts_with("sha256-"),
+            "integrity must have sha256- prefix"
+        );
+        assert_eq!(int.len(), 71, "sha256- (7) + 64 hex chars = 71");
+        // They measure different things (canonicalized vs raw bytes)
+        assert_ne!(
+            sem,
+            &int[7..],
+            "semantic and integrity hashes should typically differ"
+        );
+    }
+
+    #[test]
     fn version_dep_in_config_resolves_from_cache() {
         let ws = tempfile::TempDir::new().expect("tempdir");
         make_workspace(ws.path());
