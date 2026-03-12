@@ -403,6 +403,40 @@ mod tests {
     }
 
     #[test]
+    fn many_registries_roundtrip() {
+        let tmp = TempDir::new().expect("invariant: tempdir creation");
+        let path = tmp.path().join("credentials.toml");
+
+        let mut creds = CredentialsFile::default();
+        for i in 0..10 {
+            set_token(&mut creds, &format!("reg_{i}"), &format!("tok_{i}"));
+        }
+        save_credentials_to(&path, &creds).expect("save must succeed");
+        let loaded = load_credentials_from(&path).expect("load must succeed");
+
+        assert_eq!(loaded.registries.len(), 10);
+        for i in 0..10 {
+            assert_eq!(
+                get_token(&loaded, &format!("reg_{i}")),
+                Some(format!("tok_{i}"))
+            );
+        }
+    }
+
+    #[test]
+    fn credentials_path_returns_valid_path() {
+        // This test verifies credentials_path() doesn't panic and returns a
+        // reasonable path (may fail in CI if HOME is not set, which is fine).
+        if let Ok(path) = credentials_path() {
+            assert!(
+                path.ends_with(".duumbi/credentials.toml"),
+                "path must end with .duumbi/credentials.toml, got: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn parse_existing_credentials_toml() {
         let tmp = TempDir::new().expect("invariant: tempdir creation");
         let path = tmp.path().join("credentials.toml");

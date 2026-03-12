@@ -35,6 +35,7 @@ pub struct RegistryCredential {
 ///
 /// Constructed with a registry URL map and optional credentials. All methods
 /// are async and use exponential backoff for transient failures.
+#[derive(Debug)]
 pub struct RegistryClient {
     http: Client,
     registries: HashMap<String, String>,

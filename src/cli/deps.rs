@@ -3,14 +3,13 @@
 //! Manages dependencies declared in `.duumbi/config.toml` — both local path
 //! dependencies and registry-resolved scoped modules.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use crate::config::{self, DependencyConfig};
 use crate::deps;
-use crate::registry::client::{RegistryClient, RegistryCredential};
+use crate::registry::client::RegistryClient;
 
 /// Lists all declared dependencies and their resolution status.
 pub fn run_deps_list(workspace: &Path) -> Result<()> {
@@ -55,20 +54,8 @@ pub async fn run_deps_add(
 
     let cfg = config::load_config(workspace).unwrap_or_default();
 
-    // Determine which registry to use
-    let registry_name = registry
-        .map(|s| s.to_string())
-        .or_else(|| {
-            cfg.workspace
-                .as_ref()
-                .and_then(|ws| ws.default_registry.clone())
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No registry specified and no default-registry in config.\n\
-                 Use --registry or set default-registry in [workspace]."
-            )
-        })?;
+    // Determine which registry to use (scope-level routing: #171)
+    let registry_name = resolve_registry_for_module(registry, module_name, &cfg)?;
 
     // Build registry client
     let client = build_registry_client(&cfg, workspace)?;
@@ -134,11 +121,6 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
     let client = build_registry_client(&cfg, workspace)?;
     let cache_dir = workspace.join(".duumbi").join("cache");
 
-    let default_registry = cfg
-        .workspace
-        .as_ref()
-        .and_then(|ws| ws.default_registry.clone());
-
     let mut updates = Vec::new();
 
     let deps_to_check: Vec<(String, DependencyConfig)> = match name {
@@ -154,11 +136,9 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
     };
 
     for (dep_name, dep_config) in &deps_to_check {
-        let (version_req_str, registry_name) = match dep_config {
-            DependencyConfig::Version(v) => (v.as_str(), default_registry.as_deref()),
-            DependencyConfig::VersionWithRegistry { version, registry } => {
-                (version.as_str(), Some(registry.as_str()))
-            }
+        let version_req_str = match dep_config {
+            DependencyConfig::Version(v)
+            | DependencyConfig::VersionWithRegistry { version: v, .. } => v.as_str(),
             DependencyConfig::Path { .. } => {
                 if name.is_some() {
                     eprintln!("  {dep_name}: local path dependency — skipped");
@@ -167,19 +147,21 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
             }
         };
 
-        let registry = registry_name.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No registry for '{dep_name}': no default-registry configured.\n\
-                 Set default-registry in [workspace] or use VersionWithRegistry."
-            )
-        })?;
+        // Use scope-level routing (#171) for registry resolution
+        let registry = match resolve_registry_for_module(dep_config.registry(), dep_name, &cfg) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("  {dep_name}: could not determine registry — {e}");
+                continue;
+            }
+        };
 
         let version_req = semver::VersionReq::parse(version_req_str).with_context(|| {
             format!("Invalid version range for '{dep_name}': {version_req_str}")
         })?;
 
         match client
-            .resolve_version(registry, dep_name, &version_req)
+            .resolve_version(&registry, dep_name, &version_req)
             .await
         {
             Ok(resolved) => {
@@ -200,7 +182,7 @@ pub async fn run_deps_update(workspace: &Path, name: Option<&str>) -> Result<()>
                 if !already_cached {
                     eprintln!("  {dep_name}: downloading {version_str}…");
                     client
-                        .download_module(registry, dep_name, &version_str, &cache_dir)
+                        .download_module(&registry, dep_name, &version_str, &cache_dir)
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
@@ -266,7 +248,7 @@ pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -
         }
 
         // Table header
-        eprintln!("{:<40} {:<12} {}", "NAME", "VERSION", "DESCRIPTION");
+        eprintln!("{:<40} {:<12} DESCRIPTION", "NAME", "VERSION");
         eprintln!("{}", "─".repeat(72));
 
         for hit in &result.results {
@@ -423,6 +405,136 @@ pub fn run_deps_remove(workspace: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Downloads and resolves all dependencies from registries into the cache.
+///
+/// Iterates over all version-based dependencies in `config.toml`, resolves
+/// their versions via the appropriate registry, downloads any missing modules
+/// to `.duumbi/cache/`, and generates/updates the lockfile.
+///
+/// With `--frozen`, aborts if the lockfile would change (for CI reproducibility).
+pub async fn run_deps_install(workspace: &Path, frozen: bool) -> Result<()> {
+    let cfg = config::load_config(workspace)
+        .context("Failed to load config. Run `duumbi init` first.")?;
+
+    // Load existing lockfile for --frozen comparison
+    let existing_lock_str = if frozen {
+        let lock_path = workspace.join(".duumbi").join("deps.lock");
+        if lock_path.exists() {
+            Some(std::fs::read_to_string(&lock_path).context("Failed to read existing deps.lock")?)
+        } else {
+            Some(String::new())
+        }
+    } else {
+        None
+    };
+
+    // Collect version-based deps that need resolution
+    let version_deps: Vec<(String, &DependencyConfig)> = cfg
+        .dependencies
+        .iter()
+        .filter(|(_, dep)| dep.version().is_some())
+        .map(|(name, dep)| (name.clone(), dep))
+        .collect();
+
+    if version_deps.is_empty() && cfg.dependencies.is_empty() {
+        eprintln!("No dependencies declared in config.toml.");
+        return Ok(());
+    }
+
+    let cache_dir = workspace.join(".duumbi").join("cache");
+    let mut downloaded = 0u32;
+    let mut cached = 0u32;
+    let mut path_count = 0u32;
+
+    // Download registry deps
+    if !version_deps.is_empty() {
+        let client = build_registry_client(&cfg, workspace)?;
+
+        for (dep_name, dep_config) in &version_deps {
+            let version_str = dep_config
+                .version()
+                .expect("invariant: filtered for version deps");
+
+            let registry_name =
+                match resolve_registry_for_module(dep_config.registry(), dep_name, &cfg) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  {dep_name}: could not resolve registry — {e}");
+                        continue;
+                    }
+                };
+
+            let version_req = semver::VersionReq::parse(version_str).with_context(|| {
+                format!("Invalid version range for '{dep_name}': {version_str}")
+            })?;
+
+            // Resolve best matching version
+            let resolved = client
+                .resolve_version(&registry_name, dep_name, &version_req)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to resolve '{dep_name}': {e}"))?;
+
+            let resolved_str = resolved.to_string();
+
+            // Check if already in cache
+            let cache_entry = if let Some((scope, short_name)) = deps::parse_scoped_name(dep_name) {
+                cache_dir
+                    .join(scope)
+                    .join(format!("{short_name}@{resolved_str}"))
+            } else {
+                cache_dir.join(format!("{dep_name}@{resolved_str}"))
+            };
+
+            if cache_entry.exists() {
+                eprintln!("  {dep_name}@{resolved_str} — cached");
+                cached += 1;
+            } else {
+                eprintln!("  {dep_name}@{resolved_str} — downloading from {registry_name}…");
+                client
+                    .download_module(&registry_name, dep_name, &resolved_str, &cache_dir)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to download '{dep_name}': {e}"))?;
+                downloaded += 1;
+            }
+        }
+    }
+
+    // Count path deps
+    for dep in cfg.dependencies.values() {
+        if dep.path().is_some() {
+            path_count += 1;
+        }
+    }
+
+    // Generate/update lockfile
+    let lock = deps::generate_lockfile(workspace, &cfg).context("Failed to generate lockfile")?;
+
+    // --frozen check: compare new lockfile with existing
+    if frozen {
+        let new_lock_str = std::fs::read_to_string(workspace.join(".duumbi/deps.lock"))
+            .context("Failed to read generated deps.lock")?;
+        let existing = existing_lock_str.expect("invariant: loaded when frozen=true");
+
+        if new_lock_str != existing {
+            anyhow::bail!(
+                "--frozen: lockfile would change ({} dependencies resolved).\n\
+                 Run `duumbi deps install` without --frozen to update deps.lock.",
+                lock.dependencies.len()
+            );
+        }
+    }
+
+    // Summary
+    let total = downloaded + cached + path_count;
+    eprintln!();
+    eprintln!(
+        "Installed {total} dependencies ({downloaded} downloaded, {cached} cached, {path_count} local)."
+    );
+    eprintln!("Lockfile: {} entries.", lock.dependencies.len());
+
+    Ok(())
+}
+
 /// Vendors cached dependencies into `.duumbi/vendor/` for offline builds.
 pub fn run_deps_vendor(workspace: &Path, all: bool, include: Option<&str>) -> Result<()> {
     let mode = if all {
@@ -452,6 +564,73 @@ pub fn run_deps_vendor(workspace: &Path, all: bool, include: Option<&str>) -> Re
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Resolves which registry to use for a module, implementing scope-level routing (#171).
+///
+/// Priority order:
+/// 1. Explicit `--registry` flag
+/// 2. Scope-based auto-routing: `@scope/...` maps to registry named `scope`
+///    (e.g. `@company/auth` → registry `company`)
+/// 3. `@duumbi/*` always routes to registry `duumbi`
+/// 4. Default registry from `[workspace] default-registry`
+///
+/// Returns an error if no matching registry is found.
+fn resolve_registry_for_module(
+    explicit: Option<&str>,
+    module_name: &str,
+    cfg: &config::DuumbiConfig,
+) -> Result<String> {
+    // 1. Explicit --registry flag takes highest priority
+    if let Some(name) = explicit {
+        if !cfg.registries.contains_key(name) {
+            anyhow::bail!(
+                "Registry '{name}' not found in config.toml.\n\
+                 Add it with `duumbi registry add {name} <url>`."
+            );
+        }
+        return Ok(name.to_string());
+    }
+
+    // 2. Scope-based auto-routing: @scope/name → registry "scope"
+    if let Some(scope) = extract_scope(module_name) {
+        // @duumbi/* always routes to "duumbi"
+        let registry_name = if scope == "@duumbi" {
+            "duumbi"
+        } else {
+            &scope[1..]
+        };
+
+        if cfg.registries.contains_key(registry_name) {
+            return Ok(registry_name.to_string());
+        }
+        // Scope doesn't match any registry — fall through to default
+    }
+
+    // 3. Default registry from [workspace]
+    if let Some(ref ws) = cfg.workspace
+        && let Some(ref default) = ws.default_registry
+        && cfg.registries.contains_key(default.as_str())
+    {
+        return Ok(default.clone());
+    }
+
+    anyhow::bail!(
+        "No registry could be resolved for '{module_name}'.\n\
+         Use --registry, configure a matching scope registry, or set default-registry in [workspace]."
+    )
+}
+
+/// Extracts the scope from a scoped module name (e.g. `@scope/name` → `@scope`).
+///
+/// Returns `None` for unscoped names.
+fn extract_scope(module_name: &str) -> Option<String> {
+    if module_name.starts_with('@')
+        && let Some(slash_pos) = module_name.find('/')
+    {
+        return Some(module_name[..slash_pos].to_string());
+    }
+    None
+}
+
 /// Parses a registry specifier like `@scope/name@^1.0` into `(name, optional_version)`.
 ///
 /// Returns `("@scope/name", Some("^1.0"))` or `("@scope/name", None)`.
@@ -465,20 +644,10 @@ fn parse_registry_specifier(input: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Builds a [`RegistryClient`] from workspace config.
+/// Builds a [`RegistryClient`] from workspace config with credentials
+/// loaded from `~/.duumbi/credentials.toml`.
 fn build_registry_client(cfg: &config::DuumbiConfig, _workspace: &Path) -> Result<RegistryClient> {
-    let registries = cfg.registries.clone();
-    if registries.is_empty() {
-        anyhow::bail!(
-            "No registries configured in config.toml.\n\
-             Add a [registries] section with at least one registry URL."
-        );
-    }
-
-    // TODO(#161): Load credentials from ~/.duumbi/credentials.toml
-    let credentials: HashMap<String, RegistryCredential> = HashMap::new();
-
-    RegistryClient::new(registries, credentials, None).map_err(|e| anyhow::anyhow!("{e}"))
+    super::registry::build_registry_client_with_credentials(cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -515,5 +684,97 @@ mod tests {
         let (name, ver) = parse_registry_specifier("@scope/pkg@~3.2");
         assert_eq!(name, "@scope/pkg");
         assert_eq!(ver, Some("~3.2"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Scope-level routing tests (#171)
+    // -----------------------------------------------------------------------
+
+    fn make_cfg_with_registries(
+        registries: &[(&str, &str)],
+        default: Option<&str>,
+    ) -> config::DuumbiConfig {
+        let mut cfg = config::DuumbiConfig::default();
+        for (name, url) in registries {
+            cfg.registries.insert(name.to_string(), url.to_string());
+        }
+        if let Some(d) = default {
+            let ws = cfg.workspace.get_or_insert_with(Default::default);
+            ws.default_registry = Some(d.to_string());
+        }
+        cfg
+    }
+
+    #[test]
+    fn routing_explicit_registry_wins() {
+        let cfg = make_cfg_with_registries(
+            &[
+                ("duumbi", "https://r.duumbi.dev"),
+                ("company", "https://r.acme.com"),
+            ],
+            Some("duumbi"),
+        );
+        let result = resolve_registry_for_module(Some("company"), "@duumbi/stdlib-math", &cfg);
+        assert_eq!(result.expect("must resolve"), "company");
+    }
+
+    #[test]
+    fn routing_explicit_registry_not_found() {
+        let cfg = make_cfg_with_registries(&[("duumbi", "https://r.duumbi.dev")], None);
+        let err = resolve_registry_for_module(Some("missing"), "@duumbi/math", &cfg);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn routing_scope_based_duumbi() {
+        let cfg = make_cfg_with_registries(&[("duumbi", "https://r.duumbi.dev")], None);
+        let result = resolve_registry_for_module(None, "@duumbi/stdlib-math", &cfg);
+        assert_eq!(result.expect("must resolve"), "duumbi");
+    }
+
+    #[test]
+    fn routing_scope_based_company() {
+        let cfg = make_cfg_with_registries(
+            &[
+                ("duumbi", "https://r.duumbi.dev"),
+                ("company", "https://r.acme.com"),
+            ],
+            Some("duumbi"),
+        );
+        let result = resolve_registry_for_module(None, "@company/auth-core", &cfg);
+        assert_eq!(result.expect("must resolve"), "company");
+    }
+
+    #[test]
+    fn routing_scope_no_match_falls_to_default() {
+        let cfg = make_cfg_with_registries(&[("duumbi", "https://r.duumbi.dev")], Some("duumbi"));
+        let result = resolve_registry_for_module(None, "@unknown/pkg", &cfg);
+        assert_eq!(result.expect("must fallback to default"), "duumbi");
+    }
+
+    #[test]
+    fn routing_unscoped_uses_default() {
+        let cfg = make_cfg_with_registries(&[("duumbi", "https://r.duumbi.dev")], Some("duumbi"));
+        let result = resolve_registry_for_module(None, "simple-pkg", &cfg);
+        assert_eq!(result.expect("must use default"), "duumbi");
+    }
+
+    #[test]
+    fn routing_no_match_no_default_errors() {
+        let cfg = make_cfg_with_registries(&[("duumbi", "https://r.duumbi.dev")], None);
+        let err = resolve_registry_for_module(None, "@other/pkg", &cfg);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn extract_scope_scoped() {
+        assert_eq!(extract_scope("@duumbi/math"), Some("@duumbi".to_string()));
+        assert_eq!(extract_scope("@company/auth"), Some("@company".to_string()));
+    }
+
+    #[test]
+    fn extract_scope_unscoped() {
+        assert_eq!(extract_scope("simple"), None);
+        assert_eq!(extract_scope("no-scope"), None);
     }
 }

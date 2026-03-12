@@ -6,8 +6,11 @@ pub mod commands;
 pub mod deps;
 pub mod describe;
 pub mod init;
+pub mod publish;
+pub mod registry;
 pub mod repl;
 pub mod upgrade;
+pub mod yank;
 
 use std::path::PathBuf;
 
@@ -101,6 +104,42 @@ pub enum Commands {
         subcommand: IntentSubcommand,
     },
 
+    /// Manage registry configurations and authentication.
+    Registry {
+        /// Registry subcommand.
+        #[command(subcommand)]
+        subcommand: RegistrySubcommand,
+    },
+
+    /// Package and publish the current module to a registry.
+    Publish {
+        /// Target registry name (uses default-registry if omitted).
+        #[arg(long)]
+        registry: Option<String>,
+
+        /// Pack the module without uploading to the registry.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt and publish immediately.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Mark a published module version as yanked.
+    Yank {
+        /// Module specifier: `@scope/name@version`.
+        specifier: String,
+
+        /// Target registry name (uses default-registry if omitted).
+        #[arg(long)]
+        registry: Option<String>,
+
+        /// Skip confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
     /// Migrate a Phase 4-5 workspace to Phase 7 format.
     Upgrade,
 
@@ -158,6 +197,13 @@ pub enum DepsSubcommand {
         name: Option<String>,
     },
 
+    /// Download and resolve all dependencies from registries into cache.
+    Install {
+        /// Fail if deps.lock would change (CI/CD reproducibility).
+        #[arg(long)]
+        frozen: bool,
+    },
+
     /// Copy cached dependencies into `.duumbi/vendor/` for offline builds.
     Vendor {
         /// Vendor all dependencies regardless of config.toml [vendor] rules.
@@ -166,6 +212,48 @@ pub enum DepsSubcommand {
         /// Glob pattern to match scoped module names (e.g. `"@company/*"`).
         #[arg(long)]
         include: Option<String>,
+    },
+}
+
+/// Subcommands for `duumbi registry`.
+#[derive(Subcommand, Debug)]
+pub enum RegistrySubcommand {
+    /// Add a registry endpoint.
+    Add {
+        /// Short name for the registry (used as key in config.toml).
+        name: String,
+        /// Base URL of the registry (must be HTTPS, or http://localhost for dev).
+        url: String,
+    },
+
+    /// List all configured registries.
+    List,
+
+    /// Remove a registry endpoint.
+    Remove {
+        /// Registry name to remove.
+        name: String,
+    },
+
+    /// Set the default registry for new dependencies.
+    Default {
+        /// Registry name to set as default.
+        name: String,
+    },
+
+    /// Authenticate with a registry (stores token in ~/.duumbi/credentials.toml).
+    Login {
+        /// Registry name to log in to.
+        registry: String,
+        /// Token for non-interactive / CI use (otherwise prompts interactively).
+        #[arg(long)]
+        token: Option<String>,
+    },
+
+    /// Remove stored credentials for a registry.
+    Logout {
+        /// Registry name (omit to log out from all).
+        registry: Option<String>,
     },
 }
 

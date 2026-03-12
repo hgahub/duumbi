@@ -135,6 +135,11 @@ fn validate_manifest(manifest: &ModuleManifest) -> Result<(), PackageError> {
             field: "module.version".to_string(),
         });
     }
+    if manifest.exports.functions.is_empty() {
+        return Err(PackageError::MissingField {
+            field: "exports.functions".to_string(),
+        });
+    }
     // Validate version is valid SemVer
     semver::Version::parse(&manifest.module.version).map_err(|e| PackageError::InvalidVersion {
         version: manifest.module.version.clone(),
@@ -409,7 +414,7 @@ mod tests {
         fs::create_dir_all(&graph).expect("create dirs");
         fs::write(graph.join("main.jsonld"), "{}").expect("write");
 
-        let manifest = ModuleManifest::new("@test/mod", "not-semver", "desc", vec![]);
+        let manifest = ModuleManifest::new("@test/mod", "not-semver", "desc", vec!["fn".into()]);
         fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
 
         let err = pack_module(tmp.path()).expect_err("must fail with invalid version");
@@ -420,13 +425,31 @@ mod tests {
     }
 
     #[test]
+    fn pack_module_empty_exports_returns_error() {
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        let duumbi = tmp.path().join(".duumbi");
+        let graph = duumbi.join("graph");
+        fs::create_dir_all(&graph).expect("create dirs");
+        fs::write(graph.join("main.jsonld"), "{}").expect("write");
+
+        let manifest = ModuleManifest::new("@test/no-exports", "1.0.0", "desc", vec![]);
+        fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
+
+        let err = pack_module(tmp.path()).expect_err("must fail with empty exports");
+        assert!(
+            matches!(err, PackageError::MissingField { .. }),
+            "expected MissingField for exports, got: {err}"
+        );
+    }
+
+    #[test]
     fn pack_module_no_graph_files_returns_error() {
         let tmp = TempDir::new().expect("invariant: tempdir");
         let duumbi = tmp.path().join(".duumbi");
         let graph = duumbi.join("graph");
         fs::create_dir_all(&graph).expect("create dirs");
 
-        let manifest = ModuleManifest::new("@test/empty", "1.0.0", "desc", vec![]);
+        let manifest = ModuleManifest::new("@test/empty", "1.0.0", "desc", vec!["fn".into()]);
         fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
 
         let err = pack_module(tmp.path()).expect_err("must fail with no graph files");
@@ -522,7 +545,7 @@ mod tests {
         let graph = duumbi.join("graph");
         fs::create_dir_all(&graph).expect("create dirs");
 
-        let manifest = ModuleManifest::new("@test/content", "1.0.0", "desc", vec![]);
+        let manifest = ModuleManifest::new("@test/content", "1.0.0", "desc", vec!["fn".into()]);
         fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
 
         let original_content =
@@ -545,7 +568,7 @@ mod tests {
         let duumbi = tmp.path().join(".duumbi");
         fs::create_dir_all(&duumbi).expect("create dirs");
 
-        let manifest = ModuleManifest::new("@test/no-graph", "1.0.0", "desc", vec![]);
+        let manifest = ModuleManifest::new("@test/no-graph", "1.0.0", "desc", vec!["fn".into()]);
         fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
 
         let err = pack_module(tmp.path()).expect_err("must fail without graph dir");

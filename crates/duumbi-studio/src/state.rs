@@ -151,6 +151,62 @@ pub struct GraphData {
     pub edges: Vec<GraphEdge>,
 }
 
+/// A registry search result for display in the sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrySearchHit {
+    /// Scoped module name (e.g., `@duumbi/stdlib-math`).
+    pub name: String,
+    /// Human-readable description.
+    pub description: Option<String>,
+    /// Latest published version.
+    pub latest_version: String,
+}
+
+/// An installed dependency shown in the sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledDep {
+    /// Dependency name.
+    pub name: String,
+    /// Version requirement or path.
+    pub version: String,
+    /// Source: "registry", "path", or "vendor".
+    pub source: String,
+}
+
+/// Kind of toast notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToastKind {
+    /// Success notification (green).
+    Success,
+    /// Error notification (red).
+    Error,
+    /// Informational notification (blue).
+    Info,
+}
+
+/// A toast notification message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToastMessage {
+    /// Unique toast id (for removal).
+    pub id: u32,
+    /// Toast kind for styling.
+    pub kind: ToastKind,
+    /// Message text.
+    pub text: String,
+}
+
+/// Which sidebar tab is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SidebarTab {
+    /// Module explorer.
+    #[default]
+    Explorer,
+    /// Intent list.
+    Intents,
+    /// Registry search and installed deps.
+    Registry,
+}
+
 /// Response from the chat server function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
@@ -177,7 +233,7 @@ pub struct InitialData {
 }
 
 /// Central Studio state, provided as Leptos context.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct StudioState {
     /// Current C4 drill-down level.
     pub c4_level: RwSignal<C4Level>,
@@ -219,6 +275,24 @@ pub struct StudioState {
 
     /// Whether the Ctrl+K search overlay is visible.
     pub search_visible: RwSignal<bool>,
+
+    /// Active sidebar tab.
+    pub sidebar_tab: RwSignal<SidebarTab>,
+
+    /// Registry search results.
+    pub registry_results: RwSignal<Vec<RegistrySearchHit>>,
+
+    /// Whether a registry search is in progress.
+    pub registry_loading: RwSignal<bool>,
+
+    /// Installed dependencies.
+    pub installed_deps: RwSignal<Vec<InstalledDep>>,
+
+    /// Toast notification queue.
+    pub toasts: RwSignal<Vec<ToastMessage>>,
+
+    /// Counter for unique toast ids.
+    pub toast_counter: RwSignal<u32>,
 }
 
 impl StudioState {
@@ -245,6 +319,12 @@ impl StudioState {
             sidebar_collapsed: RwSignal::new(false),
             shortcuts_visible: RwSignal::new(false),
             search_visible: RwSignal::new(false),
+            sidebar_tab: RwSignal::new(SidebarTab::Explorer),
+            registry_results: RwSignal::new(Vec::new()),
+            registry_loading: RwSignal::new(false),
+            installed_deps: RwSignal::new(Vec::new()),
+            toasts: RwSignal::new(Vec::new()),
+            toast_counter: RwSignal::new(0),
         }
     }
 
@@ -268,6 +348,12 @@ impl StudioState {
             sidebar_collapsed: RwSignal::new(false),
             shortcuts_visible: RwSignal::new(false),
             search_visible: RwSignal::new(false),
+            sidebar_tab: RwSignal::new(SidebarTab::Explorer),
+            registry_results: RwSignal::new(Vec::new()),
+            registry_loading: RwSignal::new(false),
+            installed_deps: RwSignal::new(Vec::new()),
+            toasts: RwSignal::new(Vec::new()),
+            toast_counter: RwSignal::new(0),
         }
     }
 }

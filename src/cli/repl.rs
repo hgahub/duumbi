@@ -294,6 +294,30 @@ impl Session {
                 self.handle_intent_slash(arg).await?;
             }
 
+            "/search" => {
+                if arg.is_empty() {
+                    eprintln!("Usage: /search <query>");
+                } else {
+                    super::deps::run_search(&self.workspace_root, arg, None)
+                        .await
+                        .unwrap_or_else(|e| eprintln!("Search failed: {e:#}"));
+                }
+            }
+
+            "/deps" => {
+                self.handle_deps_slash(arg).await?;
+            }
+
+            "/publish" => {
+                super::publish::run_publish(&self.workspace_root, None, false, false)
+                    .await
+                    .unwrap_or_else(|e| eprintln!("Publish failed: {e:#}"));
+            }
+
+            "/registry" => {
+                self.handle_registry_slash(arg);
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
@@ -483,6 +507,76 @@ impl Session {
     }
 
     // -------------------------------------------------------------------------
+    // /deps handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/deps <subcommand>` within the REPL.
+    async fn handle_deps_slash(&mut self, arg: &str) -> Result<()> {
+        let mut parts = arg.splitn(2, ' ');
+        let subcmd = parts.next().unwrap_or("").trim();
+        let rest = parts.next().unwrap_or("").trim();
+
+        match subcmd {
+            "" | "list" => {
+                super::deps::run_deps_list(&self.workspace_root)
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            "audit" => {
+                super::deps::run_deps_audit(&self.workspace_root)
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            "tree" => {
+                super::deps::run_deps_tree(&self.workspace_root, 10)
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            "update" => {
+                let name = if rest.is_empty() { None } else { Some(rest) };
+                super::deps::run_deps_update(&self.workspace_root, name)
+                    .await
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            "vendor" => {
+                super::deps::run_deps_vendor(&self.workspace_root, false, None)
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            "install" => {
+                let frozen = rest == "--frozen";
+                super::deps::run_deps_install(&self.workspace_root, frozen)
+                    .await
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            _ => {
+                eprintln!("Unknown deps subcommand: {subcmd}");
+                eprintln!(
+                    "Available: /deps list, /deps audit, /deps tree, /deps update, /deps vendor, /deps install"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // /registry handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/registry <subcommand>` within the REPL.
+    fn handle_registry_slash(&self, arg: &str) {
+        let subcmd = arg.split(' ').next().unwrap_or("").trim();
+
+        match subcmd {
+            "" | "list" => {
+                super::registry::run_registry_list(&self.workspace_root)
+                    .unwrap_or_else(|e| eprintln!("Error: {e:#}"));
+            }
+            _ => {
+                eprintln!("Unknown registry subcommand: {subcmd}");
+                eprintln!("Available: /registry list");
+                eprintln!("For other registry operations, use the CLI directly.");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // /status helper
     // -------------------------------------------------------------------------
 
@@ -570,6 +664,16 @@ Intent commands:
   /intent review [name]          Show intent details
   /intent execute <name>         Execute an intent end-to-end
   /intent status [name]          Show intent execution status
+
+Registry & dependency commands:
+  /search <query>     Search registries for modules
+  /publish            Package and publish the current module
+  /registry list      List configured registries
+  /deps list          List declared dependencies
+  /deps audit         Verify dependency integrity
+  /deps tree          Show the dependency tree
+  /deps update [name] Update dependencies to latest compatible versions
+  /deps vendor        Copy cached dependencies into vendor/
 
   /help               Show this help text
   /exit               Exit the REPL

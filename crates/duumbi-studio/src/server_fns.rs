@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 // GraphNode/GraphEdge/InitialData are used inside #[server] fn bodies and load_initial_data (ssr feature only)
 #[allow(unused_imports)]
-use crate::state::{GraphData, GraphEdge, GraphNode, InitialData, IntentSummary};
+use crate::state::{
+    GraphData, GraphEdge, GraphNode, InitialData, InstalledDep, IntentSummary, RegistrySearchHit,
+};
 
 /// Server-side workspace context, shared via Leptos context.
 #[derive(Clone)]
@@ -834,6 +836,116 @@ pub fn build_c4_container_pub(graph: &duumbi::graph::SemanticGraph) -> GraphData
 #[cfg(feature = "ssr")]
 pub fn build_c4_component_pub(graph: &duumbi::graph::SemanticGraph) -> GraphData {
     build_c4_component(graph)
+}
+
+/// Searches configured registries for modules matching a query.
+#[server]
+pub async fn search_registry(query: String) -> Result<Vec<RegistrySearchHit>, ServerFnError> {
+    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ws.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config error: {e}")))?;
+
+    let registries = config.registries.clone();
+
+    if registries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let creds = duumbi::registry::credentials::load_credentials().unwrap_or_default();
+    let client_creds = duumbi::registry::credentials::to_client_credentials(&creds);
+
+    let client = duumbi::registry::RegistryClient::new(registries.clone(), client_creds, None)
+        .map_err(|e| ServerFnError::new(format!("Registry client error: {e}")))?;
+
+    let mut results = Vec::new();
+    for registry_name in registries.keys() {
+        match client.search(registry_name, &query).await {
+            Ok(resp) => {
+                for hit in resp.results {
+                    results.push(RegistrySearchHit {
+                        name: hit.name,
+                        description: hit.description,
+                        latest_version: hit.latest_version,
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Search failed for registry '{registry_name}': {e}");
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Installs a module by adding it as a dependency and downloading to cache.
+#[server]
+pub async fn install_module(module_name: String) -> Result<String, ServerFnError> {
+    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ws.read().await;
+
+    // Run duumbi deps install via subprocess (cleanest integration)
+    let output = tokio::process::Command::new("cargo")
+        .args(["run", "--quiet", "--", "deps", "install"])
+        .current_dir(&ws.root)
+        .output()
+        .await
+        .map_err(|e| ServerFnError::new(format!("Failed to run deps install: {e}")))?;
+
+    if output.status.success() {
+        Ok(format!("Installed {module_name} successfully"))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(ServerFnError::new(format!("Install failed: {stderr}")))
+    }
+}
+
+/// Returns the list of installed dependencies from config.toml.
+#[server]
+pub async fn get_installed_deps() -> Result<Vec<InstalledDep>, ServerFnError> {
+    let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ws.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config error: {e}")))?;
+
+    let deps_map = config.dependencies.clone();
+
+    let mut deps = Vec::new();
+    for (name, dep_config) in deps_map {
+        let (version, source) = match dep_config {
+            duumbi::config::DependencyConfig::Version(v) => (v, "registry".to_string()),
+            duumbi::config::DependencyConfig::Path { path } => (path, "path".to_string()),
+            duumbi::config::DependencyConfig::VersionWithRegistry { version, registry } => {
+                (version, format!("registry ({registry})"))
+            }
+        };
+        deps.push(InstalledDep {
+            name,
+            version,
+            source,
+        });
+    }
+
+    // Also check vendor dir
+    let vendor_dir = ws.root.join(".duumbi/vendor");
+    if vendor_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&vendor_dir)
+    {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if !deps.iter().any(|d| d.name == dir_name) {
+                deps.push(InstalledDep {
+                    name: dir_name,
+                    version: "vendored".to_string(),
+                    source: "vendor".to_string(),
+                });
+            }
+        }
+    }
+    Ok(deps)
 }
 
 /// Returns (label, edge_type) for a graph edge.

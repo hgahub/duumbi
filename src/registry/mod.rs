@@ -185,6 +185,36 @@ mod tests {
     }
 
     #[test]
+    fn all_error_variants_have_correct_codes() {
+        // Exhaustive error_code() mapping test for constructible variants
+        let auth = RegistryError::AuthFailed {
+            registry: "test".to_string(),
+            reason: "expired".to_string(),
+        };
+        assert_eq!(auth.error_code(), codes::E014_AUTH_FAILED);
+
+        let integrity = RegistryError::IntegrityMismatch {
+            module: "test".to_string(),
+            expected: "a".to_string(),
+            actual: "b".to_string(),
+        };
+        assert_eq!(integrity.error_code(), codes::E015_INTEGRITY_MISMATCH);
+
+        let version = RegistryError::VersionNotFound {
+            module: "test".to_string(),
+            version: "1.0.0".to_string(),
+            registry: "test".to_string(),
+        };
+        assert_eq!(version.error_code(), codes::E016_VERSION_NOT_FOUND);
+
+        let retries = RegistryError::RetriesExhausted {
+            url: "test".to_string(),
+            max_retries: 3,
+        };
+        assert_eq!(retries.error_code(), codes::E013_REGISTRY_UNREACHABLE);
+    }
+
+    #[test]
     fn unpack_error_maps_to_e013() {
         let err = RegistryError::Unpack {
             module: "test".to_string(),

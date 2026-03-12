@@ -727,6 +727,61 @@ strategy = "all"
     }
 
     #[test]
+    fn save_config_creates_duumbi_dir() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        // No .duumbi dir exists yet
+        assert!(!tmp.path().join(".duumbi").exists());
+
+        let cfg = DuumbiConfig::default();
+        save_config(tmp.path(), &cfg).expect("save must create dir");
+
+        assert!(tmp.path().join(".duumbi").exists());
+        assert!(tmp.path().join(".duumbi/config.toml").exists());
+    }
+
+    #[test]
+    fn config_workspace_name_roundtrip() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let cfg = DuumbiConfig {
+            workspace: Some(WorkspaceSection {
+                name: "my-app".to_string(),
+                namespace: "myapp".to_string(),
+                default_registry: Some("duumbi".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        save_config(tmp.path(), &cfg).expect("save must succeed");
+        let loaded = load_config(tmp.path()).expect("load must succeed");
+
+        let ws = loaded.workspace.expect("workspace section");
+        assert_eq!(ws.name, "my-app");
+        assert_eq!(ws.namespace, "myapp");
+        assert_eq!(ws.default_registry.as_deref(), Some("duumbi"));
+    }
+
+    #[test]
+    fn config_empty_workspace_name_omitted_in_toml() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let cfg = DuumbiConfig {
+            workspace: Some(WorkspaceSection {
+                name: String::new(),
+                namespace: String::new(),
+                default_registry: None,
+            }),
+            ..Default::default()
+        };
+
+        save_config(tmp.path(), &cfg).expect("save must succeed");
+        let contents = fs::read_to_string(tmp.path().join(".duumbi/config.toml")).expect("read");
+        // Empty strings should be skipped by skip_serializing_if
+        assert!(
+            !contents.contains("name = \"\""),
+            "empty name should not appear"
+        );
+    }
+
+    #[test]
     fn config_v2_roundtrip_save_load() {
         let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
         let mut cfg = DuumbiConfig::default();

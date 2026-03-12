@@ -139,14 +139,37 @@ async fn run(cli: Cli) -> Result<()> {
                 cli::DepsSubcommand::Update { name } => {
                     cli::deps::run_deps_update(&workspace, name.as_deref()).await
                 }
+                cli::DepsSubcommand::Install { frozen } => {
+                    cli::deps::run_deps_install(&workspace, frozen).await
+                }
                 cli::DepsSubcommand::Vendor { all, include } => {
                     cli::deps::run_deps_vendor(&workspace, all, include.as_deref())
                 }
             }
         }
+        Commands::Publish {
+            registry,
+            dry_run,
+            yes,
+        } => {
+            let workspace = PathBuf::from(".");
+            cli::publish::run_publish(&workspace, registry.as_deref(), dry_run, yes).await
+        }
+        Commands::Registry { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_registry(subcommand, &workspace).await
+        }
         Commands::Intent { subcommand } => {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
+        }
+        Commands::Yank {
+            specifier,
+            registry,
+            yes,
+        } => {
+            let workspace = PathBuf::from(".");
+            cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await
         }
         Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
         Commands::Studio { port, dev } => studio(port, dev).await,
@@ -300,6 +323,28 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             Some(ref slug) => intent::status::print_status_detail(&workspace, slug)
                 .map_err(|e| anyhow::anyhow!("{e}")),
         },
+    }
+}
+
+/// Dispatches `duumbi registry` subcommands.
+async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> Result<()> {
+    match subcommand {
+        cli::RegistrySubcommand::Add { name, url } => {
+            cli::registry::run_registry_add(workspace, &name, &url)
+        }
+        cli::RegistrySubcommand::List => cli::registry::run_registry_list(workspace),
+        cli::RegistrySubcommand::Remove { name } => {
+            cli::registry::run_registry_remove(workspace, &name)
+        }
+        cli::RegistrySubcommand::Default { name } => {
+            cli::registry::run_registry_default(workspace, &name)
+        }
+        cli::RegistrySubcommand::Login { registry, token } => {
+            cli::registry::run_registry_login(workspace, &registry, token.as_deref()).await
+        }
+        cli::RegistrySubcommand::Logout { registry } => {
+            cli::registry::run_registry_logout(registry.as_deref())
+        }
     }
 }
 

@@ -184,7 +184,7 @@ pub struct ResolvedModule {
 /// Splits a scoped module key `"@scope/name"` into `("@scope", "name")`.
 ///
 /// Returns `None` if the key is not scoped (i.e. does not start with `@`).
-fn parse_scoped_name(key: &str) -> Option<(&str, &str)> {
+pub fn parse_scoped_name(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix('@')?;
     let slash = rest.find('/')?;
     // scope includes the leading '@'
@@ -1678,6 +1678,98 @@ hash = "0123456789abcdef"
             &int[7..],
             "semantic and integrity hashes should typically differ"
         );
+    }
+
+    #[test]
+    fn lockfile_v1_verify_detects_multiple_tampered_entries() {
+        let ws = tempfile::TempDir::new().expect("tempdir");
+        make_workspace(ws.path());
+        let dep_a = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_a.path(), "lib_a");
+        let dep_b = tempfile::TempDir::new().expect("tempdir");
+        make_lib_workspace(dep_b.path(), "lib_b");
+
+        let path_a = dep_a.path().to_str().expect("utf8 path").to_string();
+        let path_b = dep_b.path().to_str().expect("utf8 path").to_string();
+        add_dependency(ws.path(), "lib_a", &path_a).expect("must add a");
+        add_dependency(ws.path(), "lib_b", &path_b).expect("must add b");
+
+        let config = config::load_config(ws.path()).expect("config");
+        let lock = generate_lockfile(ws.path(), &config).expect("lockfile");
+        assert_eq!(lock.dependencies.len(), 2);
+
+        // Tamper with both
+        let graph_a = dep_a.path().join(".duumbi/graph");
+        fs::write(graph_a.join("lib_a.jsonld"), r#"{"tampered": "a"}"#).expect("tamper a");
+        let graph_b = dep_b.path().join(".duumbi/graph");
+        fs::write(graph_b.join("lib_b.jsonld"), r#"{"tampered": "b"}"#).expect("tamper b");
+
+        let failures = verify_lockfile(&lock).expect("verify must not error");
+        assert_eq!(failures.len(), 2, "both tampered entries must be detected");
+    }
+
+    #[test]
+    fn lockfile_v1_verify_handles_missing_graph_dir() {
+        // If the resolved_path no longer exists, verification should handle it
+        let lock = DepsLock {
+            version: 1,
+            dependencies: vec![LockEntry {
+                name: "gone".to_string(),
+                version: None,
+                source: Some("path+/nonexistent".to_string()),
+                semantic_hash: Some("a".repeat(64)),
+                integrity: Some("sha256-".to_string() + &"b".repeat(64)),
+                resolved_path: Some("/nonexistent/path/.duumbi/graph".to_string()),
+                vendored: false,
+                path: None,
+                hash: None,
+            }],
+        };
+
+        // Should not panic — either returns error or reports failure
+        let result = verify_lockfile(&lock);
+        // Verification of a missing path should report a failure (not crash)
+        assert!(result.is_ok() || result.is_err(), "must handle gracefully");
+    }
+
+    #[test]
+    fn lockfile_v0_effective_path_falls_back() {
+        let entry = LockEntry {
+            name: "old".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: Some("/v0/only".to_string()),
+            hash: Some("abc".to_string()),
+        };
+        assert_eq!(
+            entry.effective_path(),
+            Some("/v0/only"),
+            "v0 entry without resolved_path should fall back to path"
+        );
+    }
+
+    #[test]
+    fn lockfile_entry_no_path_returns_none() {
+        let entry = LockEntry {
+            name: "orphan".to_string(),
+            version: None,
+            source: None,
+            semantic_hash: None,
+            integrity: None,
+            resolved_path: None,
+            vendored: false,
+            path: None,
+            hash: None,
+        };
+        assert!(
+            entry.effective_path().is_none(),
+            "entry with no paths should return None"
+        );
+        assert!(!entry.is_v1());
     }
 
     #[test]

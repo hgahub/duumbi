@@ -797,6 +797,100 @@ mod tests {
     }
 
     #[test]
+    fn float_special_values_produce_stable_hash() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(
+            dir.path(),
+            "main.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:main",
+                "duumbi:name": "main",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:main/main",
+                    "duumbi:name": "main", "duumbi:returnType": "f64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:main/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:ConstF64", "@id": "duumbi:main/main/entry/0",
+                             "duumbi:value": 0.0, "duumbi:resultType": "f64"},
+                            {"@type": "duumbi:ConstF64", "@id": "duumbi:main/main/entry/1",
+                             "duumbi:value": -0.0, "duumbi:resultType": "f64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/2",
+                             "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+
+        let hash1 = semantic_hash(dir.path()).expect("must succeed");
+        let hash2 = semantic_hash(dir.path()).expect("must succeed");
+        assert_eq!(hash1, hash2, "float values must produce deterministic hash");
+        assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn deeply_nested_structure_hashes_correctly() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_jsonld(
+            dir.path(),
+            "main.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:main",
+                "duumbi:name": "main",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:main/main",
+                    "duumbi:name": "main", "duumbi:returnType": "i64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:main/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0",
+                             "duumbi:value": 1, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/1",
+                             "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}}
+                        ]
+                    }, {
+                        "@type": "duumbi:Block", "@id": "duumbi:main/main/then",
+                        "duumbi:label": "then",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:main/main/then/0",
+                             "duumbi:value": 2, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:main/main/then/1",
+                             "duumbi:operand": {"@id": "duumbi:main/main/then/0"}}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+
+        let hash = semantic_hash(dir.path()).expect("must succeed");
+        assert_eq!(hash.len(), 64, "multi-block function must hash");
+    }
+
+    #[test]
+    fn semantic_hash_value_with_null_and_bool() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "@type": "duumbi:Module",
+                "duumbi:name": "test",
+                "duumbi:active": true,
+                "duumbi:meta": null,
+                "duumbi:functions": []
+            }"#,
+        )
+        .expect("invariant: test JSON must parse");
+
+        let hash = semantic_hash_value(&value);
+        assert_eq!(hash.len(), 64);
+
+        // Deterministic
+        let hash2 = semantic_hash_value(&value);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
     fn cross_module_references_distinguish_modules() {
         let dir_a = TempDir::new().expect("invariant: temp dir creation must succeed");
         let dir_b = TempDir::new().expect("invariant: temp dir creation must succeed");
