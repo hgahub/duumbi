@@ -3,9 +3,9 @@ tags:
   - project/duumbi
   - doc/strategy
   - doc/planning
-status: active
+status: archived
 created: 2026-02-28
-updated: 2026-03-06
+updated: 2026-03-13
 related_maps:
   - "[[DUUMBI - PRD]]"
   - "[[DUUMBI - MVP Specification]]"
@@ -18,7 +18,10 @@ related_maps:
   - "[[DUUMBI - Graph Repository Architecture]]"
 ---
 
-# DUUMBI — Post-MVP Implementation Roadmap
+# DUUMBI — Post-MVP Implementation Roadmap (Archivált)
+
+> [!warning] Ez a dokumentum archivált (2026-03-13). Az aktuális állapotért lásd: [[DUUMBI Roadmap Map]] és az egyedi milestone jegyzetek (Phase 4–8).
+> A részletes feladatlisták átkerültek az önálló milestone-notes-ba.
 
 > [!important] Ez a dokumentum az **autoritatív végrehajtási terv** a Phase 3 befejezése utáni fejlesztéshez. A [[DUUMBI - Post-MVP Roadmap (Refined)]] ajánlásait és a [[DUUMBI - PRD]] vízióját egyaránt figyelembe veszi, de **konkrét, megvalósítható feladatokra** bontja. Minden mérföldkőnek kill criterionja van.
 
@@ -403,45 +406,45 @@ Jóváhagyod? [Y/n] y
 ### Főbb felületek
 
 #### 6.1 Graph Explorer (C4 Navigator)
-- [ ] **M6-GFX-01**: Leptos projekt scaffolding — `crates/duumbi-studio` (WASM target)
-- [ ] **M6-GFX-02**: Axum szerver integráció — SSR + WASM hydration, API endpoints
-- [ ] **M6-GFX-03**: C4 Context nézet — modulok mint node-ok, dependency-k mint élek
-- [ ] **M6-GFX-04**: C4 Container nézet — egy modul függvényei, belső adatfolyam
-- [ ] **M6-GFX-05**: C4 Component nézet — egy függvény blokkjai, branch-ek
-- [ ] **M6-GFX-06**: C4 Code nézet — op-szintű részletek (meglévő Cytoscape logika Leptos-ra portolva)
-- [ ] **M6-GFX-07**: Drill-down animáció — smooth zoom a szintek között
-- [ ] **M6-GFX-08**: Detail panel — node metaadatok kattintásra (type, id, connections, traceId)
-- [ ] **M6-GFX-09**: WebSocket live sync — gráf változások real-time frissítés (meglévő WS logika)
+- [x] **M6-GFX-01**: Leptos projekt scaffolding — `crates/duumbi-studio` (WASM target)
+- [x] **M6-GFX-02**: Axum szerver integráció — SSR + WASM hydration, API endpoints
+- [x] **M6-GFX-03**: C4 Context nézet — modulok mint node-ok, dependency-k mint élek
+- [x] **M6-GFX-04**: C4 Container nézet — egy modul függvényei, belső adatfolyam
+- [x] **M6-GFX-05**: C4 Component nézet — egy függvény blokkjai, branch-ek
+- [x] **M6-GFX-06**: C4 Code nézet — op-szintű részletek (meglévő Cytoscape logika Leptos-ra portolva)
+- [x] **M6-GFX-07**: Drill-down animáció — smooth zoom a szintek között
+- [x] **M6-GFX-08**: Detail panel — node metaadatok kattintásra (type, id, connections, traceId)
+- [x] **M6-GFX-09**: WebSocket live sync — gráf változások real-time frissítés (meglévő WS logika)
 
 #### 6.2 Chat felület
-- [ ] **M6-CHAT-01**: Chat panel (alsó sáv) — azonos conversation, mint a CLI chat
-- [ ] **M6-CHAT-02**: API bridge — a web chat és CLI chat ugyanazt a backend-et használja
-- [ ] **M6-CHAT-03**: Streaming válaszok — token-by-token megjelenítés
-- [ ] **M6-CHAT-04**: Gráf highlight — chat által érintett node-ok kiemelése a gráf nézetben
-- [ ] **M6-CHAT-05**: Slash parancsok — `/build`, `/run`, `/describe` stb. a chat input-ból
+- [x] **M6-CHAT-01**: Chat panel (alsó sáv) — azonos conversation, mint a CLI chat
+- [x] **M6-CHAT-02**: API bridge — a web chat és CLI chat ugyanazt a backend-et használja
+- [x] **M6-CHAT-03**: Streaming válaszok — token-by-token megjelenítés
+- [x] **M6-CHAT-04**: Gráf highlight — chat által érintett node-ok kiemelése a gráf nézetben
+- [x] **M6-CHAT-05**: Slash parancsok — `/build`, `/run`, `/describe` stb. a chat input-ból
 
 #### 6.3 Sidebar nézetek
-- [ ] **M6-SIDE-01**: File Explorer — workspace fájlstruktúra fa nézet
-- [ ] **M6-SIDE-02**: Agent panel — aktív ágensek, állapotuk, utolsó akcióik
-- [ ] **M6-SIDE-03**: Intent panel — aktív és archivált intent-ek listája, állapotjelző
-- [ ] **M6-SIDE-04**: Config panel — workspace beállítások szerkesztése
+- [x] **M6-SIDE-01**: File Explorer — workspace fájlstruktúra fa nézet
+- [x] **M6-SIDE-02**: Agent panel — aktív ágensek, állapotuk, utolsó akcióik
+- [x] **M6-SIDE-03**: Intent panel — aktív és archivált intent-ek listája, állapotjelző
+- [x] **M6-SIDE-04**: Config panel — workspace beállítások szerkesztése
 
 #### 6.4 Keresés
-- [ ] **M6-SRCH-01**: `Ctrl+K` gyors keresés — node-ok @id, @type, név alapján
-- [ ] **M6-SRCH-02**: Szűrők — modul, függvény, op típus, típus
+- [x] **M6-SRCH-01**: `Ctrl+K` gyors keresés — node-ok @id, @type, név alapján
+- [x] **M6-SRCH-02**: Szűrők — modul, függvény, op típus, típus
 
 #### 6.5 Téma és UX
-- [ ] **M6-UX-01**: Dark téma (alapértelmezett)
-- [ ] **M6-UX-02**: Light téma
-- [ ] **M6-UX-03**: Témaváltó (`Ctrl+Shift+T` vagy UI toggle)
-- [ ] **M6-UX-04**: Responsive layout — sidebar összecsukható, chat panel átméretezhető
-- [ ] **M6-UX-05**: Keyboard shortcuts — navigáció, keresés, build, run
+- [x] **M6-UX-01**: Dark téma (alapértelmezett)
+- [x] **M6-UX-02**: Light téma
+- [x] **M6-UX-03**: Témaváltó (`Ctrl+Shift+T` vagy UI toggle)
+- [x] **M6-UX-04**: Responsive layout — sidebar összecsukható, chat panel átméretezhető
+- [x] **M6-UX-05**: Keyboard shortcuts — navigáció, keresés, build, run
 
 #### 6.6 Infrastruktúra
-- [ ] **M6-INFRA-01**: `duumbi studio` CLI parancs (a `viz` utódja, backward compatible alias)
-- [ ] **M6-INFRA-02**: API réteg — REST endpoints a gráf CRUD-hoz, build/run triggerekhez
-- [ ] **M6-INFRA-03**: Shared state — web és CLI chat ugyanazt a conversation state-et látja
-- [ ] **M6-INFRA-04**: Asset pipeline — Leptos WASM build + trunk/cargo-leptos integráció
+- [x] **M6-INFRA-01**: `duumbi studio` CLI parancs (a `viz` utódja, backward compatible alias)
+- [x] **M6-INFRA-02**: API réteg — REST endpoints a gráf CRUD-hoz, build/run triggerekhez
+- [x] **M6-INFRA-03**: Shared state — web és CLI chat ugyanazt a conversation state-et látja
+- [x] **M6-INFRA-04**: Asset pipeline — Leptos WASM build + trunk/cargo-leptos integráció
 
 ### Leptos technikai döntések
 

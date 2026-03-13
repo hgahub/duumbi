@@ -2,15 +2,18 @@
 tags:
   - project/duumbi
   - doc/planning
-status: active
+status: archived
 created: 2026-02-15
-updated: 2026-03-01
+updated: 2026-03-13
 related_maps:
   - "[[DUUMBI - MVP Specification]]"
   - "[[DUUMBI - Tools and Components]]"
   - "[[DUUMBI - Glossary]]"
 ---
-# DUUMBI — Task List
+# DUUMBI — Task List (Archivált)
+
+> [!warning] Ez a dokumentum archivált. Az aktuális állapotért lásd: [[DUUMBI Roadmap Map]] és az egyedi milestone jegyzetek.
+> Fázisok 0–7 mind befejezve. Az eredeti checkboxok nem frissítve — a GitHub Issues az autoritatív forrás.
 
 > Atomic implementation checklist. Each task references a requirement ID from [[DUUMBI - MVP Specification]]. Tasks are ordered by dependency — complete top to bottom within each phase.
 
