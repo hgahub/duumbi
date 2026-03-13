@@ -996,7 +996,7 @@ dependencies = [
 [[package]]
 name = "duumbi-registry"
 version = "0.1.0"
-source = "git+https://github.com/hgahub/duumbi-registry.git#04210facb163c18e7f5671cd3eee8e97479ce03b"
+source = "git+https://github.com/hgahub/duumbi-registry.git?rev=7eb18f7#7eb18f7fb345eb8bb3ea31d80ab4a2ec4ee92831"
 dependencies = [
  "anyhow",
  "askama",

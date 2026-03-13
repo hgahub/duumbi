@@ -36,5 +36,5 @@ dirs = "6.0.0"
 
 [dev-dependencies]
 axum = "0.8.8"
-duumbi-registry = { git = "https://github.com/hgahub/duumbi-registry.git" }
+duumbi-registry = { git = "https://github.com/hgahub/duumbi-registry.git", rev = "7eb18f7" }
 wiremock = "0.6.5"
