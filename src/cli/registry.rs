@@ -5,8 +5,10 @@
 
 use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 
 use crate::config::{self, DuumbiConfig};
 use crate::registry::credentials;
@@ -151,18 +153,38 @@ pub async fn run_registry_login(
         })?
         .clone();
 
-    let token = match token_arg {
-        Some(t) => t.to_string(),
-        None => prompt_token_interactive()?,
+    let (token, username_hint) = match token_arg {
+        Some(t) => {
+            if t.is_empty() {
+                anyhow::bail!("Token cannot be empty.");
+            }
+            // Validate token against registry
+            eprintln!("Validating token with {registry_url}...");
+            validate_token(&registry_url, t).await?;
+            (t.to_string(), None)
+        }
+        None => {
+            // Try device code flow first; fall back to interactive prompt on failure.
+            match device_code_login(&registry_url).await {
+                Ok((token, username)) => {
+                    eprintln!("Authenticated as {username}.");
+                    (token, Some(username))
+                }
+                Err(DeviceLoginOutcome::FallbackToPrompt) => {
+                    let token = prompt_token_interactive()?;
+                    if token.is_empty() {
+                        anyhow::bail!("Token cannot be empty.");
+                    }
+                    eprintln!("Validating token with {registry_url}...");
+                    validate_token(&registry_url, &token).await?;
+                    (token, None)
+                }
+                Err(DeviceLoginOutcome::Fatal(e)) => return Err(e),
+            }
+        }
     };
 
-    if token.is_empty() {
-        anyhow::bail!("Token cannot be empty.");
-    }
-
-    // Validate token against registry
-    eprintln!("Validating token with {registry_url}...");
-    validate_token(&registry_url, &token).await?;
+    let _ = username_hint; // stored credential uses registry name as key
 
     // Store credential
     let mut creds = credentials::load_credentials().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -211,6 +233,197 @@ pub fn run_registry_logout(registry: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Outcome of an attempted device code login.
+///
+/// Separates "fall back gracefully" from "abort with a real error".
+enum DeviceLoginOutcome {
+    /// The registry does not support device code — caller should prompt for a token.
+    FallbackToPrompt,
+    /// A hard error occurred during device code exchange that the user must see.
+    Fatal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for DeviceLoginOutcome {
+    fn from(e: anyhow::Error) -> Self {
+        DeviceLoginOutcome::Fatal(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device code flow response shapes
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct AuthModeResponse {
+    device_code_supported: bool,
+}
+
+#[derive(Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+}
+
+#[derive(Deserialize)]
+struct DeviceTokenResponse {
+    /// Bearer token returned on successful auth exchange.
+    token: String,
+    /// Display name / login of the authenticated user.
+    username: String,
+}
+
+// ---------------------------------------------------------------------------
+// Device code implementation
+// ---------------------------------------------------------------------------
+
+/// Attempts authentication via RFC 8628-style device code flow.
+///
+/// Returns `(token, username)` on success or a [`DeviceLoginOutcome`] error
+/// indicating whether the caller should fall back to interactive token prompt
+/// or surface a fatal error.
+async fn device_code_login(
+    registry_url: &str,
+) -> std::result::Result<(String, String), DeviceLoginOutcome> {
+    let base = registry_url.trim_end_matches('/');
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("Failed to create HTTP client")?;
+
+    // ------------------------------------------------------------------
+    // 1. Discover whether device code is supported.
+    // ------------------------------------------------------------------
+    let mode_url = format!("{base}/api/v1/auth/mode");
+    let mode_resp = client
+        .get(&mode_url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to connect to {mode_url}"))?;
+
+    if mode_resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // Registry is too old or does not implement this endpoint → prompt.
+        return Err(DeviceLoginOutcome::FallbackToPrompt);
+    }
+
+    if !mode_resp.status().is_success() {
+        // Unexpected error; fall back rather than abort.
+        return Err(DeviceLoginOutcome::FallbackToPrompt);
+    }
+
+    let mode: AuthModeResponse = mode_resp
+        .json()
+        .await
+        .context("Failed to parse auth mode response")?;
+
+    if !mode.device_code_supported {
+        return Err(DeviceLoginOutcome::FallbackToPrompt);
+    }
+
+    // ------------------------------------------------------------------
+    // 2. Request a device code.
+    // ------------------------------------------------------------------
+    let code_url = format!("{base}/api/v1/auth/device/code");
+    let code_resp = client
+        .post(&code_url)
+        .json(&serde_json::json!({ "client_id": "duumbi-cli" }))
+        .send()
+        .await
+        .with_context(|| format!("Failed to request device code from {code_url}"))?;
+
+    if !code_resp.status().is_success() {
+        let status = code_resp.status();
+        return Err(anyhow::anyhow!("Device code request failed with HTTP {status}.").into());
+    }
+
+    let device: DeviceCodeResponse = code_resp
+        .json()
+        .await
+        .context("Failed to parse device code response")?;
+
+    // ------------------------------------------------------------------
+    // 3. Instruct the user and optionally open the browser.
+    // ------------------------------------------------------------------
+    eprintln!(
+        "Visit {} and enter code: {}",
+        device.verification_uri, device.user_code
+    );
+    open_browser(&device.verification_uri);
+
+    // ------------------------------------------------------------------
+    // 4. Poll for a token.
+    // ------------------------------------------------------------------
+    let token_url = format!("{base}/api/v1/auth/device/token");
+    let deadline = Instant::now() + Duration::from_secs(15 * 60);
+    let poll_interval = Duration::from_secs(5);
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "Device code login timed out after 15 minutes. Run `duumbi registry login` again."
+            )
+            .into());
+        }
+
+        tokio::time::sleep(poll_interval).await;
+
+        let poll_resp = client
+            .post(&token_url)
+            .json(&serde_json::json!({
+                "device_code": device.device_code,
+                "client_id": "duumbi-cli"
+            }))
+            .send()
+            .await
+            .with_context(|| format!("Failed to poll {token_url}"))?;
+
+        match poll_resp.status() {
+            // Success — exchange complete.
+            s if s.is_success() => {
+                let tok: DeviceTokenResponse = poll_resp
+                    .json()
+                    .await
+                    .context("Failed to parse device token response")?;
+                return Ok((tok.token, tok.username));
+            }
+            // 428 Precondition Required — authorization pending, keep polling.
+            reqwest::StatusCode::PRECONDITION_REQUIRED => {
+                continue;
+            }
+            // 410 Gone — code expired.
+            reqwest::StatusCode::GONE => {
+                return Err(anyhow::anyhow!(
+                    "The device code expired before authorization was completed.\n\
+                         Run `duumbi registry login` again."
+                )
+                .into());
+            }
+            s => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected status {s} while polling for device token."
+                )
+                .into());
+            }
+        }
+    }
+}
+
+/// Attempts to open `url` in the system browser.
+///
+/// Silently ignores failures — opening a browser is best-effort only.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+
+    // On other platforms (e.g. Windows) we skip the auto-open.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let _ = url;
+}
 
 /// Prompts for a token interactively (reads from stdin, no echo).
 fn prompt_token_interactive() -> Result<String> {

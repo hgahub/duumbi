@@ -229,7 +229,22 @@ duumbi intent status                                # végrehajtás állapota
 
 ---
 
-### Phase 7: Multi-Ágens Orchestráció és Self-Healing (8-10 hét)
+### Phase 8: Registry Auth & User Management (4-6 hét)
+
+> **Cél:** Felhasználó regisztráció, bejelentkezés és API token kezelés a duumbi registry-hez.
+> **Kill Criterion:** GitHub OAuth login → token generálás → CLI device code flow login működik.
+
+- **Global registry (registry.duumbi.dev):** GitHub OAuth2
+- **Private registry (Docker):** Username + password
+- **CLI:** Device code flow (`duumbi registry login duumbi`)
+- **Web UI:** Login/avatar nav bar, token management oldal
+- **Security:** JWT cookie, CSRF, hashed tokens (SHA-256), argon2 passwords, rate limiting
+
+Részletek: [[DUUMBI - Phase 8 - Registry Auth & User Management]]
+
+---
+
+### Phase 9: Multi-Ágens Orchestráció és Self-Healing (8-10 hét)
 
 > **Cél:** Az Original PRD víziójának megvalósítása — MCP szerver, specializált ágensek, telemetria visszacsatolás.
 > **Kill Criterion:** A rendszer detektál egy futásidejű hibát, azonosítja a gráf csomópontot, és javítási javaslatot ad.
@@ -580,12 +595,17 @@ MVP befejezés
     │   ├── Coordinator Agent
     │   └── Párhuzamos ágens végrehajtás
     │
-    ├── Phase 7: Multi-ágens + Self-Healing (8-10 hét)  — 💰 TEAM indul
+    ├── Phase 8: Registry Auth (4-6 hét)
+    │   ├── GitHub OAuth2 + local password
+    │   ├── Device code flow (CLI)
+    │   └── Token management web UI
+    │
+    ├── Phase 9: Multi-ágens + Self-Healing (8-10 hét)  — 💰 TEAM indul
     │   ├── MCP szerver
     │   ├── 6 specializált ágens
     │   └── Telemetria → auto-repair
     │
-    └── Phase 8+: Hosszú táv (18+ hónap)     — 💰 ENTERPRISE
+    └── Phase 10+: Hosszú táv (18+ hónap)    — 💰 ENTERPRISE
         ├── LLVM backend
         ├── Projectional editing
         ├── Obsidian vault
