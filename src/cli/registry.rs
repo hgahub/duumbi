@@ -153,7 +153,7 @@ pub async fn run_registry_login(
         })?
         .clone();
 
-    let (token, username_hint) = match token_arg {
+    let token = match token_arg {
         Some(t) => {
             if t.is_empty() {
                 anyhow::bail!("Token cannot be empty.");
@@ -161,14 +161,16 @@ pub async fn run_registry_login(
             // Validate token against registry
             eprintln!("Validating token with {registry_url}...");
             validate_token(&registry_url, t).await?;
-            (t.to_string(), None)
+            t.to_string()
         }
         None => {
             // Try device code flow first; fall back to interactive prompt on failure.
             match device_code_login(&registry_url).await {
                 Ok((token, username)) => {
                     eprintln!("Authenticated as {username}.");
-                    (token, Some(username))
+                    eprintln!("Validating token with {registry_url}...");
+                    validate_token(&registry_url, &token).await?;
+                    token
                 }
                 Err(DeviceLoginOutcome::FallbackToPrompt) => {
                     let token = prompt_token_interactive()?;
@@ -177,14 +179,12 @@ pub async fn run_registry_login(
                     }
                     eprintln!("Validating token with {registry_url}...");
                     validate_token(&registry_url, &token).await?;
-                    (token, None)
+                    token
                 }
                 Err(DeviceLoginOutcome::Fatal(e)) => return Err(e),
             }
         }
     };
-
-    let _ = username_hint; // stored credential uses registry name as key
 
     // Store credential
     let mut creds = credentials::load_credentials().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -350,7 +350,12 @@ async fn device_code_login(
         "Visit {} and enter code: {}",
         device.verification_uri, device.user_code
     );
-    open_browser(&device.verification_uri);
+    // Only auto-open http/https URLs to prevent abuse via custom URI schemes.
+    if device.verification_uri.starts_with("https://")
+        || device.verification_uri.starts_with("http://")
+    {
+        open_browser(&device.verification_uri);
+    }
 
     // ------------------------------------------------------------------
     // 4. Poll for a token.
@@ -372,7 +377,7 @@ async fn device_code_login(
         let poll_resp = client
             .post(&token_url)
             .json(&serde_json::json!({
-                "device_code": device.device_code,
+                "device_code": &device.device_code,
                 "client_id": "duumbi-cli"
             }))
             .send()
