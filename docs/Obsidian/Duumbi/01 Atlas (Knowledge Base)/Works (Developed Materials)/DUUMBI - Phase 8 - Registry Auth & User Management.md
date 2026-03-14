@@ -2,9 +2,9 @@
 tags:
   - project/duumbi
   - milestone/phase-8
-status: in-progress
+status: complete
 github_milestone: 9
-updated: 2026-03-13
+updated: 2026-03-14
 ---
 # Phase 8 — Registry Auth & User Management
 

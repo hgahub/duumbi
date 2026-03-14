@@ -622,3 +622,8 @@ MVP befejezés
 - [[DUUMBI - Tools and Components]] — Technikai stack
 - [[DUUMBI - Architecture Diagram]] — Architektúra
 - [[DUUMBI - Glossary]] — Fogalomtár
+
+
+---
+
+> [!warning] **Updated 2026-03-14:** The phase numbers in sections 2 and 9 of this document reflect the original roadmap. The original Phase 9 (Multi-Agent & Self-Healing) has since been decomposed into Phases 9–14. See [[DUUMBI Roadmap Map]] for the current, authoritative roadmap. Phase numbering: Phase 4→4, Phase 5→7 (Registry), Phase 6→5 (Intent), Phase 8→8 (Auth), and the new Phases 9–14 replace the old Phase 9.
