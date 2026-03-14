@@ -22,7 +22,13 @@ use duumbi::deps;
 use duumbi::hash;
 use duumbi::registry::client::{RegistryClient, RegistryCredential};
 
-use duumbi_registry::{AppState, build_app, db::Database, storage::Storage};
+use duumbi_registry::{
+    AppState, AuthMode,
+    auth::rate_limit::RateLimiter,
+    build_app,
+    db::{CreateUser, Database},
+    storage::Storage,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -126,8 +132,17 @@ async fn start_test_server() -> (String, String, tempfile::TempDir) {
     database.migrate().expect("migration");
 
     let token = "duu_kill_criterion_token";
+    let user_id = database
+        .create_user(&CreateUser {
+            username: "testuser",
+            display_name: None,
+            avatar_url: None,
+            email: None,
+            password_hash: None,
+        })
+        .expect("create test user");
     database
-        .create_token("testuser", token)
+        .create_token(user_id, "kill-criterion", token)
         .expect("create token");
 
     let storage = Storage::new(tmp.path().join("modules").to_str().unwrap()).expect("storage");
@@ -135,6 +150,12 @@ async fn start_test_server() -> (String, String, tempfile::TempDir) {
     let state = Arc::new(AppState {
         db: database,
         storage,
+        auth_mode: AuthMode::LocalPassword,
+        jwt_secret: "test-jwt-secret".to_string(),
+        base_url: "http://localhost".to_string(),
+        github_client_id: None,
+        github_client_secret: None,
+        rate_limiter: RateLimiter::new(),
     });
 
     let app = build_app(state);
