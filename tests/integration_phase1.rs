@@ -187,12 +187,11 @@ fn phase1_workspace_init_build_run() {
         .output()
         .expect("invariant: compiled binary must be runnable");
 
-    let stdout = String::from_utf8_lossy(&binary_output.stdout);
-    assert_eq!(
-        stdout.trim(),
-        "8",
-        "Workspace skeleton should output 8, got '{}'",
-        stdout.trim()
+    // The skeleton program is a minimal Const(0) + Return — it exits cleanly
+    // with no printed output (no Print op).
+    assert!(
+        binary_output.status.success(),
+        "Compiled skeleton binary must exit with code 0"
     );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);

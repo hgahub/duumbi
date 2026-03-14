@@ -20,7 +20,11 @@ const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
 /// Stdlib module versions pinned at init time.
 const STDLIB_VERSION: &str = "1.0.0";
 
-/// Skeleton `main.jsonld` — a simple `add(3, 5)` program.
+/// Skeleton `main.jsonld` — a minimal program that returns 0.
+///
+/// Users are expected to build on this blank slate using `duumbi add` or
+/// by editing the graph directly. The old `add(3, 5)` sample is removed so
+/// that new workspaces start empty.
 const SKELETON_MAIN: &str = r#"{
   "@context": {
     "duumbi": "https://duumbi.dev/ns/core#"
@@ -43,31 +47,12 @@ const SKELETON_MAIN: &str = r#"{
             {
               "@type": "duumbi:Const",
               "@id": "duumbi:main/main/entry/0",
-              "duumbi:value": 3,
-              "duumbi:resultType": "i64"
-            },
-            {
-              "@type": "duumbi:Const",
-              "@id": "duumbi:main/main/entry/1",
-              "duumbi:value": 5,
-              "duumbi:resultType": "i64"
-            },
-            {
-              "@type": "duumbi:Add",
-              "@id": "duumbi:main/main/entry/2",
-              "duumbi:left": { "@id": "duumbi:main/main/entry/0" },
-              "duumbi:right": { "@id": "duumbi:main/main/entry/1" },
-              "duumbi:resultType": "i64"
-            },
-            {
-              "@type": "duumbi:Print",
-              "@id": "duumbi:main/main/entry/3",
-              "duumbi:operand": { "@id": "duumbi:main/main/entry/2" }
+              "duumbi:value": 0
             },
             {
               "@type": "duumbi:Return",
-              "@id": "duumbi:main/main/entry/4",
-              "duumbi:operand": { "@id": "duumbi:main/main/entry/2" }
+              "@id": "duumbi:main/main/entry/1",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/0" }
             }
           ]
         }
