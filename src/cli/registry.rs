@@ -58,7 +58,17 @@ pub fn run_registry_list(workspace: &Path) -> Result<()> {
         .as_ref()
         .and_then(|ws| ws.default_registry.as_deref());
 
-    let creds = credentials::load_credentials().unwrap_or_default();
+    let creds = match credentials::load_credentials() {
+        Ok(c) => c,
+        Err(e) => {
+            // Warn on genuine errors (parse failure, permission denied, no $HOME).
+            // "File does not exist" is already handled inside load_credentials and
+            // returns an empty CredentialsFile, so we will only reach this branch
+            // for real problems.
+            eprintln!("Warning: could not load credentials: {e}");
+            credentials::CredentialsFile::default()
+        }
+    };
 
     let mut registries: Vec<(&String, &String)> = cfg.registries.iter().collect();
     registries.sort_by_key(|(name, _)| name.as_str());
@@ -72,7 +82,8 @@ pub fn run_registry_list(workspace: &Path) -> Result<()> {
         } else {
             ""
         };
-        let auth_marker = if credentials::get_token(&creds, name).is_some() {
+        // Use contains_key to avoid cloning the token value just for an existence check.
+        let auth_marker = if creds.registries.contains_key(name.as_str()) {
             " [auth]"
         } else {
             ""
