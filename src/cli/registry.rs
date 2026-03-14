@@ -41,7 +41,10 @@ pub fn run_registry_add(workspace: &Path, name: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Lists all configured registries.
+/// Lists all configured registries, sorted alphabetically.
+///
+/// Shows `(default)` next to the default registry and `[auth]` next to any
+/// registry for which a token is stored in `~/.duumbi/credentials.toml`.
 pub fn run_registry_list(workspace: &Path) -> Result<()> {
     let cfg = config::load_config(workspace).unwrap_or_default();
 
@@ -55,16 +58,26 @@ pub fn run_registry_list(workspace: &Path) -> Result<()> {
         .as_ref()
         .and_then(|ws| ws.default_registry.as_deref());
 
+    let creds = credentials::load_credentials().unwrap_or_default();
+
+    let mut registries: Vec<(&String, &String)> = cfg.registries.iter().collect();
+    registries.sort_by_key(|(name, _)| name.as_str());
+
     eprintln!("{:<20} URL", "NAME");
     eprintln!("{}", "\u{2500}".repeat(60));
 
-    for (name, url) in &cfg.registries {
-        let marker = if default_reg == Some(name.as_str()) {
+    for (name, url) in registries {
+        let default_marker = if default_reg == Some(name.as_str()) {
             " (default)"
         } else {
             ""
         };
-        eprintln!("{:<20} {url}{marker}", name);
+        let auth_marker = if credentials::get_token(&creds, name).is_some() {
+            " [auth]"
+        } else {
+            ""
+        };
+        eprintln!("{:<20} {url}{default_marker}{auth_marker}", name);
     }
 
     Ok(())
@@ -351,9 +364,13 @@ async fn device_code_login(
         device.verification_uri, device.user_code
     );
     // Only auto-open http/https URLs to prevent abuse via custom URI schemes.
+    // Delay 3 seconds so the user can read and copy the code before the
+    // browser steals focus.
     if device.verification_uri.starts_with("https://")
         || device.verification_uri.starts_with("http://")
     {
+        eprintln!("Opening browser in 3 seconds...");
+        tokio::time::sleep(Duration::from_secs(3)).await;
         open_browser(&device.verification_uri);
     }
 
