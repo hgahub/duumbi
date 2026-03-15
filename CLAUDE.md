@@ -11,9 +11,11 @@ src/
   parser/      # JSON-LD parsing (serde_json, json-ld crate) → typed AST
   graph/       # Semantic graph IR using petgraph (StableGraph<Node, Edge>)
   compiler/    # Graph → Cranelift IR lowering (cranelift-codegen, cranelift-frontend)
+                 # CodegenBackend trait — Cranelift types never leak outside src/compiler/
   agents/      # AI agent framework for graph mutation (async, reqwest)
   intent/      # Intent-Driven Development (Phase 5): spec, coordinator, verifier, execute
   registry/    # Registry client, credentials, module packaging (Phase 7)
+  types.rs     # DuumbiType (I64, F64, Bool, Void, String, Array<T>, Struct), Op enum
   deps.rs      # Dependency resolution, lockfile, vendor layer
   hash.rs      # Semantic hashing (SHA-256, @id-independent)
   manifest.rs  # Module manifest (manifest.toml)
@@ -21,13 +23,14 @@ src/
   mcp/         # MCP server implementation (rmcp crate)
   web/         # WASM visualizer + axum HTTP server
   cli/         # CLI entry point (clap) — commands, deps, publish, yank, registry, repl
+runtime/       # C runtime (duumbi_runtime.c) — print, alloc, string/array/struct shims
 tests/         # Integration tests with .jsonld fixtures
 crates/        # duumbi-studio (Leptos SSR web platform)
 
 ## Build and test
 cargo build                          # Debug build
 cargo build --release                # Release
-cargo test --all                     # All tests (~790 tests)
+cargo test --all                     # All tests (~817 tests)
 cargo clippy --all-targets -- -D warnings  # Zero-warning lint policy
 cargo fmt --check                    # Format check
 
