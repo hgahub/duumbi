@@ -1,4 +1,42 @@
 {
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(cargo *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git checkout*)",
+      "Bash(git switch*)",
+      "Bash(ls *)",
+      "Bash(gh api *)",
+      "Bash(gh issue *)",
+      "Bash(gh pr *)",
+      "mcp__rust-tools__cargo-build",
+      "mcp__rust-tools__cargo-check",
+      "mcp__rust-tools__cargo-clippy",
+      "mcp__rust-tools__cargo-fmt",
+      "mcp__rust-tools__cargo-test",
+      "mcp__rust-tools__cargo-machete",
+      "mcp__rust-tools__cargo-deny-check",
+      "mcp__rust-tools__cargo-add",
+      "mcp__rust-tools__cargo-remove",
+      "mcp__rust-tools__cargo-tree",
+      "mcp__rust-tools__cargo-metadata",
+      "mcp__rust-tools__cargo-expand",
+      "mcp__rust-tools__cargo-doc",
+      "mcp__rust-tools__workspace-info",
+      "mcp__cratedocs__lookup_crate",
+      "mcp__cratedocs__lookup_item",
+      "mcp__cratedocs__search_crates",
+      "mcp__cratedocs__list_crate_items"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {

@@ -172,7 +172,7 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
 /// Checks that Return operations match the declared function return type.
 fn check_return_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
     for func_info in &graph.functions {
-        let expected_type = func_info.return_type;
+        let expected_type = &func_info.return_type;
 
         for block_info in &func_info.blocks {
             for &node_idx in &block_info.nodes {
@@ -191,7 +191,7 @@ fn check_return_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) 
                     }
                     let source_node = &graph.graph[edge_ref.source()];
                     if let Some(actual_type) = resolve_output_type(source_node)
-                        && actual_type != expected_type
+                        && actual_type != *expected_type
                     {
                         let mut details = HashMap::new();
                         details.insert("expected".to_string(), expected_type.to_string());
@@ -252,14 +252,28 @@ fn resolve_output_type(node: &super::GraphNode) -> Option<DuumbiType> {
         Op::Const(_)
         | Op::ConstF64(_)
         | Op::ConstBool(_)
+        | Op::ConstString(_)
         | Op::Add
         | Op::Sub
         | Op::Mul
         | Op::Div
-        | Op::Load { .. } => node.result_type,
-        Op::Compare(_) => Some(DuumbiType::Bool),
-        Op::Call { .. } => node.result_type,
-        Op::Print | Op::Store { .. } => Some(DuumbiType::Void),
+        | Op::Load { .. }
+        | Op::ArrayNew
+        | Op::ArrayGet
+        | Op::ArrayTryGet
+        | Op::StructNew { .. }
+        | Op::FieldGet { .. } => node.result_type.clone(),
+        Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
+        Op::StringCompare(_) => Some(DuumbiType::Bool),
+        Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+        Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+        Op::Call { .. } => node.result_type.clone(),
+        Op::Print
+        | Op::PrintString
+        | Op::Store { .. }
+        | Op::ArrayPush
+        | Op::ArraySet
+        | Op::FieldSet { .. } => Some(DuumbiType::Void),
         Op::Return | Op::Branch => None,
     }
 }

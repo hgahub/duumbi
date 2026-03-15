@@ -25,12 +25,18 @@ use crate::types::{CompareOp, DuumbiType, NodeId, Op};
 use super::CompileError;
 
 /// Converts a `DuumbiType` to a Cranelift IR type.
-fn duumbi_type_to_cl(ty: DuumbiType) -> cranelift_codegen::ir::Type {
+///
+/// Heap types (String, Array, Struct) are represented as pointers (I64)
+/// in Cranelift IR — all heap values are opaque pointers to C runtime
+/// allocated memory.
+fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
     match ty {
         DuumbiType::I64 => types::I64,
         DuumbiType::F64 => types::F64,
         DuumbiType::Bool => types::I8,
         DuumbiType::Void => types::I64, // should not be used for values
+        // Heap types are pointer-sized (opaque pointers to C runtime memory)
+        DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => types::I64,
     }
 }
 
@@ -105,11 +111,11 @@ fn make_func_signature(
     let mut sig = obj_module.make_signature();
     for param in &func_info.params {
         sig.params
-            .push(AbiParam::new(duumbi_type_to_cl(param.param_type)));
+            .push(AbiParam::new(duumbi_type_to_cl(&param.param_type)));
     }
     if func_info.return_type != DuumbiType::Void {
         sig.returns
-            .push(AbiParam::new(duumbi_type_to_cl(func_info.return_type)));
+            .push(AbiParam::new(duumbi_type_to_cl(&func_info.return_type)));
     }
     sig
 }
@@ -346,7 +352,7 @@ fn compile_function(
         })?;
 
     for param in &func_info.params {
-        builder.append_block_param(entry_block, duumbi_type_to_cl(param.param_type));
+        builder.append_block_param(entry_block, duumbi_type_to_cl(&param.param_type));
     }
 
     // SSA value map: NodeId -> Cranelift Value
@@ -364,7 +370,7 @@ fn compile_function(
         if block_idx == 0 {
             for (i, param) in func_info.params.iter().enumerate() {
                 let param_val = builder.block_params(cl_block)[i];
-                let cl_type = duumbi_type_to_cl(param.param_type);
+                let cl_type = duumbi_type_to_cl(&param.param_type);
                 let var = builder.declare_var(cl_type);
                 builder.def_var(var, param_val);
                 var_map.insert(param.name.clone(), var);
@@ -483,6 +489,7 @@ fn compile_function(
                     } else {
                         // Infer type from the operand's output type
                         let cl_type = get_operand_output_type(graph, node_idx)
+                            .as_ref()
                             .map_or(types::I64, duumbi_type_to_cl);
                         let var = builder.declare_var(cl_type);
                         builder.def_var(var, operand_val);
@@ -504,6 +511,33 @@ fn compile_function(
                 Op::Return => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     builder.ins().return_(&[operand_val]);
+                }
+                // Phase 9a-1 ops — lowering implemented in later issues (#235-#237)
+                Op::ConstString(_)
+                | Op::PrintString
+                | Op::StringConcat
+                | Op::StringEquals
+                | Op::StringCompare(_)
+                | Op::StringLength
+                | Op::StringSlice
+                | Op::StringContains
+                | Op::StringFind
+                | Op::StringFromI64
+                | Op::ArrayNew
+                | Op::ArrayPush
+                | Op::ArrayGet
+                | Op::ArraySet
+                | Op::ArrayLength
+                | Op::ArrayTryGet
+                | Op::StructNew { .. }
+                | Op::FieldGet { .. }
+                | Op::FieldSet { .. } => {
+                    return Err(CompileError::Cranelift {
+                        message: format!(
+                            "Op '{}' lowering not yet implemented (Phase 9a-1)",
+                            node.op
+                        ),
+                    });
                 }
             }
         }
@@ -718,14 +752,28 @@ fn resolve_node_output_type(node: &crate::graph::GraphNode) -> Option<DuumbiType
         Op::Const(_)
         | Op::ConstF64(_)
         | Op::ConstBool(_)
+        | Op::ConstString(_)
         | Op::Add
         | Op::Sub
         | Op::Mul
         | Op::Div
         | Op::Load { .. }
-        | Op::Call { .. } => node.result_type,
-        Op::Compare(_) => Some(DuumbiType::Bool),
-        Op::Print | Op::Store { .. } => Some(DuumbiType::Void),
+        | Op::Call { .. }
+        | Op::ArrayNew
+        | Op::ArrayGet
+        | Op::ArrayTryGet
+        | Op::StructNew { .. }
+        | Op::FieldGet { .. } => node.result_type.clone(),
+        Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
+        Op::StringCompare(_) => Some(DuumbiType::Bool),
+        Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+        Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+        Op::Print
+        | Op::PrintString
+        | Op::Store { .. }
+        | Op::ArrayPush
+        | Op::ArraySet
+        | Op::FieldSet { .. } => Some(DuumbiType::Void),
         Op::Return | Op::Branch => None,
     }
 }

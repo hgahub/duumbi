@@ -104,6 +104,16 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         "f64" => Ok(DuumbiType::F64),
         "bool" => Ok(DuumbiType::Bool),
         "void" => Ok(DuumbiType::Void),
+        "string" => Ok(DuumbiType::String),
+        _ if s.starts_with("array<") && s.ends_with('>') => {
+            let inner = &s[6..s.len() - 1];
+            let elem_type = parse_type_str(inner)?;
+            Ok(DuumbiType::Array(Box::new(elem_type)))
+        }
+        _ if s.starts_with("struct<") && s.ends_with('>') => {
+            let name = &s[7..s.len() - 1];
+            Ok(DuumbiType::Struct(name.to_string()))
+        }
         other => Err(ParseError::SchemaInvalid {
             code: codes::E009_SCHEMA_INVALID,
             message: format!("Unknown type '{other}'"),
@@ -322,7 +332,7 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
     match at_type {
         "duumbi:Const" => {
             // Determine const type from resultType
-            let rt = result_type.unwrap_or(DuumbiType::I64);
+            let rt = result_type.clone().unwrap_or(DuumbiType::I64);
             let op = match rt {
                 DuumbiType::F64 => {
                     let val = value
@@ -345,6 +355,17 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                             node_id: node_id_str.to_string(),
                         })?;
                     Op::ConstBool(val)
+                }
+                DuumbiType::String => {
+                    let val = value
+                        .get("duumbi:value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ParseError::MissingField {
+                            code: codes::E003_MISSING_FIELD,
+                            field: "duumbi:value".to_string(),
+                            node_id: node_id_str.to_string(),
+                        })?;
+                    Op::ConstString(val.to_string())
                 }
                 _ => {
                     let val = value
@@ -469,6 +490,160 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             };
             let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
             ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:PrintString" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::PrintString,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        // -- String ops --
+        "duumbi:StringConcat"
+        | "duumbi:StringEquals"
+        | "duumbi:StringContains"
+        | "duumbi:StringFind" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:StringConcat" => Op::StringConcat,
+                "duumbi:StringEquals" => Op::StringEquals,
+                "duumbi:StringContains" => Op::StringContains,
+                "duumbi:StringFind" => Op::StringFind,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:StringCompare" => {
+            let operator_str = get_str(value, "duumbi:operator", node_id_str)?;
+            let compare_op = parse_compare_op(operator_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::StringCompare(compare_op),
+                result_type,
+            );
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:StringLength" | "duumbi:StringFromI64" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let op = match at_type {
+                "duumbi:StringLength" => Op::StringLength,
+                "duumbi:StringFromI64" => Op::StringFromI64,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:StringSlice" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:start", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:end", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::StringSlice,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        // -- Array ops --
+        "duumbi:ArrayNew" => Ok(make_op_ast(
+            NodeId(node_id_str.to_string()),
+            Op::ArrayNew,
+            result_type,
+        )),
+        "duumbi:ArrayPush" => {
+            let left = parse_node_ref(value, "duumbi:array", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:element", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ArrayPush, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:ArrayGet" | "duumbi:ArrayTryGet" => {
+            let left = parse_node_ref(value, "duumbi:array", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:index", node_id_str)?;
+            let op = match at_type {
+                "duumbi:ArrayGet" => Op::ArrayGet,
+                "duumbi:ArrayTryGet" => Op::ArrayTryGet,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:ArraySet" => {
+            let operand = parse_node_ref(value, "duumbi:array", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:index", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:value", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ArraySet, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:ArrayLength" => {
+            let operand = parse_node_ref(value, "duumbi:array", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::ArrayLength,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        // -- Struct ops --
+        "duumbi:StructNew" => {
+            let struct_name = get_str(value, "duumbi:structName", node_id_str)?;
+            Ok(make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::StructNew {
+                    struct_name: struct_name.to_string(),
+                },
+                result_type,
+            ))
+        }
+        "duumbi:FieldGet" => {
+            let field_name = get_str(value, "duumbi:fieldName", node_id_str)?;
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::FieldGet {
+                    field_name: field_name.to_string(),
+                },
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:FieldSet" => {
+            let field_name = get_str(value, "duumbi:fieldName", node_id_str)?;
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:value", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::FieldSet {
+                    field_name: field_name.to_string(),
+                },
+                result_type,
+            );
+            ast.operand = Some(operand);
+            ast.right = Some(right);
             Ok(ast)
         }
         other => Err(ParseError::UnknownOp {
