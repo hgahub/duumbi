@@ -1,0 +1,104 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:main/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:main/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:main/main/entry/0",
+              "duumbi:resultType": "array<i64>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/1",
+              "duumbi:value": 10,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:main/main/entry/2",
+              "duumbi:array": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:element": { "@id": "duumbi:main/main/entry/1" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/3",
+              "duumbi:value": 20,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:main/main/entry/4",
+              "duumbi:array": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:element": { "@id": "duumbi:main/main/entry/3" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/5",
+              "duumbi:value": 30,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:main/main/entry/6",
+              "duumbi:array": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:element": { "@id": "duumbi:main/main/entry/5" }
+            },
+            {
+              "@type": "duumbi:ArrayLength",
+              "@id": "duumbi:main/main/entry/7",
+              "duumbi:array": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Print",
+              "@id": "duumbi:main/main/entry/8",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/7" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/9",
+              "duumbi:value": 1,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayGet",
+              "@id": "duumbi:main/main/entry/10",
+              "duumbi:array": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:index": { "@id": "duumbi:main/main/entry/9" },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Print",
+              "@id": "duumbi:main/main/entry/11",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/10" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/12",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:main/main/entry/13",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/12" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

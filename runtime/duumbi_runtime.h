@@ -46,9 +46,9 @@ void    *duumbi_string_from_i64(int64_t val);
  */
 
 void    *duumbi_array_new(uint64_t elem_size);
-void     duumbi_array_push(void *arr, void *elem);
-void    *duumbi_array_get(void *arr, uint64_t index);
-void     duumbi_array_set(void *arr, uint64_t index, void *elem);
+void    *duumbi_array_push(void *arr, int64_t elem);
+int64_t  duumbi_array_get(void *arr, uint64_t index);
+void     duumbi_array_set(void *arr, uint64_t index, int64_t elem);
 uint64_t duumbi_array_len(void *arr);
 void     duumbi_array_free(void *arr);
 

@@ -1,7 +1,7 @@
 //! Phase 9a-1 end-to-end integration tests.
 //!
-//! Tests string concat+print, string length, and string literal operations.
-//! Kill criterion: String concat+print compiles, links, and runs correctly.
+//! Kill criterion: String concat+print, Array push+get+length, Struct create+field
+//! access → all compile, link, and run correctly. Phase 0-8 tests green.
 
 use std::process::Command;
 
@@ -48,6 +48,56 @@ fn string_concat_prints_hello_world() {
         "Expected 'hello world', got '{}'",
         stdout.trim()
     );
+
+    let exit_code = output
+        .status
+        .code()
+        .expect("invariant: binary must have an exit code");
+    assert_eq!(exit_code, 0, "Expected exit code 0, got {exit_code}");
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+#[test]
+fn string_length_prints_6() {
+    let binary = compile_fixture("tests/fixtures/string_length.jsonld", "string_length_test");
+
+    let output = Command::new(&binary)
+        .output()
+        .expect("invariant: compiled binary must be runnable");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "6",
+        "Expected '6' (length of 'duumbi'), got '{}'",
+        stdout.trim()
+    );
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+#[test]
+fn array_push_get_length() {
+    let binary = compile_fixture(
+        "tests/fixtures/array_push_get.jsonld",
+        "array_push_get_test",
+    );
+
+    let output = Command::new(&binary)
+        .output()
+        .expect("invariant: compiled binary must be runnable");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "Expected 2 print lines, got {}",
+        lines.len()
+    );
+    assert_eq!(lines[0], "3", "Expected array length 3");
+    assert_eq!(lines[1], "20", "Expected arr[1] = 20");
 
     let exit_code = output
         .status

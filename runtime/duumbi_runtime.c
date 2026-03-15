@@ -153,26 +153,24 @@ void *duumbi_string_from_i64(int64_t val) {
 }
 
 /* ── Array ─────────────────────────────────────────────────────────── */
+/*
+ * Simplified API: all elements are stored as int64_t (8 bytes).
+ * This works for i64, f64 (via bitcast), bool, and pointers (String/Array/Struct).
+ * duumbi_array_push returns the (possibly reallocated) array pointer.
+ */
 
 #define ARRAY_INITIAL_CAPACITY 4
 
 void *duumbi_array_new(uint64_t elem_size) {
+    (void)elem_size; /* reserved for future use; currently always 8 */
     DuumbiArray *arr = (DuumbiArray *)duumbi_alloc(
-        sizeof(DuumbiArray) + elem_size * ARRAY_INITIAL_CAPACITY);
+        sizeof(DuumbiArray) + sizeof(int64_t) * ARRAY_INITIAL_CAPACITY);
     arr->len = 0;
     arr->capacity = ARRAY_INITIAL_CAPACITY;
-    arr->elem_size = elem_size;
+    arr->elem_size = sizeof(int64_t);
     return arr;
 }
 
-/**
- * Internal: grow array, returns (potentially new) pointer.
- * Caller must update their pointer to the result.
- *
- * Since push may realloc, we return the new DuumbiArray* via
- * a pointer-to-pointer stored at a well-known location. For simplicity
- * in the C ABI, duumbi_array_push takes void** (pointer to the array pointer).
- */
 static DuumbiArray *array_grow(DuumbiArray *arr) {
     uint64_t new_cap = arr->capacity * 2;
     DuumbiArray *new_arr = (DuumbiArray *)realloc(
@@ -184,33 +182,33 @@ static DuumbiArray *array_grow(DuumbiArray *arr) {
     return new_arr;
 }
 
-void duumbi_array_push(void *arr_ptr, void *elem) {
-    /* arr_ptr is actually a void** — pointer to the array pointer.
-     * This allows us to update the caller's pointer on realloc. */
-    void **slot = (void **)arr_ptr;
-    DuumbiArray *arr = (DuumbiArray *)*slot;
+void *duumbi_array_push(void *arr_ptr, int64_t elem) {
+    DuumbiArray *arr = (DuumbiArray *)arr_ptr;
     if (arr->len >= arr->capacity) {
         arr = array_grow(arr);
-        *slot = arr;  /* update caller's pointer */
     }
-    memcpy(arr->data + arr->len * arr->elem_size, elem, (size_t)arr->elem_size);
+    int64_t *data = (int64_t *)arr->data;
+    data[arr->len] = elem;
     arr->len++;
+    return arr;  /* return (possibly reallocated) pointer */
 }
 
-void *duumbi_array_get(void *arr, uint64_t index) {
+int64_t duumbi_array_get(void *arr, uint64_t index) {
     DuumbiArray *a = (DuumbiArray *)arr;
     if (index >= a->len) {
         duumbi_panic("array index out of bounds");
     }
-    return a->data + index * a->elem_size;
+    int64_t *data = (int64_t *)a->data;
+    return data[index];
 }
 
-void duumbi_array_set(void *arr, uint64_t index, void *elem) {
+void duumbi_array_set(void *arr, uint64_t index, int64_t elem) {
     DuumbiArray *a = (DuumbiArray *)arr;
     if (index >= a->len) {
         duumbi_panic("array index out of bounds");
     }
-    memcpy(a->data + index * a->elem_size, elem, (size_t)a->elem_size);
+    int64_t *data = (int64_t *)a->data;
+    data[index] = elem;
 }
 
 uint64_t duumbi_array_len(void *arr) {

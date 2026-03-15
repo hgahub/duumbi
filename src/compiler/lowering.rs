@@ -116,9 +116,9 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
         string_find: declare_runtime_fn(module, "duumbi_string_find", &[i64t, i64t], &[i64t])?,
         string_from_i64: declare_runtime_fn(module, "duumbi_string_from_i64", &[i64t], &[i64t])?,
 
-        // Array functions
+        // Array functions (push returns new ptr, get returns i64 value)
         array_new: declare_runtime_fn(module, "duumbi_array_new", &[i64t], &[i64t])?,
-        array_push: declare_runtime_fn(module, "duumbi_array_push", &[i64t, i64t], &[])?,
+        array_push: declare_runtime_fn(module, "duumbi_array_push", &[i64t, i64t], &[i64t])?,
         array_get: declare_runtime_fn(module, "duumbi_array_get", &[i64t, i64t], &[i64t])?,
         array_set: declare_runtime_fn(module, "duumbi_array_set", &[i64t, i64t, i64t], &[])?,
         array_len: declare_runtime_fn(module, "duumbi_array_len", &[i64t], &[i64t])?,
@@ -775,7 +775,21 @@ fn compile_function(
                 }
                 Op::ArrayPush => {
                     let (arr_val, elem_val) = get_binary_operands(graph, node_idx, &value_map)?;
-                    builder.ins().call(array_push_ref, &[arr_val, elem_val]);
+                    let call = builder.ins().call(array_push_ref, &[arr_val, elem_val]);
+                    // Push returns the (possibly reallocated) array pointer.
+                    // Update the array value in the value map so subsequent ops
+                    // use the new pointer. We update the source array node's entry.
+                    let new_arr = builder.inst_results(call)[0];
+                    // Find the array source node and update its value
+                    for edge_ref in graph
+                        .graph
+                        .edges_directed(node_idx, petgraph::Direction::Incoming)
+                    {
+                        if matches!(edge_ref.weight(), GraphEdge::Left) {
+                            let source_node = &graph.graph[edge_ref.source()];
+                            value_map.insert(source_node.id.clone(), new_arr);
+                        }
+                    }
                 }
                 Op::ArrayGet | Op::ArrayTryGet => {
                     let (arr_val, idx_val) = get_binary_operands(graph, node_idx, &value_map)?;
