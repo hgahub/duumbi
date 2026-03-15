@@ -13,7 +13,7 @@ use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{self, Context, isa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use petgraph::visit::EdgeRef;
 use target_lexicon::Triple;
@@ -23,6 +23,124 @@ use crate::graph::{FunctionInfo, GraphEdge, SemanticGraph};
 use crate::types::{CompareOp, DuumbiType, NodeId, Op};
 
 use super::CompileError;
+
+/// Holds FuncIds for all C runtime functions declared in the object module.
+///
+/// Replaces individual print function parameters — all runtime function
+/// references are grouped here for clean passing through the compilation pipeline.
+struct RuntimeFuncs {
+    print_i64: FuncId,
+    print_f64: FuncId,
+    print_bool: FuncId,
+    print_string: FuncId,
+    string_new: FuncId,
+    string_free: FuncId,
+    string_len: FuncId,
+    string_concat: FuncId,
+    string_equals: FuncId,
+    string_compare: FuncId,
+    string_slice: FuncId,
+    string_contains: FuncId,
+    string_find: FuncId,
+    string_from_i64: FuncId,
+    array_new: FuncId,
+    array_push: FuncId,
+    array_get: FuncId,
+    array_set: FuncId,
+    array_len: FuncId,
+    array_free: FuncId,
+    struct_new: FuncId,
+    struct_field_get: FuncId,
+    struct_field_set: FuncId,
+    struct_free: FuncId,
+}
+
+/// Helper to declare an imported C function with given param/return types.
+fn declare_runtime_fn(
+    module: &mut ObjectModule,
+    name: &str,
+    params: &[cranelift_codegen::ir::Type],
+    returns: &[cranelift_codegen::ir::Type],
+) -> Result<FuncId, CompileError> {
+    let mut sig = module.make_signature();
+    for &p in params {
+        sig.params.push(AbiParam::new(p));
+    }
+    for &r in returns {
+        sig.returns.push(AbiParam::new(r));
+    }
+    module
+        .declare_function(name, Linkage::Import, &sig)
+        .map_err(|e| CompileError::Cranelift {
+            message: format!("Failed to declare {name}: {e}"),
+        })
+}
+
+/// Declares all C runtime functions in the object module.
+fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, CompileError> {
+    let i64t = types::I64;
+    let f64t = types::F64;
+    let i8t = types::I8;
+
+    Ok(RuntimeFuncs {
+        // Print functions
+        print_i64: declare_runtime_fn(module, "duumbi_print_i64", &[i64t], &[])?,
+        print_f64: declare_runtime_fn(module, "duumbi_print_f64", &[f64t], &[])?,
+        print_bool: declare_runtime_fn(module, "duumbi_print_bool", &[i8t], &[])?,
+        print_string: declare_runtime_fn(module, "duumbi_print_string", &[i64t], &[])?,
+
+        // String functions (ptr = i64)
+        string_new: declare_runtime_fn(module, "duumbi_string_new", &[i64t, i64t], &[i64t])?,
+        string_free: declare_runtime_fn(module, "duumbi_string_free", &[i64t], &[])?,
+        string_len: declare_runtime_fn(module, "duumbi_string_len", &[i64t], &[i64t])?,
+        string_concat: declare_runtime_fn(module, "duumbi_string_concat", &[i64t, i64t], &[i64t])?,
+        string_equals: declare_runtime_fn(module, "duumbi_string_equals", &[i64t, i64t], &[i8t])?,
+        string_compare: declare_runtime_fn(
+            module,
+            "duumbi_string_compare",
+            &[i64t, i64t],
+            &[i64t],
+        )?,
+        string_slice: declare_runtime_fn(
+            module,
+            "duumbi_string_slice",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        string_contains: declare_runtime_fn(
+            module,
+            "duumbi_string_contains",
+            &[i64t, i64t],
+            &[i8t],
+        )?,
+        string_find: declare_runtime_fn(module, "duumbi_string_find", &[i64t, i64t], &[i64t])?,
+        string_from_i64: declare_runtime_fn(module, "duumbi_string_from_i64", &[i64t], &[i64t])?,
+
+        // Array functions
+        array_new: declare_runtime_fn(module, "duumbi_array_new", &[i64t], &[i64t])?,
+        array_push: declare_runtime_fn(module, "duumbi_array_push", &[i64t, i64t], &[])?,
+        array_get: declare_runtime_fn(module, "duumbi_array_get", &[i64t, i64t], &[i64t])?,
+        array_set: declare_runtime_fn(module, "duumbi_array_set", &[i64t, i64t, i64t], &[])?,
+        array_len: declare_runtime_fn(module, "duumbi_array_len", &[i64t], &[i64t])?,
+        array_free: declare_runtime_fn(module, "duumbi_array_free", &[i64t], &[])?,
+
+        // Struct functions
+        struct_new: declare_runtime_fn(module, "duumbi_struct_new", &[i64t], &[i64t])?,
+        struct_field_get: declare_runtime_fn(
+            module,
+            "duumbi_struct_field_get",
+            &[i64t, i64t],
+            &[i64t],
+        )?,
+        struct_field_set: declare_runtime_fn(
+            module,
+            "duumbi_struct_field_set",
+            &[i64t, i64t, i64t, i64t],
+            &[],
+        )?,
+        struct_free: declare_runtime_fn(module, "duumbi_struct_free", &[i64t], &[])?,
+    })
+}
 
 /// Converts a `DuumbiType` to a Cranelift IR type.
 ///
@@ -211,30 +329,11 @@ fn compile_to_object_impl(
 ) -> Result<Vec<u8>, CompileError> {
     let mut obj_module = create_object_module()?;
 
-    // Declare external print functions
-    let mut print_i64_sig = obj_module.make_signature();
-    print_i64_sig.params.push(AbiParam::new(types::I64));
-    let print_i64_id = obj_module
-        .declare_function("duumbi_print_i64", Linkage::Import, &print_i64_sig)
-        .map_err(|e| CompileError::Cranelift {
-            message: format!("Failed to declare duumbi_print_i64: {e}"),
-        })?;
+    // Declare all C runtime functions
+    let runtime = declare_all_runtime_fns(&mut obj_module)?;
 
-    let mut print_f64_sig = obj_module.make_signature();
-    print_f64_sig.params.push(AbiParam::new(types::F64));
-    let print_f64_id = obj_module
-        .declare_function("duumbi_print_f64", Linkage::Import, &print_f64_sig)
-        .map_err(|e| CompileError::Cranelift {
-            message: format!("Failed to declare duumbi_print_f64: {e}"),
-        })?;
-
-    let mut print_bool_sig = obj_module.make_signature();
-    print_bool_sig.params.push(AbiParam::new(types::I8));
-    let print_bool_id = obj_module
-        .declare_function("duumbi_print_bool", Linkage::Import, &print_bool_sig)
-        .map_err(|e| CompileError::Cranelift {
-            message: format!("Failed to declare duumbi_print_bool: {e}"),
-        })?;
+    // Collect and embed string constants as data sections
+    let string_data = embed_string_constants(graph, &mut obj_module)?;
 
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     let mut func_sigs: HashMap<String, cranelift_codegen::ir::Signature> = HashMap::new();
@@ -287,9 +386,8 @@ fn compile_to_object_impl(
             &mut obj_module,
             &func_ids,
             &func_sigs,
-            print_i64_id,
-            print_f64_id,
-            print_bool_id,
+            &runtime,
+            &string_data,
         )?;
 
         obj_module
@@ -308,6 +406,47 @@ fn compile_to_object_impl(
     Ok(bytes)
 }
 
+/// Collects all string constants from the graph and embeds them as data sections.
+///
+/// Returns a map from the string literal content to its [`DataId`], so the
+/// compiler can reference the data at use sites via `symbol_value`.
+fn embed_string_constants(
+    graph: &SemanticGraph,
+    obj_module: &mut ObjectModule,
+) -> Result<HashMap<String, DataId>, CompileError> {
+    let mut string_data: HashMap<String, DataId> = HashMap::new();
+    let mut counter = 0u32;
+
+    for node in graph.graph.node_weights() {
+        if let Op::ConstString(ref s) = node.op {
+            if string_data.contains_key(s) {
+                continue; // deduplicate
+            }
+            let data_name = format!(".str.{counter}");
+            counter += 1;
+
+            let data_id = obj_module
+                .declare_data(&data_name, Linkage::Local, false, false)
+                .map_err(|e| CompileError::Cranelift {
+                    message: format!("Failed to declare string data '{data_name}': {e}"),
+                })?;
+
+            let mut desc = DataDescription::new();
+            desc.define(s.as_bytes().to_vec().into_boxed_slice());
+
+            obj_module
+                .define_data(data_id, &desc)
+                .map_err(|e| CompileError::Cranelift {
+                    message: format!("Failed to define string data '{data_name}': {e}"),
+                })?;
+
+            string_data.insert(s.clone(), data_id);
+        }
+    }
+
+    Ok(string_data)
+}
+
 /// Compiles a single function into Cranelift IR.
 #[allow(clippy::too_many_arguments)] // Internal helper with many Cranelift context params
 fn compile_function(
@@ -318,16 +457,41 @@ fn compile_function(
     obj_module: &mut ObjectModule,
     func_ids: &HashMap<String, FuncId>,
     func_sigs: &HashMap<String, cranelift_codegen::ir::Signature>,
-    print_i64_id: FuncId,
-    print_f64_id: FuncId,
-    print_bool_id: FuncId,
+    runtime: &RuntimeFuncs,
+    string_data: &HashMap<String, DataId>,
 ) -> Result<(), CompileError> {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fn_builder_ctx);
 
-    // Import print function references
-    let print_i64_ref = obj_module.declare_func_in_func(print_i64_id, builder.func);
-    let print_f64_ref = obj_module.declare_func_in_func(print_f64_id, builder.func);
-    let print_bool_ref = obj_module.declare_func_in_func(print_bool_id, builder.func);
+    // Import runtime function references into this function
+    let print_i64_ref = obj_module.declare_func_in_func(runtime.print_i64, builder.func);
+    let print_f64_ref = obj_module.declare_func_in_func(runtime.print_f64, builder.func);
+    let print_bool_ref = obj_module.declare_func_in_func(runtime.print_bool, builder.func);
+    let print_string_ref = obj_module.declare_func_in_func(runtime.print_string, builder.func);
+    let string_new_ref = obj_module.declare_func_in_func(runtime.string_new, builder.func);
+    let string_free_ref = obj_module.declare_func_in_func(runtime.string_free, builder.func);
+    let string_len_ref = obj_module.declare_func_in_func(runtime.string_len, builder.func);
+    let string_concat_ref = obj_module.declare_func_in_func(runtime.string_concat, builder.func);
+    let string_equals_ref = obj_module.declare_func_in_func(runtime.string_equals, builder.func);
+    let string_compare_ref = obj_module.declare_func_in_func(runtime.string_compare, builder.func);
+    let string_slice_ref = obj_module.declare_func_in_func(runtime.string_slice, builder.func);
+    let string_contains_ref =
+        obj_module.declare_func_in_func(runtime.string_contains, builder.func);
+    let string_find_ref = obj_module.declare_func_in_func(runtime.string_find, builder.func);
+    let string_from_i64_ref =
+        obj_module.declare_func_in_func(runtime.string_from_i64, builder.func);
+    let array_new_ref = obj_module.declare_func_in_func(runtime.array_new, builder.func);
+    let array_push_ref = obj_module.declare_func_in_func(runtime.array_push, builder.func);
+    let array_get_ref = obj_module.declare_func_in_func(runtime.array_get, builder.func);
+    let array_set_ref = obj_module.declare_func_in_func(runtime.array_set, builder.func);
+    let array_len_ref = obj_module.declare_func_in_func(runtime.array_len, builder.func);
+    let _array_free_ref = obj_module.declare_func_in_func(runtime.array_free, builder.func);
+    let struct_new_ref = obj_module.declare_func_in_func(runtime.struct_new, builder.func);
+    let struct_field_get_ref =
+        obj_module.declare_func_in_func(runtime.struct_field_get, builder.func);
+    let struct_field_set_ref =
+        obj_module.declare_func_in_func(runtime.struct_field_set, builder.func);
+    let _struct_free_ref = obj_module.declare_func_in_func(runtime.struct_free, builder.func);
+    let _string_free_ref_alias = string_free_ref; // for Drop insertion later
 
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -512,32 +676,156 @@ fn compile_function(
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     builder.ins().return_(&[operand_val]);
                 }
-                // Phase 9a-1 ops — lowering implemented in later issues (#235-#237)
-                Op::ConstString(_)
-                | Op::PrintString
-                | Op::StringConcat
-                | Op::StringEquals
-                | Op::StringCompare(_)
-                | Op::StringLength
-                | Op::StringSlice
-                | Op::StringContains
-                | Op::StringFind
-                | Op::StringFromI64
-                | Op::ArrayNew
-                | Op::ArrayPush
-                | Op::ArrayGet
-                | Op::ArraySet
-                | Op::ArrayLength
-                | Op::ArrayTryGet
-                | Op::StructNew { .. }
-                | Op::FieldGet { .. }
-                | Op::FieldSet { .. } => {
-                    return Err(CompileError::Cranelift {
-                        message: format!(
-                            "Op '{}' lowering not yet implemented (Phase 9a-1)",
-                            node.op
-                        ),
-                    });
+                // -- Phase 9a-1: String ops --
+                Op::ConstString(s) => {
+                    // Get the embedded data address, then call duumbi_string_new(ptr, len)
+                    let data_id = string_data.get(s).ok_or_else(|| CompileError::Cranelift {
+                        message: format!("String constant data not found for '{s}'"),
+                    })?;
+                    let gv = obj_module.declare_data_in_func(*data_id, builder.func);
+                    let ptr = builder.ins().global_value(types::I64, gv);
+                    let len = builder.ins().iconst(types::I64, s.len() as i64);
+                    let call = builder.ins().call(string_new_ref, &[ptr, len]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::PrintString => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    builder.ins().call(print_string_ref, &[operand_val]);
+                }
+                Op::StringConcat => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(string_concat_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringEquals => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(string_equals_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringCompare(_) => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(string_compare_ref, &[left_val, right_val]);
+                    let cmp_result = builder.inst_results(call)[0];
+                    // Convert i64 compare result to bool based on CompareOp
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let Op::StringCompare(ref cmp_op) = node.op else {
+                        unreachable!()
+                    };
+                    let cc = compare_op_to_intcc(cmp_op);
+                    let bool_result = builder.ins().icmp(cc, cmp_result, zero);
+                    value_map.insert(node.id.clone(), bool_result);
+                }
+                Op::StringLength => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_len_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringSlice => {
+                    // operand = string, left = start index, right = end index
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let (start_val, end_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(string_slice_ref, &[operand_val, start_val, end_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringContains => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(string_contains_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringFind => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_find_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringFromI64 => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_from_i64_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9a-1: Array ops --
+                Op::ArrayNew => {
+                    // elem_size from result_type: Array<i64> → 8, Array<String> → 8 (ptr)
+                    let elem_size = match &node.result_type {
+                        Some(DuumbiType::Array(inner)) => type_size(inner),
+                        _ => 8, // default pointer size
+                    };
+                    let size_val = builder.ins().iconst(types::I64, elem_size);
+                    let call = builder.ins().call(array_new_ref, &[size_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ArrayPush => {
+                    let (arr_val, elem_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    builder.ins().call(array_push_ref, &[arr_val, elem_val]);
+                }
+                Op::ArrayGet | Op::ArrayTryGet => {
+                    let (arr_val, idx_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(array_get_ref, &[arr_val, idx_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ArraySet => {
+                    // operand = array, left = index, right = value
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let (idx_val, elem_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    builder
+                        .ins()
+                        .call(array_set_ref, &[operand_val, idx_val, elem_val]);
+                }
+                Op::ArrayLength => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(array_len_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9a-1: Struct ops --
+                Op::StructNew { .. } => {
+                    // For now, use a default struct size. Proper struct layout
+                    // requires a struct registry (tracked in #239).
+                    let total_size = builder.ins().iconst(types::I64, 64); // placeholder
+                    let call = builder.ins().call(struct_new_ref, &[total_size]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::FieldGet { .. } => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    // Offset placeholder — proper field layout requires struct registry
+                    let offset = builder.ins().iconst(types::I64, 0);
+                    let call = builder
+                        .ins()
+                        .call(struct_field_get_ref, &[operand_val, offset]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::FieldSet { .. } => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let value_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let offset = builder.ins().iconst(types::I64, 0);
+                    let size = builder.ins().iconst(types::I64, 8);
+                    builder.ins().call(
+                        struct_field_set_ref,
+                        &[operand_val, offset, value_val, size],
+                    );
                 }
             }
         }
@@ -776,6 +1064,48 @@ fn resolve_node_output_type(node: &crate::graph::GraphNode) -> Option<DuumbiType
         | Op::FieldSet { .. } => Some(DuumbiType::Void),
         Op::Return | Op::Branch => None,
     }
+}
+
+/// Returns the size in bytes for a DuumbiType (for array element sizing).
+fn type_size(ty: &DuumbiType) -> i64 {
+    match ty {
+        DuumbiType::I64 => 8,
+        DuumbiType::F64 => 8,
+        DuumbiType::Bool => 1,
+        DuumbiType::Void => 0,
+        // Heap types are pointer-sized
+        DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => 8,
+    }
+}
+
+/// Resolves the right operand SSA value for a node.
+fn get_right_operand(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    value_map: &HashMap<NodeId, Value>,
+) -> Result<Value, CompileError> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Right) {
+            let source_node = &graph.graph[edge_ref.source()];
+            return value_map.get(&source_node.id).copied().ok_or_else(|| {
+                CompileError::Cranelift {
+                    message: format!(
+                        "SSA value not found for right operand '{}' of node '{}'",
+                        source_node.id, graph.graph[node_idx].id
+                    ),
+                }
+            });
+        }
+    }
+    Err(CompileError::Cranelift {
+        message: format!(
+            "Missing right operand for node '{}'",
+            graph.graph[node_idx].id
+        ),
+    })
 }
 
 /// Collects Call argument values in order.

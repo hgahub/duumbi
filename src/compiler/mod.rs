@@ -54,6 +54,12 @@ impl CraneliftBackend {
     }
 }
 
+impl Default for CraneliftBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodegenBackend for CraneliftBackend {
     fn compile_graph(&mut self, graph: &SemanticGraph) -> Result<Vec<u8>, CompileError> {
         lowering::compile_to_object(graph)
