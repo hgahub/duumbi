@@ -38,7 +38,7 @@ A function with no blocks, or a block with no ops, is invalid and will fail comp
 Important rules:\n\
 - All @id values must be globally unique (format: duumbi:<module>/<function>/<block>/<index>)\n\
 - Use the duumbi: prefix for all field names (duumbi:value, duumbi:left, etc.)\n\
-- resultType must be one of: i64, f64, bool, void\n\
+- resultType must be one of: i64, f64, bool, void, string, array<T>, struct<Name>\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
 - Operations within a block must form a valid data-flow DAG\n\
 - The last op in each block must be Return or Branch — NO ops may follow a terminator\n\
@@ -64,6 +64,20 @@ Op reference (exhaustive — no other @type values exist):\n\
 - Call:    {\"@type\":\"duumbi:Call\",   \"duumbi:function\":\"<name>\", \"duumbi:args\":[{\"@id\":\"…\"}], \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
 - Print:   {\"@type\":\"duumbi:Print\",  \"duumbi:operand\":{\"@id\":\"…\"}}\n\
 - Return:  {\"@type\":\"duumbi:Return\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+\n\
+String ops (Phase 9a-1):\n\
+- Const (string): {\"@type\":\"duumbi:Const\", \"duumbi:value\":\"text\", \"duumbi:resultType\":\"string\"}\n\
+- PrintString:    {\"@type\":\"duumbi:PrintString\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+- StringConcat:   {\"@type\":\"duumbi:StringConcat\", \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+- StringLength:   {\"@type\":\"duumbi:StringLength\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- StringEquals:   {\"@type\":\"duumbi:StringEquals\", \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"bool\"}\n\
+- StringFromI64:  {\"@type\":\"duumbi:StringFromI64\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+\n\
+Array ops (Phase 9a-1):\n\
+- ArrayNew:    {\"@type\":\"duumbi:ArrayNew\", \"duumbi:resultType\":\"array<i64>\"}\n\
+- ArrayPush:   {\"@type\":\"duumbi:ArrayPush\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:element\":{\"@id\":\"…\"}}\n\
+- ArrayGet:    {\"@type\":\"duumbi:ArrayGet\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:index\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- ArrayLength: {\"@type\":\"duumbi:ArrayLength\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
 \n\
 Function parameters:\n\
 - Declare them on the function node: \"duumbi:params\":[{\"duumbi:name\":\"x\",\"duumbi:paramType\":\"i64\"}]\n\
