@@ -248,34 +248,7 @@ fn check_branch_conditions(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnost
 
 /// Resolves the output type of a graph node.
 fn resolve_output_type(node: &super::GraphNode) -> Option<DuumbiType> {
-    match &node.op {
-        Op::Const(_)
-        | Op::ConstF64(_)
-        | Op::ConstBool(_)
-        | Op::ConstString(_)
-        | Op::Add
-        | Op::Sub
-        | Op::Mul
-        | Op::Div
-        | Op::Load { .. }
-        | Op::ArrayNew
-        | Op::ArrayGet
-        | Op::ArrayTryGet
-        | Op::StructNew { .. }
-        | Op::FieldGet { .. } => node.result_type.clone(),
-        Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
-        Op::StringCompare(_) => Some(DuumbiType::Bool),
-        Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
-        Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
-        Op::Call { .. } => node.result_type.clone(),
-        Op::Print
-        | Op::PrintString
-        | Op::Store { .. }
-        | Op::ArrayPush
-        | Op::ArraySet
-        | Op::FieldSet { .. } => Some(DuumbiType::Void),
-        Op::Return | Op::Branch => None,
-    }
+    node.op.output_type(&node.result_type)
 }
 
 #[cfg(test)]

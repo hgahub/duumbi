@@ -525,6 +525,9 @@ fn compile_function(
     // Variable map for Load/Store and function params
     let mut var_map: HashMap<String, Variable> = HashMap::new();
 
+    // Struct field offset map: field_name → byte offset (sequential, 8 bytes each)
+    let mut field_offsets: HashMap<String, i64> = HashMap::new();
+
     // Process each block
     for (block_idx, block_info) in func_info.blocks.iter().enumerate() {
         let cl_block = block_map[&block_info.label.0];
@@ -791,11 +794,23 @@ fn compile_function(
                         }
                     }
                 }
-                Op::ArrayGet | Op::ArrayTryGet => {
+                Op::ArrayGet => {
                     let (arr_val, idx_val) = get_binary_operands(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(array_get_ref, &[arr_val, idx_val]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
+                }
+                Op::ArrayTryGet => {
+                    // ArrayTryGet requires Option<T> return type (Phase 9a-3).
+                    // Until then, report as unimplemented rather than silently
+                    // panicking like ArrayGet on out-of-bounds access.
+                    return Err(CompileError::Cranelift {
+                        message: format!(
+                            "ArrayTryGet requires Option<T> type (Phase 9a-3), \
+                             use ArrayGet for now — node '{}'",
+                            node.id
+                        ),
+                    });
                 }
                 Op::ArraySet => {
                     // operand = array, left = index, right = value
@@ -814,27 +829,29 @@ fn compile_function(
 
                 // -- Phase 9a-1: Struct ops --
                 Op::StructNew { .. } => {
-                    // For now, use a default struct size. Proper struct layout
-                    // requires a struct registry (tracked in #239).
-                    let total_size = builder.ins().iconst(types::I64, 64); // placeholder
+                    // Allocate enough space for fields. We use a generous default
+                    // since proper struct layout requires a struct registry (Phase 9a-2).
+                    // 8 fields × 8 bytes = 64 bytes covers most simple structs.
+                    let total_size = builder.ins().iconst(types::I64, 64);
                     let call = builder.ins().call(struct_new_ref, &[total_size]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
-                Op::FieldGet { .. } => {
+                Op::FieldGet { field_name } => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
-                    // Offset placeholder — proper field layout requires struct registry
-                    let offset = builder.ins().iconst(types::I64, 0);
+                    let offset_val = field_name_to_offset(field_name, &mut field_offsets);
+                    let offset = builder.ins().iconst(types::I64, offset_val);
                     let call = builder
                         .ins()
                         .call(struct_field_get_ref, &[operand_val, offset]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
-                Op::FieldSet { .. } => {
+                Op::FieldSet { field_name } => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let value_val = get_right_operand(graph, node_idx, &value_map)?;
-                    let offset = builder.ins().iconst(types::I64, 0);
+                    let offset_val = field_name_to_offset(field_name, &mut field_offsets);
+                    let offset = builder.ins().iconst(types::I64, offset_val);
                     builder
                         .ins()
                         .call(struct_field_set_ref, &[operand_val, offset, value_val]);
@@ -1048,34 +1065,17 @@ fn get_left_operand_type(
 
 /// Resolves the output type of a graph node for lowering decisions.
 fn resolve_node_output_type(node: &crate::graph::GraphNode) -> Option<DuumbiType> {
-    match &node.op {
-        Op::Const(_)
-        | Op::ConstF64(_)
-        | Op::ConstBool(_)
-        | Op::ConstString(_)
-        | Op::Add
-        | Op::Sub
-        | Op::Mul
-        | Op::Div
-        | Op::Load { .. }
-        | Op::Call { .. }
-        | Op::ArrayNew
-        | Op::ArrayGet
-        | Op::ArrayTryGet
-        | Op::StructNew { .. }
-        | Op::FieldGet { .. } => node.result_type.clone(),
-        Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
-        Op::StringCompare(_) => Some(DuumbiType::Bool),
-        Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
-        Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
-        Op::Print
-        | Op::PrintString
-        | Op::Store { .. }
-        | Op::ArrayPush
-        | Op::ArraySet
-        | Op::FieldSet { .. } => Some(DuumbiType::Void),
-        Op::Return | Op::Branch => None,
-    }
+    node.op.output_type(&node.result_type)
+}
+
+/// Assigns sequential byte offsets to struct field names (8 bytes per field).
+///
+/// Each unique field name gets the next available offset. This is a simplified
+/// layout scheme — Phase 9a-2 will introduce a proper struct registry with
+/// type-aware field sizes and alignment.
+fn field_name_to_offset(field_name: &str, offsets: &mut HashMap<String, i64>) -> i64 {
+    let next_offset = offsets.len() as i64 * 8;
+    *offsets.entry(field_name.to_string()).or_insert(next_offset)
 }
 
 /// Returns the size in bytes for a DuumbiType (for array element sizing).

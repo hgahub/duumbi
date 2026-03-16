@@ -224,6 +224,48 @@ impl fmt::Display for Op {
     }
 }
 
+impl Op {
+    /// Resolves the output type of this operation.
+    ///
+    /// For ops whose output type depends on context (e.g. `Const`, `Add`, `Load`),
+    /// the `result_type` from the graph node is returned. For ops with a fixed
+    /// output type (e.g. `Compare` → Bool, `Print` → Void), the fixed type is
+    /// returned regardless of `result_type`.
+    ///
+    /// Returns `None` for `Return` and `Branch` (no output value).
+    #[must_use]
+    pub fn output_type(&self, result_type: &Option<DuumbiType>) -> Option<DuumbiType> {
+        match self {
+            Op::Const(_)
+            | Op::ConstF64(_)
+            | Op::ConstBool(_)
+            | Op::ConstString(_)
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Load { .. }
+            | Op::Call { .. }
+            | Op::ArrayNew
+            | Op::ArrayGet
+            | Op::ArrayTryGet
+            | Op::StructNew { .. }
+            | Op::FieldGet { .. } => result_type.clone(),
+            Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
+            Op::StringCompare(_) => Some(DuumbiType::Bool),
+            Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+            Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+            Op::Print
+            | Op::PrintString
+            | Op::Store { .. }
+            | Op::ArrayPush
+            | Op::ArraySet
+            | Op::FieldSet { .. } => Some(DuumbiType::Void),
+            Op::Return | Op::Branch => None,
+        }
+    }
+}
+
 /// Type in the duumbi type system.
 ///
 /// Primitive types (`I64`, `F64`, `Bool`, `Void`) are stack-allocated.
