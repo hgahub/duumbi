@@ -57,9 +57,9 @@ void     duumbi_array_free(void *arr);
  * Struct: flat contiguous allocation, field offsets computed at compile time.
  */
 
-void *duumbi_struct_new(uint64_t total_size);
-void *duumbi_struct_field_get(void *s, uint64_t offset);
-void  duumbi_struct_field_set(void *s, uint64_t offset, void *value, uint64_t size);
-void  duumbi_struct_free(void *s);
+void    *duumbi_struct_new(uint64_t total_size);
+int64_t  duumbi_struct_field_get(void *s, uint64_t offset);
+void     duumbi_struct_field_set(void *s, uint64_t offset, int64_t value);
+void     duumbi_struct_free(void *s);
 
 #endif /* DUUMBI_RUNTIME_H */

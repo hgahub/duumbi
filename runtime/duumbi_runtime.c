@@ -228,12 +228,14 @@ void *duumbi_struct_new(uint64_t total_size) {
     return s;
 }
 
-void *duumbi_struct_field_get(void *s, uint64_t offset) {
-    return (char *)s + offset;
+int64_t duumbi_struct_field_get(void *s, uint64_t offset) {
+    int64_t value;
+    memcpy(&value, (char *)s + offset, sizeof(int64_t));
+    return value;
 }
 
-void duumbi_struct_field_set(void *s, uint64_t offset, void *value, uint64_t size) {
-    memcpy((char *)s + offset, value, (size_t)size);
+void duumbi_struct_field_set(void *s, uint64_t offset, int64_t value) {
+    memcpy((char *)s + offset, &value, sizeof(int64_t));
 }
 
 void duumbi_struct_free(void *s) {

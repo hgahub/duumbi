@@ -107,3 +107,28 @@ fn array_push_get_length() {
 
     let _ = std::fs::remove_file(&binary);
 }
+
+#[test]
+fn struct_new_field_set_get() {
+    let binary = compile_fixture("tests/fixtures/struct_field.jsonld", "struct_field_test");
+
+    let output = Command::new(&binary)
+        .output()
+        .expect("invariant: compiled binary must be runnable");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "42",
+        "Expected FieldGet(x) = 42, got '{}'",
+        stdout.trim()
+    );
+
+    let exit_code = output
+        .status
+        .code()
+        .expect("invariant: binary must have an exit code");
+    assert_eq!(exit_code, 0, "Expected exit code 0, got {exit_code}");
+
+    let _ = std::fs::remove_file(&binary);
+}

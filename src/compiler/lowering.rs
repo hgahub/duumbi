@@ -135,7 +135,7 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
         struct_field_set: declare_runtime_fn(
             module,
             "duumbi_struct_field_set",
-            &[i64t, i64t, i64t, i64t],
+            &[i64t, i64t, i64t],
             &[],
         )?,
         struct_free: declare_runtime_fn(module, "duumbi_struct_free", &[i64t], &[])?,
@@ -835,11 +835,9 @@ fn compile_function(
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let value_val = get_right_operand(graph, node_idx, &value_map)?;
                     let offset = builder.ins().iconst(types::I64, 0);
-                    let size = builder.ins().iconst(types::I64, 8);
-                    builder.ins().call(
-                        struct_field_set_ref,
-                        &[operand_val, offset, value_val, size],
-                    );
+                    builder
+                        .ins()
+                        .call(struct_field_set_ref, &[operand_val, offset, value_val]);
                 }
             }
         }
