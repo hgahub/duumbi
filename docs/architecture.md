@@ -130,8 +130,26 @@ Example: `duumbi:main/main/entry/2`
 | `Store` | `def_var` | 1 |
 | `Print` | `call duumbi_print_*` | 0 |
 | `Return` | `return` | 0 |
+| `ConstString` (string) | `global_value` + `call duumbi_string_new` | 9a-1 |
+| `PrintString` | `call duumbi_print_string` | 9a-1 |
+| `StringConcat` | `call duumbi_string_concat` | 9a-1 |
+| `StringEquals` | `call duumbi_string_equals` | 9a-1 |
+| `StringCompare` | `call duumbi_string_compare` + `icmp` | 9a-1 |
+| `StringLength` | `call duumbi_string_len` | 9a-1 |
+| `StringSlice` | `call duumbi_string_slice` | 9a-1 |
+| `StringContains` | `call duumbi_string_contains` | 9a-1 |
+| `StringFind` | `call duumbi_string_find` | 9a-1 |
+| `StringFromI64` | `call duumbi_string_from_i64` | 9a-1 |
+| `ArrayNew` | `call duumbi_array_new` | 9a-1 |
+| `ArrayPush` | `call duumbi_array_push` | 9a-1 |
+| `ArrayGet` | `call duumbi_array_get` | 9a-1 |
+| `ArraySet` | `call duumbi_array_set` | 9a-1 |
+| `ArrayLength` | `call duumbi_array_len` | 9a-1 |
+| `StructNew` | `call duumbi_struct_new` | 9a-1 |
+| `FieldGet` | `call duumbi_struct_field_get` | 9a-1 |
+| `FieldSet` | `call duumbi_struct_field_set` | 9a-1 |
 
-**Types:** `i64`, `f64`, `bool`, `void`
+**Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`
 
 ---
 
@@ -210,7 +228,9 @@ E015 integrity mismatch · E016 version not found
 | 4 | Interactive CLI + module system | `abs(-7) = 7` (init → 2-module → binary) ✓ |
 | 5 | Intent-Driven Development | Verifier passes `double(21)=42` via intent pipeline ✓ |
 | 6 | DUUMBI Studio | Leptos SSR web platform with graph visualization ✓ |
-| 7 | Registry & Distribution | Module packaging, publish, install, lockfile v1 (in progress) |
+| 7 | Registry & Distribution | Module packaging, publish, install, lockfile v1 ✓ |
+| 8 | Registry Auth | GitHub OAuth2, JWT sessions, device code flow ✓ |
+| 9a-1 | Heap Types & Runtime | String concat+print, Array push+get, Struct field access (in progress) |
 
 Phases beyond MVP (A–D): Knowledge base, Agent swarm, Self-healing, IDE.
 

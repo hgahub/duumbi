@@ -92,7 +92,7 @@ fn build_graph_impl(
                 let node = GraphNode {
                     id: op_ast.id.clone(),
                     op: op_ast.op.clone(),
-                    result_type: op_ast.result_type,
+                    result_type: op_ast.result_type.clone(),
                     function: func_ast.name.clone(),
                     block: block_ast.label.clone(),
                 };
@@ -120,13 +120,13 @@ fn build_graph_impl(
             .iter()
             .map(|p| ParamInfo {
                 name: p.name.clone(),
-                param_type: p.param_type,
+                param_type: p.param_type.clone(),
             })
             .collect();
 
         functions.push(FunctionInfo {
             name: func_ast.name.clone(),
-            return_type: func_ast.return_type,
+            return_type: func_ast.return_type.clone(),
             params,
             blocks: block_infos,
         });

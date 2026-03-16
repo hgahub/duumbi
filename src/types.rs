@@ -88,8 +88,9 @@ impl fmt::Display for CompareOp {
 /// Each variant corresponds to a `duumbi:` prefixed `@type` in JSON-LD.
 /// Phase 0 ops: Const, Add, Sub, Mul, Div, Print, Return.
 /// Phase 1 ops: ConstF64, ConstBool, Compare, Branch, Call, Load, Store.
+/// Phase 9a-1 ops: ConstString, String*, Array*, Struct*, PrintString.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Phase 1 variants used once parser/compiler are extended
+#[allow(dead_code)] // Variants used as parser/compiler are extended
 pub enum Op {
     /// Integer constant: `duumbi:Const` with `resultType: "i64"`.
     Const(i64),
@@ -97,6 +98,8 @@ pub enum Op {
     ConstF64(f64),
     /// Boolean constant: `duumbi:Const` with `resultType: "bool"`.
     ConstBool(bool),
+    /// String constant: `duumbi:Const` with `resultType: "string"`.
+    ConstString(String),
     /// Addition: `duumbi:Add`
     Add,
     /// Subtraction: `duumbi:Sub`
@@ -126,8 +129,59 @@ pub enum Op {
     },
     /// Print value to stdout: `duumbi:Print`
     Print,
+    /// Print string to stdout: `duumbi:PrintString`
+    PrintString,
     /// Return value from function: `duumbi:Return`
     Return,
+
+    // -- String operations (Phase 9a-1) --
+    /// Concatenate two strings: `duumbi:StringConcat`
+    StringConcat,
+    /// String equality check → bool: `duumbi:StringEquals`
+    StringEquals,
+    /// Lexicographic string comparison: `duumbi:StringCompare`
+    StringCompare(CompareOp),
+    /// String length → i64: `duumbi:StringLength`
+    StringLength,
+    /// Substring extraction: `duumbi:StringSlice`
+    StringSlice,
+    /// Check if string contains substring → bool: `duumbi:StringContains`
+    StringContains,
+    /// Find index of substring → i64 (-1 if not found): `duumbi:StringFind`
+    StringFind,
+    /// Convert i64 to string: `duumbi:StringFromI64`
+    StringFromI64,
+
+    // -- Array operations (Phase 9a-1) --
+    /// Create empty array: `duumbi:ArrayNew`
+    ArrayNew,
+    /// Append element to array: `duumbi:ArrayPush`
+    ArrayPush,
+    /// Get element at index (panic on OOB): `duumbi:ArrayGet`
+    ArrayGet,
+    /// Set element at index (panic on OOB): `duumbi:ArraySet`
+    ArraySet,
+    /// Array length → i64: `duumbi:ArrayLength`
+    ArrayLength,
+    /// Safe get → Option<T> (no panic): `duumbi:ArrayTryGet`
+    ArrayTryGet,
+
+    // -- Struct operations (Phase 9a-1) --
+    /// Create new struct instance: `duumbi:StructNew`
+    StructNew {
+        /// Name of the struct type to instantiate.
+        struct_name: String,
+    },
+    /// Get field value from struct: `duumbi:FieldGet`
+    FieldGet {
+        /// Name of the field to read.
+        field_name: String,
+    },
+    /// Set field value on struct: `duumbi:FieldSet`
+    FieldSet {
+        /// Name of the field to write.
+        field_name: String,
+    },
 }
 
 impl fmt::Display for Op {
@@ -136,6 +190,7 @@ impl fmt::Display for Op {
             Op::Const(v) => write!(f, "Const({v})"),
             Op::ConstF64(v) => write!(f, "ConstF64({v})"),
             Op::ConstBool(v) => write!(f, "ConstBool({v})"),
+            Op::ConstString(v) => write!(f, "ConstString(\"{v}\")"),
             Op::Add => f.write_str("Add"),
             Op::Sub => f.write_str("Sub"),
             Op::Mul => f.write_str("Mul"),
@@ -146,14 +201,77 @@ impl fmt::Display for Op {
             Op::Load { variable } => write!(f, "Load({variable})"),
             Op::Store { variable } => write!(f, "Store({variable})"),
             Op::Print => f.write_str("Print"),
+            Op::PrintString => f.write_str("PrintString"),
             Op::Return => f.write_str("Return"),
+            Op::StringConcat => f.write_str("StringConcat"),
+            Op::StringEquals => f.write_str("StringEquals"),
+            Op::StringCompare(op) => write!(f, "StringCompare({op})"),
+            Op::StringLength => f.write_str("StringLength"),
+            Op::StringSlice => f.write_str("StringSlice"),
+            Op::StringContains => f.write_str("StringContains"),
+            Op::StringFind => f.write_str("StringFind"),
+            Op::StringFromI64 => f.write_str("StringFromI64"),
+            Op::ArrayNew => f.write_str("ArrayNew"),
+            Op::ArrayPush => f.write_str("ArrayPush"),
+            Op::ArrayGet => f.write_str("ArrayGet"),
+            Op::ArraySet => f.write_str("ArraySet"),
+            Op::ArrayLength => f.write_str("ArrayLength"),
+            Op::ArrayTryGet => f.write_str("ArrayTryGet"),
+            Op::StructNew { struct_name } => write!(f, "StructNew({struct_name})"),
+            Op::FieldGet { field_name } => write!(f, "FieldGet({field_name})"),
+            Op::FieldSet { field_name } => write!(f, "FieldSet({field_name})"),
+        }
+    }
+}
+
+impl Op {
+    /// Resolves the output type of this operation.
+    ///
+    /// For ops whose output type depends on context (e.g. `Const`, `Add`, `Load`),
+    /// the `result_type` from the graph node is returned. For ops with a fixed
+    /// output type (e.g. `Compare` → Bool, `Print` → Void), the fixed type is
+    /// returned regardless of `result_type`.
+    ///
+    /// Returns `None` for `Return` and `Branch` (no output value).
+    #[must_use]
+    pub fn output_type(&self, result_type: &Option<DuumbiType>) -> Option<DuumbiType> {
+        match self {
+            Op::Const(_)
+            | Op::ConstF64(_)
+            | Op::ConstBool(_)
+            | Op::ConstString(_)
+            | Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::Load { .. }
+            | Op::Call { .. }
+            | Op::ArrayNew
+            | Op::ArrayGet
+            | Op::ArrayTryGet
+            | Op::StructNew { .. }
+            | Op::FieldGet { .. } => result_type.clone(),
+            Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
+            Op::StringCompare(_) => Some(DuumbiType::Bool),
+            Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+            Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+            Op::Print
+            | Op::PrintString
+            | Op::Store { .. }
+            | Op::ArrayPush
+            | Op::ArraySet
+            | Op::FieldSet { .. } => Some(DuumbiType::Void),
+            Op::Return | Op::Branch => None,
         }
     }
 }
 
 /// Type in the duumbi type system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Phase 1 variants used once parser/compiler are extended
+///
+/// Primitive types (`I64`, `F64`, `Bool`, `Void`) are stack-allocated.
+/// Heap types (`String`, `Array`, `Struct`) are pointer-sized at the
+/// Cranelift level and require runtime allocation/deallocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DuumbiType {
     /// 64-bit signed integer.
     I64,
@@ -163,6 +281,28 @@ pub enum DuumbiType {
     Bool,
     /// No return value (used by Print).
     Void,
+    /// Heap-allocated UTF-8 string.
+    #[allow(dead_code)] // Used starting from Phase 9a-1 string ops
+    String,
+    /// Homogeneous dynamic array, generic over element type.
+    #[allow(dead_code)] // Used starting from Phase 9a-1 array ops
+    Array(Box<DuumbiType>),
+    /// Named struct type. Field definitions are stored in the struct registry,
+    /// not in this enum — only the struct name is carried here.
+    #[allow(dead_code)] // Used starting from Phase 9a-1 struct ops
+    Struct(std::string::String),
+}
+
+impl DuumbiType {
+    /// Returns `true` if this type requires heap allocation.
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-1 codegen
+    pub fn is_heap_type(&self) -> bool {
+        matches!(
+            self,
+            DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_)
+        )
+    }
 }
 
 impl fmt::Display for DuumbiType {
@@ -172,6 +312,9 @@ impl fmt::Display for DuumbiType {
             DuumbiType::F64 => f.write_str("f64"),
             DuumbiType::Bool => f.write_str("bool"),
             DuumbiType::Void => f.write_str("void"),
+            DuumbiType::String => f.write_str("string"),
+            DuumbiType::Array(elem) => write!(f, "array<{elem}>"),
+            DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
         }
     }
 }
@@ -223,5 +366,54 @@ mod tests {
     fn duumbi_type_display_phase1() {
         assert_eq!(DuumbiType::F64.to_string(), "f64");
         assert_eq!(DuumbiType::Bool.to_string(), "bool");
+    }
+
+    #[test]
+    fn duumbi_type_display_heap_types() {
+        assert_eq!(DuumbiType::String.to_string(), "string");
+        assert_eq!(
+            DuumbiType::Array(Box::new(DuumbiType::I64)).to_string(),
+            "array<i64>"
+        );
+        assert_eq!(
+            DuumbiType::Array(Box::new(DuumbiType::String)).to_string(),
+            "array<string>"
+        );
+        assert_eq!(
+            DuumbiType::Struct("Point".to_string()).to_string(),
+            "struct<Point>"
+        );
+    }
+
+    #[test]
+    fn duumbi_type_is_heap_type() {
+        assert!(!DuumbiType::I64.is_heap_type());
+        assert!(!DuumbiType::F64.is_heap_type());
+        assert!(!DuumbiType::Bool.is_heap_type());
+        assert!(!DuumbiType::Void.is_heap_type());
+        assert!(DuumbiType::String.is_heap_type());
+        assert!(DuumbiType::Array(Box::new(DuumbiType::I64)).is_heap_type());
+        assert!(DuumbiType::Struct("Point".to_string()).is_heap_type());
+    }
+
+    #[test]
+    fn duumbi_type_equality() {
+        assert_eq!(DuumbiType::String, DuumbiType::String);
+        assert_eq!(
+            DuumbiType::Array(Box::new(DuumbiType::I64)),
+            DuumbiType::Array(Box::new(DuumbiType::I64))
+        );
+        assert_ne!(
+            DuumbiType::Array(Box::new(DuumbiType::I64)),
+            DuumbiType::Array(Box::new(DuumbiType::F64))
+        );
+        assert_eq!(
+            DuumbiType::Struct("Point".to_string()),
+            DuumbiType::Struct("Point".to_string())
+        );
+        assert_ne!(
+            DuumbiType::Struct("Point".to_string()),
+            DuumbiType::Struct("Vec2".to_string())
+        );
     }
 }

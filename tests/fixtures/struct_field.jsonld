@@ -1,0 +1,65 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:main/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:main/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:StructNew",
+              "@id": "duumbi:main/main/entry/0",
+              "duumbi:structName": "Point",
+              "duumbi:resultType": "struct<Point>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/1",
+              "duumbi:value": 42,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:FieldSet",
+              "@id": "duumbi:main/main/entry/2",
+              "duumbi:fieldName": "x",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:value": { "@id": "duumbi:main/main/entry/1" }
+            },
+            {
+              "@type": "duumbi:FieldGet",
+              "@id": "duumbi:main/main/entry/3",
+              "duumbi:fieldName": "x",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/0" },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Print",
+              "@id": "duumbi:main/main/entry/4",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/3" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/5",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:main/main/entry/6",
+              "duumbi:operand": { "@id": "duumbi:main/main/entry/5" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -131,5 +131,7 @@ fn describe_op(
             }
             format!("Return({val})")
         }
+        // Phase 9a-1 ops — use Display impl for describe output
+        other => format!("{other}"),
     }
 }
