@@ -2,9 +2,10 @@
 tags:
   - project/duumbi
   - milestone/phase-9
-status: planned
-github_milestone: ~
-updated: 2026-03-14
+status: in-progress
+github_milestone: '"Phase 9a-3: Error Handling (#12); Phase 9A: Stdlib (#13);
+  Phase 9B: Multi-LLM (#14); Phase 9C: Benchmark (#15)"'
+updated: 2026-03-17
 ---
 # Phase 9 — Build Excellence & Multi-LLM ⏳
 
@@ -691,3 +692,29 @@ Phase 9 estimate increases from 10–14 weeks to **12–16 weeks**:
 - TLS: +1–2 weeks (mostly C shim + linker flag configuration)
 - SQLite: +1 week (sqlite3.c is drop-in)
 - Event loop: +1–2 weeks (poll() integration + handler dispatch)
+
+
+---
+
+## Scope Decision (2026-03-17)
+
+**Deferred to Phase 10+:** The following sections in this note are deferred and will NOT be implemented in Phase 9:
+
+- **M9-FILE** (File I/O) → Phase 10+
+- **M9-JSON** (JSON Parse & Serialize) → Phase 10+
+- **M9-NET** (TCP + HTTP) → Phase 10+
+- **M9-TLS** (HTTPS via LibreSSL/OpenSSL) → Phase 10+
+- **M9-DB** (SQLite Embedded Database) → Phase 10+
+- **M9-EVENTLOOP** (Connection Multiplexing) → Phase 10+
+
+**Rationale:** These features add significant implementation scope (6+ weeks) without contributing to the Phase 9 kill criterion. The showcases can be implemented with in-memory data structures, String operations, and Result/Option error handling — no file/network I/O needed.
+
+**Showcase #4 (State Machine) simplified:** In-memory state machine with String commands instead of TCP server + JSON config + SQLite storage.
+
+**Revised Phase 9 structure:**
+- **9a-3**: Error Handling (Result/Option types, Match op, E030–E035) — 14 issues, branch `phase9a-3/error-handling`
+- **9A**: Stdlib & Instruction Set (Math ops, stdlib modules) — 16 issues, parallel with 9B
+- **9B**: Multi-LLM Providers (LlmProvider trait, Grok/OpenRouter, fallback) — 12 issues, parallel with 9A
+- **9C**: Benchmark & Showcases (6 showcases, benchmark runner, CI) — 14 issues, depends on 9a-3 + 9A + 9B
+
+**GitHub issues:** #271–#284 (Phase 9a-3)

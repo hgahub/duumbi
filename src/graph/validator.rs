@@ -46,6 +46,11 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
         }
     }
 
+    // Result/Option safety checks (E030–E035) — only run if graph contains such ops
+    if super::result_safety::has_result_option_ops(graph) {
+        super::result_safety::check_result_option_safety(graph, &mut diagnostics);
+    }
+
     diagnostics
 }
 
@@ -93,15 +98,15 @@ fn check_terminator_position(graph: &SemanticGraph, diagnostics: &mut Vec<Diagno
                 continue; // Already reported by check_function_structure
             }
 
-            // Check: last op must be Return or Branch
+            // Check: last op must be Return, Branch, or Match (all are terminators)
             let last_idx = *block_info.nodes.last().expect("invariant: non-empty nodes");
             let last_node = &graph.graph[last_idx];
-            if !matches!(&last_node.op, Op::Return | Op::Branch) {
+            if !matches!(&last_node.op, Op::Return | Op::Branch | Op::Match { .. }) {
                 diagnostics.push(
                     Diagnostic::error(
                         codes::E009_SCHEMA_INVALID,
                         format!(
-                            "Block '{}' in function '{}' does not end with Return or Branch \
+                            "Block '{}' in function '{}' does not end with Return, Branch, or Match \
                              — last op is {} '{}'",
                             block_info.label, func_info.name, last_node.op, last_node.id
                         ),
@@ -653,7 +658,7 @@ mod tests {
         let diags = validate(&sg);
         assert!(
             diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
-                && d.message.contains("does not end with Return or Branch")),
+                && d.message.contains("does not end with Return")),
             "Expected E009 for missing terminator, got: {diags:?}"
         );
     }

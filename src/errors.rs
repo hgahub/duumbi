@@ -79,6 +79,24 @@ pub mod codes {
     /// Return lifetime mismatch: returned borrow doesn't tie to input lifetime.
     #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
     pub const E029_RETURN_LIFETIME_MISMATCH: &str = "E029";
+    /// Unhandled Result: Call returns Result but no Match/ResultIsOk follows in the block.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
+    pub const E030_UNHANDLED_RESULT: &str = "E030";
+    /// Unhandled Option: Call returns Option but no Match/OptionIsSome follows in the block.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
+    pub const E031_UNHANDLED_OPTION: &str = "E031";
+    /// Non-exhaustive match: Match op is missing ok_block or err_block.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
+    pub const E032_NON_EXHAUSTIVE_MATCH: &str = "E032";
+    /// Result/Option type param mismatch: ResultOk wraps wrong type for declared Result<T,E>.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
+    pub const E033_RESULT_TYPE_PARAM_MISMATCH: &str = "E033";
+    /// Unwrap without check: ResultUnwrap/OptionUnwrap used without preceding check in the block.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3) — warning level
+    pub const E034_UNWRAP_WITHOUT_CHECK: &str = "E034";
+    /// Result construction with wrong payload: ResultOk/ResultErr payload doesn't match T or E.
+    #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
+    pub const E035_RESULT_PAYLOAD_TYPE_MISMATCH: &str = "E035";
 }
 
 /// Severity level for a diagnostic message.
@@ -247,6 +265,12 @@ mod tests {
             codes::E027_MOVE_WHILE_BORROWED,
             codes::E028_LIFETIME_PARAM_MISSING,
             codes::E029_RETURN_LIFETIME_MISMATCH,
+            codes::E030_UNHANDLED_RESULT,
+            codes::E031_UNHANDLED_OPTION,
+            codes::E032_NON_EXHAUSTIVE_MATCH,
+            codes::E033_RESULT_TYPE_PARAM_MISMATCH,
+            codes::E034_UNWRAP_WITHOUT_CHECK,
+            codes::E035_RESULT_PAYLOAD_TYPE_MISMATCH,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(codes.len(), unique.len(), "Error codes must be unique");

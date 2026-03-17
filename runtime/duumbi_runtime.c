@@ -241,3 +241,97 @@ void duumbi_struct_field_set(void *s, uint64_t offset, int64_t value) {
 void duumbi_struct_free(void *s) {
     duumbi_dealloc(s);
 }
+
+/* ── Result (tagged union: {i8 discriminant, i64 payload}) ────────── */
+/*
+ * Layout: DuumbiResult = { int8_t tag, int64_t payload }
+ * Tag: 1 = Ok, 0 = Err
+ * Payload: i64-sized value (integer, float bitcast, or pointer)
+ */
+
+typedef struct {
+    int8_t  tag;       /* 1 = Ok, 0 = Err */
+    int64_t payload;
+} DuumbiResult;
+
+void *duumbi_result_new_ok(int64_t payload) {
+    DuumbiResult *r = (DuumbiResult *)duumbi_alloc(sizeof(DuumbiResult));
+    r->tag = 1;
+    r->payload = payload;
+    return r;
+}
+
+void *duumbi_result_new_err(int64_t payload) {
+    DuumbiResult *r = (DuumbiResult *)duumbi_alloc(sizeof(DuumbiResult));
+    r->tag = 0;
+    r->payload = payload;
+    return r;
+}
+
+int8_t duumbi_result_is_ok(void *ptr) {
+    DuumbiResult *r = (DuumbiResult *)ptr;
+    return r->tag;
+}
+
+int64_t duumbi_result_unwrap(void *ptr) {
+    DuumbiResult *r = (DuumbiResult *)ptr;
+    if (r->tag != 1) {
+        duumbi_panic("called Result::unwrap() on an Err value");
+    }
+    return r->payload;
+}
+
+int64_t duumbi_result_unwrap_err(void *ptr) {
+    DuumbiResult *r = (DuumbiResult *)ptr;
+    if (r->tag != 0) {
+        duumbi_panic("called Result::unwrap_err() on an Ok value");
+    }
+    return r->payload;
+}
+
+void duumbi_result_free(void *ptr) {
+    duumbi_dealloc(ptr);
+}
+
+/* ── Option (tagged union: {i8 discriminant, i64 payload}) ────────── */
+/*
+ * Layout: DuumbiOption = { int8_t tag, int64_t payload }
+ * Tag: 1 = Some, 0 = None
+ * Payload: i64-sized value (only meaningful when tag == 1)
+ */
+
+typedef struct {
+    int8_t  tag;       /* 1 = Some, 0 = None */
+    int64_t payload;
+} DuumbiOption;
+
+void *duumbi_option_new_some(int64_t payload) {
+    DuumbiOption *o = (DuumbiOption *)duumbi_alloc(sizeof(DuumbiOption));
+    o->tag = 1;
+    o->payload = payload;
+    return o;
+}
+
+void *duumbi_option_new_none(void) {
+    DuumbiOption *o = (DuumbiOption *)duumbi_alloc(sizeof(DuumbiOption));
+    o->tag = 0;
+    o->payload = 0;
+    return o;
+}
+
+int8_t duumbi_option_is_some(void *ptr) {
+    DuumbiOption *o = (DuumbiOption *)ptr;
+    return o->tag;
+}
+
+int64_t duumbi_option_unwrap(void *ptr) {
+    DuumbiOption *o = (DuumbiOption *)ptr;
+    if (o->tag != 1) {
+        duumbi_panic("called Option::unwrap() on a None value");
+    }
+    return o->payload;
+}
+
+void duumbi_option_free(void *ptr) {
+    duumbi_dealloc(ptr);
+}

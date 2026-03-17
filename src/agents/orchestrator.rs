@@ -38,7 +38,7 @@ A function with no blocks, or a block with no ops, is invalid and will fail comp
 Important rules:\n\
 - All @id values must be globally unique (format: duumbi:<module>/<function>/<block>/<index>)\n\
 - Use the duumbi: prefix for all field names (duumbi:value, duumbi:left, etc.)\n\
-- resultType must be one of: i64, f64, bool, void, string, array<T>, struct<Name>\n\
+- resultType must be one of: i64, f64, bool, void, string, array<T>, struct<Name>, result<T,E>, option<T>\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
 - Operations within a block must form a valid data-flow DAG\n\
 - The last op in each block must be Return or Branch — NO ops may follow a terminator\n\
@@ -78,6 +78,18 @@ Array ops (Phase 9a-1):\n\
 - ArrayPush:   {\"@type\":\"duumbi:ArrayPush\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:element\":{\"@id\":\"…\"}}\n\
 - ArrayGet:    {\"@type\":\"duumbi:ArrayGet\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:index\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
 - ArrayLength: {\"@type\":\"duumbi:ArrayLength\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+\n\
+Result/Option ops (Phase 9a-3):\n\
+- ResultOk:       {\"@type\":\"duumbi:ResultOk\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"result<i64,i64>\"}\n\
+- ResultErr:      {\"@type\":\"duumbi:ResultErr\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"result<i64,i64>\"}\n\
+- ResultIsOk:     {\"@type\":\"duumbi:ResultIsOk\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"bool\"}\n\
+- ResultUnwrap:   {\"@type\":\"duumbi:ResultUnwrap\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- ResultUnwrapErr:{\"@type\":\"duumbi:ResultUnwrapErr\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- OptionSome:     {\"@type\":\"duumbi:OptionSome\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"option<i64>\"}\n\
+- OptionNone:     {\"@type\":\"duumbi:OptionNone\", \"duumbi:resultType\":\"option<i64>\"}\n\
+- OptionIsSome:   {\"@type\":\"duumbi:OptionIsSome\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"bool\"}\n\
+- OptionUnwrap:   {\"@type\":\"duumbi:OptionUnwrap\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- Match:          {\"@type\":\"duumbi:Match\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:okBlock\":\"ok_label\", \"duumbi:errBlock\":\"err_label\"}\n\
 \n\
 Function parameters:\n\
 - Declare them on the function node: \"duumbi:params\":[{\"duumbi:name\":\"x\",\"duumbi:paramType\":\"i64\"}]\n\

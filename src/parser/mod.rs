@@ -98,6 +98,23 @@ fn get_array<'a>(
         })
 }
 
+/// Finds the position of the first comma at nesting depth 0.
+///
+/// Used to split `result<T,E>` type strings where T or E may themselves
+/// contain angle brackets (e.g. `result<array<i64>,string>`).
+fn find_top_level_comma(s: &str) -> Option<usize> {
+    let mut depth = 0u32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
     match s {
         "i64" => Ok(DuumbiType::I64),
@@ -113,6 +130,21 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         _ if s.starts_with("struct<") && s.ends_with('>') => {
             let name = &s[7..s.len() - 1];
             Ok(DuumbiType::Struct(name.to_string()))
+        }
+        _ if s.starts_with("result<") && s.ends_with('>') => {
+            let inner = &s[7..s.len() - 1];
+            let comma = find_top_level_comma(inner).ok_or_else(|| ParseError::SchemaInvalid {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("result type must have two type parameters: '{s}'"),
+            })?;
+            let ok_type = parse_type_str(&inner[..comma])?;
+            let err_type = parse_type_str(&inner[comma + 1..])?;
+            Ok(DuumbiType::Result(Box::new(ok_type), Box::new(err_type)))
+        }
+        _ if s.starts_with("option<") && s.ends_with('>') => {
+            let inner = &s[7..s.len() - 1];
+            let inner_type = parse_type_str(inner)?;
+            Ok(DuumbiType::Option(Box::new(inner_type)))
         }
         _ if s.starts_with("&mut ") => {
             let inner = &s[5..];
@@ -743,6 +775,93 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             if let Ok(operand) = parse_node_ref(value, "duumbi:operand", node_id_str) {
                 ast.operand = Some(operand);
             }
+            Ok(ast)
+        }
+        // -- Result ops (Phase 9a-3) --
+        "duumbi:ResultOk" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ResultOk, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ResultErr" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ResultErr, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ResultIsOk" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ResultIsOk, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ResultUnwrap" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::ResultUnwrap,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ResultUnwrapErr" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::ResultUnwrapErr,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        // -- Option ops (Phase 9a-3) --
+        "duumbi:OptionSome" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::OptionSome, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:OptionNone" => Ok(make_op_ast(
+            NodeId(node_id_str.to_string()),
+            Op::OptionNone,
+            result_type,
+        )),
+        "duumbi:OptionIsSome" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::OptionIsSome,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:OptionUnwrap" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::OptionUnwrap,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        // -- Match op (Phase 9a-3) --
+        "duumbi:Match" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let ok_block = get_str(value, "duumbi:okBlock", node_id_str)?;
+            let err_block = get_str(value, "duumbi:errBlock", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Match {
+                    ok_block: ok_block.to_string(),
+                    err_block: err_block.to_string(),
+                },
+                result_type,
+            );
+            ast.operand = Some(operand);
             Ok(ast)
         }
         other => Err(ParseError::UnknownOp {

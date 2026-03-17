@@ -53,6 +53,21 @@ struct RuntimeFuncs {
     struct_field_get: FuncId,
     struct_field_set: FuncId,
     struct_free: FuncId,
+
+    // Result functions (Phase 9a-3)
+    result_new_ok: FuncId,
+    result_new_err: FuncId,
+    result_is_ok: FuncId,
+    result_unwrap: FuncId,
+    result_unwrap_err: FuncId,
+    result_free: FuncId,
+
+    // Option functions (Phase 9a-3)
+    option_new_some: FuncId,
+    option_new_none: FuncId,
+    option_is_some: FuncId,
+    option_unwrap: FuncId,
+    option_free: FuncId,
 }
 
 /// Helper to declare an imported C function with given param/return types.
@@ -139,6 +154,26 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
             &[],
         )?,
         struct_free: declare_runtime_fn(module, "duumbi_struct_free", &[i64t], &[])?,
+
+        // Result functions (Phase 9a-3) — all pointers represented as i64
+        result_new_ok: declare_runtime_fn(module, "duumbi_result_new_ok", &[i64t], &[i64t])?,
+        result_new_err: declare_runtime_fn(module, "duumbi_result_new_err", &[i64t], &[i64t])?,
+        result_is_ok: declare_runtime_fn(module, "duumbi_result_is_ok", &[i64t], &[i8t])?,
+        result_unwrap: declare_runtime_fn(module, "duumbi_result_unwrap", &[i64t], &[i64t])?,
+        result_unwrap_err: declare_runtime_fn(
+            module,
+            "duumbi_result_unwrap_err",
+            &[i64t],
+            &[i64t],
+        )?,
+        result_free: declare_runtime_fn(module, "duumbi_result_free", &[i64t], &[])?,
+
+        // Option functions (Phase 9a-3)
+        option_new_some: declare_runtime_fn(module, "duumbi_option_new_some", &[i64t], &[i64t])?,
+        option_new_none: declare_runtime_fn(module, "duumbi_option_new_none", &[], &[i64t])?,
+        option_is_some: declare_runtime_fn(module, "duumbi_option_is_some", &[i64t], &[i8t])?,
+        option_unwrap: declare_runtime_fn(module, "duumbi_option_unwrap", &[i64t], &[i64t])?,
+        option_free: declare_runtime_fn(module, "duumbi_option_free", &[i64t], &[])?,
     })
 }
 
@@ -157,6 +192,8 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => types::I64,
         // References are pointer-sized (Phase 9a-2)
         DuumbiType::Ref(_) | DuumbiType::RefMut(_) => types::I64,
+        // Result/Option are pointer-sized tagged unions (Phase 9a-3)
+        DuumbiType::Result(_, _) | DuumbiType::Option(_) => types::I64,
     }
 }
 
@@ -494,6 +531,22 @@ fn compile_function(
         obj_module.declare_func_in_func(runtime.struct_field_set, builder.func);
     let struct_free_ref = obj_module.declare_func_in_func(runtime.struct_free, builder.func);
 
+    // Result/Option function refs (Phase 9a-3)
+    let result_new_ok_ref = obj_module.declare_func_in_func(runtime.result_new_ok, builder.func);
+    let result_new_err_ref = obj_module.declare_func_in_func(runtime.result_new_err, builder.func);
+    let result_is_ok_ref = obj_module.declare_func_in_func(runtime.result_is_ok, builder.func);
+    let result_unwrap_ref = obj_module.declare_func_in_func(runtime.result_unwrap, builder.func);
+    let result_unwrap_err_ref =
+        obj_module.declare_func_in_func(runtime.result_unwrap_err, builder.func);
+    let result_free_ref = obj_module.declare_func_in_func(runtime.result_free, builder.func);
+    let option_new_some_ref =
+        obj_module.declare_func_in_func(runtime.option_new_some, builder.func);
+    let option_new_none_ref =
+        obj_module.declare_func_in_func(runtime.option_new_none, builder.func);
+    let option_is_some_ref = obj_module.declare_func_in_func(runtime.option_is_some, builder.func);
+    let option_unwrap_ref = obj_module.declare_func_in_func(runtime.option_unwrap, builder.func);
+    let option_free_ref = obj_module.declare_func_in_func(runtime.option_free, builder.func);
+
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
     for (name, &fid) in func_ids {
@@ -705,6 +758,12 @@ fn compile_function(
                             }
                             DuumbiType::Struct(_) => {
                                 builder.ins().call(struct_free_ref, &[*val]);
+                            }
+                            DuumbiType::Result(_, _) => {
+                                builder.ins().call(result_free_ref, &[*val]);
+                            }
+                            DuumbiType::Option(_) => {
+                                builder.ins().call(option_free_ref, &[*val]);
                             }
                             _ => {}
                         }
@@ -959,6 +1018,12 @@ fn compile_function(
                         Some(DuumbiType::Struct(_)) => {
                             builder.ins().call(struct_free_ref, &[operand_val]);
                         }
+                        Some(DuumbiType::Result(_, _)) => {
+                            builder.ins().call(result_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::Option(_)) => {
+                            builder.ins().call(option_free_ref, &[operand_val]);
+                        }
                         _ => {}
                     }
                     // Remove from heap_allocs — explicitly freed
@@ -968,14 +1033,130 @@ fn compile_function(
                         heap_allocs.remove(pos);
                     }
                 }
+                // -- Phase 9a-3: Result ops --
+                Op::ResultOk => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(result_new_ok_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ResultErr => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(result_new_err_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ResultIsOk => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(result_is_ok_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ResultUnwrap => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(result_unwrap_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ResultUnwrapErr => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(result_unwrap_err_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9a-3: Option ops --
+                Op::OptionSome => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(option_new_some_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::OptionNone => {
+                    // option_new_none() takes no arguments
+                    let call = builder.ins().call(option_new_none_ref, &[]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::OptionIsSome => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(option_is_some_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::OptionUnwrap => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(option_unwrap_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9a-3: Match op --
+                Op::Match {
+                    ok_block,
+                    err_block,
+                } => {
+                    // Get the Result/Option value being matched
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+
+                    // Determine discriminant: is_ok for Result, is_some for Option
+                    let operand_type = get_operand_output_type(graph, node_idx);
+                    let discriminant = match &operand_type {
+                        Some(DuumbiType::Option(_)) => {
+                            let call = builder.ins().call(option_is_some_ref, &[operand_val]);
+                            builder.inst_results(call)[0]
+                        }
+                        Some(DuumbiType::Result(_, _)) => {
+                            let call = builder.ins().call(result_is_ok_ref, &[operand_val]);
+                            builder.inst_results(call)[0]
+                        }
+                        other => {
+                            return Err(CompileError::Cranelift {
+                                message: format!(
+                                    "Match operand must be Result or Option, found {:?} at node {}",
+                                    other, node.id
+                                ),
+                            });
+                        }
+                    };
+
+                    // Look up target Cranelift blocks
+                    let ok_cl_block = block_map.get(ok_block).copied().ok_or_else(|| {
+                        CompileError::Cranelift {
+                            message: format!(
+                                "Match ok_block '{}' not found in function '{}'",
+                                ok_block, func_info.name
+                            ),
+                        }
+                    })?;
+                    let err_cl_block = block_map.get(err_block).copied().ok_or_else(|| {
+                        CompileError::Cranelift {
+                            message: format!(
+                                "Match err_block '{}' not found in function '{}'",
+                                err_block, func_info.name
+                            ),
+                        }
+                    })?;
+
+                    // Branch: non-zero discriminant → ok_block, zero → err_block
+                    builder
+                        .ins()
+                        .brif(discriminant, ok_cl_block, &[], err_cl_block, &[]);
+                }
             }
 
             // Track heap-producing non-ownership ops for auto-drop.
-            // ConstString, StringConcat, StringSlice, StringFromI64, ArrayNew, StructNew
-            // all allocate heap memory that must be freed.
+            // ConstString, StringConcat, StringSlice, StringFromI64, ArrayNew, StructNew,
+            // ResultOk, ResultErr, OptionSome, OptionNone all allocate heap memory.
+            // Match and Branch are control-flow terminators with no result value.
             if !matches!(
                 &node.op,
-                Op::Alloc { .. } | Op::Move { .. } | Op::Drop { .. } | Op::Return | Op::Branch
+                Op::Alloc { .. }
+                    | Op::Move { .. }
+                    | Op::Drop { .. }
+                    | Op::Return
+                    | Op::Branch
+                    | Op::Match { .. }
             ) && let Some(ref rt) = node.result_type
                 && rt.is_heap_type()
                 && let Some(&val) = value_map.get(&node.id)
@@ -1214,6 +1395,8 @@ fn type_size(ty: &DuumbiType) -> i64 {
         DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => 8,
         // References are pointer-sized (Phase 9a-2)
         DuumbiType::Ref(_) | DuumbiType::RefMut(_) => 8,
+        // Result/Option are pointer-sized tagged unions (Phase 9a-3)
+        DuumbiType::Result(_, _) | DuumbiType::Option(_) => 8,
     }
 }
 

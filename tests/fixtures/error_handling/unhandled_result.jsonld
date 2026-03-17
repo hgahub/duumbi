@@ -1,0 +1,69 @@
+{
+    "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:test",
+    "duumbi:name": "test",
+    "duumbi:functions": [
+        {
+            "@type": "duumbi:Function",
+            "@id": "duumbi:test/get_value",
+            "duumbi:name": "get_value",
+            "duumbi:returnType": "result<i64,i64>",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:test/get_value/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:test/get_value/entry/0",
+                        "duumbi:value": 42,
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:ResultOk",
+                        "@id": "duumbi:test/get_value/entry/1",
+                        "duumbi:operand": {"@id": "duumbi:test/get_value/entry/0"},
+                        "duumbi:resultType": "result<i64,i64>"
+                    },
+                    {
+                        "@type": "duumbi:Return",
+                        "@id": "duumbi:test/get_value/entry/2",
+                        "duumbi:operand": {"@id": "duumbi:test/get_value/entry/1"}
+                    }
+                ]
+            }]
+        },
+        {
+            "@type": "duumbi:Function",
+            "@id": "duumbi:test/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:test/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {
+                        "@type": "duumbi:Call",
+                        "@id": "duumbi:test/main/entry/0",
+                        "duumbi:function": "get_value",
+                        "duumbi:args": [],
+                        "duumbi:resultType": "result<i64,i64>"
+                    },
+                    {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:test/main/entry/1",
+                        "duumbi:value": 0,
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:Return",
+                        "@id": "duumbi:test/main/entry/2",
+                        "duumbi:operand": {"@id": "duumbi:test/main/entry/1"}
+                    }
+                ]
+            }]
+        }
+    ]
+}
