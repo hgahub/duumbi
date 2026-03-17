@@ -47,6 +47,20 @@ Quick capture. Regularly process into Dots or discard. Contains historical docum
 5. **Architecture**: Read [[DUUMBI Technical Architecture Map]] for technical decisions
 6. **Roadmap**: Read [[DUUMBI Roadmap Map]] for timeline and business context
 
+### Documentation sync agent
+
+For recurring GitHub → Obsidian synchronization work, use the dedicated Copilot prompt file:
+
+- `.github/prompts/obsidian-doc-sync.prompt.md`
+
+The workflow is intentionally lightweight and repeatable:
+
+1. Review the relevant GitHub project, milestone, and issue status first
+2. Work on a dedicated branch and PR because `main` is protected
+3. Update only the affected roadmap / phase notes under `docs/Obsidian/`
+4. Keep the frontmatter status fields and roadmap snapshot current
+5. Share the completion summary in Discord instead of email
+
 **Rules for graph mutations:**
 - Every mutation must pass schema validation (`duumbi check`)
 - The graph must reach [[Semantic Fixed Point]] before compilation
