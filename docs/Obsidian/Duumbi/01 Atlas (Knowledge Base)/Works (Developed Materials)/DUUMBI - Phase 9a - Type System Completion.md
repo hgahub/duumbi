@@ -2,15 +2,15 @@
 tags:
   - project/duumbi
   - milestone/phase-9a
-status: in-progress
+status: complete
 github_milestone: "Phase 9a-1: Heap Types & Runtime; Phase 9a-2: Ownership & Lifetimes"
-github_issues: "18/18 closed in Phase 9a-1; 1 open in Phase 9a-2"
+github_issues: "18/18 closed in Phase 9a-1; 19/19 closed in Phase 9a-2 (37 total)"
 updated: 2026-03-17
 ---
-# Phase 9a — Type System Completion 🔄
+# Phase 9a — Type System Completion ✅
 
 > **Kill Criterion:** (1) A String variable is created, concatenated, compared, and printed in a compiled binary. (2) A dynamic Array is created, elements appended, indexed, and iterated. (3) The schema validator rejects a use-after-move, a double-borrow-mut, and a dangling reference — all at graph validation time, before compilation. (4) A function returns `Result<i64, String>` — the caller handles both Ok and Err paths, and the validator rejects unhandled error cases. (5) All existing Phase 0–8 tests remain green.
-> **Status:** 🔄 In progress — Phase 9a-1 completed on 2026-03-16 (18/18 issues closed, integration kill criterion green); Phase 9a-2 ownership/lifetimes has started with `#240` open
+> **Status:** ✅ Complete — Phase 9a-1 completed on 2026-03-16 (18/18 issues closed, integration kill criterion green); Phase 9a-2 completed on 2026-03-17 (19/19 issues closed, PR #268 merged — ownership/lifetimes validator live)
 > **Estimated duration:** 10–14 weeks (solo developer)
 
 ← Back: [[DUUMBI Roadmap Map]]
@@ -49,13 +49,25 @@ Delivered scope from the GitHub project:
 - **Verification:** end-to-end integration tests for String / Array / Struct kill criterion are closed and passing (`#243`)
 - **Documentation:** core architecture / CLAUDE docs were updated in `#244`
 
-### 🔄 Active next slice: Phase 9a-2 — Ownership & Lifetimes
+### ✅ Completed in GitHub: Phase 9a-2 — Ownership & Lifetimes
 
 - **Milestone:** [Phase 9a-2: Ownership & Lifetimes](https://github.com/hgahub/duumbi/milestone/11)
-- **Open issue:** [#240 Heap memory management: Drop insertion at block scope exits](https://github.com/hgahub/duumbi/issues/240)
-- **Meaning:** the heap/runtime foundation is done, but ownership graph rules (`E020`–`E029`) and automatic Drop/lifetime enforcement are still the active work.
+- **Issue status:** 19/19 closed (`#240`, `#250`–`#267`)
+- **Merged:** PR [#268](https://github.com/hgahub/duumbi/pull/268) on 2026-03-17
+- **Validated in repo:** 890 tests total (62 new), 9 integration tests, 6 JSON-LD fixtures green
 
-> The checklist below remains the **full Phase 9a target state**. The GitHub project has already delivered the Phase 9a-1 subset above; the remaining unchecked items mostly belong to Phase 9a-2+ work.
+Delivered scope from the GitHub project:
+
+- **Types + ops:** `Op::Alloc`, `Op::Move`, `Op::Borrow`, `Op::Drop`; `DuumbiType::Ref(&T)`, `DuumbiType::RefMut(&mut T)` (`#250`–`#251`)
+- **Error codes:** E020–E029 ownership error codes added (`#252`)
+- **Graph layer:** ownership metadata on `GraphNode`; `Owns`, `MovesFrom`, `BorrowsFrom`, `Drops` edge variants; new `src/graph/ownership.rs` (`#253`–`#254`)
+- **Parser:** `duumbi:Alloc/Move/Borrow/BorrowMut/Drop` node parsing; `&T` / `&mut T` type strings; lifetime parameters on functions (`#255`–`#258`)
+- **Validator:** ownership state tracker + 6 checks: E021 use-after-move, E022 borrow exclusivity, E023 lifetime, E024–E026 drop/dangling, E028–E029 cross-function lifetimes (`#259`–`#264`)
+- **Codegen:** Alloc → `_new()`, Move/Borrow → pointer copy, Drop → `_free()`, automatic LIFO Drop before Return (`#265`)
+- **Tests:** property-based + integration + regression suite (`#266`)
+- **Documentation:** CLAUDE.md + architecture docs updated for ownership (`#267`)
+
+> Phase 9a is now **fully delivered** across both sub-milestones. All 37 issues across Phase 9a-1 and Phase 9a-2 are closed.
 
 ---
 
