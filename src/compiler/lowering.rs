@@ -68,6 +68,18 @@ struct RuntimeFuncs {
     option_is_some: FuncId,
     option_unwrap: FuncId,
     option_free: FuncId,
+
+    // Math functions (Phase 9A)
+    sqrt: FuncId,
+    pow: FuncId,
+    powi64: FuncId,
+    fmod: FuncId,
+
+    // String utility functions (Phase 9A)
+    string_trim: FuncId,
+    string_to_upper: FuncId,
+    string_to_lower: FuncId,
+    string_replace: FuncId,
 }
 
 /// Helper to declare an imported C function with given param/return types.
@@ -174,6 +186,23 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
         option_is_some: declare_runtime_fn(module, "duumbi_option_is_some", &[i64t], &[i8t])?,
         option_unwrap: declare_runtime_fn(module, "duumbi_option_unwrap", &[i64t], &[i64t])?,
         option_free: declare_runtime_fn(module, "duumbi_option_free", &[i64t], &[])?,
+
+        // Math functions (Phase 9A) — link with -lm
+        sqrt: declare_runtime_fn(module, "duumbi_sqrt", &[f64t], &[f64t])?,
+        pow: declare_runtime_fn(module, "duumbi_pow", &[f64t, f64t], &[f64t])?,
+        powi64: declare_runtime_fn(module, "duumbi_powi64", &[i64t, i64t], &[i64t])?,
+        fmod: declare_runtime_fn(module, "duumbi_fmod", &[f64t, f64t], &[f64t])?,
+
+        // String utility functions (Phase 9A)
+        string_trim: declare_runtime_fn(module, "duumbi_string_trim", &[i64t], &[i64t])?,
+        string_to_upper: declare_runtime_fn(module, "duumbi_string_to_upper", &[i64t], &[i64t])?,
+        string_to_lower: declare_runtime_fn(module, "duumbi_string_to_lower", &[i64t], &[i64t])?,
+        string_replace: declare_runtime_fn(
+            module,
+            "duumbi_string_replace",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
     })
 }
 
@@ -547,6 +576,20 @@ fn compile_function(
     let option_unwrap_ref = obj_module.declare_func_in_func(runtime.option_unwrap, builder.func);
     let option_free_ref = obj_module.declare_func_in_func(runtime.option_free, builder.func);
 
+    // Math function references (Phase 9A)
+    let sqrt_ref = obj_module.declare_func_in_func(runtime.sqrt, builder.func);
+    let pow_ref = obj_module.declare_func_in_func(runtime.pow, builder.func);
+    let powi64_ref = obj_module.declare_func_in_func(runtime.powi64, builder.func);
+    let fmod_ref = obj_module.declare_func_in_func(runtime.fmod, builder.func);
+
+    // String utility function references (Phase 9A)
+    let string_trim_ref = obj_module.declare_func_in_func(runtime.string_trim, builder.func);
+    let string_to_upper_ref =
+        obj_module.declare_func_in_func(runtime.string_to_upper, builder.func);
+    let string_to_lower_ref =
+        obj_module.declare_func_in_func(runtime.string_to_lower, builder.func);
+    let string_replace_ref = obj_module.declare_func_in_func(runtime.string_replace, builder.func);
+
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
     for (name, &fid) in func_ids {
@@ -856,6 +899,48 @@ fn compile_function(
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
+                Op::StringTrim => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_trim_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringToUpper => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_to_upper_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringToLower => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_to_lower_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringReplace => {
+                    // haystack = operand, needle = left, replacement = right
+                    let haystack_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let (needle_val, replacement_val) =
+                        get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(
+                        string_replace_ref,
+                        &[haystack_val, needle_val, replacement_val],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9A: Type cast ops --
+                Op::CastI64ToF64 => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let result = builder.ins().fcvt_from_sint(types::F64, operand_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::CastF64ToI64 => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let result = builder.ins().fcvt_to_sint_sat(types::I64, operand_val);
+                    value_map.insert(node.id.clone(), result);
+                }
 
                 // -- Phase 9a-1: Array ops --
                 Op::ArrayNew => {
@@ -1143,11 +1228,89 @@ fn compile_function(
                         .ins()
                         .brif(discriminant, ok_cl_block, &[], err_cl_block, &[]);
                 }
+
+                // -- Phase 9A: Math ops --
+                Op::Modulo => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let is_float = node.result_type == Some(DuumbiType::F64);
+                    let result = if is_float {
+                        // f64 modulo via C shim (fmod)
+                        let call = builder.ins().call(fmod_ref, &[left_val, right_val]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        // i64 modulo: signed remainder
+                        builder.ins().srem(left_val, right_val)
+                    };
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::Negate => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let is_float = node.result_type == Some(DuumbiType::F64);
+                    let result = if is_float {
+                        builder.ins().fneg(operand_val)
+                    } else {
+                        builder.ins().ineg(operand_val)
+                    };
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::Sqrt => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(sqrt_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::Pow => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(pow_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::PowI64 => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(powi64_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9A: Bitwise ops --
+                Op::BitwiseAnd => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = builder.ins().band(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::BitwiseOr => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = builder.ins().bor(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::BitwiseXor => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = builder.ins().bxor(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::BitwiseNot => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let result = builder.ins().bnot(operand_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ShiftLeft => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = builder.ins().ishl(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ShiftRight => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = builder.ins().sshr(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
             }
 
             // Track heap-producing non-ownership ops for auto-drop.
-            // ConstString, StringConcat, StringSlice, StringFromI64, ArrayNew, StructNew,
-            // ResultOk, ResultErr, OptionSome, OptionNone all allocate heap memory.
+            // Any op whose output_type() is a heap type (string, array, struct,
+            // result, option) gets tracked here. This includes ConstString,
+            // StringConcat, StringSlice, StringFromI64, StringTrim, StringToUpper,
+            // StringToLower, StringReplace, ArrayNew, StructNew, ResultOk,
+            // ResultErr, OptionSome, OptionNone, and future heap-producing ops.
             // Match and Branch are control-flow terminators with no result value.
             if !matches!(
                 &node.op,
@@ -1869,8 +2032,8 @@ mod tests {
         );
         assert_eq!(
             program.exports.len(),
-            3,
-            "abs + max + min should be exported"
+            8,
+            "abs + max + min + sqrt + pow + mod + clamp + sign should be exported"
         );
 
         let objects = compile_program(&program).expect("stdlib math must compile");

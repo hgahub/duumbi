@@ -151,6 +151,20 @@ pub enum Op {
     StringFind,
     /// Convert i64 to string: `duumbi:StringFromI64`
     StringFromI64,
+    /// Trim leading/trailing whitespace from a string: `duumbi:StringTrim`
+    StringTrim,
+    /// Convert string to ASCII uppercase: `duumbi:StringToUpper`
+    StringToUpper,
+    /// Convert string to ASCII lowercase: `duumbi:StringToLower`
+    StringToLower,
+    /// Replace first occurrence of needle with replacement: `duumbi:StringReplace`
+    StringReplace,
+
+    // -- Type cast operations (Phase 9A) --
+    /// Cast i64 to f64: `duumbi:CastI64ToF64`
+    CastI64ToF64,
+    /// Cast f64 to i64 (saturating): `duumbi:CastF64ToI64`
+    CastF64ToI64,
 
     // -- Array operations (Phase 9a-1) --
     /// Create empty array: `duumbi:ArrayNew`
@@ -237,6 +251,32 @@ pub enum Op {
         /// Block label for the Err/None branch.
         err_block: String,
     },
+
+    // -- Math operations (Phase 9A) --
+    /// Modulo (remainder): `duumbi:Modulo` — i64: `srem`, f64: `duumbi_fmod` C shim
+    Modulo,
+    /// Negate: `duumbi:Negate` — i64: `ineg`, f64: `fneg`
+    Negate,
+    /// Square root (f64 only): `duumbi:Sqrt` — via C shim `duumbi_sqrt`
+    Sqrt,
+    /// Float power (f64 only): `duumbi:Pow` — via C shim `duumbi_pow`
+    Pow,
+    /// Integer power (i64 only): `duumbi:PowI64` — via C shim `duumbi_powi64`
+    PowI64,
+
+    // -- Bitwise operations (Phase 9A) --
+    /// Bitwise AND (i64): `duumbi:BitwiseAnd` — `band`
+    BitwiseAnd,
+    /// Bitwise OR (i64): `duumbi:BitwiseOr` — `bor`
+    BitwiseOr,
+    /// Bitwise XOR (i64): `duumbi:BitwiseXor` — `bxor`
+    BitwiseXor,
+    /// Bitwise NOT (i64): `duumbi:BitwiseNot` — `bnot`
+    BitwiseNot,
+    /// Shift left (i64): `duumbi:ShiftLeft` — `ishl`
+    ShiftLeft,
+    /// Shift right arithmetic (i64): `duumbi:ShiftRight` — `sshr`
+    ShiftRight,
 }
 
 impl fmt::Display for Op {
@@ -266,6 +306,12 @@ impl fmt::Display for Op {
             Op::StringContains => f.write_str("StringContains"),
             Op::StringFind => f.write_str("StringFind"),
             Op::StringFromI64 => f.write_str("StringFromI64"),
+            Op::StringTrim => f.write_str("StringTrim"),
+            Op::StringToUpper => f.write_str("StringToUpper"),
+            Op::StringToLower => f.write_str("StringToLower"),
+            Op::StringReplace => f.write_str("StringReplace"),
+            Op::CastI64ToF64 => f.write_str("CastI64ToF64"),
+            Op::CastF64ToI64 => f.write_str("CastF64ToI64"),
             Op::ArrayNew => f.write_str("ArrayNew"),
             Op::ArrayPush => f.write_str("ArrayPush"),
             Op::ArrayGet => f.write_str("ArrayGet"),
@@ -299,6 +345,17 @@ impl fmt::Display for Op {
                 ok_block,
                 err_block,
             } => write!(f, "Match({ok_block},{err_block})"),
+            Op::Modulo => f.write_str("Modulo"),
+            Op::Negate => f.write_str("Negate"),
+            Op::Sqrt => f.write_str("Sqrt"),
+            Op::Pow => f.write_str("Pow"),
+            Op::PowI64 => f.write_str("PowI64"),
+            Op::BitwiseAnd => f.write_str("BitwiseAnd"),
+            Op::BitwiseOr => f.write_str("BitwiseOr"),
+            Op::BitwiseXor => f.write_str("BitwiseXor"),
+            Op::BitwiseNot => f.write_str("BitwiseNot"),
+            Op::ShiftLeft => f.write_str("ShiftLeft"),
+            Op::ShiftRight => f.write_str("ShiftRight"),
         }
     }
 }
@@ -335,8 +392,16 @@ impl Op {
             | Op::Borrow { .. } => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
-            Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+            Op::StringConcat
+            | Op::StringSlice
+            | Op::StringFromI64
+            | Op::StringTrim
+            | Op::StringToUpper
+            | Op::StringToLower
+            | Op::StringReplace => Some(DuumbiType::String),
             Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+            Op::CastI64ToF64 => Some(DuumbiType::F64),
+            Op::CastF64ToI64 => Some(DuumbiType::I64),
             Op::Print
             | Op::PrintString
             | Op::Store { .. }
@@ -344,6 +409,18 @@ impl Op {
             | Op::ArraySet
             | Op::FieldSet { .. }
             | Op::Drop { .. } => Some(DuumbiType::Void),
+            // Math ops with context-dependent output type (i64 or f64)
+            Op::Modulo | Op::Negate => result_type.clone(),
+            // Sqrt/Pow always produce f64; PowI64 always produces i64
+            Op::Sqrt | Op::Pow => Some(DuumbiType::F64),
+            Op::PowI64 => Some(DuumbiType::I64),
+            // Bitwise ops always produce i64
+            Op::BitwiseAnd
+            | Op::BitwiseOr
+            | Op::BitwiseXor
+            | Op::BitwiseNot
+            | Op::ShiftLeft
+            | Op::ShiftRight => Some(DuumbiType::I64),
             // Result/Option ops with context-dependent output
             Op::ResultOk | Op::ResultErr | Op::OptionSome | Op::OptionNone => result_type.clone(),
             // Result/Option ops with fixed output types

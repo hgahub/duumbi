@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -334,4 +335,111 @@ int64_t duumbi_option_unwrap(void *ptr) {
 
 void duumbi_option_free(void *ptr) {
     duumbi_dealloc(ptr);
+}
+
+/* ── Math (Phase 9A — link with -lm) ─────────────────────────────── */
+
+double duumbi_sqrt(double x) {
+    return sqrt(x);
+}
+
+double duumbi_pow(double base, double exp) {
+    return pow(base, exp);
+}
+
+int64_t duumbi_powi64(int64_t base, int64_t exp) {
+    if (exp < 0) return 0;  /* integer power of negative exponent → 0 */
+    /* Use unsigned arithmetic to avoid signed overflow UB, then cast back. */
+    uint64_t ubase = (uint64_t)base;
+    uint64_t uresult = 1;
+    uint64_t uexp = (uint64_t)exp;
+    while (uexp > 0) {
+        if (uexp & 1) uresult *= ubase;
+        ubase *= ubase;
+        uexp >>= 1;
+    }
+    return (int64_t)uresult;
+}
+
+double duumbi_fmod(double a, double b) {
+    return fmod(a, b);
+}
+
+/* ── String utilities (Phase 9A stdlib) ──────────────────────────── */
+
+void *duumbi_string_trim(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    uint64_t start = 0;
+    while (start < s->len && (s->data[start] == ' ' || s->data[start] == '\t' ||
+           s->data[start] == '\n' || s->data[start] == '\r')) {
+        start++;
+    }
+    uint64_t end = s->len;
+    while (end > start && (s->data[end - 1] == ' ' || s->data[end - 1] == '\t' ||
+           s->data[end - 1] == '\n' || s->data[end - 1] == '\r')) {
+        end--;
+    }
+    return duumbi_string_new(s->data + start, end - start);
+}
+
+void *duumbi_string_to_upper(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + s->len + 1);
+    result->len = s->len;
+    for (uint64_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        result->data[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    result->data[s->len] = '\0';
+    return result;
+}
+
+void *duumbi_string_to_lower(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + s->len + 1);
+    result->len = s->len;
+    for (uint64_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        result->data[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    result->data[s->len] = '\0';
+    return result;
+}
+
+void *duumbi_string_replace(void *haystack, void *needle, void *replacement) {
+    DuumbiString *h = (DuumbiString *)haystack;
+    DuumbiString *n = (DuumbiString *)needle;
+    DuumbiString *r = (DuumbiString *)replacement;
+
+    if (n->len == 0 || h->len < n->len) {
+        /* Empty needle or haystack too short: return a copy unchanged */
+        return duumbi_string_new(h->data, h->len);
+    }
+
+    /* Find first occurrence only */
+    uint64_t match_pos = h->len; /* sentinel: not found */
+    for (uint64_t i = 0; i <= h->len - n->len; i++) {
+        if (memcmp(h->data + i, n->data, (size_t)n->len) == 0) {
+            match_pos = i;
+            break;
+        }
+    }
+
+    if (match_pos == h->len) {
+        /* Not found: return a copy unchanged */
+        return duumbi_string_new(h->data, h->len);
+    }
+
+    uint64_t new_len = h->len - n->len + r->len;
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + new_len + 1);
+    result->len = new_len;
+
+    /* Copy prefix + replacement + suffix */
+    memcpy(result->data, h->data, (size_t)match_pos);
+    memcpy(result->data + match_pos, r->data, (size_t)r->len);
+    memcpy(result->data + match_pos + r->len,
+           h->data + match_pos + n->len,
+           (size_t)(h->len - match_pos - n->len));
+    result->data[new_len] = '\0';
+    return result;
 }
