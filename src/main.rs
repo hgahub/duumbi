@@ -213,27 +213,12 @@ fn resolve_output(explicit: Option<&Path>) -> Result<PathBuf> {
 
 /// Applies an AI-generated mutation to the graph.
 ///
-/// Loads `.duumbi/config.toml` for LLM provider settings, saves a snapshot
-/// of the current graph, calls the LLM, applies the patch, validates, and
-/// writes the updated graph if the user confirms (or `--yes` is passed).
+/// Loads `.duumbi/config.toml` for LLM provider settings (supports both
+/// `[[providers]]` and legacy `[llm]` formats), saves a snapshot of the
+/// current graph, calls the LLM, applies the patch, validates, and writes
+/// the updated graph if the user confirms (or `--yes` is passed).
 async fn add(request: &str, yes: bool) -> Result<()> {
     let workspace_root = PathBuf::from(".");
-
-    let cfg = config::load_config(&workspace_root).context(
-        "Cannot run 'duumbi add': no .duumbi/config.toml found or [llm] section missing.\n\
-         Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
-    )?;
-
-    let llm_cfg = cfg.llm.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No [llm] section in .duumbi/config.toml.\n\
-             Add provider, model, and api_key_env settings."
-        )
-    })?;
-
-    let api_key = llm_cfg
-        .resolve_api_key()
-        .context("Failed to resolve LLM API key")?;
 
     let graph_path = workspace_root
         .join(".duumbi")
@@ -246,17 +231,9 @@ async fn add(request: &str, yes: bool) -> Result<()> {
     let source: serde_json::Value =
         serde_json::from_str(&source_str).context("Failed to parse current graph as JSON")?;
 
-    let client: agents::LlmClient = match llm_cfg.provider {
-        config::LlmProvider::Anthropic => Box::new(agents::anthropic::AnthropicClient::new(
-            &llm_cfg.model,
-            api_key,
-        )),
-        config::LlmProvider::OpenAI => {
-            Box::new(agents::openai::OpenAiClient::new(&llm_cfg.model, api_key))
-        }
-    };
+    let client = require_llm_client(&workspace_root)?;
 
-    eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
+    eprintln!("Calling {}…", client.name());
 
     let result = orchestrator::mutate(&client, &source, request, 3).await?;
 

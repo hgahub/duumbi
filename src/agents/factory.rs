@@ -25,24 +25,46 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, 
             api_key,
         )),
         ProviderKind::OpenAI => {
-            let mut client = super::openai::OpenAiClient::new(&config.model, api_key);
-            if let Some(ref url) = config.base_url {
-                client = super::openai::OpenAiClient::with_base_url(
-                    &config.model,
-                    config
-                        .resolve_api_key()
-                        .map_err(|e| AgentError::Parse(format!("Cannot resolve API key: {e}")))?,
-                    url,
-                );
-            }
+            // Reuse the already-resolved api_key to avoid a redundant env var read.
+            let client = if let Some(ref url) = config.base_url {
+                super::openai::OpenAiClient::with_base_url(&config.model, api_key, url)
+            } else {
+                super::openai::OpenAiClient::new(&config.model, api_key)
+            };
             Box::new(client)
         }
-        ProviderKind::Grok => Box::new(super::grok::GrokClient::new(&config.model, api_key)),
-        ProviderKind::OpenRouter => Box::new(super::openrouter::OpenRouterClient::new(
-            &config.model,
-            api_key,
-        )),
+        ProviderKind::Grok => {
+            // Honor base_url override if configured (e.g. a custom xAI proxy).
+            if let Some(ref url) = config.base_url {
+                Box::new(
+                    super::openai::OpenAiClient::with_base_url(&config.model, api_key, url)
+                        .with_provider_name("grok"),
+                )
+            } else {
+                Box::new(super::grok::GrokClient::new(&config.model, api_key))
+            }
+        }
+        ProviderKind::OpenRouter => {
+            if config.base_url.is_some() {
+                tracing::warn!(
+                    "base_url is not supported for the OpenRouter provider \
+                     (required attribution headers would be lost); \
+                     base_url is ignored"
+                );
+            }
+            Box::new(super::openrouter::OpenRouterClient::new(
+                &config.model,
+                api_key,
+            ))
+        }
     };
+
+    if config.timeout_secs.is_some() {
+        tracing::warn!(
+            provider = %config.provider,
+            "timeout_secs is not yet implemented for this provider and will be ignored"
+        );
+    }
 
     Ok(provider)
 }
@@ -89,12 +111,16 @@ mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderKind, ProviderRole};
 
-    fn make_config(kind: ProviderKind, role: ProviderRole) -> ProviderConfig {
+    fn make_config_with_env(
+        kind: ProviderKind,
+        role: ProviderRole,
+        env_var: &str,
+    ) -> ProviderConfig {
         ProviderConfig {
             provider: kind,
             role,
             model: "test-model".to_string(),
-            api_key_env: "DUUMBI_TEST_FACTORY_KEY".to_string(),
+            api_key_env: env_var.to_string(),
             base_url: None,
             timeout_secs: None,
         }
@@ -102,30 +128,43 @@ mod tests {
 
     #[test]
     fn create_provider_anthropic() {
-        // SAFETY: test-only env var
-        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_KEY", "sk-test") };
-        let config = make_config(ProviderKind::Anthropic, ProviderRole::Primary);
+        // Use a unique env var per test to avoid races with parallel test cleanup.
+        // SAFETY: test-only env var, unique name prevents collision
+        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_ANTHROPIC", "sk-test") };
+        let config = make_config_with_env(
+            ProviderKind::Anthropic,
+            ProviderRole::Primary,
+            "DUUMBI_TEST_FACTORY_ANTHROPIC",
+        );
         let provider = create_provider(&config).expect("must create");
         assert_eq!(provider.name(), "anthropic");
-        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_KEY") };
+        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_ANTHROPIC") };
     }
 
     #[test]
     fn create_provider_grok() {
-        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_KEY", "sk-test") };
-        let config = make_config(ProviderKind::Grok, ProviderRole::Primary);
+        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_GROK", "sk-test") };
+        let config = make_config_with_env(
+            ProviderKind::Grok,
+            ProviderRole::Primary,
+            "DUUMBI_TEST_FACTORY_GROK",
+        );
         let provider = create_provider(&config).expect("must create");
         assert_eq!(provider.name(), "grok");
-        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_KEY") };
+        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_GROK") };
     }
 
     #[test]
     fn create_provider_openrouter() {
-        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_KEY", "sk-test") };
-        let config = make_config(ProviderKind::OpenRouter, ProviderRole::Primary);
+        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_OPENROUTER", "sk-test") };
+        let config = make_config_with_env(
+            ProviderKind::OpenRouter,
+            ProviderRole::Primary,
+            "DUUMBI_TEST_FACTORY_OPENROUTER",
+        );
         let provider = create_provider(&config).expect("must create");
         assert_eq!(provider.name(), "openrouter");
-        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_KEY") };
+        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_OPENROUTER") };
     }
 
     #[test]
@@ -147,11 +186,15 @@ mod tests {
 
     #[test]
     fn create_chain_single_provider() {
-        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_KEY", "sk-test") };
-        let configs = vec![make_config(ProviderKind::Anthropic, ProviderRole::Primary)];
+        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_SINGLE", "sk-test") };
+        let configs = vec![make_config_with_env(
+            ProviderKind::Anthropic,
+            ProviderRole::Primary,
+            "DUUMBI_TEST_FACTORY_SINGLE",
+        )];
         let provider = create_provider_chain(&configs).expect("must create");
         assert_eq!(provider.name(), "anthropic");
-        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_KEY") };
+        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_SINGLE") };
     }
 
     #[test]

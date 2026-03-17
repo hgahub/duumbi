@@ -246,9 +246,10 @@ async fn call_plain_completion(
     // Mutex lets the closure satisfy Fn + Send + Sync while accumulating chunks.
     let response = std::sync::Mutex::new(String::new());
 
-    // Ignore the Vec<PatchOp> result — we only care about the streamed text.
-    // AgentError::NoToolCalls is expected here (the LLM outputs text, not tool calls).
-    let _ = client
+    // AgentError::NoToolCalls is the expected success path here (the LLM outputs
+    // plain text, not tool calls). All other errors (Http, ApiError, Timeout,
+    // RateLimited, Parse) are fatal and must be surfaced to the caller.
+    let result = client
         .call_with_tools_streaming(system, user, &|chunk: &str| {
             response
                 .lock()
@@ -256,6 +257,12 @@ async fn call_plain_completion(
                 .push_str(chunk);
         })
         .await;
+
+    if let Err(e) = result {
+        if !matches!(e, crate::agents::AgentError::NoToolCalls) {
+            return Err(anyhow::anyhow!("LLM call failed: {e}"));
+        }
+    }
 
     let text = response
         .into_inner()

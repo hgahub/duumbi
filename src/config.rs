@@ -81,19 +81,6 @@ pub struct LlmConfig {
     pub api_key_env: String,
 }
 
-impl LlmConfig {
-    /// Resolves the API key by reading the configured environment variable.
-    ///
-    /// Returns an error if the env var is not set.
-    #[must_use = "must use the resolved API key or handle the error"]
-    pub fn resolve_api_key(&self) -> Result<String, ConfigError> {
-        std::env::var(&self.api_key_env).map_err(|_| ConfigError::Invalid {
-            field: "api_key_env".to_string(),
-            reason: format!("Environment variable '{}' is not set", self.api_key_env),
-        })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Phase 9B: Multi-provider configuration
 // ---------------------------------------------------------------------------
@@ -526,37 +513,6 @@ api_key_env = "COHERE_KEY"
         );
         let err = load_config(tmp.path()).expect_err("unknown provider must fail");
         assert!(matches!(err, ConfigError::Parse(_)));
-    }
-
-    #[test]
-    fn resolve_api_key_returns_value_when_set() {
-        let llm = LlmConfig {
-            provider: LlmProvider::Anthropic,
-            model: "claude-sonnet-4-6".to_string(),
-            api_key_env: "DUUMBI_TEST_KEY_ABC123".to_string(),
-        };
-        // SAFETY: test-only env mutation; var name is unique to this test.
-        // Cargo's test harness runs these tests single-threaded by default.
-        unsafe { std::env::set_var("DUUMBI_TEST_KEY_ABC123", "sk-test") };
-        let key = llm
-            .resolve_api_key()
-            .expect("key must resolve when env var is set");
-        assert_eq!(key, "sk-test");
-        // SAFETY: same rationale — cleaning up what we set.
-        unsafe { std::env::remove_var("DUUMBI_TEST_KEY_ABC123") };
-    }
-
-    #[test]
-    fn resolve_api_key_errors_when_unset() {
-        let llm = LlmConfig {
-            provider: LlmProvider::Anthropic,
-            model: "claude-sonnet-4-6".to_string(),
-            api_key_env: "DUUMBI_DEFINITELY_NOT_SET_XYZ".to_string(),
-        };
-        let err = llm
-            .resolve_api_key()
-            .expect_err("must error when env var missing");
-        assert!(matches!(err, ConfigError::Invalid { .. }));
     }
 
     #[test]
