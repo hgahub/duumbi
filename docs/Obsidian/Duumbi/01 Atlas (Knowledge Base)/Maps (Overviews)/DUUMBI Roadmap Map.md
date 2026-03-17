@@ -4,11 +4,11 @@ tags:
   - map/roadmap
 status: active
 created: 2026-03-12
-updated: 2026-03-14
+updated: 2026-03-17
 ---
 # DUUMBI — Development Roadmap (Hub)
 
-> Master overview. Every milestone links to its own note. Status reflects GitHub Issues and actual completion.
+> Master overview. Every milestone links to its own note. Status reflects GitHub issues, milestones, and actual completion.
 
 ---
 
@@ -24,8 +24,8 @@ updated: 2026-03-14
 | 5 | Intent-Driven Development | 22/22 ✓ | ✅ Done |
 | 6 | DUUMBI Studio | 47/47 ✓ | ✅ Done |
 | 7 | Registry & Distribution | 35/37 ✓ | 🔄 In Progress (2 infra) |
-| 8 | Registry Auth & User Management | done | ✅ Done |
-| 9a | Type System Completion | – | ⏳ Planned |
+| 8 | Registry Auth & User Management | 22/22 ✓ | ✅ Done |
+| 9a | Type System Completion | 18/19 ✓ | 🔄 In Progress (Phase 9a-1 done, 9a-2 started) |
 | 9 | Build Excellence & Multi-LLM | – | ⏳ Planned |
 | 10 | Intelligent Context & Knowledge Graph | – | ⏳ Planned |
 | 11 | CLI UX & Developer Experience | – | ⏳ Planned |
@@ -33,7 +33,7 @@ updated: 2026-03-14
 | 13 | Self-Healing & Telemetry | – | ⏳ Planned |
 | 14 | Marketing & Go-to-Market | – | ⏳ Planned (continuous) |
 
-**Current branch:** `phase7/registry-distribution` (2 infra issues remaining)
+**Current delivery focus:** Phase 9a-2 Ownership & Lifetimes (`#240` open)
 
 ---
 
@@ -81,7 +81,7 @@ Phase 9: Build Excellence & Multi-LLM
 
 ### Type System & Build (Phase 9a–9) ⏳
 
-- [[DUUMBI - Phase 9a - Type System Completion]] — String, Array, Struct, linear ownership, full lifetimes ⏳
+- [[DUUMBI - Phase 9a - Type System Completion]] — String, Array, Struct delivered; ownership/lifetimes in progress 🔄
 - [[DUUMBI - Phase 9 - Build Excellence & Multi-LLM]] — Stdlib, multi-provider, autoresearch benchmarks ⏳
 
 ### Intelligence & UX (Phase 10–11) ⏳
@@ -196,6 +196,9 @@ Phase 9: Build Excellence & Multi-LLM
 > **Revised time estimates:** Phase 9a: 10–14 wks (unchanged). Phase 9: 12–16 wks (was 10–14). **Total sequential: ~54–74 weeks for Phase 9a–13.**
 >
 > **Why this matters:** These three changes transform DUUMBI from "demo-grade calculator" to "production-viable tool with TLS, database, multi-connection server, and access to the C ecosystem via FFI."
+
+
+> [!success] **Execution update (2026-03-17):** Phase 8 is fully complete (`#194`–`#215`, 22/22 issues closed). Phase 9a has started in GitHub: milestone **Phase 9a-1: Heap Types & Runtime** closed all 18 tracked issues (`#227`–`#244`, including integration kill criterion `#243`), and the next active item is **#240 Heap memory management: Drop insertion at block scope exits** in milestone **Phase 9a-2: Ownership & Lifetimes**.
 
 
 > [!note] **Phase 15 update (2026-03-15):** Phase 15a (LLVM Backend) expanded to include **WASM compilation target** (`duumbi build --target wasm32`). WASM enables: browser-based DUUMBI playground (onboarding), Figma plugin generation (with MCP client from Phase 12), Cloudflare Workers / edge computing deployment. Requires WASI-compatible runtime shim (replaces libc-based C shim). Phase 12 also gained **MCP Client capability** — agents can call external MCP servers (Figma, GitHub, Browser, Database) alongside internal DUUMBI tools.
