@@ -4,13 +4,13 @@ Use this prompt when completed GitHub project, milestone, or issue work must be 
 
 ## Primary targets
 
-Start with the roadmap and the phase notes that are most likely to drift from GitHub execution status:
+Start with the roadmap map, then determine the affected phase/milestone notes from the current GitHub project state:
 
 - `docs/Obsidian/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Roadmap Map.md`
-- `docs/Obsidian/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Phase 8 - Registry Auth & User Management.md`
-- `docs/Obsidian/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Phase 9a - Type System Completion.md`
 
-Expand to other linked notes only when the GitHub project state shows they are also affected.
+Use the roadmap links plus the relevant GitHub project / milestone / issue set to identify which `DUUMBI - Phase ...` notes need updates for the current sync.
+
+Expand to other linked notes only when the roadmap map or GitHub project state shows they are also affected.
 
 ## Required workflow
 
