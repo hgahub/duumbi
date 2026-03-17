@@ -151,6 +151,20 @@ pub enum Op {
     StringFind,
     /// Convert i64 to string: `duumbi:StringFromI64`
     StringFromI64,
+    /// Trim leading/trailing whitespace from a string: `duumbi:StringTrim`
+    StringTrim,
+    /// Convert string to ASCII uppercase: `duumbi:StringToUpper`
+    StringToUpper,
+    /// Convert string to ASCII lowercase: `duumbi:StringToLower`
+    StringToLower,
+    /// Replace first occurrence of needle with replacement: `duumbi:StringReplace`
+    StringReplace,
+
+    // -- Type cast operations (Phase 9A) --
+    /// Cast i64 to f64: `duumbi:CastI64ToF64`
+    CastI64ToF64,
+    /// Cast f64 to i64 (saturating): `duumbi:CastF64ToI64`
+    CastF64ToI64,
 
     // -- Array operations (Phase 9a-1) --
     /// Create empty array: `duumbi:ArrayNew`
@@ -292,6 +306,12 @@ impl fmt::Display for Op {
             Op::StringContains => f.write_str("StringContains"),
             Op::StringFind => f.write_str("StringFind"),
             Op::StringFromI64 => f.write_str("StringFromI64"),
+            Op::StringTrim => f.write_str("StringTrim"),
+            Op::StringToUpper => f.write_str("StringToUpper"),
+            Op::StringToLower => f.write_str("StringToLower"),
+            Op::StringReplace => f.write_str("StringReplace"),
+            Op::CastI64ToF64 => f.write_str("CastI64ToF64"),
+            Op::CastF64ToI64 => f.write_str("CastF64ToI64"),
             Op::ArrayNew => f.write_str("ArrayNew"),
             Op::ArrayPush => f.write_str("ArrayPush"),
             Op::ArrayGet => f.write_str("ArrayGet"),
@@ -372,8 +392,16 @@ impl Op {
             | Op::Borrow { .. } => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
-            Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
+            Op::StringConcat
+            | Op::StringSlice
+            | Op::StringFromI64
+            | Op::StringTrim
+            | Op::StringToUpper
+            | Op::StringToLower
+            | Op::StringReplace => Some(DuumbiType::String),
             Op::StringLength | Op::StringFind | Op::ArrayLength => Some(DuumbiType::I64),
+            Op::CastI64ToF64 => Some(DuumbiType::F64),
+            Op::CastF64ToI64 => Some(DuumbiType::I64),
             Op::Print
             | Op::PrintString
             | Op::Store { .. }

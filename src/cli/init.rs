@@ -11,11 +11,17 @@ use anyhow::{Context, Result};
 
 use crate::manifest::ModuleManifest;
 
-/// Embedded `stdlib/math.jsonld` — abs, max, min for i64.
+/// Embedded `stdlib/math.jsonld` — abs, max, min, sqrt, pow, mod, clamp, sign.
 const STDLIB_MATH: &str = include_str!("../../stdlib/math.jsonld");
 
-/// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool.
+/// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool, string.
 const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
+
+/// Embedded `stdlib/lang.jsonld` — language utilities (assert_true).
+const STDLIB_LANG: &str = include_str!("../../stdlib/lang.jsonld");
+
+/// Embedded `stdlib/string.jsonld` — string utilities (length, contains, find).
+const STDLIB_STRING: &str = include_str!("../../stdlib/string.jsonld");
 
 /// Stdlib module versions pinned at init time.
 const STDLIB_VERSION: &str = "1.0.0";
@@ -76,6 +82,8 @@ duumbi = "https://registry.duumbi.dev"
 [dependencies]
 "@duumbi/stdlib-math" = "1.0.0"
 "@duumbi/stdlib-io" = "1.0.0"
+"@duumbi/stdlib-lang" = "1.0.0"
+"@duumbi/stdlib-string" = "1.0.0"
 
 # Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
 # [llm]
@@ -97,8 +105,7 @@ const GITIGNORE: &str = "\
 ///
 /// Creates `.duumbi/` with subdirectories for config, graph, schema, build,
 /// telemetry, and intents. Stdlib modules are written to the M5 cache layout:
-/// `.duumbi/cache/@duumbi/stdlib-math@1.0.0/` and
-/// `.duumbi/cache/@duumbi/stdlib-io@1.0.0/`.
+/// `.duumbi/cache/@duumbi/stdlib-{math,io,lang,string}@1.0.0/`.
 /// Fails if `.duumbi/` already exists.
 pub fn run_init(base: &Path) -> Result<()> {
     let duumbi_dir = base.join(".duumbi");
@@ -131,8 +138,17 @@ pub fn run_init(base: &Path) -> Result<()> {
         ModuleManifest::new(
             "@duumbi/stdlib-math",
             STDLIB_VERSION,
-            "Mathematical utility functions (abs, max, min) for i64",
-            vec!["abs".to_string(), "max".to_string(), "min".to_string()],
+            "Mathematical utility functions (abs, max, min, sqrt, pow, mod, clamp, sign)",
+            vec![
+                "abs".to_string(),
+                "max".to_string(),
+                "min".to_string(),
+                "sqrt".to_string(),
+                "pow".to_string(),
+                "mod".to_string(),
+                "clamp".to_string(),
+                "sign".to_string(),
+            ],
         ),
     )
     .context("Failed to write stdlib math module")?;
@@ -148,15 +164,62 @@ pub fn run_init(base: &Path) -> Result<()> {
         ModuleManifest::new(
             "@duumbi/stdlib-io",
             STDLIB_VERSION,
-            "I/O utility functions (print wrappers for i64, f64, bool)",
+            "I/O utility functions (print wrappers for i64, f64, bool, string)",
             vec![
                 "print_i64".to_string(),
                 "print_f64".to_string(),
                 "print_bool".to_string(),
+                "print_string".to_string(),
             ],
         ),
     )
     .context("Failed to write stdlib io module")?;
+
+    // Write stdlib lang module to cache
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-lang",
+        STDLIB_VERSION,
+        "lang.jsonld",
+        STDLIB_LANG,
+        ModuleManifest::new(
+            "@duumbi/stdlib-lang",
+            STDLIB_VERSION,
+            "Language utility functions (assert_true, i64_to_f64, f64_to_i64)",
+            vec![
+                "assert_true".to_string(),
+                "i64_to_f64".to_string(),
+                "f64_to_i64".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib lang module")?;
+
+    // Write stdlib string module to cache
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-string",
+        STDLIB_VERSION,
+        "string.jsonld",
+        STDLIB_STRING,
+        ModuleManifest::new(
+            "@duumbi/stdlib-string",
+            STDLIB_VERSION,
+            "String utility functions (length, contains, find, trim, to_upper, to_lower, replace)",
+            vec![
+                "length".to_string(),
+                "contains".to_string(),
+                "find".to_string(),
+                "trim".to_string(),
+                "to_upper".to_string(),
+                "to_lower".to_string(),
+                "replace".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib string module")?;
 
     // Write config (includes stdlib deps by default)
     fs::write(duumbi_dir.join("config.toml"), DEFAULT_CONFIG)
@@ -245,6 +308,26 @@ mod tests {
             d.join("cache/@duumbi/stdlib-io@1.0.0/manifest.toml")
                 .exists(),
             "stdlib-io manifest must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-lang@1.0.0/graph/lang.jsonld")
+                .exists(),
+            "stdlib-lang jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-lang@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-lang manifest must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-string@1.0.0/graph/string.jsonld")
+                .exists(),
+            "stdlib-string jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-string@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-string manifest must exist"
         );
     }
 

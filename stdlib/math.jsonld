@@ -3,7 +3,7 @@
   "@type": "duumbi:Module",
   "@id": "duumbi:math",
   "duumbi:name": "math",
-  "duumbi:exports": ["abs", "max", "min"],
+  "duumbi:exports": ["abs", "max", "min", "sqrt", "pow", "mod", "clamp", "sign"],
   "duumbi:functions": [
     {
       "@type": "duumbi:Function",
@@ -166,6 +166,255 @@
               "duumbi:variable": "y", "duumbi:resultType": "i64"},
             {"@type": "duumbi:Return", "@id": "duumbi:math/min/min_y/1",
               "duumbi:operand": {"@id": "duumbi:math/min/min_y/0"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:math/sqrt",
+      "duumbi:name": "sqrt",
+      "duumbi:returnType": "f64",
+      "duumbi:params": [{"duumbi:name": "x", "duumbi:paramType": "f64"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sqrt/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/sqrt/entry/0",
+              "duumbi:variable": "x", "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Sqrt", "@id": "duumbi:math/sqrt/entry/1",
+              "duumbi:operand": {"@id": "duumbi:math/sqrt/entry/0"},
+              "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/sqrt/entry/2",
+              "duumbi:operand": {"@id": "duumbi:math/sqrt/entry/1"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:math/pow",
+      "duumbi:name": "pow",
+      "duumbi:returnType": "f64",
+      "duumbi:params": [
+        {"duumbi:name": "base", "duumbi:paramType": "f64"},
+        {"duumbi:name": "exp", "duumbi:paramType": "f64"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/pow/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/pow/entry/0",
+              "duumbi:variable": "base", "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Load", "@id": "duumbi:math/pow/entry/1",
+              "duumbi:variable": "exp", "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Pow", "@id": "duumbi:math/pow/entry/2",
+              "duumbi:left": {"@id": "duumbi:math/pow/entry/0"},
+              "duumbi:right": {"@id": "duumbi:math/pow/entry/1"},
+              "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/pow/entry/3",
+              "duumbi:operand": {"@id": "duumbi:math/pow/entry/2"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:math/mod",
+      "duumbi:name": "mod",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [
+        {"duumbi:name": "a", "duumbi:paramType": "i64"},
+        {"duumbi:name": "b", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/mod/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/mod/entry/0",
+              "duumbi:variable": "a", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Load", "@id": "duumbi:math/mod/entry/1",
+              "duumbi:variable": "b", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Modulo", "@id": "duumbi:math/mod/entry/2",
+              "duumbi:left": {"@id": "duumbi:math/mod/entry/0"},
+              "duumbi:right": {"@id": "duumbi:math/mod/entry/1"},
+              "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/mod/entry/3",
+              "duumbi:operand": {"@id": "duumbi:math/mod/entry/2"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:math/clamp",
+      "duumbi:name": "clamp",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [
+        {"duumbi:name": "val", "duumbi:paramType": "i64"},
+        {"duumbi:name": "lo", "duumbi:paramType": "i64"},
+        {"duumbi:name": "hi", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/clamp/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/entry/0",
+              "duumbi:variable": "val", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/entry/1",
+              "duumbi:variable": "lo", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Compare", "@id": "duumbi:math/clamp/entry/2",
+              "duumbi:operator": "lt",
+              "duumbi:left": {"@id": "duumbi:math/clamp/entry/0"},
+              "duumbi:right": {"@id": "duumbi:math/clamp/entry/1"},
+              "duumbi:resultType": "bool"},
+            {"@type": "duumbi:Branch", "@id": "duumbi:math/clamp/entry/3",
+              "duumbi:condition": {"@id": "duumbi:math/clamp/entry/2"},
+              "duumbi:trueBlock": "clamp_lo",
+              "duumbi:falseBlock": "clamp_check_hi"}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/clamp/clamp_lo",
+          "duumbi:label": "clamp_lo",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/clamp_lo/0",
+              "duumbi:variable": "lo", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/clamp/clamp_lo/1",
+              "duumbi:operand": {"@id": "duumbi:math/clamp/clamp_lo/0"}}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/clamp/clamp_check_hi",
+          "duumbi:label": "clamp_check_hi",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/clamp_check_hi/0",
+              "duumbi:variable": "val", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/clamp_check_hi/1",
+              "duumbi:variable": "hi", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Compare", "@id": "duumbi:math/clamp/clamp_check_hi/2",
+              "duumbi:operator": "gt",
+              "duumbi:left": {"@id": "duumbi:math/clamp/clamp_check_hi/0"},
+              "duumbi:right": {"@id": "duumbi:math/clamp/clamp_check_hi/1"},
+              "duumbi:resultType": "bool"},
+            {"@type": "duumbi:Branch", "@id": "duumbi:math/clamp/clamp_check_hi/3",
+              "duumbi:condition": {"@id": "duumbi:math/clamp/clamp_check_hi/2"},
+              "duumbi:trueBlock": "clamp_hi",
+              "duumbi:falseBlock": "clamp_val"}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/clamp/clamp_hi",
+          "duumbi:label": "clamp_hi",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/clamp_hi/0",
+              "duumbi:variable": "hi", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/clamp/clamp_hi/1",
+              "duumbi:operand": {"@id": "duumbi:math/clamp/clamp_hi/0"}}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/clamp/clamp_val",
+          "duumbi:label": "clamp_val",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/clamp/clamp_val/0",
+              "duumbi:variable": "val", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/clamp/clamp_val/1",
+              "duumbi:operand": {"@id": "duumbi:math/clamp/clamp_val/0"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:math/sign",
+      "duumbi:name": "sign",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [{"duumbi:name": "x", "duumbi:paramType": "i64"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sign/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/sign/entry/0",
+              "duumbi:variable": "x", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Const", "@id": "duumbi:math/sign/entry/1",
+              "duumbi:value": 0, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Compare", "@id": "duumbi:math/sign/entry/2",
+              "duumbi:operator": "lt",
+              "duumbi:left": {"@id": "duumbi:math/sign/entry/0"},
+              "duumbi:right": {"@id": "duumbi:math/sign/entry/1"},
+              "duumbi:resultType": "bool"},
+            {"@type": "duumbi:Branch", "@id": "duumbi:math/sign/entry/3",
+              "duumbi:condition": {"@id": "duumbi:math/sign/entry/2"},
+              "duumbi:trueBlock": "sign_neg",
+              "duumbi:falseBlock": "sign_check_pos"}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sign/sign_neg",
+          "duumbi:label": "sign_neg",
+          "duumbi:ops": [
+            {"@type": "duumbi:Const", "@id": "duumbi:math/sign/sign_neg/0",
+              "duumbi:value": -1, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/sign/sign_neg/1",
+              "duumbi:operand": {"@id": "duumbi:math/sign/sign_neg/0"}}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sign/sign_check_pos",
+          "duumbi:label": "sign_check_pos",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:math/sign/sign_check_pos/0",
+              "duumbi:variable": "x", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Const", "@id": "duumbi:math/sign/sign_check_pos/1",
+              "duumbi:value": 0, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Compare", "@id": "duumbi:math/sign/sign_check_pos/2",
+              "duumbi:operator": "gt",
+              "duumbi:left": {"@id": "duumbi:math/sign/sign_check_pos/0"},
+              "duumbi:right": {"@id": "duumbi:math/sign/sign_check_pos/1"},
+              "duumbi:resultType": "bool"},
+            {"@type": "duumbi:Branch", "@id": "duumbi:math/sign/sign_check_pos/3",
+              "duumbi:condition": {"@id": "duumbi:math/sign/sign_check_pos/2"},
+              "duumbi:trueBlock": "sign_pos",
+              "duumbi:falseBlock": "sign_zero"}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sign/sign_pos",
+          "duumbi:label": "sign_pos",
+          "duumbi:ops": [
+            {"@type": "duumbi:Const", "@id": "duumbi:math/sign/sign_pos/0",
+              "duumbi:value": 1, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/sign/sign_pos/1",
+              "duumbi:operand": {"@id": "duumbi:math/sign/sign_pos/0"}}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:math/sign/sign_zero",
+          "duumbi:label": "sign_zero",
+          "duumbi:ops": [
+            {"@type": "duumbi:Const", "@id": "duumbi:math/sign/sign_zero/0",
+              "duumbi:value": 0, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:math/sign/sign_zero/1",
+              "duumbi:operand": {"@id": "duumbi:math/sign/sign_zero/0"}}
           ]
         }
       ]

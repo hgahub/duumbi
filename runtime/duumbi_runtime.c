@@ -408,34 +408,35 @@ void *duumbi_string_replace(void *haystack, void *needle, void *replacement) {
     DuumbiString *n = (DuumbiString *)needle;
     DuumbiString *r = (DuumbiString *)replacement;
 
-    if (n->len == 0) {
-        /* Empty needle: return a copy */
+    if (n->len == 0 || h->len < n->len) {
+        /* Empty needle or haystack too short: return a copy unchanged */
         return duumbi_string_new(h->data, h->len);
     }
 
-    /* Count occurrences to pre-allocate */
-    uint64_t count = 0;
+    /* Find first occurrence only */
+    uint64_t match_pos = h->len; /* sentinel: not found */
     for (uint64_t i = 0; i <= h->len - n->len; i++) {
         if (memcmp(h->data + i, n->data, (size_t)n->len) == 0) {
-            count++;
-            i += n->len - 1;
+            match_pos = i;
+            break;
         }
     }
 
-    uint64_t new_len = h->len + count * (r->len - n->len);
+    if (match_pos == h->len) {
+        /* Not found: return a copy unchanged */
+        return duumbi_string_new(h->data, h->len);
+    }
+
+    uint64_t new_len = h->len - n->len + r->len;
     DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + new_len + 1);
     result->len = new_len;
 
-    uint64_t wi = 0;
-    for (uint64_t i = 0; i < h->len; ) {
-        if (i <= h->len - n->len && memcmp(h->data + i, n->data, (size_t)n->len) == 0) {
-            memcpy(result->data + wi, r->data, (size_t)r->len);
-            wi += r->len;
-            i += n->len;
-        } else {
-            result->data[wi++] = h->data[i++];
-        }
-    }
+    /* Copy prefix + replacement + suffix */
+    memcpy(result->data, h->data, (size_t)match_pos);
+    memcpy(result->data + match_pos, r->data, (size_t)r->len);
+    memcpy(result->data + match_pos + r->len,
+           h->data + match_pos + n->len,
+           (size_t)(h->len - match_pos - n->len));
     result->data[new_len] = '\0';
     return result;
 }

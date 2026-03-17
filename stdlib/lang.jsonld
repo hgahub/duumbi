@@ -1,0 +1,104 @@
+{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:lang",
+  "duumbi:name": "lang",
+  "duumbi:exports": ["assert_true", "i64_to_f64", "f64_to_i64"],
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:lang/assert_true",
+      "duumbi:name": "assert_true",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [{"duumbi:name": "val", "duumbi:paramType": "bool"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:lang/assert_true/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:lang/assert_true/entry/0",
+              "duumbi:variable": "val", "duumbi:resultType": "bool"},
+            {"@type": "duumbi:Branch", "@id": "duumbi:lang/assert_true/entry/1",
+              "duumbi:condition": {"@id": "duumbi:lang/assert_true/entry/0"},
+              "duumbi:trueBlock": "assert_pass",
+              "duumbi:falseBlock": "assert_fail"}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:lang/assert_true/assert_pass",
+          "duumbi:label": "assert_pass",
+          "duumbi:ops": [
+            {"@type": "duumbi:Const", "@id": "duumbi:lang/assert_true/assert_pass/0",
+              "duumbi:value": 0, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:lang/assert_true/assert_pass/1",
+              "duumbi:operand": {"@id": "duumbi:lang/assert_true/assert_pass/0"}}
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:lang/assert_true/assert_fail",
+          "duumbi:label": "assert_fail",
+          "duumbi:ops": [
+            {"@type": "duumbi:Const", "@id": "duumbi:lang/assert_true/assert_fail/0",
+              "duumbi:value": "assertion failed: expected true",
+              "duumbi:resultType": "string"},
+            {"@type": "duumbi:PrintString", "@id": "duumbi:lang/assert_true/assert_fail/1",
+              "duumbi:operand": {"@id": "duumbi:lang/assert_true/assert_fail/0"}},
+            {"@type": "duumbi:Const", "@id": "duumbi:lang/assert_true/assert_fail/2",
+              "duumbi:value": 1, "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:lang/assert_true/assert_fail/3",
+              "duumbi:operand": {"@id": "duumbi:lang/assert_true/assert_fail/2"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:lang/i64_to_f64",
+      "duumbi:name": "i64_to_f64",
+      "duumbi:returnType": "f64",
+      "duumbi:params": [{"duumbi:name": "x", "duumbi:paramType": "i64"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:lang/i64_to_f64/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:lang/i64_to_f64/entry/0",
+              "duumbi:variable": "x", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:CastI64ToF64", "@id": "duumbi:lang/i64_to_f64/entry/1",
+              "duumbi:operand": {"@id": "duumbi:lang/i64_to_f64/entry/0"},
+              "duumbi:resultType": "f64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:lang/i64_to_f64/entry/2",
+              "duumbi:operand": {"@id": "duumbi:lang/i64_to_f64/entry/1"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:lang/f64_to_i64",
+      "duumbi:name": "f64_to_i64",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [{"duumbi:name": "x", "duumbi:paramType": "f64"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:lang/f64_to_i64/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:lang/f64_to_i64/entry/0",
+              "duumbi:variable": "x", "duumbi:resultType": "f64"},
+            {"@type": "duumbi:CastF64ToI64", "@id": "duumbi:lang/f64_to_i64/entry/1",
+              "duumbi:operand": {"@id": "duumbi:lang/f64_to_i64/entry/0"},
+              "duumbi:resultType": "i64"},
+            {"@type": "duumbi:Return", "@id": "duumbi:lang/f64_to_i64/entry/2",
+              "duumbi:operand": {"@id": "duumbi:lang/f64_to_i64/entry/1"}}
+          ]
+        }
+      ]
+    }
+  ]
+}

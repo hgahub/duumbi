@@ -597,15 +597,40 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             ast.right = Some(right);
             Ok(ast)
         }
-        "duumbi:StringLength" | "duumbi:StringFromI64" => {
+        "duumbi:StringLength"
+        | "duumbi:StringFromI64"
+        | "duumbi:StringTrim"
+        | "duumbi:StringToUpper"
+        | "duumbi:StringToLower"
+        | "duumbi:CastI64ToF64"
+        | "duumbi:CastF64ToI64" => {
             let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
             let op = match at_type {
                 "duumbi:StringLength" => Op::StringLength,
                 "duumbi:StringFromI64" => Op::StringFromI64,
+                "duumbi:StringTrim" => Op::StringTrim,
+                "duumbi:StringToUpper" => Op::StringToUpper,
+                "duumbi:StringToLower" => Op::StringToLower,
+                "duumbi:CastI64ToF64" => Op::CastI64ToF64,
+                "duumbi:CastF64ToI64" => Op::CastF64ToI64,
                 _ => unreachable!(),
             };
             let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
             ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:StringReplace" => {
+            let operand = parse_node_ref(value, "duumbi:haystack", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:needle", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:replacement", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::StringReplace,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
             Ok(ast)
         }
         "duumbi:StringSlice" => {

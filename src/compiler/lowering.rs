@@ -74,6 +74,12 @@ struct RuntimeFuncs {
     pow: FuncId,
     powi64: FuncId,
     fmod: FuncId,
+
+    // String utility functions (Phase 9A)
+    string_trim: FuncId,
+    string_to_upper: FuncId,
+    string_to_lower: FuncId,
+    string_replace: FuncId,
 }
 
 /// Helper to declare an imported C function with given param/return types.
@@ -186,6 +192,17 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
         pow: declare_runtime_fn(module, "duumbi_pow", &[f64t, f64t], &[f64t])?,
         powi64: declare_runtime_fn(module, "duumbi_powi64", &[i64t, i64t], &[i64t])?,
         fmod: declare_runtime_fn(module, "duumbi_fmod", &[f64t, f64t], &[f64t])?,
+
+        // String utility functions (Phase 9A)
+        string_trim: declare_runtime_fn(module, "duumbi_string_trim", &[i64t], &[i64t])?,
+        string_to_upper: declare_runtime_fn(module, "duumbi_string_to_upper", &[i64t], &[i64t])?,
+        string_to_lower: declare_runtime_fn(module, "duumbi_string_to_lower", &[i64t], &[i64t])?,
+        string_replace: declare_runtime_fn(
+            module,
+            "duumbi_string_replace",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
     })
 }
 
@@ -565,6 +582,14 @@ fn compile_function(
     let powi64_ref = obj_module.declare_func_in_func(runtime.powi64, builder.func);
     let fmod_ref = obj_module.declare_func_in_func(runtime.fmod, builder.func);
 
+    // String utility function references (Phase 9A)
+    let string_trim_ref = obj_module.declare_func_in_func(runtime.string_trim, builder.func);
+    let string_to_upper_ref =
+        obj_module.declare_func_in_func(runtime.string_to_upper, builder.func);
+    let string_to_lower_ref =
+        obj_module.declare_func_in_func(runtime.string_to_lower, builder.func);
+    let string_replace_ref = obj_module.declare_func_in_func(runtime.string_replace, builder.func);
+
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
     for (name, &fid) in func_ids {
@@ -872,6 +897,48 @@ fn compile_function(
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(string_from_i64_ref, &[operand_val]);
                     let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringTrim => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_trim_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringToUpper => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_to_upper_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringToLower => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(string_to_lower_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::StringReplace => {
+                    // haystack = operand, needle = left, replacement = right
+                    let haystack_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let (needle_val, replacement_val) =
+                        get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(
+                        string_replace_ref,
+                        &[haystack_val, needle_val, replacement_val],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                // -- Phase 9A: Type cast ops --
+                Op::CastI64ToF64 => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let result = builder.ins().fcvt_from_sint(types::F64, operand_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::CastF64ToI64 => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let result = builder.ins().fcvt_to_sint_sat(types::I64, operand_val);
                     value_map.insert(node.id.clone(), result);
                 }
 
@@ -1962,8 +2029,8 @@ mod tests {
         );
         assert_eq!(
             program.exports.len(),
-            3,
-            "abs + max + min should be exported"
+            8,
+            "abs + max + min + sqrt + pow + mod + clamp + sign should be exported"
         );
 
         let objects = compile_program(&program).expect("stdlib math must compile");
