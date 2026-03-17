@@ -182,6 +182,30 @@ pub enum Op {
         /// Name of the field to write.
         field_name: String,
     },
+
+    // -- Ownership operations (Phase 9a-2) --
+    /// Allocate heap value: `duumbi:Alloc`
+    Alloc {
+        /// Type to allocate.
+        alloc_type: DuumbiType,
+    },
+    /// Move ownership: `duumbi:Move`
+    Move {
+        /// Source node ID to move from.
+        source: String,
+    },
+    /// Borrow (shared or mutable): `duumbi:Borrow` / `duumbi:BorrowMut`
+    Borrow {
+        /// Source node ID to borrow from.
+        source: String,
+        /// Whether the borrow is mutable.
+        mutable: bool,
+    },
+    /// Drop heap value: `duumbi:Drop`
+    Drop {
+        /// Target node ID to drop.
+        target: String,
+    },
 }
 
 impl fmt::Display for Op {
@@ -220,6 +244,17 @@ impl fmt::Display for Op {
             Op::StructNew { struct_name } => write!(f, "StructNew({struct_name})"),
             Op::FieldGet { field_name } => write!(f, "FieldGet({field_name})"),
             Op::FieldSet { field_name } => write!(f, "FieldSet({field_name})"),
+            Op::Alloc { alloc_type } => write!(f, "Alloc({alloc_type})"),
+            Op::Move { source } => write!(f, "Move({source})"),
+            Op::Borrow {
+                source,
+                mutable: true,
+            } => write!(f, "BorrowMut({source})"),
+            Op::Borrow {
+                source,
+                mutable: false,
+            } => write!(f, "Borrow({source})"),
+            Op::Drop { target } => write!(f, "Drop({target})"),
         }
     }
 }
@@ -250,7 +285,10 @@ impl Op {
             | Op::ArrayGet
             | Op::ArrayTryGet
             | Op::StructNew { .. }
-            | Op::FieldGet { .. } => result_type.clone(),
+            | Op::FieldGet { .. }
+            | Op::Alloc { .. }
+            | Op::Move { .. }
+            | Op::Borrow { .. } => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
             Op::StringConcat | Op::StringSlice | Op::StringFromI64 => Some(DuumbiType::String),
@@ -260,7 +298,8 @@ impl Op {
             | Op::Store { .. }
             | Op::ArrayPush
             | Op::ArraySet
-            | Op::FieldSet { .. } => Some(DuumbiType::Void),
+            | Op::FieldSet { .. }
+            | Op::Drop { .. } => Some(DuumbiType::Void),
             Op::Return | Op::Branch => None,
         }
     }
@@ -291,6 +330,12 @@ pub enum DuumbiType {
     /// not in this enum — only the struct name is carried here.
     #[allow(dead_code)] // Used starting from Phase 9a-1 struct ops
     Struct(std::string::String),
+    /// Shared reference to a value.
+    #[allow(dead_code)] // Used starting from Phase 9a-2 ownership ops
+    Ref(Box<DuumbiType>),
+    /// Mutable reference to a value.
+    #[allow(dead_code)] // Used starting from Phase 9a-2 ownership ops
+    RefMut(Box<DuumbiType>),
 }
 
 impl DuumbiType {
@@ -302,6 +347,30 @@ impl DuumbiType {
             self,
             DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_)
         )
+    }
+
+    /// Returns `true` if this type is a reference (`&T` or `&mut T`).
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-2 ownership checks
+    pub fn is_reference(&self) -> bool {
+        matches!(self, DuumbiType::Ref(_) | DuumbiType::RefMut(_))
+    }
+
+    /// Returns the inner type for references, or `self` for non-references.
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-2 ownership checks
+    pub fn inner_type(&self) -> &DuumbiType {
+        match self {
+            DuumbiType::Ref(inner) | DuumbiType::RefMut(inner) => inner,
+            other => other,
+        }
+    }
+
+    /// Returns `true` if this type is a mutable reference (`&mut T`).
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-2 ownership checks
+    pub fn is_mutable_ref(&self) -> bool {
+        matches!(self, DuumbiType::RefMut(_))
     }
 }
 
@@ -315,6 +384,8 @@ impl fmt::Display for DuumbiType {
             DuumbiType::String => f.write_str("string"),
             DuumbiType::Array(elem) => write!(f, "array<{elem}>"),
             DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
+            DuumbiType::Ref(inner) => write!(f, "&{inner}"),
+            DuumbiType::RefMut(inner) => write!(f, "&mut {inner}"),
         }
     }
 }
@@ -415,5 +486,119 @@ mod tests {
             DuumbiType::Struct("Point".to_string()),
             DuumbiType::Struct("Vec2".to_string())
         );
+    }
+
+    #[test]
+    fn op_display_ownership_variants() {
+        assert_eq!(
+            Op::Alloc {
+                alloc_type: DuumbiType::String
+            }
+            .to_string(),
+            "Alloc(string)"
+        );
+        assert_eq!(
+            Op::Move {
+                source: "x".to_string()
+            }
+            .to_string(),
+            "Move(x)"
+        );
+        assert_eq!(
+            Op::Borrow {
+                source: "x".to_string(),
+                mutable: false
+            }
+            .to_string(),
+            "Borrow(x)"
+        );
+        assert_eq!(
+            Op::Borrow {
+                source: "x".to_string(),
+                mutable: true
+            }
+            .to_string(),
+            "BorrowMut(x)"
+        );
+        assert_eq!(
+            Op::Drop {
+                target: "x".to_string()
+            }
+            .to_string(),
+            "Drop(x)"
+        );
+    }
+
+    #[test]
+    fn duumbi_type_display_references() {
+        assert_eq!(
+            DuumbiType::Ref(Box::new(DuumbiType::String)).to_string(),
+            "&string"
+        );
+        assert_eq!(
+            DuumbiType::RefMut(Box::new(DuumbiType::String)).to_string(),
+            "&mut string"
+        );
+        assert_eq!(
+            DuumbiType::Ref(Box::new(DuumbiType::Array(Box::new(DuumbiType::I64)))).to_string(),
+            "&array<i64>"
+        );
+    }
+
+    #[test]
+    fn duumbi_type_reference_helpers() {
+        let shared = DuumbiType::Ref(Box::new(DuumbiType::String));
+        assert!(shared.is_reference());
+        assert!(!shared.is_mutable_ref());
+        assert_eq!(*shared.inner_type(), DuumbiType::String);
+
+        let mutable = DuumbiType::RefMut(Box::new(DuumbiType::I64));
+        assert!(mutable.is_reference());
+        assert!(mutable.is_mutable_ref());
+        assert_eq!(*mutable.inner_type(), DuumbiType::I64);
+
+        let plain = DuumbiType::I64;
+        assert!(!plain.is_reference());
+        assert!(!plain.is_mutable_ref());
+        assert_eq!(*plain.inner_type(), DuumbiType::I64);
+    }
+
+    #[test]
+    fn duumbi_type_ref_not_heap() {
+        assert!(!DuumbiType::Ref(Box::new(DuumbiType::String)).is_heap_type());
+        assert!(!DuumbiType::RefMut(Box::new(DuumbiType::String)).is_heap_type());
+    }
+
+    #[test]
+    fn ownership_op_output_types() {
+        let alloc = Op::Alloc {
+            alloc_type: DuumbiType::String,
+        };
+        assert_eq!(
+            alloc.output_type(&Some(DuumbiType::String)),
+            Some(DuumbiType::String)
+        );
+
+        let mv = Op::Move {
+            source: "x".to_string(),
+        };
+        assert_eq!(
+            mv.output_type(&Some(DuumbiType::String)),
+            Some(DuumbiType::String)
+        );
+
+        let borrow = Op::Borrow {
+            source: "x".to_string(),
+            mutable: false,
+        };
+        assert_eq!(
+            borrow.output_type(&Some(DuumbiType::Ref(Box::new(DuumbiType::String)))),
+            Some(DuumbiType::Ref(Box::new(DuumbiType::String)))
+        );
+
+        let drop = Op::Drop {
+            target: "x".to_string(),
+        };
+        assert_eq!(drop.output_type(&None), Some(DuumbiType::Void));
     }
 }

@@ -114,6 +114,16 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
             let name = &s[7..s.len() - 1];
             Ok(DuumbiType::Struct(name.to_string()))
         }
+        _ if s.starts_with("&mut ") => {
+            let inner = &s[5..];
+            let inner_type = parse_type_str(inner)?;
+            Ok(DuumbiType::RefMut(Box::new(inner_type)))
+        }
+        _ if s.starts_with('&') => {
+            let inner = &s[1..];
+            let inner_type = parse_type_str(inner)?;
+            Ok(DuumbiType::Ref(Box::new(inner_type)))
+        }
         other => Err(ParseError::SchemaInvalid {
             code: codes::E009_SCHEMA_INVALID,
             message: format!("Unknown type '{other}'"),
@@ -251,12 +261,31 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
                 let param_name = get_str(param_val, "duumbi:name", node_id_str)?;
                 let param_type_str = get_str(param_val, "duumbi:paramType", node_id_str)?;
                 let param_type = parse_type_str(param_type_str)?;
+                let lifetime = param_val
+                    .get("duumbi:lifetime")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 params.push(ParamAst {
                     name: param_name.to_string(),
                     param_type,
+                    lifetime,
                 });
             }
             params
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Parse lifetime parameters (optional array of strings)
+    let lifetime_params = if let Some(lp_val) = value.get("duumbi:lifetimeParams") {
+        if let Some(lp_arr) = lp_val.as_array() {
+            lp_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
         } else {
             Vec::new()
         }
@@ -275,6 +304,7 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
         return_type,
         params,
         blocks,
+        lifetime_params,
     })
 }
 
@@ -644,6 +674,75 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             );
             ast.operand = Some(operand);
             ast.right = Some(right);
+            Ok(ast)
+        }
+        // -- Ownership ops (Phase 9a-2) --
+        "duumbi:Alloc" => {
+            let alloc_type_str = get_str(value, "duumbi:allocType", node_id_str)?;
+            let alloc_type = parse_type_str(alloc_type_str)?;
+            Ok(make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Alloc { alloc_type },
+                result_type,
+            ))
+        }
+        "duumbi:Move" => {
+            let source = get_str(value, "duumbi:source", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Move {
+                    source: source.to_string(),
+                },
+                result_type,
+            );
+            // Also parse operand reference if present (for graph edges)
+            if let Ok(operand) = parse_node_ref(value, "duumbi:operand", node_id_str) {
+                ast.operand = Some(operand);
+            }
+            Ok(ast)
+        }
+        "duumbi:Borrow" => {
+            let source = get_str(value, "duumbi:source", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Borrow {
+                    source: source.to_string(),
+                    mutable: false,
+                },
+                result_type,
+            );
+            if let Ok(operand) = parse_node_ref(value, "duumbi:operand", node_id_str) {
+                ast.operand = Some(operand);
+            }
+            Ok(ast)
+        }
+        "duumbi:BorrowMut" => {
+            let source = get_str(value, "duumbi:source", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Borrow {
+                    source: source.to_string(),
+                    mutable: true,
+                },
+                result_type,
+            );
+            if let Ok(operand) = parse_node_ref(value, "duumbi:operand", node_id_str) {
+                ast.operand = Some(operand);
+            }
+            Ok(ast)
+        }
+        "duumbi:Drop" => {
+            let target = get_str(value, "duumbi:target", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::Drop {
+                    target: target.to_string(),
+                },
+                result_type,
+            );
+            if let Ok(operand) = parse_node_ref(value, "duumbi:operand", node_id_str) {
+                ast.operand = Some(operand);
+            }
             Ok(ast)
         }
         other => Err(ParseError::UnknownOp {
@@ -1162,5 +1261,143 @@ mod tests {
         assert!(
             matches!(err, ParseError::MissingField { field, .. } if field == "duumbi:operator")
         );
+    }
+
+    #[test]
+    fn parse_type_str_ref() {
+        assert_eq!(
+            parse_type_str("&string").unwrap(),
+            DuumbiType::Ref(Box::new(DuumbiType::String))
+        );
+        assert_eq!(
+            parse_type_str("&mut string").unwrap(),
+            DuumbiType::RefMut(Box::new(DuumbiType::String))
+        );
+        assert_eq!(
+            parse_type_str("&array<i64>").unwrap(),
+            DuumbiType::Ref(Box::new(DuumbiType::Array(Box::new(DuumbiType::I64))))
+        );
+        assert_eq!(
+            parse_type_str("&mut struct<Point>").unwrap(),
+            DuumbiType::RefMut(Box::new(DuumbiType::Struct("Point".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_alloc_op() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/1",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/2",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/1"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).unwrap();
+        let op = &module.functions[0].blocks[0].ops[0];
+        assert!(matches!(&op.op, Op::Alloc { alloc_type } if *alloc_type == DuumbiType::String));
+    }
+
+    #[test]
+    fn parse_move_op() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "string",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Move", "@id": "duumbi:t/main/e/1",
+                         "duumbi:source": "x", "duumbi:resultType": "string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/2",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/1"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).unwrap();
+        let op = &module.functions[0].blocks[0].ops[1];
+        assert!(matches!(&op.op, Op::Move { source } if source == "x"));
+    }
+
+    #[test]
+    fn parse_borrow_and_borrow_mut_ops() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Borrow", "@id": "duumbi:t/main/e/1",
+                         "duumbi:source": "s", "duumbi:resultType": "&string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:BorrowMut", "@id": "duumbi:t/main/e/2",
+                         "duumbi:source": "s", "duumbi:resultType": "&mut string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/3",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/4",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/3"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).unwrap();
+        let borrow = &module.functions[0].blocks[0].ops[1];
+        assert!(matches!(&borrow.op, Op::Borrow { source, mutable } if source == "s" && !mutable));
+        let borrow_mut = &module.functions[0].blocks[0].ops[2];
+        assert!(
+            matches!(&borrow_mut.op, Op::Borrow { source, mutable } if source == "s" && *mutable)
+        );
+    }
+
+    #[test]
+    fn parse_drop_op() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Drop", "@id": "duumbi:t/main/e/1",
+                         "duumbi:target": "s",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/2",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/3",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/2"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).unwrap();
+        let drop_op = &module.functions[0].blocks[0].ops[1];
+        assert!(matches!(&drop_op.op, Op::Drop { target } if target == "s"));
     }
 }

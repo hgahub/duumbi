@@ -95,6 +95,9 @@ fn build_graph_impl(
                     result_type: op_ast.result_type.clone(),
                     function: func_ast.name.clone(),
                     block: block_ast.label.clone(),
+                    owner: None,
+                    lifetime: None,
+                    lifetime_param: None,
                 };
 
                 // Store branch target labels for later lowering
@@ -121,6 +124,7 @@ fn build_graph_impl(
             .map(|p| ParamInfo {
                 name: p.name.clone(),
                 param_type: p.param_type.clone(),
+                lifetime: p.lifetime.clone(),
             })
             .collect();
 
@@ -129,6 +133,7 @@ fn build_graph_impl(
             return_type: func_ast.return_type.clone(),
             params,
             blocks: block_infos,
+            lifetime_params: func_ast.lifetime_params.clone(),
         });
     }
 
@@ -215,6 +220,39 @@ fn build_graph_impl(
                         }),
                     }
                 }
+
+                // Ownership edges (Phase 9a-2)
+                match &op_ast.op {
+                    crate::types::Op::Alloc { .. } => {
+                        // Alloc creates an owned value — no edges to create here,
+                        // the value is owned by default
+                    }
+                    crate::types::Op::Move { .. } => {
+                        // Move: create MovesFrom edge from operand (source value)
+                        if let Some(ref operand) = op_ast.operand
+                            && let Some(&target_idx) = node_map.get(&operand.id)
+                        {
+                            graph.add_edge(target_idx, src_idx, GraphEdge::MovesFrom);
+                        }
+                    }
+                    crate::types::Op::Borrow { .. } => {
+                        // Borrow/BorrowMut: create BorrowsFrom edge from operand
+                        if let Some(ref operand) = op_ast.operand
+                            && let Some(&target_idx) = node_map.get(&operand.id)
+                        {
+                            graph.add_edge(target_idx, src_idx, GraphEdge::BorrowsFrom);
+                        }
+                    }
+                    crate::types::Op::Drop { .. } => {
+                        // Drop: create Drops edge from operand
+                        if let Some(ref operand) = op_ast.operand
+                            && let Some(&target_idx) = node_map.get(&operand.id)
+                        {
+                            graph.add_edge(target_idx, src_idx, GraphEdge::Drops);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -264,6 +302,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -319,6 +358,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -362,6 +402,7 @@ mod tests {
                 name: FunctionName("helper".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/helper/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -400,6 +441,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -488,5 +530,50 @@ mod tests {
         assert_eq!(sg.functions[0].blocks[0].label.0, "entry");
         assert_eq!(sg.functions[0].blocks[1].label.0, "alt");
         assert_eq!(sg.graph.node_count(), 4);
+    }
+
+    #[test]
+    fn ownership_edges_created() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Borrow", "@id": "duumbi:t/main/e/1",
+                         "duumbi:source": "s", "duumbi:resultType": "&string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Drop", "@id": "duumbi:t/main/e/2",
+                         "duumbi:target": "s",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/3",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/4",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/3"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse");
+        let sg = build_graph(&module).expect("build");
+
+        use petgraph::visit::IntoEdgeReferences;
+        // Check that BorrowsFrom edge exists (from alloc to borrow)
+        let has_borrows_from = sg
+            .graph
+            .edge_references()
+            .any(|e| matches!(e.weight(), super::GraphEdge::BorrowsFrom));
+        assert!(has_borrows_from, "Expected BorrowsFrom edge");
+        // Check that Drops edge exists (from alloc to drop)
+        let has_drops = sg
+            .graph
+            .edge_references()
+            .any(|e| matches!(e.weight(), super::GraphEdge::Drops));
+        assert!(has_drops, "Expected Drops edge");
     }
 }

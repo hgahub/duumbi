@@ -21,6 +21,8 @@ pub struct ParamAst {
     pub name: String,
     /// Parameter type.
     pub param_type: DuumbiType,
+    /// Optional lifetime annotation (e.g. `"'a"`).
+    pub lifetime: Option<String>,
 }
 
 /// A parsed operation within a block.
@@ -74,6 +76,8 @@ pub struct FunctionAst {
     pub params: Vec<ParamAst>,
     /// Blocks in this function.
     pub blocks: Vec<BlockAst>,
+    /// Lifetime parameters declared on this function (e.g. `["'a", "'b"]`).
+    pub lifetime_params: Vec<String>,
 }
 
 /// A parsed import declaration on a `duumbi:Module` node.
