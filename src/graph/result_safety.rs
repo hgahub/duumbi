@@ -375,6 +375,10 @@ fn collect_handled_ids(
 }
 
 /// Returns the `NodeId`s of all nodes that feed into `node_idx` via any incoming edge.
+/// Returns the source node IDs of operand edges (Left, Right, Operand) only.
+///
+/// Filters out ownership edges (Owns, MovesFrom, BorrowsFrom, Drops) to avoid
+/// false positives in Result/Option safety checks.
 fn operand_source_ids(
     graph: &SemanticGraph,
     node_idx: petgraph::stable_graph::NodeIndex,
@@ -382,6 +386,12 @@ fn operand_source_ids(
     graph
         .graph
         .edges_directed(node_idx, petgraph::Direction::Incoming)
+        .filter(|e| {
+            matches!(
+                e.weight(),
+                GraphEdge::Left | GraphEdge::Right | GraphEdge::Operand | GraphEdge::Condition
+            )
+        })
         .map(|e| graph.graph[e.source()].id.clone())
         .collect()
 }

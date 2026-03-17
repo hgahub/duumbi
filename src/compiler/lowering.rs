@@ -1124,10 +1124,17 @@ fn compile_function(
                             let call = builder.ins().call(option_is_some_ref, &[operand_val]);
                             builder.inst_results(call)[0]
                         }
-                        // Default (Result or unknown) — use is_ok
-                        _ => {
+                        Some(DuumbiType::Result(_, _)) => {
                             let call = builder.ins().call(result_is_ok_ref, &[operand_val]);
                             builder.inst_results(call)[0]
+                        }
+                        other => {
+                            return Err(CompileError::Cranelift {
+                                message: format!(
+                                    "Match operand must be Result or Option, found {:?} at node {}",
+                                    other, node.id
+                                ),
+                            });
                         }
                     };
 
