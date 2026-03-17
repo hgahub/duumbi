@@ -15,7 +15,7 @@ src/
   agents/      # AI agent framework for graph mutation (async, reqwest)
   intent/      # Intent-Driven Development (Phase 5): spec, coordinator, verifier, execute
   registry/    # Registry client, credentials, module packaging (Phase 7)
-  types.rs     # DuumbiType (I64, F64, Bool, Void, String, Array<T>, Struct), Op enum
+  types.rs     # DuumbiType (I64, F64, Bool, Void, String, Array<T>, Struct, &T, &mut T), Op enum
   deps.rs      # Dependency resolution, lockfile, vendor layer
   hash.rs      # Semantic hashing (SHA-256, @id-independent)
   manifest.rs  # Module manifest (manifest.toml)

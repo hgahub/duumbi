@@ -155,6 +155,8 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         DuumbiType::Void => types::I64, // should not be used for values
         // Heap types are pointer-sized (opaque pointers to C runtime memory)
         DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => types::I64,
+        // References are pointer-sized (Phase 9a-2)
+        DuumbiType::Ref(_) | DuumbiType::RefMut(_) => types::I64,
     }
 }
 
@@ -484,14 +486,13 @@ fn compile_function(
     let array_get_ref = obj_module.declare_func_in_func(runtime.array_get, builder.func);
     let array_set_ref = obj_module.declare_func_in_func(runtime.array_set, builder.func);
     let array_len_ref = obj_module.declare_func_in_func(runtime.array_len, builder.func);
-    let _array_free_ref = obj_module.declare_func_in_func(runtime.array_free, builder.func);
+    let array_free_ref = obj_module.declare_func_in_func(runtime.array_free, builder.func);
     let struct_new_ref = obj_module.declare_func_in_func(runtime.struct_new, builder.func);
     let struct_field_get_ref =
         obj_module.declare_func_in_func(runtime.struct_field_get, builder.func);
     let struct_field_set_ref =
         obj_module.declare_func_in_func(runtime.struct_field_set, builder.func);
-    let _struct_free_ref = obj_module.declare_func_in_func(runtime.struct_free, builder.func);
-    let _string_free_ref_alias = string_free_ref; // for Drop insertion later
+    let struct_free_ref = obj_module.declare_func_in_func(runtime.struct_free, builder.func);
 
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -527,6 +528,11 @@ fn compile_function(
 
     // Struct field offset map: field_name → byte offset (sequential, 8 bytes each)
     let mut field_offsets: HashMap<String, i64> = HashMap::new();
+
+    // Track heap-allocated values for automatic Drop insertion at scope exits.
+    // Maps NodeId → (SSA Value, DuumbiType) for values that need freeing.
+    // Removed when explicitly Dropped, Moved, or Returned.
+    let mut heap_allocs: HashMap<NodeId, (Value, DuumbiType)> = HashMap::new();
 
     // Process each block
     for (block_idx, block_info) in func_info.blocks.iter().enumerate() {
@@ -677,6 +683,33 @@ fn compile_function(
                 }
                 Op::Return => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+
+                    // Auto-drop: free remaining heap values before return (LIFO order).
+                    // Skip the value being returned (it escapes to the caller).
+                    let return_source_id = find_return_operand_node_id(graph, node_idx);
+                    let mut to_free: Vec<(Value, DuumbiType)> = heap_allocs
+                        .iter()
+                        .filter(|(id, _)| return_source_id.as_ref() != Some(*id))
+                        .map(|(_, v)| v.clone())
+                        .collect();
+                    // LIFO order: reverse so last-allocated is freed first
+                    to_free.reverse();
+                    for (val, ty) in &to_free {
+                        match ty {
+                            DuumbiType::String => {
+                                builder.ins().call(string_free_ref, &[*val]);
+                            }
+                            DuumbiType::Array(_) => {
+                                builder.ins().call(array_free_ref, &[*val]);
+                            }
+                            DuumbiType::Struct(_) => {
+                                builder.ins().call(struct_free_ref, &[*val]);
+                            }
+                            _ => {}
+                        }
+                    }
+                    heap_allocs.clear();
+
                     builder.ins().return_(&[operand_val]);
                 }
                 // -- Phase 9a-1: String ops --
@@ -856,6 +889,94 @@ fn compile_function(
                         .ins()
                         .call(struct_field_set_ref, &[operand_val, offset, value_val]);
                 }
+                // -- Ownership ops (Phase 9a-2) --
+                Op::Alloc { alloc_type } => {
+                    // Allocate a new heap value based on type.
+                    // Each type uses its specific _new() constructor.
+                    let cl_val = match alloc_type {
+                        DuumbiType::String => {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            let inst = builder.ins().call(string_new_ref, &[zero, zero]);
+                            builder.inst_results(inst)[0]
+                        }
+                        DuumbiType::Array(_) => {
+                            let elem_size = match alloc_type {
+                                DuumbiType::Array(inner) => type_size(inner),
+                                _ => 8,
+                            };
+                            let size_val = builder.ins().iconst(types::I64, elem_size);
+                            let inst = builder.ins().call(array_new_ref, &[size_val]);
+                            builder.inst_results(inst)[0]
+                        }
+                        DuumbiType::Struct(_) => {
+                            let cap = builder.ins().iconst(types::I64, 8);
+                            let inst = builder.ins().call(struct_new_ref, &[cap]);
+                            builder.inst_results(inst)[0]
+                        }
+                        _ => builder.ins().iconst(types::I64, 0),
+                    };
+                    value_map.insert(node.id.clone(), cl_val);
+                    // Track for automatic Drop insertion at scope exit
+                    if alloc_type.is_heap_type() {
+                        heap_allocs.insert(node.id.clone(), (cl_val, alloc_type.clone()));
+                    }
+                }
+                Op::Move { .. } => {
+                    // Move is a pointer copy — no runtime cost.
+                    // The source SSA value is simply forwarded.
+                    // Remove source from heap_allocs (ownership transferred).
+                    let source_node_id = find_operand_node_id(graph, node_idx);
+                    let operand_val = get_operand(graph, node_idx, &value_map)?;
+                    value_map.insert(node.id.clone(), operand_val);
+                    if let Some(src_id) = source_node_id
+                        && let Some(entry) = heap_allocs.remove(&src_id)
+                    {
+                        // Transfer ownership to the move result
+                        heap_allocs.insert(node.id.clone(), entry);
+                    }
+                }
+                Op::Borrow { .. } => {
+                    // Borrow (shared or mutable) is a pointer copy — no runtime cost.
+                    // Safety is enforced by the validator, not at runtime.
+                    // Does NOT transfer ownership — source stays in heap_allocs.
+                    let operand_val = get_operand(graph, node_idx, &value_map)?;
+                    value_map.insert(node.id.clone(), operand_val);
+                }
+                Op::Drop { .. } => {
+                    // Explicit Drop — dispatch to type-specific free function.
+                    let source_node_id = find_operand_node_id(graph, node_idx);
+                    let operand_val = get_operand(graph, node_idx, &value_map)?;
+                    let source_type = find_operand_type(graph, node_idx);
+                    match source_type {
+                        Some(DuumbiType::String) => {
+                            builder.ins().call(string_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::Array(_)) => {
+                            builder.ins().call(array_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::Struct(_)) => {
+                            builder.ins().call(struct_free_ref, &[operand_val]);
+                        }
+                        _ => {}
+                    }
+                    // Remove from heap_allocs — explicitly freed
+                    if let Some(src_id) = source_node_id {
+                        heap_allocs.remove(&src_id);
+                    }
+                }
+            }
+
+            // Track heap-producing non-ownership ops for auto-drop.
+            // ConstString, StringConcat, StringSlice, StringFromI64, ArrayNew, StructNew
+            // all allocate heap memory that must be freed.
+            if !matches!(
+                &node.op,
+                Op::Alloc { .. } | Op::Move { .. } | Op::Drop { .. } | Op::Return | Op::Branch
+            ) && let Some(ref rt) = node.result_type
+                && rt.is_heap_type()
+                && let Some(&val) = value_map.get(&node.id)
+            {
+                heap_allocs.insert(node.id.clone(), (val, rt.clone()));
             }
         }
     }
@@ -1087,6 +1208,8 @@ fn type_size(ty: &DuumbiType) -> i64 {
         DuumbiType::Void => 0,
         // Heap types are pointer-sized
         DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => 8,
+        // References are pointer-sized (Phase 9a-2)
+        DuumbiType::Ref(_) | DuumbiType::RefMut(_) => 8,
     }
 }
 
@@ -1118,6 +1241,113 @@ fn get_right_operand(
             graph.graph[node_idx].id
         ),
     })
+}
+
+/// Resolves the single operand SSA value for ownership ops.
+///
+/// Follows incoming Operand, MovesFrom, BorrowsFrom, or Drops edges
+/// to find the source value.
+fn get_operand(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    value_map: &HashMap<NodeId, Value>,
+) -> Result<Value, CompileError> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        match edge_ref.weight() {
+            GraphEdge::Operand
+            | GraphEdge::MovesFrom
+            | GraphEdge::BorrowsFrom
+            | GraphEdge::Drops => {
+                let source_node = &graph.graph[edge_ref.source()];
+                return value_map.get(&source_node.id).copied().ok_or_else(|| {
+                    CompileError::Cranelift {
+                        message: format!(
+                            "SSA value not found for operand '{}' of node '{}'",
+                            source_node.id, graph.graph[node_idx].id
+                        ),
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    Err(CompileError::Cranelift {
+        message: format!(
+            "Missing operand for ownership op '{}'",
+            graph.graph[node_idx].id
+        ),
+    })
+}
+
+/// Finds the output type of the operand connected via ownership edges.
+///
+/// Used by Drop to determine which type-specific free function to call.
+fn find_operand_type(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+) -> Option<DuumbiType> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        match edge_ref.weight() {
+            GraphEdge::Operand
+            | GraphEdge::MovesFrom
+            | GraphEdge::BorrowsFrom
+            | GraphEdge::Drops => {
+                let source_node = &graph.graph[edge_ref.source()];
+                return resolve_node_output_type(source_node);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Finds the NodeId of the Return operand (the value being returned).
+///
+/// Used to exclude the returned value from automatic Drop insertion.
+fn find_return_operand_node_id(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+) -> Option<NodeId> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Operand) {
+            return Some(graph.graph[edge_ref.source()].id.clone());
+        }
+    }
+    None
+}
+
+/// Finds the NodeId of the operand connected via ownership edges.
+///
+/// Used for heap_allocs tracking — to know which allocation to remove
+/// when a value is Moved or Dropped.
+fn find_operand_node_id(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+) -> Option<NodeId> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        match edge_ref.weight() {
+            GraphEdge::Operand
+            | GraphEdge::MovesFrom
+            | GraphEdge::BorrowsFrom
+            | GraphEdge::Drops => {
+                return Some(graph.graph[edge_ref.source()].id.clone());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Collects Call argument values in order.
@@ -1196,6 +1426,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let r = g.add_node(GraphNode {
             id: NodeId("r".to_string()),
@@ -1203,6 +1436,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         g.add_edge(c, r, GraphEdge::Operand);
 
@@ -1213,6 +1449,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c, r],
@@ -1239,6 +1476,9 @@ mod tests {
             result_type: Some(DuumbiType::F64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let print = g.add_node(GraphNode {
             id: NodeId("p".to_string()),
@@ -1246,6 +1486,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let zero = g.add_node(GraphNode {
             id: NodeId("z".to_string()),
@@ -1253,6 +1496,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let r = g.add_node(GraphNode {
             id: NodeId("r".to_string()),
@@ -1260,6 +1506,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         g.add_edge(c, print, GraphEdge::Operand);
         g.add_edge(zero, r, GraphEdge::Operand);
@@ -1271,6 +1520,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c, print, zero, r],

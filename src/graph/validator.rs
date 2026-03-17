@@ -18,6 +18,9 @@ use super::{GraphEdge, SemanticGraph};
 ///
 /// Returns a list of all validation errors found. An empty vec means valid.
 /// Does not short-circuit on first error — collects all errors.
+///
+/// Ownership checks (E020–E029) are gated on the presence of ownership ops
+/// in the graph — Phase 0–8 graphs skip them for backward compatibility.
 #[must_use]
 pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -28,6 +31,18 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     check_types(graph, &mut diagnostics);
     check_return_types(graph, &mut diagnostics);
     check_branch_conditions(graph, &mut diagnostics);
+
+    // Ownership checks — only run if the graph contains ownership ops
+    if super::ownership::has_ownership_ops(graph) {
+        for func_info in &graph.functions {
+            super::ownership::check_use_after_move(graph, func_info, &mut diagnostics);
+            super::ownership::check_borrow_exclusivity(graph, func_info, &mut diagnostics);
+            super::ownership::check_lifetimes(graph, func_info, &mut diagnostics);
+            super::ownership::check_drop_safety(graph, func_info, &mut diagnostics);
+            super::ownership::check_move_while_borrowed(graph, func_info, &mut diagnostics);
+            super::ownership::check_lifetime_params(graph, func_info, &mut diagnostics);
+        }
+    }
 
     diagnostics
 }
@@ -282,6 +297,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let b = graph.add_node(GraphNode {
             id: NodeId("b".to_string()),
@@ -289,6 +307,9 @@ mod tests {
             result_type: Some(DuumbiType::Void), // mismatch!
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let add = graph.add_node(GraphNode {
             id: NodeId("add".to_string()),
@@ -296,6 +317,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(a, add, GraphEdge::Left);
         graph.add_edge(b, add, GraphEdge::Right);
@@ -324,6 +348,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let b = graph.add_node(GraphNode {
             id: NodeId("b".to_string()),
@@ -331,6 +358,9 @@ mod tests {
             result_type: Some(DuumbiType::F64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let add = graph.add_node(GraphNode {
             id: NodeId("add".to_string()),
@@ -338,6 +368,9 @@ mod tests {
             result_type: Some(DuumbiType::F64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(a, add, GraphEdge::Left);
         graph.add_edge(b, add, GraphEdge::Right);
@@ -366,6 +399,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let b = graph.add_node(GraphNode {
             id: NodeId("b".to_string()),
@@ -373,6 +409,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(a, b, GraphEdge::Left);
         graph.add_edge(b, a, GraphEdge::Left); // cycle!
@@ -403,6 +442,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let ret = graph.add_node(GraphNode {
             id: NodeId("ret".to_string()),
@@ -410,6 +452,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(void_node, ret, GraphEdge::Operand);
 
@@ -420,6 +465,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![NodeIndex::new(0), NodeIndex::new(1)],
@@ -445,6 +491,9 @@ mod tests {
             result_type: Some(DuumbiType::I64), // not bool!
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let branch = graph.add_node(GraphNode {
             id: NodeId("branch".to_string()),
@@ -452,6 +501,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(cond, branch, GraphEdge::Condition);
 
@@ -479,6 +531,9 @@ mod tests {
             result_type: Some(DuumbiType::Bool),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let branch = graph.add_node(GraphNode {
             id: NodeId("branch".to_string()),
@@ -486,6 +541,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(cond, branch, GraphEdge::Condition);
 
@@ -514,6 +572,7 @@ mod tests {
                 name: FunctionName("empty_fn".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![], // no blocks!
             }],
             branch_targets: std::collections::HashMap::new(),
@@ -539,6 +598,7 @@ mod tests {
                 name: FunctionName("fn_empty_block".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![], // no ops!
@@ -566,6 +626,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
 
         let sg = SemanticGraph {
@@ -575,6 +638,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c], // Const only, no Return!
@@ -601,6 +665,9 @@ mod tests {
             result_type: None,
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let extra = graph.add_node(GraphNode {
             id: NodeId("extra".to_string()),
@@ -608,6 +675,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
 
         let sg = SemanticGraph {
@@ -617,6 +687,7 @@ mod tests {
                 name: FunctionName("main".to_string()),
                 return_type: DuumbiType::I64,
                 params: vec![],
+                lifetime_params: Vec::new(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![ret, extra], // Return before Const — invalid!
@@ -645,6 +716,9 @@ mod tests {
             result_type: Some(DuumbiType::I64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let b = graph.add_node(GraphNode {
             id: NodeId("b".to_string()),
@@ -652,6 +726,9 @@ mod tests {
             result_type: Some(DuumbiType::F64),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         let cmp = graph.add_node(GraphNode {
             id: NodeId("cmp".to_string()),
@@ -659,6 +736,9 @@ mod tests {
             result_type: Some(DuumbiType::Bool),
             function: FunctionName("main".to_string()),
             block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
         });
         graph.add_edge(a, cmp, GraphEdge::Left);
         graph.add_edge(b, cmp, GraphEdge::Right);
@@ -675,6 +755,55 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == codes::E001_TYPE_MISMATCH),
             "Expected E001 for Compare with mismatched operand types"
+        );
+    }
+
+    #[test]
+    fn plain_add_graph_skips_ownership_checks() {
+        // Phase 0-8 graphs have no ownership ops — validate() should skip ownership checks
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let sg = build_graph(&module).expect("invariant: fixture must build");
+        let diags = validate(&sg);
+        assert!(
+            diags.is_empty(),
+            "Plain add(3,5) should produce zero diagnostics, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ownership_checks_run_when_ops_present() {
+        // A graph with a use-after-move should produce E021 via validate()
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Alloc", "@id": "duumbi:t/main/e/0",
+                         "duumbi:allocType": "string", "duumbi:resultType": "string"},
+                        {"@type": "duumbi:Move", "@id": "duumbi:t/main/e/1",
+                         "duumbi:source": "s", "duumbi:resultType": "string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Borrow", "@id": "duumbi:t/main/e/2",
+                         "duumbi:source": "s", "duumbi:resultType": "&string",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/0"}},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/3",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/4",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/3"}}
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse");
+        let sg = build_graph(&module).expect("build");
+        let diags = validate(&sg);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E021_USE_AFTER_MOVE),
+            "Expected E021 from validate(), got: {diags:?}"
         );
     }
 }

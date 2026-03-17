@@ -1,6 +1,6 @@
 //! Error types, diagnostic codes, and structured JSONL reporting.
 //!
-//! All duumbi errors use error codes E001–E016. The `Diagnostic` struct
+//! All duumbi errors use error codes E001–E029. The `Diagnostic` struct
 //! serializes to JSONL for machine-readable output.
 
 use serde::Serialize;
@@ -49,6 +49,36 @@ pub mod codes {
     /// Requested version not found in the registry.
     #[allow(dead_code)] // Used by registry client (Phase 7)
     pub const E016_VERSION_NOT_FOUND: &str = "E016";
+    /// Ownership violation: a value can only have one owner at a time.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E020_SINGLE_OWNER: &str = "E020";
+    /// Use after move: value was moved and cannot be accessed.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E021_USE_AFTER_MOVE: &str = "E021";
+    /// Borrow exclusivity: cannot have shared and mutable borrows simultaneously.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E022_BORROW_EXCLUSIVITY: &str = "E022";
+    /// Lifetime exceeded: borrow outlives the owner's scope.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E023_LIFETIME_EXCEEDED: &str = "E023";
+    /// Drop incomplete: not all code paths drop the value.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E024_DROP_INCOMPLETE: &str = "E024";
+    /// Double free: value dropped more than once.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E025_DOUBLE_FREE: &str = "E025";
+    /// Dangling reference: borrow used after the value was dropped.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E026_DANGLING_REFERENCE: &str = "E026";
+    /// Move while borrowed: cannot move a value that has active borrows.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E027_MOVE_WHILE_BORROWED: &str = "E027";
+    /// Missing lifetime parameter on function that borrows.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E028_LIFETIME_PARAM_MISSING: &str = "E028";
+    /// Return lifetime mismatch: returned borrow doesn't tie to input lifetime.
+    #[allow(dead_code)] // Used by ownership validator (Phase 9a-2)
+    pub const E029_RETURN_LIFETIME_MISMATCH: &str = "E029";
 }
 
 /// Severity level for a diagnostic message.
@@ -207,6 +237,16 @@ mod tests {
             codes::E014_AUTH_FAILED,
             codes::E015_INTEGRITY_MISMATCH,
             codes::E016_VERSION_NOT_FOUND,
+            codes::E020_SINGLE_OWNER,
+            codes::E021_USE_AFTER_MOVE,
+            codes::E022_BORROW_EXCLUSIVITY,
+            codes::E023_LIFETIME_EXCEEDED,
+            codes::E024_DROP_INCOMPLETE,
+            codes::E025_DOUBLE_FREE,
+            codes::E026_DANGLING_REFERENCE,
+            codes::E027_MOVE_WHILE_BORROWED,
+            codes::E028_LIFETIME_PARAM_MISSING,
+            codes::E029_RETURN_LIFETIME_MISMATCH,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(codes.len(), unique.len(), "Error codes must be unique");

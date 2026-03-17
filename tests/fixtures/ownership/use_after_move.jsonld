@@ -1,0 +1,50 @@
+{
+    "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:test",
+    "duumbi:name": "test",
+    "duumbi:functions": [{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:test/main",
+        "duumbi:name": "main",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:test/main/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {
+                    "@type": "duumbi:Alloc",
+                    "@id": "duumbi:test/main/entry/0",
+                    "duumbi:allocType": "string",
+                    "duumbi:resultType": "string"
+                },
+                {
+                    "@type": "duumbi:Move",
+                    "@id": "duumbi:test/main/entry/1",
+                    "duumbi:source": "s",
+                    "duumbi:resultType": "string",
+                    "duumbi:operand": {"@id": "duumbi:test/main/entry/0"}
+                },
+                {
+                    "@type": "duumbi:Borrow",
+                    "@id": "duumbi:test/main/entry/2",
+                    "duumbi:source": "s",
+                    "duumbi:resultType": "&string",
+                    "duumbi:operand": {"@id": "duumbi:test/main/entry/0"}
+                },
+                {
+                    "@type": "duumbi:Const",
+                    "@id": "duumbi:test/main/entry/3",
+                    "duumbi:value": 0,
+                    "duumbi:resultType": "i64"
+                },
+                {
+                    "@type": "duumbi:Return",
+                    "@id": "duumbi:test/main/entry/4",
+                    "duumbi:operand": {"@id": "duumbi:test/main/entry/3"}
+                }
+            ]
+        }]
+    }]
+}

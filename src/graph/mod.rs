@@ -5,6 +5,7 @@
 //! all transformations are graph-to-graph.
 
 pub mod builder;
+pub mod ownership;
 pub mod program;
 pub mod validator;
 
@@ -72,6 +73,12 @@ pub struct GraphNode {
     pub function: FunctionName,
     /// Which block this node belongs to.
     pub block: BlockLabel,
+    /// Owner node ID — for Borrow/BorrowMut ops, who owns the borrowed value.
+    pub owner: Option<NodeId>,
+    /// Block-scoped lifetime label (e.g. `"entry"`).
+    pub lifetime: Option<String>,
+    /// Cross-function lifetime parameter (e.g. `"'a"`).
+    pub lifetime_param: Option<String>,
 }
 
 /// Edge label in the semantic graph.
@@ -92,6 +99,16 @@ pub enum GraphEdge {
     FalseBlock,
     /// Call argument by position.
     Arg(usize),
+
+    // -- Ownership edges (Phase 9a-2) --
+    /// Ownership edge: source node owns the target value.
+    Owns,
+    /// Move edge: value moves from source to target.
+    MovesFrom,
+    /// Borrow edge: target borrows from source.
+    BorrowsFrom,
+    /// Drop edge: target drops the source value.
+    Drops,
 }
 
 /// Parameter info for a function.
@@ -102,6 +119,8 @@ pub struct ParamInfo {
     pub name: String,
     /// Parameter type.
     pub param_type: DuumbiType,
+    /// Optional lifetime annotation (e.g. `"'a"`).
+    pub lifetime: Option<String>,
 }
 
 /// Information about a function in the graph.
@@ -116,6 +135,8 @@ pub struct FunctionInfo {
     pub params: Vec<ParamInfo>,
     /// Blocks in this function, in order.
     pub blocks: Vec<BlockInfo>,
+    /// Lifetime parameters declared on this function (e.g. `["'a", "'b"]`).
+    pub lifetime_params: Vec<String>,
 }
 
 /// Information about a block in the graph.

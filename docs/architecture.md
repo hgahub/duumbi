@@ -148,8 +148,13 @@ Example: `duumbi:main/main/entry/2`
 | `StructNew` | `call duumbi_struct_new` | 9a-1 |
 | `FieldGet` | `call duumbi_struct_field_get` | 9a-1 |
 | `FieldSet` | `call duumbi_struct_field_set` | 9a-1 |
+| `Alloc` | `call duumbi_alloc` (type-specific) | 9a-2 |
+| `Move` | pointer copy (no runtime cost) | 9a-2 |
+| `Borrow` | pointer copy (no runtime cost) | 9a-2 |
+| `BorrowMut` | pointer copy (no runtime cost) | 9a-2 |
+| `Drop` | `call duumbi_*_free` (type-specific) | 9a-2 |
 
-**Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`
+**Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`, `&T`, `&mut T`
 
 ---
 
@@ -213,7 +218,11 @@ E004 orphan reference · E005 duplicate @id · E006 no entry function ·
 E007 cycle · E008 link failed · E009 schema invalid ·
 E010 unresolved cross-module ref · E011 dependency not found ·
 E012 module conflict · E013 registry unreachable · E014 auth failed ·
-E015 integrity mismatch · E016 version not found
+E015 integrity mismatch · E016 version not found ·
+E020 single owner · E021 use-after-move · E022 borrow exclusivity ·
+E023 lifetime exceeded · E024 drop incomplete · E025 double free ·
+E026 dangling reference · E027 move while borrowed ·
+E028 lifetime param missing · E029 return lifetime mismatch
 
 ---
 
@@ -230,7 +239,8 @@ E015 integrity mismatch · E016 version not found
 | 6 | DUUMBI Studio | Leptos SSR web platform with graph visualization ✓ |
 | 7 | Registry & Distribution | Module packaging, publish, install, lockfile v1 ✓ |
 | 8 | Registry Auth | GitHub OAuth2, JWT sessions, device code flow ✓ |
-| 9a-1 | Heap Types & Runtime | String concat+print, Array push+get, Struct field access (in progress) |
+| 9a-1 | Heap Types & Runtime | String concat+print, Array push+get, Struct field access ✓ |
+| 9a-2 | Ownership & Lifetimes | Alloc/Move/Borrow/Drop ops, &T/&mut T, E020–E029 validator (in progress) |
 
 Phases beyond MVP (A–D): Knowledge base, Agent swarm, Self-healing, IDE.
 
