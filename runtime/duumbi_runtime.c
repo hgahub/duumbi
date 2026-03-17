@@ -361,3 +361,81 @@ int64_t duumbi_powi64(int64_t base, int64_t exp) {
 double duumbi_fmod(double a, double b) {
     return fmod(a, b);
 }
+
+/* ── String utilities (Phase 9A stdlib) ──────────────────────────── */
+
+void *duumbi_string_trim(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    uint64_t start = 0;
+    while (start < s->len && (s->data[start] == ' ' || s->data[start] == '\t' ||
+           s->data[start] == '\n' || s->data[start] == '\r')) {
+        start++;
+    }
+    uint64_t end = s->len;
+    while (end > start && (s->data[end - 1] == ' ' || s->data[end - 1] == '\t' ||
+           s->data[end - 1] == '\n' || s->data[end - 1] == '\r')) {
+        end--;
+    }
+    return duumbi_string_new(s->data + start, end - start);
+}
+
+void *duumbi_string_to_upper(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + s->len + 1);
+    result->len = s->len;
+    for (uint64_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        result->data[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    result->data[s->len] = '\0';
+    return result;
+}
+
+void *duumbi_string_to_lower(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + s->len + 1);
+    result->len = s->len;
+    for (uint64_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        result->data[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    result->data[s->len] = '\0';
+    return result;
+}
+
+void *duumbi_string_replace(void *haystack, void *needle, void *replacement) {
+    DuumbiString *h = (DuumbiString *)haystack;
+    DuumbiString *n = (DuumbiString *)needle;
+    DuumbiString *r = (DuumbiString *)replacement;
+
+    if (n->len == 0) {
+        /* Empty needle: return a copy */
+        return duumbi_string_new(h->data, h->len);
+    }
+
+    /* Count occurrences to pre-allocate */
+    uint64_t count = 0;
+    for (uint64_t i = 0; i <= h->len - n->len; i++) {
+        if (memcmp(h->data + i, n->data, (size_t)n->len) == 0) {
+            count++;
+            i += n->len - 1;
+        }
+    }
+
+    uint64_t new_len = h->len + count * (r->len - n->len);
+    DuumbiString *result = (DuumbiString *)duumbi_alloc(sizeof(DuumbiString) + new_len + 1);
+    result->len = new_len;
+
+    uint64_t wi = 0;
+    for (uint64_t i = 0; i < h->len; ) {
+        if (i <= h->len - n->len && memcmp(h->data + i, n->data, (size_t)n->len) == 0) {
+            memcpy(result->data + wi, r->data, (size_t)r->len);
+            wi += r->len;
+            i += n->len;
+        } else {
+            result->data[wi++] = h->data[i++];
+        }
+    }
+    result->data[new_len] = '\0';
+    return result;
+}
