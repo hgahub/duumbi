@@ -22,9 +22,6 @@ Thumbs.db
 !.vscode/extensions.json
 *.sublime-workspace
 
-# ── Obsidian workspace metadata ──────────────────────────────────────────────
-.obsidian/
-
 # ── Infra (Pulumi/Node.js) ───────────────────────────────────────────────────
 infra/node_modules/
 infra/bin/*.js
