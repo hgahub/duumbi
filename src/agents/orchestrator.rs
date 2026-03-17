@@ -17,7 +17,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::agents::LlmClient;
+use crate::agents::LlmProvider;
 use crate::errors::Diagnostic;
 use crate::patch::{GraphPatch, apply_patch};
 
@@ -79,6 +79,28 @@ Array ops (Phase 9a-1):\n\
 - ArrayGet:    {\"@type\":\"duumbi:ArrayGet\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:index\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
 - ArrayLength: {\"@type\":\"duumbi:ArrayLength\", \"duumbi:array\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
 \n\
+Ownership ops (Phase 9a-2):\n\
+- Alloc:      {\"@type\":\"duumbi:Alloc\", \"duumbi:allocType\":\"string\", \"duumbi:resultType\":\"string\"}\n\
+- Move:       {\"@type\":\"duumbi:Move\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+- Borrow:     {\"@type\":\"duumbi:Borrow\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"&string\"}\n\
+- BorrowMut:  {\"@type\":\"duumbi:BorrowMut\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"&mut string\"}\n\
+- Drop:       {\"@type\":\"duumbi:Drop\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
+Types can be referenced: &T (immutable borrow), &mut T (mutable borrow).\n\
+\n\
+Math/cast ops (Phase 9A):\n\
+- Modulo:     {\"@type\":\"duumbi:Modulo\", \"duumbi:left\":{\"@id\":\"…\"}, \"duumbi:right\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+- Negate:     {\"@type\":\"duumbi:Negate\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- Sqrt:       {\"@type\":\"duumbi:Sqrt\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"f64\"}\n\
+- Pow:        {\"@type\":\"duumbi:Pow\", \"duumbi:base\":{\"@id\":\"…\"}, \"duumbi:exponent\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"|\"f64\"}\n\
+- CastI64ToF64: {\"@type\":\"duumbi:CastI64ToF64\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"f64\"}\n\
+- CastF64ToI64: {\"@type\":\"duumbi:CastF64ToI64\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"i64\"}\n\
+\n\
+Additional string ops (Phase 9A):\n\
+- StringTrim:    {\"@type\":\"duumbi:StringTrim\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+- StringToUpper: {\"@type\":\"duumbi:StringToUpper\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+- StringToLower: {\"@type\":\"duumbi:StringToLower\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+- StringReplace: {\"@type\":\"duumbi:StringReplace\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:pattern\":{\"@id\":\"…\"}, \"duumbi:replacement\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"string\"}\n\
+\n\
 Result/Option ops (Phase 9a-3):\n\
 - ResultOk:       {\"@type\":\"duumbi:ResultOk\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"result<i64,i64>\"}\n\
 - ResultErr:      {\"@type\":\"duumbi:ResultErr\", \"duumbi:operand\":{\"@id\":\"…\"}, \"duumbi:resultType\":\"result<i64,i64>\"}\n\
@@ -109,6 +131,16 @@ Example — adding a function multiply(a, b) → a*b via one add_function call:\
 {\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:main/multiply/entry/3\",\"duumbi:operand\":{\"@id\":\"duumbi:main/multiply/entry/2\"}}]}]}}\n\
 ";
 
+/// Builds the effective system prompt by appending a provider-specific suffix.
+fn effective_system_prompt(provider_name: &str) -> String {
+    let suffix = crate::agents::prompts::provider_prompt_suffix(provider_name);
+    if suffix.is_empty() {
+        SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{SYSTEM_PROMPT}{suffix}")
+    }
+}
+
 /// Result of a successful mutation.
 pub struct MutationResult {
     /// The patched JSON-LD value (not yet written to disk).
@@ -137,7 +169,7 @@ pub struct MutationResult {
 /// Returns an error if the LLM call fails, the patch cannot be applied, or
 /// validation still fails after all retries.
 pub async fn mutate(
-    client: &LlmClient,
+    client: &dyn LlmProvider,
     source: &serde_json::Value,
     user_request: &str,
     max_retries: u32,
@@ -145,13 +177,15 @@ pub async fn mutate(
     let graph_json = serde_json::to_string_pretty(source)
         .context("Failed to serialize current graph for context")?;
 
+    let system_prompt = effective_system_prompt(client.name());
+
     let base_message = format!(
         "Current program graph:\n```json\n{graph_json}\n```\n\nRequested change: {user_request}"
     );
 
     // First attempt
     let ops = client
-        .call_with_tools(SYSTEM_PROMPT, &base_message)
+        .call_with_tools(&system_prompt, &base_message)
         .await
         .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
 
@@ -181,7 +215,7 @@ pub async fn mutate(
                 );
 
                 let retry_ops = client
-                    .call_with_tools(SYSTEM_PROMPT, &retry_msg)
+                    .call_with_tools(&system_prompt, &retry_msg)
                     .await
                     .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
 
@@ -232,26 +266,25 @@ pub async fn mutate(
 /// # Errors
 ///
 /// See [`mutate`] — same error conditions apply.
-pub async fn mutate_streaming<F>(
-    client: &LlmClient,
+pub async fn mutate_streaming(
+    client: &dyn LlmProvider,
     source: &serde_json::Value,
     user_request: &str,
     max_retries: u32,
     library_mode: bool,
-    on_text: F,
-) -> Result<MutationResult>
-where
-    F: Fn(&str),
-{
+    on_text: impl Fn(&str) + Send + Sync,
+) -> Result<MutationResult> {
     let graph_json = serde_json::to_string_pretty(source)
         .context("Failed to serialize current graph for context")?;
+
+    let system_prompt = effective_system_prompt(client.name());
 
     let base_message = format!(
         "Current program graph:\n```json\n{graph_json}\n```\n\nRequested change: {user_request}"
     );
 
     let ops = client
-        .call_with_tools_streaming(SYSTEM_PROMPT, &base_message, &on_text)
+        .call_with_tools_streaming(&system_prompt, &base_message, &on_text)
         .await
         .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
 
@@ -281,7 +314,7 @@ where
                 );
 
                 let retry_ops = client
-                    .call_with_tools_streaming(SYSTEM_PROMPT, &retry_msg, &on_text)
+                    .call_with_tools_streaming(&system_prompt, &retry_msg, &on_text)
                     .await
                     .map_err(|e| anyhow::anyhow!("LLM retry call failed: {e}"))?;
 

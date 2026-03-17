@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::agents::LlmClient;
+use crate::agents::LlmProvider;
 use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TestCase};
 use crate::intent::{IntentError, save_intent, slugify, unique_slug};
 
@@ -48,7 +48,10 @@ Example response:
 /// Calls the LLM to generate an `IntentSpec` from a natural language description.
 ///
 /// On success, returns the spec with the given intent string populated.
-pub async fn generate_spec_with_llm(client: &LlmClient, description: &str) -> Result<IntentSpec> {
+pub async fn generate_spec_with_llm(
+    client: &dyn LlmProvider,
+    description: &str,
+) -> Result<IntentSpec> {
     let user_message = format!("Create an intent spec for this programming task:\n\n{description}");
 
     // Use the existing call_with_tools infrastructure. Since we need a plain
@@ -235,19 +238,35 @@ fn chrono_now() -> String {
 ///
 /// This bypasses the graph mutation tool infrastructure and returns the raw
 /// assistant message text.
-async fn call_plain_completion(client: &LlmClient, system: &str, user: &str) -> Result<String> {
-    // RefCell lets the closure satisfy Fn (not FnMut) while accumulating chunks.
-    let response = std::cell::RefCell::new(String::new());
+async fn call_plain_completion(
+    client: &dyn LlmProvider,
+    system: &str,
+    user: &str,
+) -> Result<String> {
+    // Mutex lets the closure satisfy Fn + Send + Sync while accumulating chunks.
+    let response = std::sync::Mutex::new(String::new());
 
-    // Ignore the Vec<PatchOp> result — we only care about the streamed text.
-    // AgentError::NoToolCalls is expected here (the LLM outputs text, not tool calls).
-    let _ = client
+    // AgentError::NoToolCalls is the expected success path here (the LLM outputs
+    // plain text, not tool calls). All other errors (Http, ApiError, Timeout,
+    // RateLimited, Parse) are fatal and must be surfaced to the caller.
+    let result = client
         .call_with_tools_streaming(system, user, &|chunk: &str| {
-            response.borrow_mut().push_str(chunk);
+            response
+                .lock()
+                .expect("invariant: mutex not poisoned")
+                .push_str(chunk);
         })
         .await;
 
-    let text = response.into_inner();
+    if let Err(e) = result
+        && !matches!(e, crate::agents::AgentError::NoToolCalls)
+    {
+        return Err(anyhow::anyhow!("LLM call failed: {e}"));
+    }
+
+    let text = response
+        .into_inner()
+        .expect("invariant: mutex not poisoned");
     if text.is_empty() {
         anyhow::bail!("LLM returned empty response for intent spec generation");
     }
@@ -266,7 +285,7 @@ async fn call_plain_completion(client: &LlmClient, system: &str, user: &str) -> 
 ///
 /// Returns the slug of the saved intent.
 pub async fn run_create(
-    client: &LlmClient,
+    client: &dyn LlmProvider,
     workspace: &Path,
     description: &str,
     yes: bool,

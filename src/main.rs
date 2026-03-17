@@ -213,27 +213,12 @@ fn resolve_output(explicit: Option<&Path>) -> Result<PathBuf> {
 
 /// Applies an AI-generated mutation to the graph.
 ///
-/// Loads `.duumbi/config.toml` for LLM provider settings, saves a snapshot
-/// of the current graph, calls the LLM, applies the patch, validates, and
-/// writes the updated graph if the user confirms (or `--yes` is passed).
+/// Loads `.duumbi/config.toml` for LLM provider settings (supports both
+/// `[[providers]]` and legacy `[llm]` formats), saves a snapshot of the
+/// current graph, calls the LLM, applies the patch, validates, and writes
+/// the updated graph if the user confirms (or `--yes` is passed).
 async fn add(request: &str, yes: bool) -> Result<()> {
     let workspace_root = PathBuf::from(".");
-
-    let cfg = config::load_config(&workspace_root).context(
-        "Cannot run 'duumbi add': no .duumbi/config.toml found or [llm] section missing.\n\
-         Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
-    )?;
-
-    let llm_cfg = cfg.llm.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No [llm] section in .duumbi/config.toml.\n\
-             Add provider, model, and api_key_env settings."
-        )
-    })?;
-
-    let api_key = llm_cfg
-        .resolve_api_key()
-        .context("Failed to resolve LLM API key")?;
 
     let graph_path = workspace_root
         .join(".duumbi")
@@ -246,12 +231,9 @@ async fn add(request: &str, yes: bool) -> Result<()> {
     let source: serde_json::Value =
         serde_json::from_str(&source_str).context("Failed to parse current graph as JSON")?;
 
-    let client = match llm_cfg.provider {
-        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
-        config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
-    };
+    let client = require_llm_client(&workspace_root)?;
 
-    eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
+    eprintln!("Calling {}…", client.name());
 
     let result = orchestrator::mutate(&client, &source, request, 3).await?;
 
@@ -349,24 +331,25 @@ async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> 
 }
 
 /// Builds an [`agents::LlmClient`] from workspace config, or bails with a helpful message.
+///
+/// Uses the `[[providers]]` config if available, falling back to the legacy
+/// `[llm]` section for backward compatibility.
 fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
     let cfg = config::load_config(workspace).context(
-        "Cannot run intent commands: no .duumbi/config.toml found.\n\
-         Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
+        "Cannot run AI commands: no .duumbi/config.toml found.\n\
+         Run `duumbi init` and add a [[providers]] section to .duumbi/config.toml.",
     )?;
-    let llm_cfg = cfg.llm.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No [llm] section in .duumbi/config.toml.\n\
-             Add provider, model, and api_key_env settings."
-        )
-    })?;
-    let api_key = llm_cfg
-        .resolve_api_key()
-        .context("Failed to resolve LLM API key")?;
-    Ok(match llm_cfg.provider {
-        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
-        config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
-    })
+
+    let providers = cfg.effective_providers();
+    if providers.is_empty() {
+        anyhow::bail!(
+            "No LLM provider configured in .duumbi/config.toml.\n\
+             Add a [[providers]] section or a legacy [llm] section."
+        );
+    }
+
+    agents::factory::create_provider_chain(&providers)
+        .map_err(|e| anyhow::anyhow!("Failed to create LLM provider: {e}"))
 }
 
 /// Starts the DUUMBI Studio web platform.
