@@ -26,9 +26,9 @@ pub fn find_cc() -> String {
 /// We suppress linker warnings with `-w` to avoid confusing users.
 fn platform_link_args() -> Vec<&'static str> {
     if cfg!(target_os = "macos") {
-        vec!["-Wl,-w"]
+        vec!["-Wl,-w", "-lm"]
     } else {
-        vec![]
+        vec!["-lm"]
     }
 }
 
