@@ -98,7 +98,22 @@ jobs:
                   pass
               print("Discord notification sent.")
           except urllib.error.HTTPError as error:
+              body = ""
+              try:
+                  body = error.read().decode("utf-8", errors="replace")
+              except Exception:
+                  pass
               print(f"Discord webhook returned HTTP {error.code}: {error.reason}")
+              if body:
+                  print(f"Response body: {body}")
+              if error.code == 403:
+                  print(
+                      "HTTP 403 usually means the webhook URL is invalid or has been deleted.\n"
+                      "Regenerate the webhook in Discord (Server Settings → Integrations → Webhooks)\n"
+                      "and update the DISCORD_WEBHOOK_URL repository secret."
+                  )
+              sys.exit(1)
           except urllib.error.URLError as error:
               print(f"Discord webhook request failed: {error.reason}")
+              sys.exit(1)
           PY
