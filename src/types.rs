@@ -237,6 +237,32 @@ pub enum Op {
         /// Block label for the Err/None branch.
         err_block: String,
     },
+
+    // -- Math operations (Phase 9A) --
+    /// Modulo (remainder): `duumbi:Modulo` — i64: `srem`, f64: `frem`
+    Modulo,
+    /// Negate: `duumbi:Negate` — i64: `ineg`, f64: `fneg`
+    Negate,
+    /// Square root (f64 only): `duumbi:Sqrt` — via C shim `duumbi_sqrt`
+    Sqrt,
+    /// Float power (f64 only): `duumbi:Pow` — via C shim `duumbi_pow`
+    Pow,
+    /// Integer power (i64 only): `duumbi:PowI64` — via C shim `duumbi_powi64`
+    PowI64,
+
+    // -- Bitwise operations (Phase 9A) --
+    /// Bitwise AND (i64): `duumbi:BitwiseAnd` — `band`
+    BitwiseAnd,
+    /// Bitwise OR (i64): `duumbi:BitwiseOr` — `bor`
+    BitwiseOr,
+    /// Bitwise XOR (i64): `duumbi:BitwiseXor` — `bxor`
+    BitwiseXor,
+    /// Bitwise NOT (i64): `duumbi:BitwiseNot` — `bnot`
+    BitwiseNot,
+    /// Shift left (i64): `duumbi:ShiftLeft` — `ishl`
+    ShiftLeft,
+    /// Shift right arithmetic (i64): `duumbi:ShiftRight` — `sshr`
+    ShiftRight,
 }
 
 impl fmt::Display for Op {
@@ -299,6 +325,17 @@ impl fmt::Display for Op {
                 ok_block,
                 err_block,
             } => write!(f, "Match({ok_block},{err_block})"),
+            Op::Modulo => f.write_str("Modulo"),
+            Op::Negate => f.write_str("Negate"),
+            Op::Sqrt => f.write_str("Sqrt"),
+            Op::Pow => f.write_str("Pow"),
+            Op::PowI64 => f.write_str("PowI64"),
+            Op::BitwiseAnd => f.write_str("BitwiseAnd"),
+            Op::BitwiseOr => f.write_str("BitwiseOr"),
+            Op::BitwiseXor => f.write_str("BitwiseXor"),
+            Op::BitwiseNot => f.write_str("BitwiseNot"),
+            Op::ShiftLeft => f.write_str("ShiftLeft"),
+            Op::ShiftRight => f.write_str("ShiftRight"),
         }
     }
 }
@@ -344,6 +381,15 @@ impl Op {
             | Op::ArraySet
             | Op::FieldSet { .. }
             | Op::Drop { .. } => Some(DuumbiType::Void),
+            // Math/Bitwise ops with context-dependent output type (i64 or f64)
+            Op::Modulo | Op::Negate | Op::Sqrt | Op::Pow | Op::PowI64 => result_type.clone(),
+            // Bitwise ops always produce i64
+            Op::BitwiseAnd
+            | Op::BitwiseOr
+            | Op::BitwiseXor
+            | Op::BitwiseNot
+            | Op::ShiftLeft
+            | Op::ShiftRight => Some(DuumbiType::I64),
             // Result/Option ops with context-dependent output
             Op::ResultOk | Op::ResultErr | Op::OptionSome | Op::OptionNone => result_type.clone(),
             // Result/Option ops with fixed output types

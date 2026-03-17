@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -334,4 +335,29 @@ int64_t duumbi_option_unwrap(void *ptr) {
 
 void duumbi_option_free(void *ptr) {
     duumbi_dealloc(ptr);
+}
+
+/* ── Math (Phase 9A — link with -lm) ─────────────────────────────── */
+
+double duumbi_sqrt(double x) {
+    return sqrt(x);
+}
+
+double duumbi_pow(double base, double exp) {
+    return pow(base, exp);
+}
+
+int64_t duumbi_powi64(int64_t base, int64_t exp) {
+    if (exp < 0) return 0;  /* integer power of negative exponent → 0 */
+    int64_t result = 1;
+    while (exp > 0) {
+        if (exp & 1) result *= base;
+        base *= base;
+        exp >>= 1;
+    }
+    return result;
+}
+
+double duumbi_fmod(double a, double b) {
+    return fmod(a, b);
 }

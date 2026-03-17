@@ -864,6 +864,77 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             ast.operand = Some(operand);
             Ok(ast)
         }
+        // -- Math ops (Phase 9A) --
+        "duumbi:Modulo" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::Modulo, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:Negate" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::Negate, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:Sqrt" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::Sqrt, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:Pow" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::Pow, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:PowI64" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::PowI64, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        // -- Bitwise ops (Phase 9A) --
+        "duumbi:BitwiseAnd" | "duumbi:BitwiseOr" | "duumbi:BitwiseXor" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:BitwiseAnd" => Op::BitwiseAnd,
+                "duumbi:BitwiseOr" => Op::BitwiseOr,
+                "duumbi:BitwiseXor" => Op::BitwiseXor,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:BitwiseNot" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::BitwiseNot, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ShiftLeft" | "duumbi:ShiftRight" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:ShiftLeft" => Op::ShiftLeft,
+                "duumbi:ShiftRight" => Op::ShiftRight,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
         other => Err(ParseError::UnknownOp {
             code: codes::E002_UNKNOWN_OP,
             op_type: other.to_string(),
@@ -928,14 +999,16 @@ mod tests {
                     "@id": "duumbi:test/main/entry",
                     "duumbi:label": "entry",
                     "duumbi:ops": [{
-                        "@type": "duumbi:Modulo",
+                        "@type": "duumbi:Frobnicate",
                         "@id": "duumbi:test/main/entry/0"
                     }]
                 }]
             }]
         }"#;
         let err = parse_jsonld(json).unwrap_err();
-        assert!(matches!(err, ParseError::UnknownOp { op_type, .. } if op_type == "duumbi:Modulo"));
+        assert!(
+            matches!(err, ParseError::UnknownOp { op_type, .. } if op_type == "duumbi:Frobnicate")
+        );
     }
 
     #[test]
