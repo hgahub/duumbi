@@ -1306,8 +1306,11 @@ fn compile_function(
             }
 
             // Track heap-producing non-ownership ops for auto-drop.
-            // ConstString, StringConcat, StringSlice, StringFromI64, ArrayNew, StructNew,
-            // ResultOk, ResultErr, OptionSome, OptionNone all allocate heap memory.
+            // Any op whose output_type() is a heap type (string, array, struct,
+            // result, option) gets tracked here. This includes ConstString,
+            // StringConcat, StringSlice, StringFromI64, StringTrim, StringToUpper,
+            // StringToLower, StringReplace, ArrayNew, StructNew, ResultOk,
+            // ResultErr, OptionSome, OptionNone, and future heap-producing ops.
             // Match and Branch are control-flow terminators with no result value.
             if !matches!(
                 &node.op,

@@ -32,7 +32,7 @@
       "@type": "duumbi:Function",
       "@id": "duumbi:string/contains",
       "duumbi:name": "contains",
-      "duumbi:returnType": "i64",
+      "duumbi:returnType": "bool",
       "duumbi:params": [
         {"duumbi:name": "s", "duumbi:paramType": "string"},
         {"duumbi:name": "sub", "duumbi:paramType": "string"}
@@ -51,10 +51,8 @@
               "duumbi:left": {"@id": "duumbi:string/contains/entry/0"},
               "duumbi:right": {"@id": "duumbi:string/contains/entry/1"},
               "duumbi:resultType": "bool"},
-            {"@type": "duumbi:Const", "@id": "duumbi:string/contains/entry/3",
-              "duumbi:value": 0, "duumbi:resultType": "i64"},
-            {"@type": "duumbi:Return", "@id": "duumbi:string/contains/entry/4",
-              "duumbi:operand": {"@id": "duumbi:string/contains/entry/3"}}
+            {"@type": "duumbi:Return", "@id": "duumbi:string/contains/entry/3",
+              "duumbi:operand": {"@id": "duumbi:string/contains/entry/2"}}
           ]
         }
       ]

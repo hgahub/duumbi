@@ -253,7 +253,7 @@ pub enum Op {
     },
 
     // -- Math operations (Phase 9A) --
-    /// Modulo (remainder): `duumbi:Modulo` — i64: `srem`, f64: `frem`
+    /// Modulo (remainder): `duumbi:Modulo` — i64: `srem`, f64: `duumbi_fmod` C shim
     Modulo,
     /// Negate: `duumbi:Negate` — i64: `ineg`, f64: `fneg`
     Negate,
@@ -409,8 +409,11 @@ impl Op {
             | Op::ArraySet
             | Op::FieldSet { .. }
             | Op::Drop { .. } => Some(DuumbiType::Void),
-            // Math/Bitwise ops with context-dependent output type (i64 or f64)
-            Op::Modulo | Op::Negate | Op::Sqrt | Op::Pow | Op::PowI64 => result_type.clone(),
+            // Math ops with context-dependent output type (i64 or f64)
+            Op::Modulo | Op::Negate => result_type.clone(),
+            // Sqrt/Pow always produce f64; PowI64 always produces i64
+            Op::Sqrt | Op::Pow => Some(DuumbiType::F64),
+            Op::PowI64 => Some(DuumbiType::I64),
             // Bitwise ops always produce i64
             Op::BitwiseAnd
             | Op::BitwiseOr

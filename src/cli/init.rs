@@ -20,7 +20,7 @@ const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
 /// Embedded `stdlib/lang.jsonld` — language utilities (assert_true).
 const STDLIB_LANG: &str = include_str!("../../stdlib/lang.jsonld");
 
-/// Embedded `stdlib/string.jsonld` — string utilities (length, contains, find).
+/// Embedded `stdlib/string.jsonld` — string utilities (length, contains, find, trim, to_upper, to_lower, replace).
 const STDLIB_STRING: &str = include_str!("../../stdlib/string.jsonld");
 
 /// Stdlib module versions pinned at init time.

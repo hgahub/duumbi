@@ -77,6 +77,12 @@ fn negate_i64_compiles_and_runs() {
     }"#;
     let module = parse_jsonld(json).expect("parse");
     let sg = build_graph(&module).expect("build");
+    let diags = validate(&sg);
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == duumbi::errors::DiagnosticLevel::Error)
+        .collect();
+    assert!(errors.is_empty(), "Validation errors: {errors:?}");
     let obj_bytes = lowering::compile_to_object(&sg).expect("compile");
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let obj_path = tmp.path().join("test.o");
@@ -109,6 +115,12 @@ fn bitwise_and_compiles_and_runs() {
     }"#;
     let module = parse_jsonld(json).expect("parse");
     let sg = build_graph(&module).expect("build");
+    let diags = validate(&sg);
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == duumbi::errors::DiagnosticLevel::Error)
+        .collect();
+    assert!(errors.is_empty(), "Validation errors: {errors:?}");
     let obj_bytes = lowering::compile_to_object(&sg).expect("compile");
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let obj_path = tmp.path().join("test.o");

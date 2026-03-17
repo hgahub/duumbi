@@ -349,13 +349,16 @@ double duumbi_pow(double base, double exp) {
 
 int64_t duumbi_powi64(int64_t base, int64_t exp) {
     if (exp < 0) return 0;  /* integer power of negative exponent → 0 */
-    int64_t result = 1;
-    while (exp > 0) {
-        if (exp & 1) result *= base;
-        base *= base;
-        exp >>= 1;
+    /* Use unsigned arithmetic to avoid signed overflow UB, then cast back. */
+    uint64_t ubase = (uint64_t)base;
+    uint64_t uresult = 1;
+    uint64_t uexp = (uint64_t)exp;
+    while (uexp > 0) {
+        if (uexp & 1) uresult *= ubase;
+        ubase *= ubase;
+        uexp >>= 1;
     }
-    return result;
+    return (int64_t)uresult;
 }
 
 double duumbi_fmod(double a, double b) {

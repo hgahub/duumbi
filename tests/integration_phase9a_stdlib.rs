@@ -462,8 +462,9 @@ fn edge_case_cast_f64_nan_to_i64_saturates() {
 // ===== Regression matrix: stdlib module parse+build (#301) =====
 //
 // Library modules have no `main` function — we use parse_jsonld only to
-// validate syntax. Full compilation is tested via Program::load() in
-// src/compiler/lowering.rs unit tests.
+// validate syntax and structure. Full end-to-end compilation of stdlib
+// modules requires a caller program (via Program::load); math.jsonld has
+// a compile test in src/compiler/lowering.rs, others are parse-only here.
 
 #[test]
 fn stdlib_math_jsonld_parses() {
