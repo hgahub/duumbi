@@ -25,7 +25,7 @@ updated: 2026-03-17
 | 6 | DUUMBI Studio | 47/47 ✓ | ✅ Done |
 | 7 | Registry & Distribution | 35/37 ✓ | 🔄 In Progress (2 infra) |
 | 8 | Registry Auth & User Management | 22/22 ✓ | ✅ Done |
-| 9a | Type System Completion | 18/19 ✓ | 🔄 In Progress (Phase 9a-1 done, 9a-2 started) |
+| 9a | Type System Completion | 37/37 ✓ | ✅ Done |
 | 9 | Build Excellence & Multi-LLM | – | ⏳ Planned |
 | 10 | Intelligent Context & Knowledge Graph | – | ⏳ Planned |
 | 11 | CLI UX & Developer Experience | – | ⏳ Planned |
@@ -33,7 +33,7 @@ updated: 2026-03-17
 | 13 | Self-Healing & Telemetry | – | ⏳ Planned |
 | 14 | Marketing & Go-to-Market | – | ⏳ Planned (continuous) |
 
-**Current delivery focus:** Phase 9a-2 Ownership & Lifetimes (`#240` open)
+**Current delivery focus:** Phase 9 — Build Excellence & Multi-LLM (Phase 9a fully complete, 37/37 ✓)
 
 ---
 
@@ -79,9 +79,9 @@ Phase 9: Build Excellence & Multi-LLM
 - [[DUUMBI - Phase 7 - Registry & Distribution]] — publish, install, lockfile v1 🔄
 - [[DUUMBI - Phase 8 - Registry Auth & User Management]] — OAuth, tokens, device code flow ✅
 
-### Type System & Build (Phase 9a–9) ⏳
+### Type System & Build (Phase 9a–9) 🔄
 
-- [[DUUMBI - Phase 9a - Type System Completion]] — String, Array, Struct delivered; ownership/lifetimes in progress 🔄
+- [[DUUMBI - Phase 9a - Type System Completion]] — String, Array, Struct, ownership/lifetimes — all delivered ✅
 - [[DUUMBI - Phase 9 - Build Excellence & Multi-LLM]] — Stdlib, multi-provider, autoresearch benchmarks ⏳
 
 ### Intelligence & UX (Phase 10–11) ⏳
@@ -113,7 +113,7 @@ Phase 9: Build Excellence & Multi-LLM
 | 6 | 3/3 devs faster navigation web vs CLI | ✅ |
 | 7 | Deterministic hash + publish+install + offline build | 🔄 |
 | 8 | GitHub OAuth → token → device code flow login | ✅ |
-| 9a | String + Array + ownership validation rejects use-after-move | ⏳ |
+| 9a | String + Array + ownership validation rejects use-after-move | ✅ |
 | 9 | 5 showcases × 2+ LLM providers = flawless | ⏳ |
 | 10 | Existing graph recognition + modular add + auto-context | ⏳ |
 | 11 | 3/3 new users succeed via `/` menu in 10 min + `/resume` works | ⏳ |
@@ -199,6 +199,9 @@ Phase 9: Build Excellence & Multi-LLM
 
 
 > [!success] **Execution update (2026-03-17):** Phase 8 is fully complete (`#194`–`#215`, 22/22 issues closed). Phase 9a has started in GitHub: milestone **Phase 9a-1: Heap Types & Runtime** closed all 18 tracked issues (`#227`–`#244`, including integration kill criterion `#243`), and the next active item is **#240 Heap memory management: Drop insertion at block scope exits** in milestone **Phase 9a-2: Ownership & Lifetimes**.
+
+
+> [!success] **Execution update (2026-03-17 — Phase 9a complete):** Milestone **Phase 9a-2: Ownership & Lifetimes** is fully closed — all 19 issues (`#240`, `#250`–`#267`) merged in PR [#268](https://github.com/hgahub/duumbi/pull/268). Delivered: `Op::Alloc/Move/Borrow/Drop`, `DuumbiType::Ref(&T)/RefMut(&mut T)`, E020–E029 ownership validator, automatic LIFO drop insertion, 890 tests (62 new), 6 JSON-LD fixtures. **Phase 9a is now 100% complete (37/37 issues across both sub-milestones).** Kill criterion satisfied: validator rejects use-after-move (E021), double-borrow-mut (E022), and dangling reference (E026) at graph validation time. Next active phase: **Phase 9 — Build Excellence & Multi-LLM.**
 
 
 > [!note] **Phase 15 update (2026-03-15):** Phase 15a (LLVM Backend) expanded to include **WASM compilation target** (`duumbi build --target wasm32`). WASM enables: browser-based DUUMBI playground (onboarding), Figma plugin generation (with MCP client from Phase 12), Cloudflare Workers / edge computing deployment. Requires WASI-compatible runtime shim (replaces libc-based C shim). Phase 12 also gained **MCP Client capability** — agents can call external MCP servers (Figma, GitHub, Browser, Database) alongside internal DUUMBI tools.
