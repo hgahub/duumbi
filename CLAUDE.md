@@ -6,6 +6,12 @@ for native code generation. petgraph for graph IR, serde_json for JSON-LD
 parsing. AI agent graph mutation (OpenAI/Anthropic APIs), intent-driven
 development, registry distribution, DUUMBI Studio web platform.
 
+## Repository layout
+- **`hgahub/duumbi`** (this repo) — Rust source code, compiler, CLI, tests, technical docs
+- **`hgahub/duumbi-vault`** — Obsidian planning vault (PRD, phase specs, roadmap, architecture diagrams)
+  - Lokálisan: `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/`
+  - Obsidian MCP nincs használatban — a vault fájljai közvetlenül elérhetők: Read/Edit/Grep/Glob toolokkal
+
 ## Project structure
 src/
   parser/      # JSON-LD parsing (serde_json, json-ld crate) → typed AST
