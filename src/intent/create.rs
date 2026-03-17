@@ -258,10 +258,10 @@ async fn call_plain_completion(
         })
         .await;
 
-    if let Err(e) = result {
-        if !matches!(e, crate::agents::AgentError::NoToolCalls) {
-            return Err(anyhow::anyhow!("LLM call failed: {e}"));
-        }
+    if let Err(e) = result
+        && !matches!(e, crate::agents::AgentError::NoToolCalls)
+    {
+        return Err(anyhow::anyhow!("LLM call failed: {e}"));
     }
 
     let text = response
