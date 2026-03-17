@@ -64,6 +64,60 @@ impl fmt::Display for LlmProvider {
     }
 }
 
+/// The kind of task an LLM agent is being used for.
+///
+/// Used to look up per-task model overrides in [`TaskModels`].
+#[allow(dead_code)] // Used by orchestrator and intent engine to select per-task models
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    /// High-level feature or milestone planning.
+    Planning,
+    /// Source-code authoring and implementation.
+    Coding,
+    /// Test design and test-code generation.
+    Testing,
+    /// Code-review and quality analysis.
+    Review,
+    /// Technical research and option evaluation.
+    Research,
+}
+
+/// Per-task model overrides in the `[llm.models]` table.
+///
+/// Each field is optional. When a field is absent the parent `[llm].model`
+/// is used as the fallback. Configure only the tasks whose model should
+/// differ from the default.
+///
+/// # Recommended defaults (highest quality per task)
+///
+/// ```toml
+/// [llm.models]
+/// planning  = "claude-opus-4-5"    # deep reasoning / Anthropic
+/// coding    = "claude-sonnet-4-5"  # fast, high-quality code generation
+/// testing   = "claude-sonnet-4-5"  # strong test generation
+/// review    = "claude-opus-4-5"    # thorough code understanding
+/// research  = "claude-opus-4-5"    # broad knowledge synthesis
+/// ```
+#[allow(dead_code)] // Fields consumed by model_for_task and future orchestrator
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TaskModels {
+    /// Model override for planning tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning: Option<String>,
+    /// Model override for code-writing tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding: Option<String>,
+    /// Model override for testing tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testing: Option<String>,
+    /// Model override for code-review tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    /// Model override for research tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research: Option<String>,
+}
+
 /// LLM configuration block from `[llm]` in `config.toml`.
 #[allow(dead_code)] // Used in Issue #31 orchestrator
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -71,7 +125,9 @@ pub struct LlmConfig {
     /// LLM provider to use (`"anthropic"` or `"openai"`).
     pub provider: LlmProvider,
 
-    /// Model name, e.g. `"claude-sonnet-4-6"` or `"gpt-4o"`.
+    /// Default model name, e.g. `"claude-sonnet-4-5"` or `"gpt-4o"`.
+    ///
+    /// Used for any task that does not have an explicit override in `models`.
     pub model: String,
 
     /// Name of the environment variable that holds the API key.
@@ -79,9 +135,32 @@ pub struct LlmConfig {
     /// Example: `"ANTHROPIC_API_KEY"` or `"OPENAI_API_KEY"`.
     /// The key itself is never stored in config.
     pub api_key_env: String,
+
+    /// Optional per-task model overrides (`[llm.models]` table).
+    ///
+    /// Absent fields fall back to [`Self::model`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<TaskModels>,
 }
 
 impl LlmConfig {
+    /// Returns the model name to use for `task`.
+    ///
+    /// Looks up the task-specific override in [`Self::models`] first;
+    /// falls back to [`Self::model`] when no override is configured.
+    #[allow(dead_code)] // Called by the orchestrator / intent engine
+    #[must_use]
+    pub fn model_for_task(&self, task: TaskKind) -> &str {
+        let override_model = self.models.as_ref().and_then(|m| match task {
+            TaskKind::Planning => m.planning.as_deref(),
+            TaskKind::Coding => m.coding.as_deref(),
+            TaskKind::Testing => m.testing.as_deref(),
+            TaskKind::Review => m.review.as_deref(),
+            TaskKind::Research => m.research.as_deref(),
+        });
+        override_model.unwrap_or(&self.model)
+    }
+
     /// Resolves the API key by reading the configured environment variable.
     ///
     /// Returns an error if the env var is not set.
@@ -407,6 +486,7 @@ api_key_env = "COHERE_KEY"
             provider: LlmProvider::Anthropic,
             model: "claude-sonnet-4-6".to_string(),
             api_key_env: "DUUMBI_TEST_KEY_ABC123".to_string(),
+            models: None,
         };
         // SAFETY: test-only env mutation; var name is unique to this test.
         // Cargo's test harness runs these tests single-threaded by default.
@@ -425,6 +505,7 @@ api_key_env = "COHERE_KEY"
             provider: LlmProvider::Anthropic,
             model: "claude-sonnet-4-6".to_string(),
             api_key_env: "DUUMBI_DEFINITELY_NOT_SET_XYZ".to_string(),
+            models: None,
         };
         let err = llm
             .resolve_api_key()
@@ -439,8 +520,129 @@ api_key_env = "COHERE_KEY"
     }
 
     // -------------------------------------------------------------------------
-    // Config v2 tests (#156)
+    // Per-task model tests
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn model_for_task_falls_back_to_default_when_no_overrides() {
+        let llm = LlmConfig {
+            provider: LlmProvider::Anthropic,
+            model: "claude-sonnet-4-5".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            models: None,
+        };
+        for task in [
+            TaskKind::Planning,
+            TaskKind::Coding,
+            TaskKind::Testing,
+            TaskKind::Review,
+            TaskKind::Research,
+        ] {
+            assert_eq!(
+                llm.model_for_task(task),
+                "claude-sonnet-4-5",
+                "expected fallback model for {task:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn model_for_task_uses_override_when_configured() {
+        let llm = LlmConfig {
+            provider: LlmProvider::Anthropic,
+            model: "claude-sonnet-4-5".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            models: Some(TaskModels {
+                planning: Some("claude-opus-4-5".to_string()),
+                coding: None,
+                testing: None,
+                review: Some("claude-opus-4-5".to_string()),
+                research: Some("claude-opus-4-5".to_string()),
+            }),
+        };
+        assert_eq!(llm.model_for_task(TaskKind::Planning), "claude-opus-4-5");
+        // Tasks without an override fall back to the default model.
+        assert_eq!(llm.model_for_task(TaskKind::Coding), "claude-sonnet-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Testing), "claude-sonnet-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Review), "claude-opus-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Research), "claude-opus-4-5");
+    }
+
+    #[test]
+    fn load_config_task_models_parsed_from_toml() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.models]
+planning  = "claude-opus-4-5"
+coding    = "claude-sonnet-4-5"
+testing   = "claude-sonnet-4-5"
+review    = "claude-opus-4-5"
+research  = "claude-opus-4-5"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let llm = cfg.llm.expect("llm section must be present");
+        let models = llm.models.expect("models sub-table must be present");
+        assert_eq!(models.planning.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(models.coding.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(models.testing.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(models.review.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(models.research.as_deref(), Some("claude-opus-4-5"));
+    }
+
+    #[test]
+    fn load_config_task_models_partial_overrides() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.models]
+planning = "claude-opus-4-5"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let llm = cfg.llm.expect("llm section must be present");
+        assert_eq!(llm.model_for_task(TaskKind::Planning), "claude-opus-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Coding), "claude-sonnet-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Testing), "claude-sonnet-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Review), "claude-sonnet-4-5");
+        assert_eq!(llm.model_for_task(TaskKind::Research), "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn load_config_no_task_models_section_backwards_compat() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[llm]
+provider = "openai"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse with no models sub-table");
+        let llm = cfg.llm.expect("llm section must be present");
+        assert!(llm.models.is_none());
+        // All tasks fall back to the single default model.
+        assert_eq!(llm.model_for_task(TaskKind::Planning), "gpt-4o");
+        assert_eq!(llm.model_for_task(TaskKind::Coding), "gpt-4o");
+    }
 
     #[test]
     fn config_v2_registries_and_default_registry() {

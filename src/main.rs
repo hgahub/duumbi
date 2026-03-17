@@ -247,11 +247,19 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         serde_json::from_str(&source_str).context("Failed to parse current graph as JSON")?;
 
     let client = match llm_cfg.provider {
-        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
-        config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
+        config::LlmProvider::Anthropic => {
+            agents::LlmClient::anthropic(llm_cfg.model_for_task(config::TaskKind::Coding), api_key)
+        }
+        config::LlmProvider::OpenAI => {
+            agents::LlmClient::openai(llm_cfg.model_for_task(config::TaskKind::Coding), api_key)
+        }
     };
 
-    eprintln!("Calling {} ({})…", llm_cfg.provider, llm_cfg.model);
+    eprintln!(
+        "Calling {} ({})…",
+        llm_cfg.provider,
+        llm_cfg.model_for_task(config::TaskKind::Coding)
+    );
 
     let result = orchestrator::mutate(&client, &source, request, 3).await?;
 
@@ -294,7 +302,7 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Result<()> {
     match subcommand {
         cli::IntentSubcommand::Create { description, yes } => {
-            let client = require_llm_client(&workspace)?;
+            let client = require_llm_client_for_task(&workspace, config::TaskKind::Planning)?;
             intent::create::run_create(&client, &workspace, &description, yes).await?;
             Ok(())
         }
@@ -309,7 +317,7 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             }
         }
         cli::IntentSubcommand::Execute { name } => {
-            let client = require_llm_client(&workspace)?;
+            let client = require_llm_client_for_task(&workspace, config::TaskKind::Coding)?;
             let ok = intent::execute::run_execute(&client, &workspace, &name).await?;
             if !ok {
                 process::exit(1);
@@ -348,8 +356,15 @@ async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> 
     }
 }
 
-/// Builds an [`agents::LlmClient`] from workspace config, or bails with a helpful message.
-fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
+/// Builds an [`agents::LlmClient`] for a specific [`config::TaskKind`].
+///
+/// Reads `[llm.models]` from the workspace config and selects the per-task
+/// model override when one is configured; falls back to the default `[llm].model`
+/// otherwise.
+fn require_llm_client_for_task(
+    workspace: &Path,
+    task: config::TaskKind,
+) -> Result<agents::LlmClient> {
     let cfg = config::load_config(workspace).context(
         "Cannot run intent commands: no .duumbi/config.toml found.\n\
          Run `duumbi init` and add an [llm] section to .duumbi/config.toml.",
@@ -363,9 +378,10 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
     let api_key = llm_cfg
         .resolve_api_key()
         .context("Failed to resolve LLM API key")?;
+    let model = llm_cfg.model_for_task(task).to_string();
     Ok(match llm_cfg.provider {
-        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&llm_cfg.model, api_key),
-        config::LlmProvider::OpenAI => agents::LlmClient::openai(&llm_cfg.model, api_key),
+        config::LlmProvider::Anthropic => agents::LlmClient::anthropic(&model, api_key),
+        config::LlmProvider::OpenAI => agents::LlmClient::openai(&model, api_key),
     })
 }
 
