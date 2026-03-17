@@ -206,6 +206,37 @@ pub enum Op {
         /// Target node ID to drop.
         target: String,
     },
+
+    // -- Result operations (Phase 9a-3) --
+    /// Wrap value in Ok: `duumbi:ResultOk`
+    ResultOk,
+    /// Wrap value in Err: `duumbi:ResultErr`
+    ResultErr,
+    /// Check if Result is Ok → bool: `duumbi:ResultIsOk`
+    ResultIsOk,
+    /// Extract Ok payload (panics on Err): `duumbi:ResultUnwrap`
+    ResultUnwrap,
+    /// Extract Err payload (panics on Ok): `duumbi:ResultUnwrapErr`
+    ResultUnwrapErr,
+
+    // -- Option operations (Phase 9a-3) --
+    /// Wrap value in Some: `duumbi:OptionSome`
+    OptionSome,
+    /// Create None: `duumbi:OptionNone`
+    OptionNone,
+    /// Check if Option is Some → bool: `duumbi:OptionIsSome`
+    OptionIsSome,
+    /// Extract Some payload (panics on None): `duumbi:OptionUnwrap`
+    OptionUnwrap,
+
+    // -- Match operation (Phase 9a-3) --
+    /// Pattern match on Result/Option — branches to Ok/Some or Err/None block: `duumbi:Match`
+    Match {
+        /// Block label for the Ok/Some branch.
+        ok_block: String,
+        /// Block label for the Err/None branch.
+        err_block: String,
+    },
 }
 
 impl fmt::Display for Op {
@@ -255,6 +286,19 @@ impl fmt::Display for Op {
                 mutable: false,
             } => write!(f, "Borrow({source})"),
             Op::Drop { target } => write!(f, "Drop({target})"),
+            Op::ResultOk => f.write_str("ResultOk"),
+            Op::ResultErr => f.write_str("ResultErr"),
+            Op::ResultIsOk => f.write_str("ResultIsOk"),
+            Op::ResultUnwrap => f.write_str("ResultUnwrap"),
+            Op::ResultUnwrapErr => f.write_str("ResultUnwrapErr"),
+            Op::OptionSome => f.write_str("OptionSome"),
+            Op::OptionNone => f.write_str("OptionNone"),
+            Op::OptionIsSome => f.write_str("OptionIsSome"),
+            Op::OptionUnwrap => f.write_str("OptionUnwrap"),
+            Op::Match {
+                ok_block,
+                err_block,
+            } => write!(f, "Match({ok_block},{err_block})"),
         }
     }
 }
@@ -300,7 +344,13 @@ impl Op {
             | Op::ArraySet
             | Op::FieldSet { .. }
             | Op::Drop { .. } => Some(DuumbiType::Void),
-            Op::Return | Op::Branch => None,
+            // Result/Option ops with context-dependent output
+            Op::ResultOk | Op::ResultErr | Op::OptionSome | Op::OptionNone => result_type.clone(),
+            // Result/Option ops with fixed output types
+            Op::ResultIsOk | Op::OptionIsSome => Some(DuumbiType::Bool),
+            // Unwrap extracts the payload — output type from context
+            Op::ResultUnwrap | Op::ResultUnwrapErr | Op::OptionUnwrap => result_type.clone(),
+            Op::Return | Op::Branch | Op::Match { .. } => None,
         }
     }
 }
@@ -336,6 +386,12 @@ pub enum DuumbiType {
     /// Mutable reference to a value.
     #[allow(dead_code)] // Used starting from Phase 9a-2 ownership ops
     RefMut(Box<DuumbiType>),
+    /// Result type with Ok and Err variants: `result<T, E>`.
+    #[allow(dead_code)] // Used starting from Phase 9a-3 error handling ops
+    Result(Box<DuumbiType>, Box<DuumbiType>),
+    /// Option type with Some and None variants: `option<T>`.
+    #[allow(dead_code)] // Used starting from Phase 9a-3 error handling ops
+    Option(Box<DuumbiType>),
 }
 
 impl DuumbiType {
@@ -345,7 +401,11 @@ impl DuumbiType {
     pub fn is_heap_type(&self) -> bool {
         matches!(
             self,
-            DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_)
+            DuumbiType::String
+                | DuumbiType::Array(_)
+                | DuumbiType::Struct(_)
+                | DuumbiType::Result(_, _)
+                | DuumbiType::Option(_)
         )
     }
 
@@ -372,6 +432,20 @@ impl DuumbiType {
     pub fn is_mutable_ref(&self) -> bool {
         matches!(self, DuumbiType::RefMut(_))
     }
+
+    /// Returns `true` if this type is a `Result<T, E>`.
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-3 error handling
+    pub fn is_result(&self) -> bool {
+        matches!(self, DuumbiType::Result(_, _))
+    }
+
+    /// Returns `true` if this type is an `Option<T>`.
+    #[must_use]
+    #[allow(dead_code)] // Used starting from Phase 9a-3 error handling
+    pub fn is_option(&self) -> bool {
+        matches!(self, DuumbiType::Option(_))
+    }
 }
 
 impl fmt::Display for DuumbiType {
@@ -386,6 +460,8 @@ impl fmt::Display for DuumbiType {
             DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
             DuumbiType::Ref(inner) => write!(f, "&{inner}"),
             DuumbiType::RefMut(inner) => write!(f, "&mut {inner}"),
+            DuumbiType::Result(ok, err) => write!(f, "result<{ok},{err}>"),
+            DuumbiType::Option(inner) => write!(f, "option<{inner}>"),
         }
     }
 }
@@ -600,5 +676,76 @@ mod tests {
             target: "x".to_string(),
         };
         assert_eq!(drop.output_type(&None), Some(DuumbiType::Void));
+    }
+
+    #[test]
+    fn duumbi_type_result_display() {
+        assert_eq!(
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::I64)).to_string(),
+            "result<i64,i64>"
+        );
+        assert_eq!(
+            DuumbiType::Result(Box::new(DuumbiType::F64), Box::new(DuumbiType::String)).to_string(),
+            "result<f64,string>"
+        );
+    }
+
+    #[test]
+    fn duumbi_type_option_display() {
+        assert_eq!(
+            DuumbiType::Option(Box::new(DuumbiType::I64)).to_string(),
+            "option<i64>"
+        );
+        assert_eq!(
+            DuumbiType::Option(Box::new(DuumbiType::String)).to_string(),
+            "option<string>"
+        );
+    }
+
+    #[test]
+    fn duumbi_type_result_option_helpers() {
+        let result_ty = DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::String));
+        assert!(result_ty.is_result());
+        assert!(!result_ty.is_option());
+        assert!(result_ty.is_heap_type());
+        assert!(!result_ty.is_reference());
+
+        let option_ty = DuumbiType::Option(Box::new(DuumbiType::I64));
+        assert!(option_ty.is_option());
+        assert!(!option_ty.is_result());
+        assert!(option_ty.is_heap_type());
+        assert!(!option_ty.is_reference());
+    }
+
+    #[test]
+    fn duumbi_type_result_option_equality() {
+        assert_eq!(
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::I64)),
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::I64))
+        );
+        assert_ne!(
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::I64)),
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::F64))
+        );
+        assert_eq!(
+            DuumbiType::Option(Box::new(DuumbiType::I64)),
+            DuumbiType::Option(Box::new(DuumbiType::I64))
+        );
+        assert_ne!(
+            DuumbiType::Option(Box::new(DuumbiType::I64)),
+            DuumbiType::Option(Box::new(DuumbiType::String))
+        );
+    }
+
+    #[test]
+    fn duumbi_type_nested_result_option() {
+        // option<result<i64,string>>
+        let nested = DuumbiType::Option(Box::new(DuumbiType::Result(
+            Box::new(DuumbiType::I64),
+            Box::new(DuumbiType::String),
+        )));
+        assert_eq!(nested.to_string(), "option<result<i64,string>>");
+        assert!(nested.is_option());
+        assert!(!nested.is_result());
     }
 }

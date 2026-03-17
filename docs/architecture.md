@@ -153,8 +153,18 @@ Example: `duumbi:main/main/entry/2`
 | `Borrow` | pointer copy (no runtime cost) | 9a-2 |
 | `BorrowMut` | pointer copy (no runtime cost) | 9a-2 |
 | `Drop` | `call duumbi_*_free` (type-specific) | 9a-2 |
+| `ResultOk` | `call duumbi_result_new_ok` | 9a-3 |
+| `ResultErr` | `call duumbi_result_new_err` | 9a-3 |
+| `ResultIsOk` | `call duumbi_result_is_ok` | 9a-3 |
+| `ResultUnwrap` | `call duumbi_result_unwrap` | 9a-3 |
+| `ResultUnwrapErr` | `call duumbi_result_unwrap_err` | 9a-3 |
+| `OptionSome` | `call duumbi_option_new_some` | 9a-3 |
+| `OptionNone` | `call duumbi_option_new_none` | 9a-3 |
+| `OptionIsSome` | `call duumbi_option_is_some` | 9a-3 |
+| `OptionUnwrap` | `call duumbi_option_unwrap` | 9a-3 |
+| `Match` | `brif` on discriminant → ok/err blocks | 9a-3 |
 
-**Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`, `&T`, `&mut T`
+**Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`, `&T`, `&mut T`, `result<T,E>`, `option<T>`
 
 ---
 
@@ -222,7 +232,10 @@ E015 integrity mismatch · E016 version not found ·
 E020 single owner · E021 use-after-move · E022 borrow exclusivity ·
 E023 lifetime exceeded · E024 drop incomplete · E025 double free ·
 E026 dangling reference · E027 move while borrowed ·
-E028 lifetime param missing · E029 return lifetime mismatch
+E028 lifetime param missing · E029 return lifetime mismatch ·
+E030 unhandled Result · E031 unhandled Option ·
+E032 non-exhaustive match · E033 Result/Option type param mismatch ·
+E034 unwrap without check · E035 wrong payload type
 
 ---
 
@@ -240,9 +253,13 @@ E028 lifetime param missing · E029 return lifetime mismatch
 | 7 | Registry & Distribution | Module packaging, publish, install, lockfile v1 ✓ |
 | 8 | Registry Auth | GitHub OAuth2, JWT sessions, device code flow ✓ |
 | 9a-1 | Heap Types & Runtime | String concat+print, Array push+get, Struct field access ✓ |
-| 9a-2 | Ownership & Lifetimes | Alloc/Move/Borrow/Drop ops, &T/&mut T, E020–E029 validator (in progress) |
+| 9a-2 | Ownership & Lifetimes | Alloc/Move/Borrow/Drop ops, &T/&mut T, E020–E029 validator ✓ |
+| 9a-3 | Error Handling | Result/Option types, Match op, E030–E035 validator |
+| 9A | Stdlib & Instruction Set | Math ops (Sqrt, Pow, Modulo), stdlib modules |
+| 9B | Multi-LLM Providers | LlmProvider trait, Grok/OpenRouter, fallback chain |
+| 9C | Benchmark & Showcases | 6 showcases, benchmark runner, CI integration |
 
-Phases beyond MVP (A–D): Knowledge base, Agent swarm, Self-healing, IDE.
+Phases beyond MVP (10–15): Knowledge base, CLI UX, Agent swarm, Self-healing, Marketing, Formal verification.
 
 ## Intent system (Phase 5)
 

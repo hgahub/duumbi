@@ -7,6 +7,7 @@
 pub mod builder;
 pub mod ownership;
 pub mod program;
+pub mod result_safety;
 pub mod validator;
 
 use std::collections::HashMap;
