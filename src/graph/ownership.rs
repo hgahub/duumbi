@@ -281,14 +281,7 @@ fn find_operand_source(
 ///
 /// After a Move event, any subsequent use of the moved value's source node
 /// (via operand edges or Load of the same variable) is an error.
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_use_after_move(
-    graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let analysis = analyze_function(graph, func_info);
-
+pub fn check_use_after_move(analysis: &OwnershipAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     // Track which source nodes have been moved, and at which Move node
     let mut moved_sources: HashMap<NodeId, NodeId> = HashMap::new(); // source_node -> move_node
 
@@ -349,14 +342,7 @@ pub fn check_use_after_move(
 /// - Exactly one mutable borrow (`&mut T`)
 ///
 /// but not both simultaneously.
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_borrow_exclusivity(
-    graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let analysis = analyze_function(graph, func_info);
-
+pub fn check_borrow_exclusivity(analysis: &OwnershipAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     // Track active borrows per source node
     // Key: source_node_id, Value: list of (borrow_node_id, mutable)
     let mut active_borrows: HashMap<NodeId, Vec<(NodeId, bool)>> = HashMap::new();
@@ -427,14 +413,7 @@ pub fn check_borrow_exclusivity(
 /// A borrow created in block B cannot be used in a block that executes
 /// after the owner's block ends. For now, this is a simplified check:
 /// borrows and owners must be in the same block.
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_lifetimes(
-    graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let analysis = analyze_function(graph, func_info);
-
+pub fn check_lifetimes(analysis: &OwnershipAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     // Check that borrows and their sources are in the same block
     for event in &analysis.events {
         if let OwnershipEvent::Borrow {
@@ -465,14 +444,7 @@ pub fn check_lifetimes(
 ///
 /// - E025: A value is dropped more than once.
 /// - E026: A borrow is created after the source value was dropped.
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_drop_safety(
-    graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let analysis = analyze_function(graph, func_info);
-
+pub fn check_drop_safety(analysis: &OwnershipAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     // Track dropped source nodes
     let mut dropped: HashMap<NodeId, NodeId> = HashMap::new(); // source_node -> first_drop_node
 
@@ -519,14 +491,7 @@ pub fn check_drop_safety(
 }
 
 /// Checks that values cannot be moved while borrows are active (E027).
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_move_while_borrowed(
-    graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let analysis = analyze_function(graph, func_info);
-
+pub fn check_move_while_borrowed(analysis: &OwnershipAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     // Track which nodes have active borrows
     let mut borrowed_nodes: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
 
@@ -569,12 +534,7 @@ pub fn check_move_while_borrowed(
 ///
 /// - E028: A function that borrows a parameter must declare lifetime params.
 /// - E029: A function returning a reference must tie it to an input lifetime.
-#[allow(dead_code)] // Called from validator.rs once ownership validation is wired up
-pub fn check_lifetime_params(
-    _graph: &SemanticGraph,
-    func_info: &FunctionInfo,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
+pub fn check_lifetime_params(func_info: &FunctionInfo, diagnostics: &mut Vec<Diagnostic>) {
     let has_ref_params = func_info.params.iter().any(|p| p.param_type.is_reference());
     let returns_ref = func_info.return_type.is_reference();
 
@@ -819,7 +779,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_use_after_move(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_use_after_move(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E021"),
             "Expected E021, got: {diags:?}"
@@ -856,7 +817,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_use_after_move(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_use_after_move(&analysis, &mut diags);
         assert!(diags.is_empty(), "Expected no errors, got: {diags:?}");
     }
 
@@ -890,7 +852,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_borrow_exclusivity(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_borrow_exclusivity(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E022"),
             "Expected E022, got: {diags:?}"
@@ -927,7 +890,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_borrow_exclusivity(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_borrow_exclusivity(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E022"),
             "Expected E022, got: {diags:?}"
@@ -964,7 +928,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_borrow_exclusivity(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_borrow_exclusivity(&analysis, &mut diags);
         assert!(diags.is_empty(), "Expected no E022, got: {diags:?}");
     }
 
@@ -998,7 +963,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_drop_safety(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_drop_safety(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E025"),
             "Expected E025, got: {diags:?}"
@@ -1035,7 +1001,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_drop_safety(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_drop_safety(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E026"),
             "Expected E026, got: {diags:?}"
@@ -1072,7 +1039,8 @@ mod tests {
         let module = parse_jsonld(json).expect("invariant: test JSON must parse");
         let sg = build_graph(&module).expect("invariant: test graph must build");
         let mut diags = Vec::new();
-        check_move_while_borrowed(&sg, &sg.functions[0], &mut diags);
+        let analysis = analyze_function(&sg, &sg.functions[0]);
+        check_move_while_borrowed(&analysis, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E027"),
             "Expected E027, got: {diags:?}"
@@ -1082,7 +1050,7 @@ mod tests {
     #[test]
     fn lifetime_param_missing_detected() {
         use crate::graph::ParamInfo;
-        use crate::types::{DuumbiType, FunctionName, ModuleName};
+        use crate::types::{DuumbiType, FunctionName};
 
         let func = FunctionInfo {
             name: FunctionName("borrow_fn".to_string()),
@@ -1096,17 +1064,8 @@ mod tests {
             lifetime_params: vec![], // Missing!
         };
 
-        let graph = petgraph::stable_graph::StableGraph::new();
-        let sg = SemanticGraph {
-            graph,
-            node_map: HashMap::new(),
-            functions: vec![func.clone()],
-            branch_targets: HashMap::new(),
-            module_name: ModuleName("test".to_string()),
-        };
-
         let mut diags = Vec::new();
-        check_lifetime_params(&sg, &func, &mut diags);
+        check_lifetime_params(&func, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E028"),
             "Expected E028, got: {diags:?}"
@@ -1115,7 +1074,7 @@ mod tests {
 
     #[test]
     fn return_ref_without_lifetime_detected() {
-        use crate::types::{DuumbiType, FunctionName, ModuleName};
+        use crate::types::{DuumbiType, FunctionName};
 
         let func = FunctionInfo {
             name: FunctionName("get_ref".to_string()),
@@ -1125,17 +1084,8 @@ mod tests {
             lifetime_params: vec![], // Missing!
         };
 
-        let graph = petgraph::stable_graph::StableGraph::new();
-        let sg = SemanticGraph {
-            graph,
-            node_map: HashMap::new(),
-            functions: vec![func.clone()],
-            branch_targets: HashMap::new(),
-            module_name: ModuleName("test".to_string()),
-        };
-
         let mut diags = Vec::new();
-        check_lifetime_params(&sg, &func, &mut diags);
+        check_lifetime_params(&func, &mut diags);
         assert!(
             diags.iter().any(|d| d.code == "E029"),
             "Expected E029, got: {diags:?}"

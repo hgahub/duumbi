@@ -35,12 +35,14 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     // Ownership checks — only run if the graph contains ownership ops
     if super::ownership::has_ownership_ops(graph) {
         for func_info in &graph.functions {
-            super::ownership::check_use_after_move(graph, func_info, &mut diagnostics);
-            super::ownership::check_borrow_exclusivity(graph, func_info, &mut diagnostics);
-            super::ownership::check_lifetimes(graph, func_info, &mut diagnostics);
-            super::ownership::check_drop_safety(graph, func_info, &mut diagnostics);
-            super::ownership::check_move_while_borrowed(graph, func_info, &mut diagnostics);
-            super::ownership::check_lifetime_params(graph, func_info, &mut diagnostics);
+            // Analyze once per function, pass result to all checks
+            let analysis = super::ownership::analyze_function(graph, func_info);
+            super::ownership::check_use_after_move(&analysis, &mut diagnostics);
+            super::ownership::check_borrow_exclusivity(&analysis, &mut diagnostics);
+            super::ownership::check_lifetimes(&analysis, &mut diagnostics);
+            super::ownership::check_drop_safety(&analysis, &mut diagnostics);
+            super::ownership::check_move_while_borrowed(&analysis, &mut diagnostics);
+            super::ownership::check_lifetime_params(func_info, &mut diagnostics);
         }
     }
 

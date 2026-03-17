@@ -530,9 +530,9 @@ fn compile_function(
     let mut field_offsets: HashMap<String, i64> = HashMap::new();
 
     // Track heap-allocated values for automatic Drop insertion at scope exits.
-    // Maps NodeId → (SSA Value, DuumbiType) for values that need freeing.
-    // Removed when explicitly Dropped, Moved, or Returned.
-    let mut heap_allocs: HashMap<NodeId, (Value, DuumbiType)> = HashMap::new();
+    // Ordered Vec for deterministic LIFO (last-allocated freed first) ordering.
+    // Entries: (NodeId, SSA Value, DuumbiType). Removed on explicit Drop or Move.
+    let mut heap_allocs: Vec<(NodeId, Value, DuumbiType)> = Vec::new();
 
     // Process each block
     for (block_idx, block_info) in func_info.blocks.iter().enumerate() {
@@ -687,13 +687,14 @@ fn compile_function(
                     // Auto-drop: free remaining heap values before return (LIFO order).
                     // Skip the value being returned (it escapes to the caller).
                     let return_source_id = find_return_operand_node_id(graph, node_idx);
-                    let mut to_free: Vec<(Value, DuumbiType)> = heap_allocs
+                    // LIFO order: iterate in reverse (last-allocated freed first),
+                    // skipping the returned value.
+                    let to_free: Vec<(Value, DuumbiType)> = heap_allocs
                         .iter()
-                        .filter(|(id, _)| return_source_id.as_ref() != Some(*id))
-                        .map(|(_, v)| v.clone())
+                        .rev()
+                        .filter(|(id, _, _)| return_source_id.as_ref() != Some(id))
+                        .map(|(_, val, ty)| (*val, ty.clone()))
                         .collect();
-                    // LIFO order: reverse so last-allocated is freed first
-                    to_free.reverse();
                     for (val, ty) in &to_free {
                         match ty {
                             DuumbiType::String => {
@@ -918,7 +919,7 @@ fn compile_function(
                     value_map.insert(node.id.clone(), cl_val);
                     // Track for automatic Drop insertion at scope exit
                     if alloc_type.is_heap_type() {
-                        heap_allocs.insert(node.id.clone(), (cl_val, alloc_type.clone()));
+                        heap_allocs.push((node.id.clone(), cl_val, alloc_type.clone()));
                     }
                 }
                 Op::Move { .. } => {
@@ -928,11 +929,12 @@ fn compile_function(
                     let source_node_id = find_operand_node_id(graph, node_idx);
                     let operand_val = get_operand(graph, node_idx, &value_map)?;
                     value_map.insert(node.id.clone(), operand_val);
-                    if let Some(src_id) = source_node_id
-                        && let Some(entry) = heap_allocs.remove(&src_id)
-                    {
-                        // Transfer ownership to the move result
-                        heap_allocs.insert(node.id.clone(), entry);
+                    if let Some(ref src_id) = source_node_id {
+                        // Remove source from tracking, transfer to move result
+                        if let Some(pos) = heap_allocs.iter().position(|(id, _, _)| id == src_id) {
+                            let (_, val, ty) = heap_allocs.remove(pos);
+                            heap_allocs.push((node.id.clone(), val, ty));
+                        }
                     }
                 }
                 Op::Borrow { .. } => {
@@ -960,8 +962,10 @@ fn compile_function(
                         _ => {}
                     }
                     // Remove from heap_allocs — explicitly freed
-                    if let Some(src_id) = source_node_id {
-                        heap_allocs.remove(&src_id);
+                    if let Some(ref src_id) = source_node_id
+                        && let Some(pos) = heap_allocs.iter().position(|(id, _, _)| id == src_id)
+                    {
+                        heap_allocs.remove(pos);
                     }
                 }
             }
@@ -976,7 +980,7 @@ fn compile_function(
                 && rt.is_heap_type()
                 && let Some(&val) = value_map.get(&node.id)
             {
-                heap_allocs.insert(node.id.clone(), (val, rt.clone()));
+                heap_allocs.push((node.id.clone(), val, rt.clone()));
             }
         }
     }
