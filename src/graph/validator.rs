@@ -46,6 +46,11 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
         }
     }
 
+    // Result/Option safety checks (E030–E035) — only run if graph contains such ops
+    if super::result_safety::has_result_option_ops(graph) {
+        super::result_safety::check_result_option_safety(graph, &mut diagnostics);
+    }
+
     diagnostics
 }
 

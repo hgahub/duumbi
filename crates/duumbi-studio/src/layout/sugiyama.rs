@@ -498,7 +498,7 @@ mod tests {
             by_layer.entry(node.layer).or_default().push(node);
         }
 
-        for (_layer, layer_nodes) in &by_layer {
+        for layer_nodes in by_layer.values() {
             for i in 0..layer_nodes.len() {
                 for j in (i + 1)..layer_nodes.len() {
                     let a = layer_nodes[i];
