@@ -3,14 +3,16 @@ tags:
   - project/duumbi
   - milestone/phase-8
 status: complete
-github_milestone: 9
-updated: 2026-03-14
+github_milestone: "Phase 8: Registry Auth & User Management"
+github_issues: "22/22 closed"
+updated: 2026-03-17
 ---
-# Phase 8 — Registry Auth & User Management
+# Phase 8 — Registry Auth & User Management ✅
 
 > **Kill Criterion:** Felhasználó GitHub OAuth-tal bejelentkezik a registry.duumbi.dev-en, generál API tokent, majd `duumbi registry login duumbi` device code flow-val hitelesít a CLI-ből.
 > **Milestone:** [Phase 8: Registry Auth & User Management](https://github.com/hgahub/duumbi/milestone/9)
 > **Fejlesztői ág:** `phase8/registry-auth`
+> **Eredmény:** ✅ 22/22 issue lezárva (`#194`–`#215`), a kill criterion teljesítve
 
 <- Vissza: [[DUUMBI Roadmap Map]]
 
@@ -19,6 +21,19 @@ updated: 2026-03-14
 ## Összefoglaló
 
 Felhasználó regisztráció, bejelentkezés és API token kezelés a duumbi registry-hez. Két auth mód: **GitHub OAuth2** a globális registry-hez (`registry.duumbi.dev`), **username+password** a privát (Docker self-hosted) registry-khez.
+
+## Projekt státusz (2026-03-17)
+
+- ✅ **Track A — Core Auth:** `#194`–`#198` lezárva
+- ✅ **Track B — GitHub OAuth:** `#199`–`#202` lezárva
+- ✅ **Track C — Local Password:** `#203` lezárva
+- ✅ **Track D — Token Management:** `#204`–`#206` lezárva
+- ✅ **Track E — Web UI:** `#207`–`#209` lezárva
+- ✅ **Track F — Security:** `#210`–`#212` lezárva
+- ✅ **Track G — CLI:** `#213` lezárva
+- ✅ **Track H — Infra:** `#214`–`#215` lezárva
+
+> A GitHub project alapján a Phase 8 scope teljes egészében elkészült; további auth fejlesztés már nem ezen a milestone-on fut, hanem a későbbi Phase 9+ capability-ket szolgálja ki.
 
 ## Architektúra
 
@@ -221,3 +236,12 @@ Phase 8 (Auth)             ──→ Phase 9 (Multi-Agent, Self-Healing)
 - `uuid = { version = "1", features = ["v4"] }` — session ID-k
 - `cookie = "0.18"` — cookie parsing
 - reqwest → dependencies-be mozgatás (GitHub API hívások)
+
+---
+
+## GitHub
+
+- Milestone: **Phase 8: Registry Auth & User Management** (#9)
+- Issues: `#194`–`#215` (**22/22 lezárva**)
+- Branch: `phase8/registry-auth`
+- Kapcsolódó repók: `hgahub/duumbi-registry`, `hgahub/duumbi-infra`

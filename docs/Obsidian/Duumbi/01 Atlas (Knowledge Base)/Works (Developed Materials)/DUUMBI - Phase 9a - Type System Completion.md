@@ -2,14 +2,15 @@
 tags:
   - project/duumbi
   - milestone/phase-9a
-status: planned
-github_milestone: ~
-updated: 2026-03-14
+status: in-progress
+github_milestone: "Phase 9a-1: Heap Types & Runtime; Phase 9a-2: Ownership & Lifetimes"
+github_issues: "18/18 closed in Phase 9a-1; 1 open in Phase 9a-2"
+updated: 2026-03-17
 ---
-# Phase 9a — Type System Completion ⏳
+# Phase 9a — Type System Completion 🔄
 
 > **Kill Criterion:** (1) A String variable is created, concatenated, compared, and printed in a compiled binary. (2) A dynamic Array is created, elements appended, indexed, and iterated. (3) The schema validator rejects a use-after-move, a double-borrow-mut, and a dangling reference — all at graph validation time, before compilation. (4) A function returns `Result<i64, String>` — the caller handles both Ok and Err paths, and the validator rejects unhandled error cases. (5) All existing Phase 0–8 tests remain green.
-> **Status:** ⏳ Planned — starts after Phase 8, before Phase 9
+> **Status:** 🔄 In progress — Phase 9a-1 completed on 2026-03-16 (18/18 issues closed, integration kill criterion green); Phase 9a-2 ownership/lifetimes has started with `#240` open
 > **Estimated duration:** 10–14 weeks (solo developer)
 
 ← Back: [[DUUMBI Roadmap Map]]
@@ -27,6 +28,34 @@ The ownership model is enforced entirely at the **schema validation layer** — 
 The error handling model follows Rust's `Result<T, E>` pattern — no exceptions, no try/catch. Errors are values in the graph, and the schema validator ensures every error path is handled.
 
 **Scientific significance:** Implementing a full ownership/lifetime system AND algebraic error types as schema constraints on a semantic graph — rather than as compiler passes on an AST — has no published precedent.
+
+---
+
+## Project Status Snapshot (2026-03-17)
+
+### ✅ Completed in GitHub: Phase 9a-1 — Heap Types & Runtime
+
+- **Milestone:** [Phase 9a-1: Heap Types & Runtime](https://github.com/hgahub/duumbi/milestone/10)
+- **Issue status:** 18/18 closed (`#227`–`#244`)
+- **Validated in repo:** `cargo test` is green, including `tests/integration_phase9a1.rs`
+
+Delivered scope from the GitHub project:
+
+- **Type system + op model:** `DuumbiType` now includes `String`, `Array`, `Struct`; new ops landed for String / Array / Struct flows (`#227`–`#230`)
+- **Runtime:** C shims for heap allocation, strings, arrays, and structs are implemented in `runtime/duumbi_runtime.{c,h}` (`#231`–`#233`)
+- **Compiler architecture:** `CodegenBackend` abstraction and Cranelift-backed lowering are in place (`#234`–`#237`)
+- **Front-end pipeline:** parser and validator understand the new types/ops (`#238`–`#239`)
+- **Object generation + AI tooling:** string constant embedding and agent prompt/tool updates shipped (`#241`–`#242`)
+- **Verification:** end-to-end integration tests for String / Array / Struct kill criterion are closed and passing (`#243`)
+- **Documentation:** core architecture / CLAUDE docs were updated in `#244`
+
+### 🔄 Active next slice: Phase 9a-2 — Ownership & Lifetimes
+
+- **Milestone:** [Phase 9a-2: Ownership & Lifetimes](https://github.com/hgahub/duumbi/milestone/11)
+- **Open issue:** [#240 Heap memory management: Drop insertion at block scope exits](https://github.com/hgahub/duumbi/issues/240)
+- **Meaning:** the heap/runtime foundation is done, but ownership graph rules (`E020`–`E029`) and automatic Drop/lifetime enforcement are still the active work.
+
+> The checklist below remains the **full Phase 9a target state**. The GitHub project has already delivered the Phase 9a-1 subset above; the remaining unchecked items mostly belong to Phase 9a-2+ work.
 
 ---
 
@@ -443,6 +472,19 @@ src/runtime/
 └── duumbi_runtime.h  — header for new functions
 .duumbi/schema/
 └── core.schema.json  — (extended: new types, ownership, error handling, E020–E035)
+```
+
+## Current implementation footprint (repo snapshot)
+
+```text
+src/types.rs                  — String / Array / Struct type variants
+src/parser/mod.rs             — parser support for Phase 9a-1 types and ops
+src/compiler/mod.rs           — CodegenBackend trait + CraneliftBackend
+src/compiler/lowering.rs      — lowering for heap/runtime-backed operations
+runtime/duumbi_runtime.c      — alloc/string/array/struct runtime shims
+runtime/duumbi_runtime.h      — runtime shim declarations
+tests/integration_phase9a1.rs — end-to-end kill criterion validation
+tests/fixtures/*.jsonld       — String / Array / Struct fixtures
 ```
 
 ## Monetization
