@@ -6,7 +6,10 @@ use futures_util::StreamExt as _;
 use reqwest::Client;
 use serde_json::json;
 
-use crate::agents::AgentError;
+use std::future::Future;
+use std::pin::Pin;
+
+use crate::agents::{AgentError, LlmProvider};
 use crate::patch::PatchOp;
 use crate::tools::{AnthropicToolCall, anthropic_tools, patch_op_from_anthropic};
 
@@ -32,10 +35,8 @@ impl AnthropicClient {
         }
     }
 
-    /// Sends a message to Claude with graph-mutation tools attached.
-    ///
-    /// Returns the list of `PatchOp` values parsed from tool call responses.
-    pub async fn call_with_tools(
+    /// Sends a message to Claude with graph-mutation tools attached (internal).
+    async fn do_call_with_tools(
         &self,
         system_prompt: &str,
         user_message: &str,
@@ -77,20 +78,13 @@ impl AnthropicClient {
         parse_anthropic_response(&response)
     }
 
-    /// Sends a streaming message to Claude and invokes `on_text` for each text chunk.
-    ///
-    /// Uses server-sent events (SSE) with `"stream": true`. Text content blocks
-    /// are surfaced via `on_text` in real time. Tool call inputs are accumulated
-    /// from `input_json_delta` events and parsed at the end.
-    pub async fn call_with_tools_streaming<F>(
-        &self,
-        system_prompt: &str,
-        user_message: &str,
-        on_text: &F,
-    ) -> Result<Vec<PatchOp>, AgentError>
-    where
-        F: Fn(&str),
-    {
+    /// Sends a streaming message to Claude (internal).
+    async fn do_call_with_tools_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Result<Vec<PatchOp>, AgentError> {
         let tools = anthropic_tools();
         let tools_json = serde_json::to_value(&tools)
             .map_err(|e| AgentError::Parse(format!("Failed to serialize tools: {e}")))?;
@@ -129,6 +123,29 @@ impl AnthropicClient {
     }
 }
 
+impl LlmProvider for AnthropicClient {
+    fn name(&self) -> &str {
+        "anthropic"
+    }
+
+    fn call_with_tools<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+        Box::pin(self.do_call_with_tools(system_prompt, user_message))
+    }
+
+    fn call_with_tools_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+        Box::pin(self.do_call_with_tools_streaming(system_prompt, user_message, on_text))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSE stream parser
 // ---------------------------------------------------------------------------
@@ -141,13 +158,10 @@ struct ToolBlock {
 
 /// Consumes an Anthropic SSE response stream, calling `on_text` for each
 /// streamed text chunk and accumulating tool call inputs to return as `PatchOp`s.
-async fn parse_sse_stream<F>(
+async fn parse_sse_stream(
     resp: reqwest::Response,
-    on_text: &F,
-) -> Result<Vec<PatchOp>, AgentError>
-where
-    F: Fn(&str),
-{
+    on_text: &(dyn Fn(&str) + Send + Sync),
+) -> Result<Vec<PatchOp>, AgentError> {
     let mut byte_stream = resp.bytes_stream();
     let mut line_buf = String::new();
 
@@ -202,7 +216,7 @@ fn process_sse_line(
     line: &str,
     tool_blocks: &mut HashMap<usize, ToolBlock>,
     tool_indices: &mut Vec<usize>,
-    on_text: &impl Fn(&str),
+    on_text: &dyn Fn(&str),
 ) {
     let Some(data) = line.strip_prefix("data: ") else {
         return;

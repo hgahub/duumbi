@@ -171,6 +171,7 @@ mod tests {
                 default_registry: default.map(|s| s.to_string()),
             }),
             llm: None,
+            providers: Vec::new(),
             registries: reg_map,
             dependencies: HashMap::new(),
             vendor: None,

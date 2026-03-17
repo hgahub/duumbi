@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use serde_json::json;
 
-use crate::agents::{LlmClient, orchestrator};
+use crate::agents::{LlmProvider, orchestrator};
 use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
@@ -32,7 +32,7 @@ use crate::snapshot;
 /// 6. If all pass → archive as `Completed`; otherwise mark `Failed`
 ///
 /// Returns `Ok(true)` if all tasks and tests passed, `Ok(false)` if failed.
-pub async fn run_execute(client: &LlmClient, workspace: &Path, slug: &str) -> Result<bool> {
+pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str) -> Result<bool> {
     let graph_path = workspace.join(".duumbi/graph/main.jsonld");
 
     // 1. Load spec

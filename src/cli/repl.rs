@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 
 use crate::agents::{LlmClient, orchestrator};
-use crate::config::{DuumbiConfig, LlmProvider};
+use crate::config::DuumbiConfig;
 use crate::intent;
 use crate::snapshot;
 
@@ -149,18 +149,15 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
 /// Builds an [`LlmClient`] from the workspace config, or returns `None` with
 /// a warning if the provider is not configured or the API key is missing.
 fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
-    let llm_cfg = config.llm.as_ref()?;
+    let providers = config.effective_providers();
+    if providers.is_empty() {
+        return None;
+    }
 
-    match llm_cfg.resolve_api_key() {
-        Ok(api_key) => {
-            let client = match llm_cfg.provider {
-                LlmProvider::Anthropic => LlmClient::anthropic(&llm_cfg.model, api_key),
-                LlmProvider::OpenAI => LlmClient::openai(&llm_cfg.model, api_key),
-            };
-            Some(client)
-        }
+    match crate::agents::factory::create_provider_chain(&providers) {
+        Ok(client) => Some(client),
         Err(e) => {
-            eprintln!("Warning: LLM API key not available ({e}). AI mutations disabled.");
+            eprintln!("Warning: LLM provider not available ({e}). AI mutations disabled.");
             None
         }
     }

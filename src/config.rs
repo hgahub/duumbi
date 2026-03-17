@@ -44,8 +44,7 @@ pub enum ConfigError {
     },
 }
 
-/// LLM provider selection.
-#[allow(dead_code)] // Used in Issue #29/#30 provider implementations
+/// LLM provider selection (legacy `[llm]` section format).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
@@ -64,8 +63,9 @@ impl fmt::Display for LlmProvider {
     }
 }
 
-/// LLM configuration block from `[llm]` in `config.toml`.
-#[allow(dead_code)] // Used in Issue #31 orchestrator
+/// LLM configuration block from `[llm]` in `config.toml` (legacy format).
+///
+/// Kept for backward compatibility. New configs should use `[[providers]]`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmConfig {
     /// LLM provider to use (`"anthropic"` or `"openai"`).
@@ -85,7 +85,84 @@ impl LlmConfig {
     /// Resolves the API key by reading the configured environment variable.
     ///
     /// Returns an error if the env var is not set.
-    #[allow(dead_code)] // Called in Issue #29/#30 provider implementations
+    #[must_use = "must use the resolved API key or handle the error"]
+    pub fn resolve_api_key(&self) -> Result<String, ConfigError> {
+        std::env::var(&self.api_key_env).map_err(|_| ConfigError::Invalid {
+            field: "api_key_env".to_string(),
+            reason: format!("Environment variable '{}' is not set", self.api_key_env),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9B: Multi-provider configuration
+// ---------------------------------------------------------------------------
+
+/// Provider kind for the `[[providers]]` config section.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    /// Anthropic Claude API.
+    Anthropic,
+    /// OpenAI API.
+    #[serde(rename = "openai")]
+    OpenAI,
+    /// xAI Grok API (OpenAI-compatible).
+    Grok,
+    /// OpenRouter API (OpenAI-compatible).
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+}
+
+impl fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProviderKind::Anthropic => f.write_str("anthropic"),
+            ProviderKind::OpenAI => f.write_str("openai"),
+            ProviderKind::Grok => f.write_str("grok"),
+            ProviderKind::OpenRouter => f.write_str("openrouter"),
+        }
+    }
+}
+
+/// Role of a provider in the provider chain.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderRole {
+    /// Primary provider — tried first.
+    #[default]
+    Primary,
+    /// Fallback provider — tried when the primary fails with a transient error.
+    Fallback,
+}
+
+/// Configuration for a single LLM provider entry in `[[providers]]`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProviderConfig {
+    /// Provider type.
+    pub provider: ProviderKind,
+
+    /// Role in the provider chain (primary or fallback).
+    #[serde(default)]
+    pub role: ProviderRole,
+
+    /// Model name (e.g. `"claude-sonnet-4-6"`, `"gpt-4o"`, `"grok-3"`).
+    pub model: String,
+
+    /// Name of the environment variable holding the API key.
+    pub api_key_env: String,
+
+    /// Optional custom endpoint override (e.g. self-hosted API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
+    /// Optional per-provider timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+impl ProviderConfig {
+    /// Resolves the API key by reading the configured environment variable.
     #[must_use = "must use the resolved API key or handle the error"]
     pub fn resolve_api_key(&self) -> Result<String, ConfigError> {
         std::env::var(&self.api_key_env).map_err(|_| ConfigError::Invalid {
@@ -219,17 +296,34 @@ pub struct VendorSection {
 }
 
 /// Top-level duumbi workspace configuration.
-#[allow(dead_code)] // Used in Issue #31 orchestrator
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DuumbiConfig {
     /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
 
-    /// LLM provider settings — required for `duumbi add` / AI commands.
+    /// LLM provider settings (legacy `[llm]` section — use `[[providers]]` instead).
     ///
     /// Omitting this section is allowed; the CLI will return a clear error
     /// when an AI command is invoked without LLM config.
     pub llm: Option<LlmConfig>,
+
+    /// Multi-provider configuration (Phase 9B).
+    ///
+    /// ```toml
+    /// [[providers]]
+    /// provider = "anthropic"
+    /// role = "primary"
+    /// model = "claude-sonnet-4-6"
+    /// api_key_env = "ANTHROPIC_API_KEY"
+    ///
+    /// [[providers]]
+    /// provider = "grok"
+    /// role = "fallback"
+    /// model = "grok-3"
+    /// api_key_env = "XAI_API_KEY"
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<ProviderConfig>,
 
     /// Named registry endpoints.
     ///
@@ -253,6 +347,39 @@ pub struct DuumbiConfig {
 
     /// Vendor configuration.
     pub vendor: Option<VendorSection>,
+}
+
+impl DuumbiConfig {
+    /// Returns the effective provider list.
+    ///
+    /// If `[[providers]]` is non-empty, returns it directly.
+    /// Otherwise, if the legacy `[llm]` section is present, converts it
+    /// to a single primary provider entry for backward compatibility.
+    /// Returns an empty vec if neither is configured.
+    #[must_use]
+    pub fn effective_providers(&self) -> Vec<ProviderConfig> {
+        if !self.providers.is_empty() {
+            return self.providers.clone();
+        }
+
+        // Legacy fallback: convert [llm] to a single provider
+        if let Some(ref llm) = self.llm {
+            let kind = match llm.provider {
+                LlmProvider::Anthropic => ProviderKind::Anthropic,
+                LlmProvider::OpenAI => ProviderKind::OpenAI,
+            };
+            return vec![ProviderConfig {
+                provider: kind,
+                role: ProviderRole::Primary,
+                model: llm.model.clone(),
+                api_key_env: llm.api_key_env.clone(),
+                base_url: None,
+                timeout_secs: None,
+            }];
+        }
+
+        Vec::new()
+    }
 }
 
 /// Saves a [`DuumbiConfig`] to `<workspace_root>/.duumbi/config.toml`.
