@@ -1,0 +1,104 @@
+name: Obsidian Docs Discord Notify
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - 'docs/Obsidian/**'
+      - '.github/prompts/obsidian-doc-sync.prompt.md'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/Obsidian/**'
+      - '.github/prompts/obsidian-doc-sync.prompt.md'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    steps:
+      - name: Send Discord notification when configured
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          COMPARE_URL: ${{ github.event.compare }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not webhook_url:
+              print("DISCORD_WEBHOOK_URL is not configured; skipping Discord notification.")
+              sys.exit(0)
+
+          event_name = os.environ["GITHUB_EVENT_NAME"]
+          actor = os.environ["GITHUB_ACTOR"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          if event_name == "pull_request":
+              number = os.environ.get("PR_NUMBER", "")
+              title = os.environ.get("PR_TITLE", "").strip()
+              url = os.environ.get("PR_URL", "").strip()
+              action = os.environ.get("GITHUB_EVENT_ACTION", "").strip()
+              merged = os.environ.get("PR_MERGED", "false").lower() == "true"
+
+              if action == "closed" and merged:
+                  status = "✅ merged"
+              elif action == "closed":
+                  status = "🛑 closed"
+              elif action == "synchronize":
+                  status = "🔄 updated"
+              elif action == "ready_for_review":
+                  status = "👀 ready for review"
+              else:
+                  status = "📝 opened"
+
+              content = (
+                  f"{status} Obsidian docs sync PR in `{repo}`\n"
+                  f"PR #{number}: {title}\n"
+                  f"{url}\n"
+                  f"Actor: `{actor}`\n"
+                  "Notification channel: Discord"
+              )
+          else:
+              ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+              compare_url = os.environ.get("COMPARE_URL", "").strip()
+              content = (
+                  f"🚀 Obsidian docs sync pushed to `{repo}`\n"
+                  f"Branch: `{ref_name}`\n"
+                  f"{compare_url}\n"
+                  f"Actor: `{actor}`\n"
+                  "Notification channel: Discord"
+              )
+
+          payload = json.dumps({"content": content}).encode("utf-8")
+          request = urllib.request.Request(
+              webhook_url,
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request):
+                  pass
+              print("Discord notification sent.")
+          except urllib.error.HTTPError as error:
+              print(f"Discord webhook returned HTTP {error.code}: {error.reason}")
+          except urllib.error.URLError as error:
+              print(f"Discord webhook request failed: {error.reason}")
+          PY
