@@ -49,9 +49,10 @@ Quick capture. Regularly process into Dots or discard. Contains historical docum
 
 ### Documentation sync agent
 
-For recurring GitHub → Obsidian synchronization work, use the dedicated Copilot prompt file:
+For recurring GitHub → Obsidian synchronization work, use the dedicated Copilot Agent or its underlying prompt:
 
-- `.github/prompts/obsidian-doc-sync.prompt.md`
+- `.github/agents/obsidian-doc-sync.agent.md` — reusable custom Copilot Agent for this workflow
+- `.github/prompts/obsidian-doc-sync.prompt.md` — lightweight prompt version of the same instructions
 
 The workflow is intentionally lightweight and repeatable:
 
