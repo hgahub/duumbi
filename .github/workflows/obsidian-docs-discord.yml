@@ -22,15 +22,10 @@ jobs:
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
-      - name: Skip when Discord webhook is not configured
-        if: ${{ env.DISCORD_WEBHOOK_URL == '' }}
-        run: echo "DISCORD_WEBHOOK_URL is not configured; skipping Discord notification."
-
-      - name: Send Discord notification
-        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
+      - name: Send Discord notification when configured
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_ACTION: ${{ github.event.action }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_ACTOR: ${{ github.actor }}
@@ -43,7 +38,14 @@ jobs:
           python <<'PY'
           import json
           import os
+          import sys
+          import urllib.error
           import urllib.request
+
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not webhook_url:
+              print("DISCORD_WEBHOOK_URL is not configured; skipping Discord notification.")
+              sys.exit(0)
 
           event_name = os.environ["GITHUB_EVENT_NAME"]
           actor = os.environ["GITHUB_ACTOR"]
@@ -53,7 +55,7 @@ jobs:
               number = os.environ.get("PR_NUMBER", "")
               title = os.environ.get("PR_TITLE", "").strip()
               url = os.environ.get("PR_URL", "").strip()
-              action = os.environ.get("GITHUB_ACTION", "").strip()
+              action = os.environ.get("GITHUB_EVENT_ACTION", "").strip()
               merged = os.environ.get("PR_MERGED", "false").lower() == "true"
 
               if action == "closed" and merged:
@@ -87,9 +89,16 @@ jobs:
 
           payload = json.dumps({"content": content}).encode("utf-8")
           request = urllib.request.Request(
-              os.environ["DISCORD_WEBHOOK_URL"],
+              webhook_url,
               data=payload,
               headers={"Content-Type": "application/json"},
           )
-          urllib.request.urlopen(request).read()
+          try:
+              with urllib.request.urlopen(request):
+                  pass
+              print("Discord notification sent.")
+          except urllib.error.HTTPError as error:
+              print(f"Discord webhook returned HTTP {error.code}: {error.reason}")
+          except urllib.error.URLError as error:
+              print(f"Discord webhook request failed: {error.reason}")
           PY
