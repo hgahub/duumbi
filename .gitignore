@@ -49,3 +49,4 @@ cache/
 *.tmp
 *.swp
 myproject/
+docs/.obsidian/
