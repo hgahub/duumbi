@@ -32,11 +32,33 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
             .collect::<Vec<_>>()
             .join("; ");
 
-        let description = if criteria_summary.is_empty() {
-            format!("Create module '{module_name}' as described in the intent.")
+        // Collect unique function names targeted at this module from test_cases.
+        // These must all appear in the module's duumbi:exports array.
+        let module_stem = module_name.split('/').next_back().unwrap_or(module_name);
+        let mut export_names: Vec<&str> = spec
+            .test_cases
+            .iter()
+            .map(|tc| tc.function.as_str())
+            .filter(|&f| f != "main")
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        export_names.sort_unstable();
+        let exports_hint = if export_names.is_empty() {
+            String::new()
         } else {
-            format!("Create module '{module_name}'. Requirements: {criteria_summary}")
+            format!(
+                " IMPORTANT: the duumbi:exports array MUST include ALL of these functions: [{}].",
+                export_names.join(", ")
+            )
         };
+
+        let description = if criteria_summary.is_empty() {
+            format!("Create module '{module_name}' as described in the intent.{exports_hint}")
+        } else {
+            format!("Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}")
+        };
+        let _ = module_stem; // used only for context above
 
         tasks.push(Task {
             id,
