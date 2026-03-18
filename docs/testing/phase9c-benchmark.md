@@ -1,6 +1,6 @@
 # Phase 9C: Benchmark & Showcases — Manual Test Protocol
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** 2026-03-18
 **Branch:** `phase9c/benchmark-showcases`
 **PR:** #329
@@ -10,48 +10,57 @@
 ## Prerequisites
 
 - [ ] Rust toolchain installed (`rustup show` → stable)
-- [ ] Project builds: `cargo build`
+- [ ] Project builds: `cargo build` (a repo gyökerében)
 - [ ] Existing tests pass: `cargo test --all`
-- [ ] At least one LLM provider configured in `.duumbi/config.toml`
+- [ ] At least one LLM provider configured
   - Anthropic: `ANTHROPIC_API_KEY` env var set
   - OpenAI: `OPENAI_API_KEY` env var set
   - (Optional) Grok: `XAI_API_KEY`, OpenRouter: `OPENROUTER_API_KEY`
 
-### Important: Binary Selection
+### Binary: ne használj `cargo install`
 
-**Do NOT use `cargo install`** — it places duumbi in `~/.cargo/bin/` globally, which can:
-- Cache stale binaries from previous builds
-- Interfere with development and later test runs
-- Cause unexpected behavior from older versions
+**Ne futtasd `cargo install --path .`** — az a binárist globálisan telepíti
+(`~/.cargo/bin/duumbi`), ami zavarhatja a fejlesztést (régi cached verzió
+fut, PATH ütközés). Mindig a frissen fordított lokális binárist használd.
 
-**Instead, use the locally built binary:**
+---
+
+## Test Workspace Setup
+
+**A tesztelést ne a repo gyökerében végezd.** A `duumbi init` egy `.duumbi/`
+mappát hoz létre, amelynek egyes fájljai (`config.toml`, `graph/`, `schema/`)
+**nincsenek gitignore-ban** (user fájlok), ezért a repo gyökerében való
+futtatás szennyes `git status`-t okozna.
+
+**Egy parancs a teljes tesztkörnyezet felállítására** (a repo gyökerében futtasd):
 
 ```bash
-# During testing, always use the local debug binary:
-./target/debug/duumbi benchmark --help
-./target/debug/duumbi benchmark --showcase calculator --attempts 1
+# 1. Exportáld a bináris elérési útját (egyszer, terminál session-önként)
+export DUUMBI="$(pwd)/target/debug/duumbi"
 
-# Optional: create a shell alias for convenience
-alias duumbi-dev='./target/debug/duumbi'
-duumbi-dev benchmark --help
+# 2. Hozz létre test workspace-t a repón KÍVÜL
+mkdir -p /tmp/duumbi-test
+cd /tmp/duumbi-test
+
+# 3. Init
+$DUUMBI init .
+
+# 4. Konfiguráld a provider(eke)t (lásd template lent)
+nano .duumbi/config.toml   # vagy: code .duumbi/config.toml
 ```
 
-**If you must install globally temporarily:**
+**Takarítás a tesztelés után:**
 
 ```bash
-# Before testing (not recommended, but if you must)
-cargo install --path . --force
-
-# ... run tests with: ./target/debug/duumbi benchmark ... ...
-
-# After testing — IMPORTANT: clean up
-cargo uninstall duumbi
+cd ~
+rm -rf /tmp/duumbi-test
 ```
 
 ### Config template
 
 ```toml
-# .duumbi/config.toml — minimum 2 providers for kill criterion
+# /tmp/duumbi-test/.duumbi/config.toml
+# Minimum 2 provider a kill criterion-hoz (T3, T9)
 [workspace]
 name = "benchmark-test"
 
@@ -68,46 +77,51 @@ model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+> **Megjegyzés:** T1 és T10.1 az egyetlen szekció, ahol a `DUUMBI` változót
+> a **repo gyökeréből** futtatod (workspace nem szükséges). Az összes többi
+> tesztet `/tmp/duumbi-test/`-ből futtasd.
+
 ---
 
 ## T1 — CLI Help & Argument Parsing
 
+> Futtatás helye: **repo gyökere** (workspace nem szükséges)
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 1.1 | `./target/debug/duumbi benchmark --help` | Megjelenik a help szöveg az összes opcióval (--showcase, --provider, --attempts, --output, --ci, --baseline) | | |
-| 1.2 | `./target/debug/duumbi benchmark --attempts 0` | Elindul 0 attempt-tel, üres report JSON-t ad | | |
-| 1.3 | `./target/debug/duumbi benchmark --showcase nonexistent --attempts 1` | Hiba: "no showcases match the given filter" | | |
-| 1.4 | `./target/debug/duumbi benchmark --provider nonexistent --attempts 1` | Hiba: "no providers match the given filter" | | |
-| 1.5 | `./target/debug/duumbi benchmark --showcase calculator,fibonacci --attempts 1` | Csak a 2 kiválasztott showcase fut | | |
+| 1.1 | `$DUUMBI benchmark --help` | Help szöveg megjelenik az összes opcióval (--showcase, --provider, --attempts, --output, --ci, --baseline) | | |
+| 1.2 | `$DUUMBI benchmark --attempts 0` | Hiba: no .duumbi/config.toml (nincs workspace) | | |
+| 1.3 | (workspace-ből) `$DUUMBI benchmark --showcase nonexistent --attempts 1` | Hiba: "no showcases match the given filter" | | |
+| 1.4 | (workspace-ből) `$DUUMBI benchmark --provider nonexistent --attempts 1` | Hiba: "no providers match the given filter" | | |
+| 1.5 | (workspace-ből) `$DUUMBI benchmark --showcase calculator,fibonacci --attempts 1` | Csak a 2 kiválasztott showcase fut | | |
 
 ---
 
 ## T2 — Single Showcase, Single Provider
 
-> **Cél:** Ellenőrizni, hogy egy showcase végigmegy az intent pipeline-on.
+> Futtatás helye: **`/tmp/duumbi-test/`** (1 provider konfiggal)
 
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 2.1 | `../target/debug/duumbi init benchmark-test && cd benchmark-test` | Workspace létrejön | | |
-| 2.2 | Config beállítása (1 provider) | `config.toml` tartalmazza a [[providers]] szekciót | | |
-| 2.3 | `../target/debug/duumbi benchmark --showcase calculator --attempts 1` | Progress output stderr-en, JSON report stdout-on | | |
-| 2.4 | Ellenőrizni: stderr tartalmaz `[1/1] calculator / ...` sort | Progress jelzés látható | | |
-| 2.5 | Ellenőrizni: stdout valid JSON | `... \| jq .` sikeres parse | | |
-| 2.6 | JSON report tartalmaz `showcases[0].name == "calculator"` | Showcase neve helyes | | |
-| 2.7 | JSON report tartalmaz `results[0].duration_secs > 0` | Időmérés működik | | |
-| 2.8 | Ha sikeres: `results[0].success == true`, `tests_passed == tests_total` | Teszt eredmények helyesek | | |
-| 2.9 | Ha sikertelen: `error_category` kitöltve, `error_message` nem üres | Hibakategorizálás működik | | |
+| 2.1 | `cat .duumbi/config.toml` | Config létezik, 1 `[[providers]]` blokk | | |
+| 2.2 | `$DUUMBI benchmark --showcase calculator --attempts 1` | Progress stderr-en, JSON report stdout-on | | |
+| 2.3 | stderr tartalmaz `[1/1] calculator / ...` sort | Progress jelzés látható | | |
+| 2.4 | `$DUUMBI benchmark --showcase calculator --attempts 1 \| jq .` | Valid JSON, nincs parse hiba | | |
+| 2.5 | JSON: `showcases[0].name == "calculator"` | Showcase neve helyes | | |
+| 2.6 | JSON: `results[0].duration_secs > 0` | Időmérés működik | | |
+| 2.7 | Ha sikeres: `results[0].success == true` és `tests_passed == tests_total` | Teszt eredmények helyesek | | |
+| 2.8 | Ha sikertelen: `error_category` kitöltve, `error_message` nem üres | Hibakategorizálás működik | | |
 
 ---
 
 ## T3 — Multiple Providers
 
-> **Cél:** Ellenőrizni, hogy több provider-rel is fut, és a report külön tartja őket.
+> Futtatás helye: **`/tmp/duumbi-test/`** (2 provider konfiggal — lásd config template)
 
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 3.1 | Config: 2 provider (Anthropic + OpenAI) | Mindkét provider konfigurálva | | |
-| 3.2 | `./target/debug/duumbi benchmark --showcase calculator --attempts 1` | 2 run (1 showcase × 2 provider × 1 attempt) | | |
+| 3.1 | `cat .duumbi/config.toml` | 2 `[[providers]]` blokk látható | | |
+| 3.2 | `$DUUMBI benchmark --showcase calculator --attempts 1` | 2 run (1 showcase × 2 provider × 1 attempt) | | |
 | 3.3 | stderr: `[1/2]` és `[2/2]` progress sorok | Mindkét provider fut | | |
 | 3.4 | JSON: `showcases[0].providers` tömb 2 elemű | Két provider stat elkülönül | | |
 | 3.5 | JSON: mindkét provider neve megjelenik | Provider nevek helyesek | | |
@@ -116,9 +130,11 @@ api_key_env = "OPENAI_API_KEY"
 
 ## T4 — Multiple Attempts
 
+> Futtatás helye: **`/tmp/duumbi-test/`**
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 4.1 | `./target/debug/duumbi benchmark --showcase fibonacci --attempts 3 --provider anthropic` | 3 run (1 × 1 × 3) | | |
+| 4.1 | `$DUUMBI benchmark --showcase fibonacci --attempts 3 --provider anthropic` | 3 run (1 showcase × 1 provider × 3 attempt) | | |
 | 4.2 | JSON: `results` tömb 3 elemű | 3 eredmény rögzítve | | |
 | 4.3 | JSON: `results[*].attempt` értékek 1, 2, 3 | Attempt számozás helyes | | |
 | 4.4 | JSON: `attempts_per_run == 3` | Config érték tükröződik | | |
@@ -127,9 +143,11 @@ api_key_env = "OPENAI_API_KEY"
 
 ## T5 — Output File
 
+> Futtatás helye: **`/tmp/duumbi-test/`**
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 5.1 | `./target/debug/duumbi benchmark --showcase calculator --attempts 1 --output report.json` | Fájl létrejön | | |
+| 5.1 | `$DUUMBI benchmark --showcase calculator --attempts 1 --output report.json` | Fájl létrejön: `/tmp/duumbi-test/report.json` | | |
 | 5.2 | `cat report.json \| jq .kill_criterion_met` | Valid JSON, mező létezik | | |
 | 5.3 | stderr: "Report written to report.json" üzenet | Visszajelzés megjelenik | | |
 | 5.4 | stdout üres (nincs JSON a konzolra írva) | Csak fájlba írt | | |
@@ -138,48 +156,54 @@ api_key_env = "OPENAI_API_KEY"
 
 ## T6 — CI Mode
 
+> Futtatás helye: **`/tmp/duumbi-test/`**
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 6.1 | `./target/debug/duumbi benchmark --ci --showcase calculator --attempts 1; echo "exit: $?"` | Exit code: 0 vagy 1 | | |
-| 6.2 | Ha kill criterion nem teljesül (1 provider < 2): exit 1 | Nem-nulla exit code | | |
-| 6.3 | `./target/debug/duumbi benchmark --ci --attempts 5` (nincs --attempts override) | Alapértelmezett 20-ra vált (ellenőrizni JSON `attempts_per_run`) | | |
+| 6.1 | `$DUUMBI benchmark --ci --showcase calculator --attempts 1; echo "exit: $?"` | Exit code: 0 (pass) vagy 1 (fail) | | |
+| 6.2 | 1 provider konfiggal: `$DUUMBI benchmark --ci --showcase calculator --attempts 1; echo "exit: $?"` | Exit 1 (1 provider < 2, kill criterion nem teljesül) | | |
+| 6.3 | `$DUUMBI benchmark --ci --showcase calculator --attempts 5 \| jq .attempts_per_run` | 20-at ad vissza (CI default override) | | |
 
 ---
 
 ## T7 — Summary Table & Error Breakdown
 
+> Futtatás helye: **`/tmp/duumbi-test/`**
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 7.1 | Futtatás után a stderr-en megjelenik a táblázat | Unicode keret (╔═╗║╚═╝) és oszlopok: Showcase, Provider, Success, Rate | | |
+| 7.1 | Bármely sikeres futtatás után a stderr-en megjelenik a táblázat | Unicode keret (╔═╗║╚═╝), oszlopok: Showcase, Provider, Success, Rate | | |
 | 7.2 | Kill criterion státusz megjelenik | "PASSED" vagy "NOT MET" szöveg | | |
-| 7.3 | Ha voltak hibák: "Error breakdown:" szekció | Kategória → szám párok | | |
+| 7.3 | Ha voltak hibák: "Error breakdown:" szekció a stderr-en | Kategória → szám párok (pl. `logic_error: 2`) | | |
 
 ---
 
 ## T8 — Baseline Regression Detection
 
+> Futtatás helye: **`/tmp/duumbi-test/`**
+
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 8.1 | Első futtatás: `duumbi benchmark --showcase calculator --attempts 3 --output baseline.json` | Baseline report mentve | | |
-| 8.2 | Második futtatás: `duumbi benchmark --showcase calculator --attempts 3 --baseline baseline.json` | Összehasonlítás fut | | |
-| 8.3 | Ha nincs regresszió: nincs "Regressions detected" üzenet | Csend = jó | | |
-| 8.4 | Manuálisan módosítani baseline.json-ben egy success_rate-et 1.0-ra, majd újrafuttatni alacsonyabb eredménnyel | "⚠ Regressions detected:" megjelenik | | |
-| 8.5 | `--baseline nonexistent.json` | Hiba: "failed to read baseline" | | |
+| 8.1 | `$DUUMBI benchmark --showcase calculator --attempts 3 --output baseline.json` | Baseline report mentve | | |
+| 8.2 | `$DUUMBI benchmark --showcase calculator --attempts 3 --baseline baseline.json` | Összehasonlítás fut, nincs regresszió | | |
+| 8.3 | Ha nincs regresszió: nincs "Regressions detected" üzenet a stderr-en | Csend = jó | | |
+| 8.4 | `jq '.showcases[0].providers[0].success_rate = 1.0' baseline.json > b2.json && $DUUMBI benchmark --showcase calculator --attempts 3 --baseline b2.json` | "⚠ Regressions detected:" megjelenik (ha az aktuális rate < 0.95) | | |
+| 8.5 | `$DUUMBI benchmark --showcase calculator --attempts 1 --baseline nonexistent.json` | Hiba: "failed to read baseline" | | |
 
 ---
 
 ## T9 — All 6 Showcases (Full Run)
 
-> **Cél:** Teljes benchmark futtatás az összes showcase-zal. Ez a kill criterion validáció.
-> **Figyelem:** Ez hosszú futás (6 × 2 × N attempt), API költséggel jár.
+> Futtatás helye: **`/tmp/duumbi-test/`** (2 provider konfiggal)
+> **Figyelem:** Hosszú futás (6 × 2 × N attempt), API költséggel jár. Futtasd utoljára.
 
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 9.1 | `./target/debug/duumbi benchmark --attempts 3 --output full-report.json` | Mind a 6 showcase fut mind a 2 provider-rel | | |
+| 9.1 | `$DUUMBI benchmark --attempts 3 --output full-report.json` | Mind a 6 showcase fut mind a 2 provider-rel | | |
 | 9.2 | Progress: `[1/36]` ... `[36/36]` (6×2×3) | Összes run megjelenik | | |
-| 9.3 | JSON: 6 showcase summary | Minden showcase-nak van statisztikája | | |
+| 9.3 | JSON: `showcases` tömb 6 elemű | Minden showcase-nak van statisztikája | | |
 | 9.4 | Summary table: 12 sor (6 showcase × 2 provider) | Minden kombináció listázva | | |
-| 9.5 | `kill_criterion_met` érték konzisztens a táblázattal | 5/6 × 2+ provider ≥ 95% → true | | |
+| 9.5 | `cat full-report.json \| jq .kill_criterion_met` | `true`, ha 5/6 showcase ≥ 95% × 2 provider | | |
 
 ### Showcase-specifikus ellenőrzés
 
@@ -196,18 +220,18 @@ api_key_env = "OPENAI_API_KEY"
 
 ## T10 — Edge Cases & Error Handling
 
-| # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
-|---|-------|-----------------|-----|------------|
-| 10.1 | Futtatás workspace nélkül (üres könyvtárból) | "Cannot run benchmarks: no .duumbi/config.toml found" | | |
-| 10.2 | Futtatás üres [[providers]] konfiggal | "No LLM providers configured" | | |
-| 10.3 | Érvénytelen API key-vel futtatás | Provider error kategória, nem crash | | |
-| 10.4 | `ANTHROPIC_API_KEY="" ./target/debug/duumbi benchmark --showcase calculator --attempts 1` | Értelmes hibaüzenet | | |
+| # | Lépés | Futtatás helye | Elvárt eredmény | ✓/✗ | Megjegyzés |
+|---|-------|----------------|-----------------|-----|------------|
+| 10.1 | `$DUUMBI benchmark --showcase calculator --attempts 1` | Üres könyvtár (pl. `/tmp`) | "Cannot run benchmarks: no .duumbi/config.toml found" | | |
+| 10.2 | Config: üres `[[providers]]` nélkül, majd `$DUUMBI benchmark --attempts 1` | `/tmp/duumbi-test/` | "No LLM providers configured" | | |
+| 10.3 | `ANTHROPIC_API_KEY=invalid $DUUMBI benchmark --showcase calculator --attempts 1` | `/tmp/duumbi-test/` | Provider error kategória, nem crash | | |
+| 10.4 | `ANTHROPIC_API_KEY="" $DUUMBI benchmark --showcase calculator --attempts 1` | `/tmp/duumbi-test/` | Értelmes hibaüzenet az API key hiányáról | | |
 
 ---
 
 ## Automated Test Verification (reference)
 
-A következő tesztek CI-ben futnak API key nélkül:
+A következő tesztek API key nélkül futnak CI-ben (repo gyökerében):
 
 ```bash
 cargo test bench::              # 14 unit test (showcases, report)
@@ -223,6 +247,17 @@ cargo test integration_phase9c  # 26 integration test
 - ✅ JSON szerializáció/deszializáció roundtrip
 - ✅ Regresszió detektálás (threshold felett/alatt)
 - ✅ ErrorCategory serde snake_case
+
+---
+
+## Cleanup
+
+```bash
+cd ~
+rm -rf /tmp/duumbi-test
+# Ha $DUUMBI alias aktív:
+unset DUUMBI
+```
 
 ---
 
