@@ -121,7 +121,14 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
         eprintln!(); // newline after streamed output
 
         match result {
-            Ok(mut mutation_result) => {
+            Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
+                eprintln!("  ⚠ Clarification needed: {question}");
+                eprintln!(
+                    "    Skipping task (intent execution does not support interactive clarification)"
+                );
+                task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
+            }
+            Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 // For library modules, ensure all functions are exported
                 if is_create_module {
                     ensure_exports(&mut mutation_result.patched);

@@ -149,6 +149,17 @@ pub struct MutationResult {
     pub ops_count: usize,
 }
 
+/// Outcome of a mutation attempt.
+///
+/// Allows the LLM to ask a clarifying question instead of making a
+/// (potentially wrong) mutation when the request is ambiguous.
+pub enum MutationOutcome {
+    /// The mutation succeeded — patched graph is ready.
+    Success(MutationResult),
+    /// The LLM needs clarification from the user before proceeding.
+    NeedsClarification(String),
+}
+
 /// Runs the full mutation loop: prompt → LLM → patch → validate → retry.
 ///
 /// `source` is the current JSON-LD module value.
@@ -273,7 +284,7 @@ pub async fn mutate_streaming(
     max_retries: u32,
     library_mode: bool,
     on_text: impl Fn(&str) + Send + Sync,
-) -> Result<MutationResult> {
+) -> Result<MutationOutcome> {
     let graph_json = serde_json::to_string_pretty(source)
         .context("Failed to serialize current graph for context")?;
 
@@ -288,6 +299,11 @@ pub async fn mutate_streaming(
         .await
         .map_err(|e| anyhow::anyhow!("LLM call failed: {e}"))?;
 
+    // Check for clarification request
+    if let Some(question) = extract_clarification(&ops) {
+        return Ok(MutationOutcome::NeedsClarification(question));
+    }
+
     if ops.is_empty() {
         anyhow::bail!("LLM returned no tool calls — nothing to apply");
     }
@@ -296,7 +312,10 @@ pub async fn mutate_streaming(
     let patch = GraphPatch { ops };
 
     match try_apply_collecting_diagnostics(source, &patch, library_mode) {
-        Ok(patched) => Ok(MutationResult { patched, ops_count }),
+        Ok(patched) => Ok(MutationOutcome::Success(MutationResult {
+            patched,
+            ops_count,
+        })),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
@@ -327,10 +346,10 @@ pub async fn mutate_streaming(
 
                 match try_apply_collecting_diagnostics(source, &retry_patch, library_mode) {
                     Ok(patched) => {
-                        return Ok(MutationResult {
+                        return Ok(MutationOutcome::Success(MutationResult {
                             patched,
                             ops_count: retry_count,
-                        });
+                        }));
                     }
                     Err((new_msg, new_diags)) => {
                         last_error_msg = new_msg;
@@ -350,6 +369,32 @@ pub async fn mutate_streaming(
             unreachable!("retry loop must return or bail before this point");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Clarification detection
+// ---------------------------------------------------------------------------
+
+/// Checks if any of the PatchOps represent an `ask_clarification` tool call.
+///
+/// The LLM may use the `ask_clarification` tool instead of mutating the graph
+/// when the request is ambiguous. This function extracts the question text.
+fn extract_clarification(ops: &[crate::patch::PatchOp]) -> Option<String> {
+    // The ask_clarification tool is represented as a ModifyOp with a
+    // special sentinel node_id. Check for it.
+    for op in ops {
+        if let crate::patch::PatchOp::ModifyOp {
+            node_id,
+            field,
+            value,
+        } = op
+            && node_id == "duumbi:clarification"
+            && field == "question"
+        {
+            return value.as_str().map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

@@ -368,13 +368,13 @@ impl Session {
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let result =
+        let outcome =
             match orchestrator::mutate_streaming(client, &source, &prompt, 3, false, |text| {
                 eprint!("{text}");
             })
             .await
             {
-                Ok(r) => r,
+                Ok(o) => o,
                 Err(e) => {
                     eprintln!();
                     eprintln!("{e:#}");
@@ -382,6 +382,20 @@ impl Session {
                 }
             };
         eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
+
+        // Handle clarification requests
+        let result = match outcome {
+            orchestrator::MutationOutcome::Success(r) => r,
+            orchestrator::MutationOutcome::NeedsClarification(question) => {
+                eprintln!("\n? {question}");
+                // The next user input will include this context
+                self.history.push(Turn {
+                    request: request.to_string(),
+                    summary: format!("Clarification needed: {question}"),
+                });
+                return Ok(());
+            }
+        };
 
         // Show diff summary
         let diff = orchestrator::describe_changes(&source, &result.patched);
