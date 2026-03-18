@@ -15,6 +15,7 @@
 
 use std::borrow::Cow;
 use std::fs;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -24,6 +25,7 @@ use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::DuumbiConfig;
 use crate::intent;
+use crate::session::SessionManager;
 use crate::snapshot;
 
 use super::commands;
@@ -48,6 +50,8 @@ struct Session {
     client: Option<LlmClient>,
     /// Completed turns, used to build context for subsequent requests.
     history: Vec<Turn>,
+    /// Persistent session manager for cross-restart state.
+    session_mgr: SessionManager,
 }
 
 /// Minimal REPL prompt that renders a single `> ` marker.
@@ -91,6 +95,26 @@ impl Prompt for ReplPrompt {
 pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let client = build_client(&config);
 
+    // Initialize persistent session
+    let mut session_mgr = SessionManager::load_or_create(&workspace_root)
+        .map_err(|e| anyhow::anyhow!("session init: {e}"))?;
+
+    // Offer to resume if there's a pending session
+    if session_mgr.has_pending_session() {
+        let turns = session_mgr.turns().len();
+        eprint!("Resume previous session ({turns} turn(s))? [Y/n] ");
+        io::stderr().flush().ok();
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .context("Failed to read resume prompt")?;
+        if input.trim().eq_ignore_ascii_case("n") {
+            session_mgr
+                .archive()
+                .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
+        }
+    }
+
     print_header(&config, &workspace_root);
 
     let mut session = Session {
@@ -98,6 +122,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
         config,
         client,
         history: Vec::new(),
+        session_mgr,
     };
 
     let mut editor = Reedline::create();
@@ -113,6 +138,11 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                 if input.starts_with('/') {
                     match session.handle_slash(&input).await {
                         Ok(true) => {
+                            // Archive session on exit
+                            session
+                                .session_mgr
+                                .archive()
+                                .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
                             eprintln!("Goodbye!");
                             break;
                         }
@@ -129,6 +159,10 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                 eprintln!("(Use /exit or Ctrl+D to quit)");
             }
             Ok(Signal::CtrlD) => {
+                session
+                    .session_mgr
+                    .archive()
+                    .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
                 eprintln!("Goodbye!");
                 break;
             }
@@ -455,10 +489,15 @@ impl Session {
         }
 
         // Record turn in session history (#55)
+        let diff_clone = diff.clone();
         self.history.push(Turn {
             request: request.to_string(),
             summary: diff,
         });
+
+        // Persist session state
+        self.session_mgr.add_turn(request, &diff_clone, "Mutation");
+        let _ = self.session_mgr.save();
 
         eprintln!();
         Ok(())

@@ -23,6 +23,8 @@ mod manifest;
 mod parser;
 mod patch;
 mod registry;
+#[allow(dead_code)] // Binary uses a subset; full API used via lib crate
+mod session;
 mod snapshot;
 mod tools;
 mod types;
