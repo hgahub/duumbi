@@ -1,5 +1,7 @@
 # DUUMBI
 
+[![Coverage](https://codecov.io/gh/hgahub/duumbi/branch/main/graph/badge.svg)](https://codecov.io/gh/hgahub/duumbi)
+
 > AI-first semantic graph compiler. Programs are stored as JSON-LD graphs — not text files. The toolchain validates, compiles, and links them to native binaries via Cranelift.
 
 **Status:** Phase 2 — AI mutation via `duumbi add` / `duumbi undo` (Anthropic + OpenAI).
