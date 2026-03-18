@@ -22,6 +22,27 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
     let mut tasks = Vec::new();
     let mut id = 1;
 
+    // Build a shared exports hint from all non-main test_case functions.
+    // Used in both CreateModule and AddFunction tasks so the LLM is reminded
+    // to populate duumbi:exports at every mutation step.
+    let mut export_names: Vec<&str> = spec
+        .test_cases
+        .iter()
+        .map(|tc| tc.function.as_str())
+        .filter(|&f| f != "main")
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    export_names.sort_unstable();
+    let exports_hint = if export_names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " IMPORTANT: the duumbi:exports array MUST include ALL of these functions: [{}].",
+            export_names.join(", ")
+        )
+    };
+
     // Phase 1: Create new modules
     for module_name in &spec.modules.create {
         let criteria_summary = spec
@@ -33,9 +54,9 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
             .join("; ");
 
         let description = if criteria_summary.is_empty() {
-            format!("Create module '{module_name}' as described in the intent.")
+            format!("Create module '{module_name}' as described in the intent.{exports_hint}")
         } else {
-            format!("Create module '{module_name}'. Requirements: {criteria_summary}")
+            format!("Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}")
         };
 
         tasks.push(Task {
@@ -56,17 +77,17 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
             continue;
         }
 
+        let criteria = spec.acceptance_criteria.join("; ");
         let description = format!(
-            "Modify module '{}' to satisfy the acceptance criteria: {}",
-            module_name,
-            spec.acceptance_criteria.join("; ")
+            "Modify module '{}' to satisfy the acceptance criteria: {}{exports_hint}",
+            module_name, criteria,
         );
 
         tasks.push(Task {
             id,
             kind: TaskKind::AddFunction {
                 module_name: module_name.clone(),
-                description: spec.acceptance_criteria.join("; "),
+                description: format!("{criteria}{exports_hint}"),
             },
             description,
             status: TaskStatus::Pending,
@@ -207,6 +228,108 @@ mod tests {
         assert!(
             create_task.description.contains("add(a, b) returns a + b"),
             "create task must reference acceptance criteria"
+        );
+    }
+
+    #[test]
+    fn create_task_includes_exports_hint() {
+        let spec = sample_spec();
+        let tasks = decompose(&spec);
+        let create_task = tasks
+            .iter()
+            .find(|t| matches!(&t.kind, TaskKind::CreateModule { .. }))
+            .expect("must have create task");
+        // The exports hint must list the function from test_cases (sorted, no "main")
+        assert!(
+            create_task.description.contains(
+                "IMPORTANT: the duumbi:exports array MUST include ALL of these functions: [add]"
+            ),
+            "create task must include sorted exports hint; got: {}",
+            create_task.description
+        );
+    }
+
+    #[test]
+    fn add_function_task_includes_exports_hint() {
+        use crate::intent::spec::{IntentModules, TestCase};
+        // Spec with a non-main module in `modify` so Phase 2 generates an AddFunction task.
+        let spec = IntentSpec {
+            intent: "Test".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec!["double(x) returns x * 2".to_string()],
+            modules: IntentModules {
+                create: vec![],
+                modify: vec!["math/ops".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "t1".to_string(),
+                function: "double".to_string(),
+                args: vec![7],
+                expected_return: 14,
+            }],
+            dependencies: vec![],
+            created_at: None,
+            execution: None,
+        };
+        let tasks = decompose(&spec);
+        let add_task = tasks
+            .iter()
+            .find(|t| matches!(&t.kind, TaskKind::AddFunction { .. }))
+            .expect("must have add_function task");
+        assert!(
+            add_task.description.contains(
+                "IMPORTANT: the duumbi:exports array MUST include ALL of these functions: [double]"
+            ),
+            "add_function task must include exports hint; got: {}",
+            add_task.description
+        );
+    }
+
+    #[test]
+    fn exports_hint_excludes_main_function() {
+        use crate::intent::spec::{IntentModules, TestCase};
+        let spec = IntentSpec {
+            intent: "Test".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec![],
+            modules: IntentModules {
+                create: vec!["some/module".to_string()],
+                modify: vec![],
+            },
+            test_cases: vec![
+                TestCase {
+                    name: "t1".to_string(),
+                    function: "main".to_string(),
+                    args: vec![],
+                    expected_return: 0,
+                },
+                TestCase {
+                    name: "t2".to_string(),
+                    function: "helper".to_string(),
+                    args: vec![],
+                    expected_return: 1,
+                },
+            ],
+            dependencies: vec![],
+            created_at: None,
+            execution: None,
+        };
+        let tasks = decompose(&spec);
+        let create_task = tasks
+            .iter()
+            .find(|t| matches!(&t.kind, TaskKind::CreateModule { .. }))
+            .expect("must have create task");
+        assert!(
+            create_task.description.contains("[helper]"),
+            "exports hint must list helper but not main; got: {}",
+            create_task.description
+        );
+        assert!(
+            !create_task.description.contains("main"),
+            "exports hint must not include 'main'; got: {}",
+            create_task.description
         );
     }
 
