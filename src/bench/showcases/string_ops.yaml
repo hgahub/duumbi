@@ -1,9 +1,9 @@
-intent: "Build string operation functions: length_of_hello returns the length of the string 'hello', hello_contains_ell returns 1 if 'hello' contains 'ell' and 0 otherwise"
+intent: "Build string operation functions: length_of_hello returns the length of 'hello', concat_hello_twice_length returns the length of 'hello' concatenated with itself"
 version: 1
 status: pending
 acceptance_criteria:
-  - "length_of_hello() returns 5 (length of 'hello')"
-  - "hello_contains_ell() returns 1 (true as i64)"
+  - "length_of_hello() returns 5 (length of the string 'hello')"
+  - "concat_hello_twice_length() returns 10 (length of StringConcat('hello', 'hello'))"
 modules:
   create:
     - "text/ops"
@@ -14,8 +14,8 @@ test_cases:
     function: "length_of_hello"
     args: []
     expected_return: 5
-  - name: "hello_contains_ell"
-    function: "hello_contains_ell"
+  - name: "concat_hello_twice_length"
+    function: "concat_hello_twice_length"
     args: []
-    expected_return: 1
+    expected_return: 10
 dependencies: []

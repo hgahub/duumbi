@@ -105,7 +105,7 @@ fn string_ops_showcase_has_two_test_cases() {
     let spec = parse_showcase(so).expect("parse failed");
     assert_eq!(spec.test_cases.len(), 2);
     assert_eq!(spec.test_cases[0].expected_return, 5);
-    assert_eq!(spec.test_cases[1].expected_return, 1);
+    assert_eq!(spec.test_cases[1].expected_return, 10);
 }
 
 // ---------------------------------------------------------------------------
