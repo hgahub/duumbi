@@ -95,6 +95,9 @@ pub fn categorize_error(msg: &str) -> ErrorCategory {
         || lower.contains("retry")
         || lower.contains("tool_use")
         || lower.contains("function_call")
+        || lower.contains("deserialize tool call")
+        || lower.contains("missing field")
+        || lower.contains("missing 'duumbi:")
     {
         ErrorCategory::MutationFailed
     } else if lower.contains("link failed")
@@ -102,6 +105,8 @@ pub fn categorize_error(msg: &str) -> ErrorCategory {
         || lower.contains("cranelift")
         || lower.contains("segfault")
         || lower.contains("signal")
+        || lower.contains("write obj")
+        || lower.contains("no such file or directory")
     {
         ErrorCategory::Crash
     } else {
@@ -584,7 +589,21 @@ mod tests {
             ErrorCategory::MutationFailed
         );
         assert_eq!(
+            categorize_error(
+                "Failed to deserialize tool call 'replace_block': missing field `ops`"
+            ),
+            ErrorCategory::MutationFailed
+        );
+        assert_eq!(
+            categorize_error("Block is missing 'duumbi:ops' array"),
+            ErrorCategory::MutationFailed
+        );
+        assert_eq!(
             categorize_error("link failed: undefined symbol"),
+            ErrorCategory::Crash
+        );
+        assert_eq!(
+            categorize_error("write obj: No such file or directory"),
             ErrorCategory::Crash
         );
         assert_eq!(

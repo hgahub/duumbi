@@ -203,6 +203,14 @@ fn categorize_error_mutation() {
         categorize_error("no tool_use response from LLM"),
         ErrorCategory::MutationFailed
     );
+    assert_eq!(
+        categorize_error("Failed to deserialize tool call 'replace_block': missing field `ops`"),
+        ErrorCategory::MutationFailed
+    );
+    assert_eq!(
+        categorize_error("Block 'duumbi:x/y/entry' is missing 'duumbi:ops' array"),
+        ErrorCategory::MutationFailed
+    );
 }
 
 #[test]
@@ -217,6 +225,10 @@ fn categorize_error_crash() {
     );
     assert_eq!(
         categorize_error("compile error: invalid function signature"),
+        ErrorCategory::Crash
+    );
+    assert_eq!(
+        categorize_error("write obj 'calculator': No such file or directory"),
         ErrorCategory::Crash
     );
 }
