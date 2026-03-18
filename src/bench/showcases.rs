@@ -11,10 +11,10 @@ pub const CALCULATOR_YAML: &str = include_str!("showcases/calculator.yaml");
 /// Fibonacci: recursive fib(n).
 pub const FIBONACCI_YAML: &str = include_str!("showcases/fibonacci.yaml");
 
-/// Sorting: bubble sort on 3 elements, index-based retrieval.
+/// Sorting (simplified): min_of_two(a, b) returns the smaller of two i64 values.
 pub const SORTING_YAML: &str = include_str!("showcases/sorting.yaml");
 
-/// State machine: transition(state, command) → next state.
+/// State machine (simplified): clamp(x, lo, hi) clamps an i64 between lo and hi.
 pub const STATE_MACHINE_YAML: &str = include_str!("showcases/state_machine.yaml");
 
 /// Multi-module: double and square in a separate ops module.
