@@ -154,8 +154,8 @@ pub enum Commands {
         provider: Option<Vec<String>>,
 
         /// Number of attempts per (showcase, provider) pair.
-        #[arg(long, default_value_t = 5)]
-        attempts: u32,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        attempts: Option<u32>,
 
         /// Write JSON report to this file instead of stdout.
         #[arg(long)]

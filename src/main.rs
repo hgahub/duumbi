@@ -399,7 +399,7 @@ async fn studio(port: u16, _dev: bool) -> Result<()> {
 async fn run_benchmark(
     showcase: Option<Vec<String>>,
     provider_filter: Option<Vec<String>>,
-    mut attempts: u32,
+    explicit_attempts: Option<u32>,
     output: Option<PathBuf>,
     ci: bool,
     baseline: Option<PathBuf>,
@@ -417,10 +417,8 @@ async fn run_benchmark(
         );
     }
 
-    if ci && attempts == 5 {
-        // CI mode default: 20 attempts
-        attempts = 20;
-    }
+    // Resolve attempts: explicit > CI default (20) > normal default (5)
+    let attempts = explicit_attempts.unwrap_or(if ci { 20 } else { 5 });
 
     let config = bench::runner::BenchmarkConfig {
         attempts,

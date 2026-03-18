@@ -243,7 +243,12 @@ impl BenchmarkReport {
         eprintln!("╚══════════════════╩══════════════════╩══════════╩═══════════╝");
         eprintln!();
 
-        if self.kill_criterion_met {
+        let total_showcases = self.showcases.len();
+        if total_showcases < 6 {
+            eprintln!(
+                "Kill criterion: N/A (only {total_showcases}/6 showcases — run all 6 to evaluate)"
+            );
+        } else if self.kill_criterion_met {
             eprintln!("Kill criterion: PASSED (5/6 showcases × 2+ providers ≥ 95%)");
         } else {
             eprintln!("Kill criterion: NOT MET (need 5/6 showcases × 2+ providers ≥ 95%)");
@@ -280,8 +285,15 @@ impl BenchmarkReport {
 ///
 /// Criterion: at least 5 out of 6 showcases must have ≥ 95% success rate
 /// across at least 2 different providers.
+///
+/// Returns `false` if fewer than 6 showcases are present (filtered run).
 #[must_use]
 pub fn check_kill_criterion(showcases: &[ShowcaseSummary]) -> bool {
+    // Kill criterion only applies to full-suite runs (all 6 showcases).
+    if showcases.len() < 6 {
+        return false;
+    }
+
     let passing = showcases
         .iter()
         .filter(|s| {

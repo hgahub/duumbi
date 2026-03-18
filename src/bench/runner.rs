@@ -111,14 +111,7 @@ where
                         result
                             .error_category
                             .as_ref()
-                            .map_or("unknown", |c| match c {
-                                ErrorCategory::SchemaError => "schema_error",
-                                ErrorCategory::TypeError => "type_error",
-                                ErrorCategory::LogicError => "logic_error",
-                                ErrorCategory::Crash => "crash",
-                                ErrorCategory::ProviderError => "provider_error",
-                                ErrorCategory::MutationFailed => "mutation_failed",
-                            }),
+                            .map_or_else(|| "unknown".to_string(), ToString::to_string),
                         result.error_message.as_deref().unwrap_or("no details"),
                     );
                 }
@@ -278,7 +271,10 @@ fn filter_providers<'a>(
     }
 }
 
-/// Extracts a human-readable provider name from config.
+/// Builds a stable, unique provider identifier from config.
+///
+/// Includes provider kind and model to distinguish multiple entries for the
+/// same provider (e.g. two Anthropic configs with different models).
 fn provider_name(config: &ProviderConfig) -> String {
-    format!("{:?}", config.provider).to_lowercase()
+    format!("{}:{}", config.provider, config.model)
 }
