@@ -72,7 +72,7 @@ fn sorting_showcase_parses_correctly() {
         .expect("sorting not found");
     let spec = parse_showcase(sort).expect("parse failed");
     assert_eq!(spec.test_cases.len(), 2);
-    assert_eq!(spec.test_cases[0].function, "sort_and_get");
+    assert_eq!(spec.test_cases[0].function, "min_of_two");
 }
 
 #[test]
@@ -82,6 +82,7 @@ fn state_machine_showcase_has_four_transitions() {
         .find(|s| s.name == "state_machine")
         .expect("state_machine not found");
     let spec = parse_showcase(sm).expect("parse failed");
+    // Simplified to clamp(x, lo, hi) — 4 test cases cover below/in/above/at-lo
     assert_eq!(spec.test_cases.len(), 4);
 }
 
