@@ -33,10 +33,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
       - name: Generate HTML report
-        run: >
-          cargo llvm-cov report
-          --workspace --exclude duumbi-studio
-          --html --output-dir coverage-html
+        run: cargo llvm-cov report --html --output-dir coverage-html
       - name: Upload HTML artifact
         uses: actions/upload-artifact@v4
         with:
