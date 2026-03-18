@@ -76,10 +76,10 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 1.1 | `$DUUMBI knowledge --help` | Help szoveg: list, show, prune, stats subcommandok | | |
-| 1.2 | `$DUUMBI knowledge list --help` | `--type` opcio lathato (success, decision, pattern) | | |
-| 1.3 | `$DUUMBI knowledge prune --help` | `--older-than` opcio lathato (default: 90) | | |
-| 1.4 | `$DUUMBI knowledge show --help` | `id` pozicionalis argumentum lathato | | |
+| 1.1 | `$DUUMBI knowledge --help` | Help szoveg: list, show, prune, stats subcommandok | ✓ | |
+| 1.2 | `$DUUMBI knowledge list --help` | `--type` opcio lathato (success, decision, pattern) | ✓ | |
+| 1.3 | `$DUUMBI knowledge prune --help` | `--older-than` opcio lathato (default: 90) | ✓ | |
+| 1.4 | `$DUUMBI knowledge show --help` | `id` pozicionalis argumentum lathato | ✓ | |
 
 ---
 
@@ -89,11 +89,11 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 2.1 | `$DUUMBI knowledge stats` | "Knowledge store:" + "Success records: 0" + "Learning log: 0 entries" | | |
-| 2.2 | `$DUUMBI knowledge list` | "No knowledge nodes found." | | |
-| 2.3 | `$DUUMBI knowledge list --type success` | "No knowledge nodes found." | | |
-| 2.4 | `$DUUMBI knowledge show "duumbi:nonexistent"` | "Node not found: duumbi:nonexistent" | | |
-| 2.5 | `$DUUMBI knowledge prune` | "Pruned 0 node(s) older than 90 days." | | |
+| 2.1 | `$DUUMBI knowledge stats` | "Knowledge store:" + "Success records: 0" + "Learning log: 0 entries" | ✓ | |
+| 2.2 | `$DUUMBI knowledge list` | "No knowledge nodes found." | ✓ | |
+| 2.3 | `$DUUMBI knowledge list --type success` | "No knowledge nodes found." | ✓ | |
+| 2.4 | `$DUUMBI knowledge show "duumbi:nonexistent"` | "Node not found: duumbi:nonexistent" | ✓ | |
+| 2.5 | `$DUUMBI knowledge prune` | "Pruned 0 node(s) older than 90 days." | ✓ | |
 
 ---
 
@@ -105,10 +105,16 @@ unset DUUMBI
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
 | 3.1 | `$DUUMBI add "add a multiply function that takes two i64 parameters a and b and returns a*b" -y` | Mutacio sikeres (function hozzaadva) | | |
-| 3.2 | `$DUUMBI knowledge stats` | "Learning log: 0 entries" (a CLI `add` nem integralja meg a learning log-ot) | | |
-| 3.3 | Intent letrehozasa es futtatas:<br>`$DUUMBI intent create "Add a subtract function that takes two i64 parameters and returns their difference" -y`<br>`$DUUMBI intent execute subtract` | Intent futtat, task siker | | |
-| 3.4 | `$DUUMBI knowledge stats` | "Learning log: N entries" ahol N >= 1 (intent task success logged) | | |
-| 3.5 | `cat .duumbi/learning/successes.jsonl` | JSONL sorok, minden sor valid JSON; tartalmazza `request`, `taskType`, `opsCount` mezoket | | |
+| 3.2 | `$DUUMBI knowledge stats` | "Learning log: 0 entries" (a CLI `add` nem integralja meg a learning log-ot — csak intent) | | |
+| 3.3 | Intent letrehozasa:<br>`$DUUMBI intent create "Create a double function that takes an i64 parameter n and returns n*2. The main function should call double(21) and exit with the result." -y` | Intent YAML letrejott `.duumbi/intents/` alatt | | |
+| 3.4 | `$DUUMBI intent execute <slug>` (a 3.3-ban kapott slug) | Task(ok) futnak, verifier: double(21)=42 PASS | | |
+| 3.5 | `$DUUMBI knowledge stats` | "Learning log: N entries" ahol N >= 1 (intent task success logged) | | |
+| 3.6 | `cat .duumbi/learning/successes.jsonl` | JSONL sorok, minden sor valid JSON; tartalmazza `request`, `taskType`, `opsCount` mezoket | | |
+
+> **Megjegyzes:** Ha a Coordinator "ModifyMain" egyetlen task-ot general (a fuggvenyt a
+> main modulba teszi), a verifier E010-et adhat multi-module modban. Ilyenkor a task
+> attol meg "Completed" (a mutation sikeres volt), de a verifier teszt bukik.
+> Ez a Coordinator ismert korlatozasa — a learning log ilyenkor is ira task siker rekordot.
 
 ---
 
