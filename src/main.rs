@@ -6,6 +6,7 @@
 //! which make LLM API calls.
 
 mod agents;
+mod bench;
 mod cli;
 mod compiler;
 mod config;
@@ -172,6 +173,14 @@ async fn run(cli: Cli) -> Result<()> {
             cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await
         }
         Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
+        Commands::Benchmark {
+            showcase,
+            provider,
+            attempts,
+            output,
+            ci,
+            baseline,
+        } => run_benchmark(showcase, provider, attempts, output, ci, baseline).await,
         Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
@@ -384,6 +393,118 @@ async fn studio(port: u16, _dev: bool) -> Result<()> {
     anyhow::bail!(
         "Studio binary not found. Build with: cargo build -p duumbi-studio --features ssr"
     )
+}
+
+/// Runs the benchmark suite against configured LLM providers.
+async fn run_benchmark(
+    showcase: Option<Vec<String>>,
+    provider_filter: Option<Vec<String>>,
+    explicit_attempts: Option<u32>,
+    output: Option<PathBuf>,
+    ci: bool,
+    baseline: Option<PathBuf>,
+) -> Result<()> {
+    let workspace = PathBuf::from(".");
+    let cfg = config::load_config(&workspace).context(
+        "Cannot run benchmarks: no .duumbi/config.toml found.\n\
+         Run `duumbi init` and add a [[providers]] section to .duumbi/config.toml.",
+    )?;
+
+    let providers = cfg.effective_providers();
+    if providers.is_empty() {
+        anyhow::bail!(
+            "No LLM providers configured. Add [[providers]] sections to .duumbi/config.toml."
+        );
+    }
+
+    // Resolve attempts: explicit > CI default (20) > normal default (5)
+    let attempts = explicit_attempts.unwrap_or(if ci { 20 } else { 5 });
+
+    let config = bench::runner::BenchmarkConfig {
+        attempts,
+        providers,
+        showcase_filter: showcase,
+        provider_filter,
+    };
+
+    let started_at = iso8601_now();
+
+    let results = bench::runner::run_benchmark(&config, cli::init::run_init)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let finished_at = iso8601_now();
+
+    let report =
+        bench::report::BenchmarkReport::from_results(results, attempts, started_at, finished_at);
+
+    // Print human-readable summary to stderr
+    report.print_summary();
+    report.print_error_breakdown();
+
+    // Baseline comparison
+    if let Some(ref baseline_path) = baseline {
+        let base =
+            bench::report::load_baseline(baseline_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let regressions = bench::report::detect_regressions(&report, &base, 0.05);
+        bench::report::print_regressions(&regressions);
+    }
+
+    // Output JSON
+    match output {
+        Some(ref path) => {
+            report
+                .write_to_file(path)
+                .with_context(|| format!("Failed to write report to '{}'", path.display()))?;
+            eprintln!("Report written to {}", path.display());
+        }
+        None => {
+            let json = report.to_json().context("Failed to serialize report")?;
+            println!("{json}");
+        }
+    }
+
+    // CI exit code
+    if ci && !report.kill_criterion_met {
+        process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Returns the current time as an ISO-8601 string (UTC, second precision).
+fn iso8601_now() -> String {
+    use std::time::SystemTime;
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    // Convert to a basic ISO-8601 UTC timestamp
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let mins = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+
+    // Simple date calculation (good enough for timestamps)
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{s:02}Z")
+}
+
+/// Converts days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Civil days algorithm (Howard Hinnant)
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.

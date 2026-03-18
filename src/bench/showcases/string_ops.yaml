@@ -1,0 +1,21 @@
+intent: "Build string operation functions: length_of_hello returns the length of 'hello', concat_hello_twice_length returns the length of 'hello' concatenated with itself"
+version: 1
+status: pending
+acceptance_criteria:
+  - "length_of_hello() returns 5 (length of the string 'hello')"
+  - "concat_hello_twice_length() returns 10 (length of StringConcat('hello', 'hello'))"
+modules:
+  create:
+    - "text/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "length_of_hello"
+    function: "length_of_hello"
+    args: []
+    expected_return: 5
+  - name: "concat_hello_twice_length"
+    function: "concat_hello_twice_length"
+    args: []
+    expected_return: 10
+dependencies: []

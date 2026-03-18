@@ -137,6 +137,10 @@ fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) 
             .get(module_name)
             .ok_or_else(|| anyhow::anyhow!("Missing object bytes for module '{module_name}'"))?;
         let obj_path = tmp_dir.join(format!("{module_name}.o"));
+        if let Some(parent) = obj_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create dir for '{}'", obj_path.display()))?;
+        }
         fs::write(&obj_path, obj_bytes)
             .with_context(|| format!("Failed to write object file '{}'", obj_path.display()))?;
         object_paths.push(obj_path);

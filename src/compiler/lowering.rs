@@ -813,7 +813,18 @@ fn compile_function(
                     }
                     heap_allocs.clear();
 
-                    builder.ins().return_(&[operand_val]);
+                    // If the declared return type is i64 but the value is i8 (from
+                    // StringContains/StringEquals/Compare/ConstBool), zero-extend so
+                    // Cranelift verification passes.  Functions returning Bool keep their
+                    // i8 value untouched.
+                    let return_val = if func_info.return_type == DuumbiType::I64
+                        && builder.func.dfg.value_type(operand_val) == types::I8
+                    {
+                        builder.ins().uextend(types::I64, operand_val)
+                    } else {
+                        operand_val
+                    };
+                    builder.ins().return_(&[return_val]);
                 }
                 // -- Phase 9a-1: String ops --
                 Op::ConstString(s) => {
@@ -938,7 +949,15 @@ fn compile_function(
                 }
                 Op::CastF64ToI64 => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
-                    let result = builder.ins().fcvt_to_sint_sat(types::I64, operand_val);
+                    // An i8 operand means a bool/compare result is being widened to i64
+                    // (LLMs sometimes use CastF64ToI64 for this). Use uextend, not
+                    // fcvt_to_sint_sat (which is float→int only and would fail Cranelift
+                    // verification).
+                    let result = if builder.func.dfg.value_type(operand_val) == types::I8 {
+                        builder.ins().uextend(types::I64, operand_val)
+                    } else {
+                        builder.ins().fcvt_to_sint_sat(types::I64, operand_val)
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
 

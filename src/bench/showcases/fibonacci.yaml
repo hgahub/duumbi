@@ -1,0 +1,26 @@
+intent: "Build a recursive fibonacci function that returns fib(n) for i64 input"
+version: 1
+status: pending
+acceptance_criteria:
+  - "fib(0) returns 0"
+  - "fib(1) returns 1"
+  - "fib(n) returns fib(n-1) + fib(n-2) for n >= 2"
+modules:
+  create:
+    - "math/fib"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "fib_zero"
+    function: "fib"
+    args: [0]
+    expected_return: 0
+  - name: "fib_one"
+    function: "fib"
+    args: [1]
+    expected_return: 1
+  - name: "fib_ten"
+    function: "fib"
+    args: [10]
+    expected_return: 55
+dependencies: []

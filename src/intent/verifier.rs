@@ -238,7 +238,10 @@ fn compile_and_run(tmp_workspace: &Path, function: &str) -> Result<i64, String> 
     for name in &sorted_names {
         let bytes = &objects[*name];
         let path = tmp_workspace.join(format!("{name}.o"));
-        std::fs::write(&path, bytes).map_err(|e| format!("write obj: {e}"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create obj dir: {e}"))?;
+        }
+        std::fs::write(&path, bytes).map_err(|e| format!("write obj '{name}': {e}"))?;
         obj_paths.push(path);
     }
 

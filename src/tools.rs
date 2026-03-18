@@ -204,10 +204,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "duumbi:returnType": { "type": "string", "enum": ["i64", "f64", "bool", "void"] },
                             "duumbi:params": {
                                 "type": "array",
+                                "items": { "type": "object" },
                                 "description": "Function parameters. Each: {\"duumbi:name\": \"x\", \"duumbi:paramType\": \"i64\"}"
                             },
                             "duumbi:blocks": {
                                 "type": "array",
+                                "items": { "type": "object" },
                                 "minItems": 1,
                                 "description": "Non-empty array of duumbi:Block nodes, each with duumbi:ops populated."
                             }
@@ -236,7 +238,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "@type": { "type": "string", "const": "duumbi:Block" },
                             "@id": { "type": "string" },
                             "duumbi:label": { "type": "string" },
-                            "duumbi:ops": { "type": "array" }
+                            "duumbi:ops": { "type": "array", "items": { "type": "object" } }
                         }
                     }
                 }
@@ -270,7 +272,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "duumbi:trueBlock": { "type": "string" },
                             "duumbi:falseBlock": { "type": "string" },
                             "duumbi:function": { "type": "string" },
-                            "duumbi:args": { "type": "array" },
+                            "duumbi:args": { "type": "array", "items": {} },
                             "duumbi:variable": { "type": "string" },
                             "duumbi:operator": { "type": "string" }
                         }
@@ -356,6 +358,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "ops": {
                         "type": "array",
+                        "items": { "type": "object" },
                         "minItems": 1,
                         "description": "Complete new ops list. Must end with Return or Branch. \
                             Each element is a full JSON-LD op object with @type and @id."

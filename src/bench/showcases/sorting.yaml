@@ -1,0 +1,21 @@
+intent: "Build a comparison module with min_of_two(a, b) that returns the smaller of two i64 values"
+version: 1
+status: pending
+acceptance_criteria:
+  - "min_of_two(a, b) returns a if a <= b, otherwise returns b"
+  - "Uses compare and branch operations"
+modules:
+  create:
+    - "cmp/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "first_is_smaller"
+    function: "min_of_two"
+    args: [3, 7]
+    expected_return: 3
+  - name: "second_is_smaller"
+    function: "min_of_two"
+    args: [9, 2]
+    expected_return: 2
+dependencies: []
