@@ -15,7 +15,6 @@
 
 use std::borrow::Cow;
 use std::fs;
-use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -95,24 +94,16 @@ impl Prompt for ReplPrompt {
 pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let client = build_client(&config);
 
-    // Initialize persistent session
+    // Initialize persistent session — always start fresh.
+    // Previous sessions are available via /resume.
     let mut session_mgr = SessionManager::load_or_create(&workspace_root)
         .map_err(|e| anyhow::anyhow!("session init: {e}"))?;
 
-    // Offer to resume if there's a pending session
+    // If there's an unsaved session from a crash, archive it
     if session_mgr.has_pending_session() {
-        let turns = session_mgr.turns().len();
-        eprint!("Resume previous session ({turns} turn(s))? [Y/n] ");
-        io::stderr().flush().ok();
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("Failed to read resume prompt")?;
-        if input.trim().eq_ignore_ascii_case("n") {
-            session_mgr
-                .archive()
-                .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
-        }
+        session_mgr
+            .archive()
+            .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
     }
 
     print_header(&config, &workspace_root);
@@ -351,6 +342,10 @@ impl Session {
 
             "/knowledge" => {
                 self.handle_knowledge_slash(arg);
+            }
+
+            "/resume" => {
+                self.handle_resume_slash(arg);
             }
 
             "/help" => print_help(),
@@ -707,6 +702,67 @@ impl Session {
     }
 
     // -------------------------------------------------------------------------
+    // /resume handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/resume [N]` within the REPL.
+    ///
+    /// - `/resume` — list archived sessions with index numbers
+    /// - `/resume <N>` — load session N's turns into current history
+    fn handle_resume_slash(&mut self, arg: &str) {
+        let history_dir = self.workspace_root.join(".duumbi/session/history");
+
+        // List archived sessions
+        let mut sessions = list_archived_sessions(&history_dir);
+        if sessions.is_empty() {
+            eprintln!("No archived sessions found.");
+            return;
+        }
+
+        // Sort by filename (timestamp-based, newest first)
+        sessions.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let sub = arg.trim();
+        if sub.is_empty() {
+            // List mode
+            eprintln!("Archived sessions:");
+            for (i, (filename, turns, _)) in sessions.iter().enumerate() {
+                let display_name = filename.trim_end_matches(".json").replace('_', " ");
+                eprintln!("  [{}] {} ({} turn(s))", i + 1, display_name, turns);
+            }
+            eprintln!();
+            eprintln!("Use /resume <N> to load a session's context.");
+        } else {
+            // Load mode
+            let idx: usize = match sub.parse::<usize>() {
+                Ok(n) if n >= 1 && n <= sessions.len() => n - 1,
+                _ => {
+                    eprintln!(
+                        "Invalid session number. Use 1–{} (from /resume list).",
+                        sessions.len()
+                    );
+                    return;
+                }
+            };
+
+            let (filename, _turns, loaded_turns) = &sessions[idx];
+            // Merge loaded turns into current history
+            for turn in loaded_turns {
+                self.history.push(Turn {
+                    request: turn.request.clone(),
+                    summary: turn.summary.clone(),
+                });
+            }
+            let display_name = filename.trim_end_matches(".json").replace('_', " ");
+            eprintln!(
+                "Resumed session '{}' ({} turn(s) loaded into context).",
+                display_name,
+                loaded_turns.len()
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // /status helper
     // -------------------------------------------------------------------------
 
@@ -771,6 +827,41 @@ fn build_prompt_with_history(request: &str, history: &[Turn]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Session archive helpers
+// ---------------------------------------------------------------------------
+
+/// Lists archived session files, returning (filename, turn_count, turns) tuples.
+fn list_archived_sessions(
+    history_dir: &Path,
+) -> Vec<(String, usize, Vec<crate::session::PersistentTurn>)> {
+    let entries = match std::fs::read_dir(history_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(state) = serde_json::from_str::<crate::session::SessionState>(&content)
+        {
+            let turn_count = state.turns.len();
+            results.push((filename, turn_count, state.turns));
+        }
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Help text
 // ---------------------------------------------------------------------------
 
@@ -799,6 +890,10 @@ Knowledge commands:
   /knowledge          Show knowledge statistics
   /knowledge list     List all knowledge nodes
   /knowledge stats    Show aggregated learning statistics
+
+Session commands:
+  /resume             List archived sessions
+  /resume <N>         Load session N's history into current context
 
 Registry & dependency commands:
   /search <query>     Search registries for modules
