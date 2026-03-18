@@ -15,6 +15,8 @@ use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
+use crate::knowledge::learning;
+use crate::knowledge::types::SuccessRecord;
 use crate::snapshot;
 
 // ---------------------------------------------------------------------------
@@ -134,6 +136,11 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                     ensure_exports(&mut mutation_result.patched);
                 }
 
+                // Auto-wire: add new module as local dependency in config.toml (#354)
+                if let TaskKind::CreateModule { module_name } = &task.kind {
+                    auto_wire_module(workspace, module_name);
+                }
+
                 // Write patched graph to the appropriate file
                 let patched_str = serde_json::to_string_pretty(&mutation_result.patched)
                     .context("Serialize patched graph")?;
@@ -153,6 +160,22 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                 );
                 task.status = TaskStatus::Completed;
                 tasks_completed += 1;
+
+                // Log success for few-shot learning (#363)
+                let task_type_str = match &task.kind {
+                    TaskKind::CreateModule { .. } => "CreateModule",
+                    TaskKind::AddFunction { .. } => "AddFunction",
+                    TaskKind::ModifyFunction { .. } => "ModifyFunction",
+                    TaskKind::ModifyMain { .. } => "ModifyMain",
+                };
+                let mut record = SuccessRecord::new(&task.description, task_type_str);
+                record.ops_count = mutation_result.ops_count;
+                record.module = match &task.kind {
+                    TaskKind::CreateModule { module_name } => module_name.clone(),
+                    _ => "main".to_string(),
+                };
+                // Best-effort: don't fail the intent if logging fails
+                let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
                 eprintln!("  ✗ Task failed: {e:#}");
@@ -384,6 +407,54 @@ fn archive_success(
         },
     )
     .map_err(|e: IntentError| anyhow::anyhow!("{e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Auto-wiring (#354)
+// ---------------------------------------------------------------------------
+
+/// Adds a newly created module as a local path dependency in `config.toml`.
+///
+/// This is a deterministic post-processing step — no LLM involved.
+/// Best-effort: logs a warning if the config cannot be updated.
+fn auto_wire_module(workspace: &Path, module_name: &str) {
+    let config_path = workspace.join(".duumbi/config.toml");
+    if !config_path.exists() {
+        return;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Check if dependency already exists
+    if content.contains(&format!("\"{module_name}\"")) {
+        return;
+    }
+
+    // Compute the relative path from workspace to the module's graph dir
+    let file_name = module_name_to_filename(module_name);
+    let rel_path = format!(".duumbi/graph/{file_name}");
+
+    // Append dependency to [dependencies] section
+    let dep_line = format!("\"{module_name}\" = {{ path = \"{rel_path}\" }}\n");
+
+    let updated = if content.contains("[dependencies]") {
+        // Insert after [dependencies] line
+        content.replacen(
+            "[dependencies]\n",
+            &format!("[dependencies]\n{dep_line}"),
+            1,
+        )
+    } else {
+        // Add [dependencies] section
+        format!("{content}\n[dependencies]\n{dep_line}")
+    };
+
+    if std::fs::write(&config_path, updated).is_ok() {
+        eprintln!("  Auto-wired: added \"{module_name}\" to config.toml dependencies");
+    }
 }
 
 // ---------------------------------------------------------------------------

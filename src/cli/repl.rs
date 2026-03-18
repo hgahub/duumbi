@@ -315,6 +315,10 @@ impl Session {
                 self.handle_registry_slash(arg);
             }
 
+            "/knowledge" => {
+                self.handle_knowledge_slash(arg);
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
@@ -588,6 +592,59 @@ impl Session {
     }
 
     // -------------------------------------------------------------------------
+    // /knowledge handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/knowledge [subcommand]` within the REPL.
+    ///
+    /// Supported forms:
+    /// - `/knowledge` or `/knowledge stats` — show aggregated statistics
+    /// - `/knowledge list` — list all knowledge nodes
+    fn handle_knowledge_slash(&self, arg: &str) {
+        use crate::knowledge::learning;
+        use crate::knowledge::store::KnowledgeStore;
+
+        let sub = arg.split_whitespace().next().unwrap_or("stats");
+
+        match sub {
+            "list" => match KnowledgeStore::new(&self.workspace_root) {
+                Ok(store) => {
+                    let nodes = store.load_all();
+                    if nodes.is_empty() {
+                        eprintln!("No knowledge nodes found.");
+                    } else {
+                        eprintln!("{} knowledge node(s):", nodes.len());
+                        for node in &nodes {
+                            eprintln!("  [{}] {}", node.node_type(), node.id());
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Knowledge store error: {e}"),
+            },
+            "" | "stats" => match KnowledgeStore::new(&self.workspace_root) {
+                Ok(store) => {
+                    let stats = store.stats();
+                    let success_count = learning::success_count(&self.workspace_root);
+                    eprintln!(
+                        "Knowledge: {} success, {} decision, {} pattern ({} total)",
+                        stats.successes,
+                        stats.decisions,
+                        stats.patterns,
+                        stats.total()
+                    );
+                    eprintln!("Learning log: {success_count} entries");
+                }
+                Err(e) => eprintln!("Knowledge store error: {e}"),
+            },
+            _ => {
+                eprintln!("Usage: /knowledge [list|stats]");
+                eprintln!("  /knowledge list   — list all knowledge nodes");
+                eprintln!("  /knowledge stats  — show aggregated statistics");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // /status helper
     // -------------------------------------------------------------------------
 
@@ -675,6 +732,11 @@ Intent commands:
   /intent review [name]          Show intent details
   /intent execute <name>         Execute an intent end-to-end
   /intent status [name]          Show intent execution status
+
+Knowledge commands:
+  /knowledge          Show knowledge statistics
+  /knowledge list     List all knowledge nodes
+  /knowledge stats    Show aggregated learning statistics
 
 Registry & dependency commands:
   /search <query>     Search registries for modules
