@@ -143,6 +143,34 @@ pub enum Commands {
     /// Migrate a Phase 4-5 workspace to Phase 7 format.
     Upgrade,
 
+    /// Run benchmark showcases against configured LLM providers.
+    Benchmark {
+        /// Run only the named showcase(s) (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        showcase: Option<Vec<String>>,
+
+        /// Run only the named provider(s) (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        provider: Option<Vec<String>>,
+
+        /// Number of attempts per (showcase, provider) pair.
+        #[arg(long, default_value_t = 5)]
+        attempts: u32,
+
+        /// Write JSON report to this file instead of stdout.
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+
+        /// CI mode: exit 0 if kill criterion met, exit 1 otherwise.
+        /// Sets default attempts to 20.
+        #[arg(long)]
+        ci: bool,
+
+        /// Compare against a previous report JSON for regression detection.
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
+    },
+
     /// Start the DUUMBI Studio web platform.
     Studio {
         /// Port to listen on.

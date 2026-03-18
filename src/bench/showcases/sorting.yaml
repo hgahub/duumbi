@@ -1,0 +1,21 @@
+intent: "Build a sorting module that sorts three i64 values using bubble sort logic and returns the element at a given index"
+version: 1
+status: pending
+acceptance_criteria:
+  - "sort_and_get(a, b, c, idx) sorts a, b, c in ascending order and returns element at position idx (0-based)"
+  - "Uses compare and branch operations for sorting"
+modules:
+  create:
+    - "sort/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "sort_first"
+    function: "sort_and_get"
+    args: [3, 1, 2, 0]
+    expected_return: 1
+  - name: "sort_last"
+    function: "sort_and_get"
+    args: [3, 1, 2, 2]
+    expected_return: 3
+dependencies: []

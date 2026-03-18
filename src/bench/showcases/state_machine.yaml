@@ -1,0 +1,32 @@
+intent: "Build a state machine where transition(state, command) returns the next state as i64. States: 0=idle, 1=running, 2=paused, 3=stopped. Commands: 1=start, 2=pause, 3=resume, 4=stop."
+version: 1
+status: pending
+acceptance_criteria:
+  - "transition(0, 1) = 1 (idle + start -> running)"
+  - "transition(1, 2) = 2 (running + pause -> paused)"
+  - "transition(2, 3) = 1 (paused + resume -> running)"
+  - "transition(1, 4) = 3 (running + stop -> stopped)"
+  - "Invalid transitions return the current state unchanged"
+modules:
+  create:
+    - "fsm/engine"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "idle_start"
+    function: "transition"
+    args: [0, 1]
+    expected_return: 1
+  - name: "running_pause"
+    function: "transition"
+    args: [1, 2]
+    expected_return: 2
+  - name: "paused_resume"
+    function: "transition"
+    args: [2, 3]
+    expected_return: 1
+  - name: "running_stop"
+    function: "transition"
+    args: [1, 4]
+    expected_return: 3
+dependencies: []

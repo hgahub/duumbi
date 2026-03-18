@@ -1,0 +1,31 @@
+intent: "Build a calculator module with add, sub, mul, div operations on i64"
+version: 1
+status: pending
+acceptance_criteria:
+  - "add(a, b) returns a + b for i64"
+  - "sub(a, b) returns a - b for i64"
+  - "mul(a, b) returns a * b for i64"
+  - "div(a, b) returns a / b for i64 (integer division)"
+modules:
+  create:
+    - "calculator/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "addition"
+    function: "add"
+    args: [3, 5]
+    expected_return: 8
+  - name: "subtraction"
+    function: "sub"
+    args: [10, 4]
+    expected_return: 6
+  - name: "multiplication"
+    function: "mul"
+    args: [7, 6]
+    expected_return: 42
+  - name: "division"
+    function: "div"
+    args: [20, 4]
+    expected_return: 5
+dependencies: []

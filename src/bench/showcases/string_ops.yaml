@@ -1,0 +1,21 @@
+intent: "Build string operation functions: length_of_hello returns the length of the string 'hello', hello_contains_ell returns 1 if 'hello' contains 'ell' and 0 otherwise"
+version: 1
+status: pending
+acceptance_criteria:
+  - "length_of_hello() returns 5 (length of 'hello')"
+  - "hello_contains_ell() returns 1 (true as i64)"
+modules:
+  create:
+    - "text/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "length_of_hello"
+    function: "length_of_hello"
+    args: []
+    expected_return: 5
+  - name: "hello_contains_ell"
+    function: "hello_contains_ell"
+    args: []
+    expected_return: 1
+dependencies: []

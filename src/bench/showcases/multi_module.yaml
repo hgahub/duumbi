@@ -1,0 +1,22 @@
+intent: "Build a multi-module program with an ops module containing double and square functions"
+version: 1
+status: pending
+acceptance_criteria:
+  - "double(x) returns x * 2"
+  - "square(x) returns x * x"
+  - "Main module calls functions from the ops module"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "double_seven"
+    function: "double"
+    args: [7]
+    expected_return: 14
+  - name: "square_five"
+    function: "square"
+    args: [5]
+    expected_return: 25
+dependencies: []
