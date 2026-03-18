@@ -48,12 +48,8 @@ pub fn append_success(workspace: &Path, record: &SuccessRecord) -> Result<(), Kn
 /// Reads the last `limit` success records from the JSONL file.
 ///
 /// Returns records in chronological order (oldest first).
-/// Silently skips malformed lines.
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be opened (returns empty vec if
-/// the file does not exist).
+/// Silently skips malformed lines. Returns an empty vec if the file
+/// does not exist or cannot be read.
 #[must_use]
 pub fn query_successes(workspace: &Path, limit: usize) -> Vec<SuccessRecord> {
     let path = successes_path(workspace);
@@ -95,9 +91,8 @@ pub fn success_count(workspace: &Path) -> usize {
 /// Scoring rules:
 /// - Task type match: +3
 /// - Error code overlap: +5 per matching code
-/// - Module match: +2
-/// - Op kind overlap: +1 per matching kind
-/// - Recency: +1 (if within the last 100 records — caller responsibility)
+/// - Module name match (request contains module name part): +2
+/// - Function name match (request contains function name): +1 per match
 #[must_use]
 pub fn score_for_request(
     record: &SuccessRecord,

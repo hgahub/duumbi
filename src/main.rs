@@ -16,7 +16,7 @@ mod examples;
 mod graph;
 mod hash;
 mod intent;
-#[allow(dead_code)]
+#[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
 mod manifest;
 mod parser;

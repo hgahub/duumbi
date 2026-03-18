@@ -125,10 +125,17 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
         match result {
             Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
                 eprintln!("  ⚠ Clarification needed: {question}");
-                eprintln!(
-                    "    Skipping task (intent execution does not support interactive clarification)"
-                );
+                eprintln!("    Intent execution does not support interactive clarification.");
                 task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
+
+                // Halt intent — can't proceed without user input
+                spec.status = IntentStatus::Failed;
+                save_intent(workspace, slug, &spec)
+                    .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
+
+                eprintln!();
+                eprintln!("Intent failed at task {}/{}.", task.id, total);
+                return Ok(false);
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 // For library modules, ensure all functions are exported

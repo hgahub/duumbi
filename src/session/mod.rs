@@ -16,9 +16,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Monotonic counter for unique session IDs and archive filenames.
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Errors from session operations.
 #[derive(Debug, thiserror::Error)]
@@ -123,7 +127,11 @@ impl SessionState {
     fn new() -> Self {
         let now = Utc::now();
         Self {
-            session_id: format!("session-{}", now.timestamp_millis()),
+            session_id: format!(
+                "session-{}-{}",
+                now.timestamp_millis(),
+                SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
             started_at: now,
             turns: Vec::new(),
             usage_stats: UsageStats::default(),
@@ -185,6 +193,8 @@ impl SessionManager {
 
         fs::write(&tmp_path, &json).map_err(|e| SessionError::Io(format!("writing tmp: {e}")))?;
 
+        // Remove destination first for Windows compatibility (rename fails if dest exists)
+        let _ = fs::remove_file(&current_path);
         fs::rename(&tmp_path, &current_path)
             .map_err(|e| SessionError::Io(format!("renaming tmp to current: {e}")))?;
 
@@ -200,8 +210,7 @@ impl SessionManager {
     /// Returns an error if save or rename fails.
     pub fn archive(&mut self) -> Result<(), SessionError> {
         if self.state.turns.is_empty() {
-            // Nothing to archive
-            self.state = SessionState::new();
+            // Nothing to archive — keep current state unchanged
             return Ok(());
         }
 
@@ -209,7 +218,8 @@ impl SessionManager {
         self.save()?;
 
         let current_path = self.session_dir.join("current.json");
-        let timestamp = Utc::now().format("%Y%m%d_%H%M%S_%3f");
+        let seq = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let timestamp = format!("{}_{seq}", Utc::now().format("%Y%m%d_%H%M%S_%3f"));
         let archive_path = self
             .session_dir
             .join("history")

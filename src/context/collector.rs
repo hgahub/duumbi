@@ -112,15 +112,34 @@ pub fn collect(
                 }
             }
 
-            StepKind::Neighborhood { target, hops: _ } => {
-                // For now, include the target module's callers/callees from the project map
-                // A full graph traversal would require loading and parsing the graph
+            StepKind::Neighborhood { target, hops } => {
+                // Include signatures of other modules as neighborhood context.
+                // A full call-graph hop traversal would require parsing all edges;
+                // for now we include all non-target module signatures, limited by
+                // the hops parameter (hops=1: only modules sharing exported names,
+                // hops>=2: all other modules).
                 if seen_modules.insert(format!("neigh:{target}")) {
-                    // Include modules that reference or are referenced by the target
                     for module in &project_map.modules {
-                        if module.name != *target
-                            && seen_modules.insert(format!("sig:{}", module.name))
-                        {
+                        if module.name == *target {
+                            continue;
+                        }
+                        // hops=1: only modules that share function names with the target
+                        if *hops <= 1 {
+                            let target_funcs: std::collections::HashSet<&str> = project_map
+                                .modules
+                                .iter()
+                                .filter(|m| m.name == *target)
+                                .flat_map(|m| m.functions.iter().map(|f| f.name.as_str()))
+                                .collect();
+                            let shares_func = module
+                                .functions
+                                .iter()
+                                .any(|f| target_funcs.contains(f.name.as_str()));
+                            if !shares_func {
+                                continue;
+                            }
+                        }
+                        if seen_modules.insert(format!("sig:{}", module.name)) {
                             let text = format_module_signatures(module);
                             fragments.push(ContextFragment {
                                 text,

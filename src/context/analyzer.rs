@@ -138,39 +138,60 @@ fn scan_graph_directory(
     Ok(())
 }
 
-/// Scans vendor/cache dependency directories.
+/// Scans vendor/cache dependency directories recursively.
+///
+/// Handles scoped layouts like `.duumbi/vendor/@scope/name/graph/`
+/// and `.duumbi/cache/@scope/name@version/graph/`.
 fn scan_dependency_modules(
     dep_dir: &Path,
     modules: &mut Vec<ModuleInfo>,
     exports: &mut HashMap<String, String>,
 ) -> Result<(), ContextError> {
-    if let Ok(entries) = fs::read_dir(dep_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                // Look for graph/ subdirectory
-                let graph_sub = path.join("graph");
-                if graph_sub.exists()
-                    && let Ok(jsonld_entries) = fs::read_dir(&graph_sub)
+    scan_dep_dir_recursive(dep_dir, modules, exports, 0);
+    Ok(())
+}
+
+/// Recursively scans directories for `graph/*.jsonld` files (max depth 4).
+fn scan_dep_dir_recursive(
+    dir: &Path,
+    modules: &mut Vec<ModuleInfo>,
+    exports: &mut HashMap<String, String>,
+    depth: u32,
+) {
+    if depth > 4 {
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // Check if this directory has a graph/ subdirectory
+        let graph_sub = path.join("graph");
+        if graph_sub.exists()
+            && let Ok(jsonld_entries) = fs::read_dir(&graph_sub)
+        {
+            for jsonld_entry in jsonld_entries.flatten() {
+                let jsonld_path = jsonld_entry.path();
+                if jsonld_path.extension().is_some_and(|ext| ext == "jsonld")
+                    && let Ok(content) = fs::read_to_string(&jsonld_path)
+                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(info) = extract_module_info(&value)
                 {
-                    for jsonld_entry in jsonld_entries.flatten() {
-                        let jsonld_path = jsonld_entry.path();
-                        if jsonld_path.extension().is_some_and(|ext| ext == "jsonld")
-                            && let Ok(content) = fs::read_to_string(&jsonld_path)
-                            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&content)
-                            && let Some(info) = extract_module_info(&value)
-                        {
-                            for func in &info.functions {
-                                exports.insert(func.name.clone(), info.name.clone());
-                            }
-                            modules.push(info);
-                        }
+                    for func in &info.functions {
+                        exports.insert(func.name.clone(), info.name.clone());
                     }
+                    modules.push(info);
                 }
             }
         }
+        // Recurse into subdirectories (for scoped paths like @scope/name/)
+        scan_dep_dir_recursive(&path, modules, exports, depth + 1);
     }
-    Ok(())
 }
 
 /// Extracts module info from a JSON-LD module value.

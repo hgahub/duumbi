@@ -91,8 +91,16 @@ pub fn assemble_context(
     let estimator = budget::CharEstimator;
     let fitted = budget::fit_to_budget(&context_nodes, max_tokens, &estimator);
 
-    // Step 5: Few-shot injection
-    let few_shot = fewshot::select_examples(workspace, &task_type, request, &[], &estimator, 500);
+    // Step 5: Few-shot injection (extract error codes from request for FixError scoring)
+    let error_codes = extract_error_codes(request);
+    let few_shot = fewshot::select_examples(
+        workspace,
+        &task_type,
+        request,
+        &error_codes,
+        &estimator,
+        500,
+    );
 
     // Build the enriched message
     let mut parts = Vec::new();
@@ -143,6 +151,21 @@ pub fn assemble_context(
         token_estimate,
         modules_referenced,
     })
+}
+
+/// Extracts DUUMBI error codes (E001–E099) from a request string.
+fn extract_error_codes(request: &str) -> Vec<String> {
+    let mut codes = Vec::new();
+    for word in request.split_whitespace() {
+        let upper = word.to_uppercase();
+        if upper.len() == 4
+            && upper.starts_with('E')
+            && upper[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            codes.push(upper);
+        }
+    }
+    codes
 }
 
 #[cfg(test)]
