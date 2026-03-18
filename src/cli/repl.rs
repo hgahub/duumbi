@@ -369,22 +369,45 @@ impl Session {
         // Build prompt with conversation history (#55)
         let prompt = build_prompt_with_history(request, &self.history);
 
+        // Detect multi-module workspace to skip Call validation for cross-module refs
+        let graph_dir = self.workspace_root.join(".duumbi/graph");
+        let is_multi_module = graph_dir
+            .read_dir()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        let p = e.path();
+                        p.extension().is_some_and(|ext| ext == "jsonld")
+                            && p.file_name().is_some_and(|n| n != "main.jsonld")
+                    })
+                    .count()
+                    > 0
+            })
+            .unwrap_or(false);
+
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let outcome =
-            match orchestrator::mutate_streaming(client, &source, &prompt, 3, false, |text| {
+        let outcome = match orchestrator::mutate_streaming(
+            client,
+            &source,
+            &prompt,
+            3,
+            is_multi_module,
+            |text| {
                 eprint!("{text}");
-            })
-            .await
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!();
-                    eprintln!("{e:#}");
-                    return Ok(());
-                }
-            };
+            },
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!();
+                eprintln!("{e:#}");
+                return Ok(());
+            }
+        };
         eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
 
         // Handle clarification requests

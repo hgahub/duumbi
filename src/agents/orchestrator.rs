@@ -179,6 +179,7 @@ pub enum MutationOutcome {
 ///
 /// Returns an error if the LLM call fails, the patch cannot be applied, or
 /// validation still fails after all retries.
+#[allow(dead_code)] // Public API — callers may use non-streaming variant
 pub async fn mutate(
     client: &dyn LlmProvider,
     source: &serde_json::Value,

@@ -5,6 +5,7 @@
 //! Async runtime (tokio) is needed for `duumbi add` and the interactive REPL,
 //! which make LLM API calls.
 
+#[allow(dead_code)] // Binary uses streaming path; non-streaming API is used via lib crate
 mod agents;
 mod bench;
 mod cli;
@@ -248,9 +249,41 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     let client = require_llm_client(&workspace_root)?;
 
+    // Detect multi-module workspace: if there are other .jsonld files besides
+    // main.jsonld, skip Call validation (cross-module calls can't be resolved
+    // from main.jsonld alone).
+    let graph_dir = workspace_root.join(".duumbi/graph");
+    let is_multi_module = graph_dir
+        .read_dir()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.extension().is_some_and(|ext| ext == "jsonld")
+                        && p.file_name().is_some_and(|n| n != "main.jsonld")
+                })
+                .count()
+                > 0
+        })
+        .unwrap_or(false);
+
     eprintln!("Calling {}…", client.name());
 
-    let result = orchestrator::mutate(&client, &source, request, 3).await?;
+    let result =
+        orchestrator::mutate_streaming(&client, &source, request, 3, is_multi_module, |text| {
+            eprint!("{text}");
+        })
+        .await?;
+    eprintln!();
+
+    let result = match result {
+        orchestrator::MutationOutcome::Success(r) => r,
+        orchestrator::MutationOutcome::NeedsClarification(question) => {
+            eprintln!("? {question}");
+            return Ok(());
+        }
+    };
 
     let diff = orchestrator::describe_changes(&source, &result.patched);
     eprintln!(
