@@ -310,6 +310,15 @@ The `pre-commit` hooks run `rustfmt` and `clippy` automatically on every commit.
 
 ---
 
+## Community
+
+- Review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating in
+  issues, discussions, or pull requests.
+- Use GitHub issue and pull request templates so reports and changes include the
+  context maintainers need to review them quickly.
+
+---
+
 ## Supported Platforms
 
 | Platform | Architecture | Status |
@@ -331,4 +340,3 @@ The `pre-commit` hooks run `rustfmt` and `clippy` automatically on every commit.
 | 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD | Week 11-13 |
 
 Each phase ends with a Gate Review — Go/No-Go decision before proceeding.
-
