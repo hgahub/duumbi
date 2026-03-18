@@ -135,3 +135,185 @@ fn describe_op(
         other => format!("{other}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::builder::build_graph_no_call_check;
+    use crate::parser::parse_jsonld;
+
+    fn make_graph(jsonld: &str) -> SemanticGraph {
+        let module = parse_jsonld(jsonld).expect("fixture must parse");
+        build_graph_no_call_check(&module).expect("fixture must build")
+    }
+
+    fn const_graph() -> SemanticGraph {
+        make_graph(
+            r#"{
+                "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+                "@type": "duumbi:Module",
+                "@id": "duumbi:test",
+                "duumbi:name": "test",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:test/main",
+                    "duumbi:name": "main",
+                    "duumbi:returnType": "i64",
+                    "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block",
+                        "@id": "duumbi:test/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {
+                                "@type": "duumbi:Const",
+                                "@id": "duumbi:test/main/entry/0",
+                                "duumbi:value": 42
+                            },
+                            {
+                                "@type": "duumbi:Return",
+                                "@id": "duumbi:test/main/entry/1",
+                                "duumbi:operand": {"@id": "duumbi:test/main/entry/0"}
+                            }
+                        ]
+                    }]
+                }]
+            }"#,
+        )
+    }
+
+    #[test]
+    fn describe_op_const() {
+        let graph = const_graph();
+        let node_idx = graph
+            .graph
+            .node_indices()
+            .find(|&i| matches!(graph.graph[i].op, Op::Const(42)))
+            .expect("Const(42) node must exist");
+        let result = describe_op(&graph, node_idx, &Op::Const(42));
+        assert_eq!(result, "Const(42)");
+    }
+
+    #[test]
+    fn describe_op_const_bool() {
+        let graph = make_graph(
+            r#"{
+            "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+            "@type": "duumbi:Module",
+            "@id": "duumbi:test",
+            "duumbi:name": "test",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": "duumbi:test/main",
+                "duumbi:name": "main",
+                "duumbi:returnType": "bool",
+                "duumbi:params": [],
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block",
+                    "@id": "duumbi:test/main/entry",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {
+                            "@type": "duumbi:Const",
+                            "@id": "duumbi:test/main/entry/0",
+                            "duumbi:value": true,
+                            "duumbi:resultType": "bool"
+                        },
+                        {
+                            "@type": "duumbi:Return",
+                            "@id": "duumbi:test/main/entry/1",
+                            "duumbi:operand": {"@id": "duumbi:test/main/entry/0"}
+                        }
+                    ]
+                }]
+            }]
+        }"#,
+        );
+        let node_idx = graph
+            .graph
+            .node_indices()
+            .find(|&i| matches!(graph.graph[i].op, Op::ConstBool(true)))
+            .expect("ConstBool(true) node must exist");
+        let result = describe_op(&graph, node_idx, &Op::ConstBool(true));
+        assert_eq!(result, "ConstBool(true)");
+    }
+
+    #[test]
+    fn describe_op_return() {
+        let graph = const_graph();
+        let node_idx = graph
+            .graph
+            .node_indices()
+            .find(|&i| matches!(graph.graph[i].op, Op::Return))
+            .expect("Return node must exist");
+        let result = describe_op(&graph, node_idx, &Op::Return);
+        // Return should show its operand
+        assert!(result.starts_with("Return("), "got: {result}");
+    }
+
+    #[test]
+    fn describe_op_add() {
+        let graph = make_graph(
+            r#"{
+            "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+            "@type": "duumbi:Module",
+            "@id": "duumbi:test",
+            "duumbi:name": "test",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": "duumbi:test/main",
+                "duumbi:name": "main",
+                "duumbi:returnType": "i64",
+                "duumbi:params": [],
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block",
+                    "@id": "duumbi:test/main/entry",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {
+                            "@type": "duumbi:Const",
+                            "@id": "duumbi:test/main/entry/0",
+                            "duumbi:value": 3
+                        },
+                        {
+                            "@type": "duumbi:Const",
+                            "@id": "duumbi:test/main/entry/1",
+                            "duumbi:value": 5
+                        },
+                        {
+                            "@type": "duumbi:Add",
+                            "@id": "duumbi:test/main/entry/2",
+                            "duumbi:left": {"@id": "duumbi:test/main/entry/0"},
+                            "duumbi:right": {"@id": "duumbi:test/main/entry/1"}
+                        },
+                        {
+                            "@type": "duumbi:Return",
+                            "@id": "duumbi:test/main/entry/3",
+                            "duumbi:operand": {"@id": "duumbi:test/main/entry/2"}
+                        }
+                    ]
+                }]
+            }]
+        }"#,
+        );
+        let node_idx = graph
+            .graph
+            .node_indices()
+            .find(|&i| matches!(graph.graph[i].op, Op::Add))
+            .expect("Add node must exist");
+        let result = describe_op(&graph, node_idx, &Op::Add);
+        assert!(result.starts_with("Add("), "got: {result}");
+        assert!(
+            result.contains('%'),
+            "must reference operand nodes: {result}"
+        );
+    }
+
+    #[test]
+    fn describe_runs_without_panic() {
+        // Smoke test: describe() must not panic on a valid graph
+        let graph = const_graph();
+        // describe() calls println!, so just ensure it completes without panic.
+        describe(&graph);
+    }
+}
