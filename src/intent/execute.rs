@@ -141,6 +141,44 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                 // For library modules, ensure all functions are exported
                 if is_create_module {
                     ensure_exports(&mut mutation_result.patched);
+
+                    // Post-mutation validation: check all expected functions are present.
+                    // If the LLM only created some of the required functions, retry with
+                    // specific feedback about which ones are missing.
+                    let expected_fns = expected_exports_for_module(&spec, &task.kind);
+                    let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
+
+                    if !missing.is_empty() {
+                        eprintln!("  ⚠ Missing functions: [{}]. Retrying…", missing.join(", "));
+                        let retry_prompt = format!(
+                            "{}\n\nCRITICAL: The previous attempt only created some functions. \
+                             The following functions are STILL MISSING and MUST be added: [{}]. \
+                             Add ALL missing functions in this single response using add_function tool calls.",
+                            prompt,
+                            missing.join(", ")
+                        );
+                        // Use the partially-created module as source for the retry
+                        let retry_result = orchestrator::mutate_streaming(
+                            client,
+                            &mutation_result.patched,
+                            &retry_prompt,
+                            1,
+                            skip_call_validation,
+                            |text| {
+                                eprint!("{text}");
+                            },
+                        )
+                        .await;
+                        eprintln!();
+
+                        if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
+                            retry_result
+                        {
+                            ensure_exports(&mut retry_mr.patched);
+                            mutation_result = retry_mr;
+                        }
+                        // If retry fails, proceed with what we have — the verifier will catch it
+                    }
                 }
 
                 // Write patched graph to the appropriate file
@@ -409,6 +447,48 @@ fn archive_success(
         },
     )
     .map_err(|e: IntentError| anyhow::anyhow!("{e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Post-mutation validation helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the list of function names that a CreateModule task should produce,
+/// based on the intent spec's test cases.
+fn expected_exports_for_module(spec: &IntentSpec, task_kind: &TaskKind) -> Vec<String> {
+    let _module_name = match task_kind {
+        TaskKind::CreateModule { module_name } => module_name,
+        _ => return Vec::new(),
+    };
+
+    // Collect all non-main function names from test cases
+    spec.test_cases
+        .iter()
+        .map(|tc| tc.function.as_str())
+        .filter(|&f| f != "main")
+        .map(|f| f.to_string())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Checks which expected function names are missing from a module's duumbi:functions.
+fn find_missing_functions(module: &serde_json::Value, expected: &[String]) -> Vec<String> {
+    let present: std::collections::HashSet<&str> = module["duumbi:functions"]
+        .as_array()
+        .map(|funcs| {
+            funcs
+                .iter()
+                .filter_map(|f| f["duumbi:name"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    expected
+        .iter()
+        .filter(|name| !present.contains(name.as_str()))
+        .cloned()
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
