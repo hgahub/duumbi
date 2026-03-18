@@ -104,12 +104,12 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 3.1 | `$DUUMBI add "add a multiply function that takes two i64 parameters a and b and returns a*b" -y` | Mutacio sikeres (function hozzaadva) | | |
-| 3.2 | `$DUUMBI knowledge stats` | "Learning log: 0 entries" (a CLI `add` nem integralja meg a learning log-ot — csak intent) | | |
-| 3.3 | Intent letrehozasa:<br>`$DUUMBI intent create "Create a double function that takes an i64 parameter n and returns n*2. The main function should call double(21) and exit with the result." -y` | Intent YAML letrejott `.duumbi/intents/` alatt | | |
-| 3.4 | `$DUUMBI intent execute <slug>` (a 3.3-ban kapott slug) | Task(ok) futnak, verifier: double(21)=42 PASS | | |
-| 3.5 | `$DUUMBI knowledge stats` | "Learning log: N entries" ahol N >= 1 (intent task success logged) | | |
-| 3.6 | `cat .duumbi/learning/successes.jsonl` | JSONL sorok, minden sor valid JSON; tartalmazza `request`, `taskType`, `opsCount` mezoket | | |
+| 3.1 | `$DUUMBI add "add a multiply function that takes two i64 parameters a and b and returns a*b" -y` | Mutacio sikeres (function hozzaadva) | ✓ | |
+| 3.2 | `$DUUMBI knowledge stats` | "Learning log: 0 entries" (a CLI `add` nem integralja meg a learning log-ot — csak intent) |✓ | |
+| 3.3 | Intent letrehozasa:<br>`$DUUMBI intent create "Create a double function that takes an i64 parameter n and returns n*2. The main function should call double(21) and exit with the result." -y` | Intent YAML letrejott `.duumbi/intents/` alatt | ✓ | |
+| 3.4 | `$DUUMBI intent execute <slug>` (a 3.3-ban kapott slug) | Task(ok) futnak, verifier: double(21)=42 PASS | ✓ | |
+| 3.5 | `$DUUMBI knowledge stats` | "Learning log: N entries" ahol N >= 1 (intent task success logged) | ✓ | |
+| 3.6 | `cat .duumbi/learning/successes.jsonl` | JSONL sorok, minden sor valid JSON; tartalmazza `request`, `taskType`, `opsCount` mezoket | ✓ | |
 
 > **Megjegyzes:** Ha a Coordinator "ModifyMain" egyetlen task-ot general (a fuggvenyt a
 > main modulba teszi), a verifier E010-et adhat multi-module modban. Ilyenkor a task
@@ -124,9 +124,9 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 4.1 | `$DUUMBI knowledge list` | Ha van intent success: legalabb 0 node (a store meg ures, mert a learning log kulon) | | |
-| 4.2 | `ls .duumbi/knowledge/` | 3 almappa: `success/`, `decision/`, `pattern/` | | |
-| 4.3 | `$DUUMBI knowledge stats` | Osszes szamok osszegezve | | |
+| 4.1 | `$DUUMBI knowledge list` | Ha van intent success: legalabb 0 node (a store meg ures, mert a learning log kulon) | ✓ | |
+| 4.2 | `ls .duumbi/knowledge/` | 3 almappa: `success/`, `decision/`, `pattern/` | ✓ | |
+| 4.3 | `$DUUMBI knowledge stats` | Osszes szamok osszegezve | ✓ | |
 
 ---
 
@@ -136,13 +136,13 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 5.1 | `$DUUMBI` (REPL indul) | `>` prompt megjelenik | | |
-| 5.2 | REPL-ben: `/help` | "Knowledge commands:" szekcio lathato, `/knowledge`, `/knowledge list`, `/knowledge stats` | | |
-| 5.3 | REPL-ben: `/knowledge` | Statisztikak megjelennek (success/decision/pattern/total + learning log count) | | |
-| 5.4 | REPL-ben: `/knowledge stats` | Ugyanaz mint `/knowledge` | | |
-| 5.5 | REPL-ben: `/knowledge list` | Node lista (vagy "No knowledge nodes found.") | | |
-| 5.6 | REPL-ben: `/knowledge invalid` | "Usage: /knowledge [list\|stats]" help uzenet | | |
-| 5.7 | REPL-ben: `/exit` | REPL kilep | | |
+| 5.1 | `$DUUMBI` (REPL indul) | `>` prompt megjelenik | ✓ | |
+| 5.2 | REPL-ben: `/help` | "Knowledge commands:" szekcio lathato, `/knowledge`, `/knowledge list`, `/knowledge stats` | ✓ | |
+| 5.3 | REPL-ben: `/knowledge` | Statisztikak megjelennek (success/decision/pattern/total + learning log count) | ✓ | |
+| 5.4 | REPL-ben: `/knowledge stats` | Ugyanaz mint `/knowledge` | ✓ | |
+| 5.5 | REPL-ben: `/knowledge list` | Node lista (vagy "No knowledge nodes found.") | ✓ | |
+| 5.6 | REPL-ben: `/knowledge invalid` | "Usage: /knowledge [list\|stats]" help uzenet | ✓ | |
+| 5.7 | REPL-ben: `/exit` | REPL kilep | ✓ | |
 
 ---
 
@@ -171,14 +171,19 @@ unset DUUMBI
 
 ---
 
-## T7 — Auto-Wiring: New Module Dependencies
+## T7 — Workspace Module Auto-Discovery
 
 > Futtatasi hely: **`/tmp/duumbi-p10-test/`** (T6 utan)
+>
+> **Megjegyzes:** A workspace `.duumbi/graph/` konyvtarban levo modulokat a
+> `Program::load()` automatikusan betolti — nem kell dependency-kent
+> regisztralni a config.toml-ban. Ez a teszt azt ellenorzi.
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 7.1 | `cat .duumbi/config.toml` | Ha az intent CreateModule taskat futtatott: a "ops" modul megjelenik a `[dependencies]` szekcioban | | |
-| 7.2 | Az auto-wire uzenet lathato volt a T6.2 stderr kimeneteben | `Auto-wired: added "ops" to config.toml dependencies` | | |
+| 7.1 | `cat .duumbi/config.toml` | A config.toml NEM tartalmaz "ops" dependency-t (nincs [dependencies] szekcio vagy ures) | | |
+| 7.2 | `$DUUMBI build` | Build sikerul — a Program::load() megtalalta az ops.jsonld-t automatikusan | | |
+| 7.3 | `$DUUMBI check` | Check sikerul — cross-module Call-ok feloldodnak | | |
 
 ---
 
@@ -269,7 +274,7 @@ Egy 3+ modulbol allo projektben a `duumbi add "..."`:
 1. **Felismeri a meglevo modulokat** (T6.6 — nem dumpol mindent main-be)
 2. **Kerdez, ha az intent nem egyertelmu** (T9.1 — MutationOutcome::NeedsClarification)
 3. **Uj modult hoz letre ha kell** (T6.2 — CreateModule task)
-4. **Automatikusan bekotozi a meglevo graph elemeket** (T7.1 — auto-wire)
+4. **Workspace modulok automatikusan betoltodnek** (T7.2 — Program::load auto-discovery)
 5. **Context assembly zero manualis config fajlt igenyel** (T6.6 — assemble_context)
 6. **Session state megmarad CLI ujrainditaskor** (T8.5-T8.6 — persistent session)
 
