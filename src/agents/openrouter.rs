@@ -20,12 +20,21 @@ impl OpenRouterClient {
     /// Creates a new OpenRouter client with required attribution headers.
     #[must_use]
     pub fn new(model: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::with_base_url_inner(model, api_key, OPENROUTER_API_URL)
+    }
+
+    /// Shared constructor used by both `new` and the test helper — single source of truth
+    /// for header setup so production and test construction paths never drift.
+    fn with_base_url_inner(
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        url: &str,
+    ) -> Self {
         let mut headers = HashMap::new();
         headers.insert("X-Title".to_string(), "duumbi".to_string());
         headers.insert("HTTP-Referer".to_string(), "https://duumbi.dev".to_string());
-
         Self(
-            OpenAiClient::with_base_url(model, api_key, OPENROUTER_API_URL)
+            OpenAiClient::with_base_url(model, api_key, url)
                 .with_extra_headers(headers)
                 .with_provider_name("openrouter"),
         )
@@ -36,14 +45,7 @@ impl OpenRouterClient {
 #[cfg(test)]
 impl OpenRouterClient {
     fn with_base_url(model: impl Into<String>, api_key: impl Into<String>, url: &str) -> Self {
-        let mut headers = HashMap::new();
-        headers.insert("X-Title".to_string(), "duumbi".to_string());
-        headers.insert("HTTP-Referer".to_string(), "https://duumbi.dev".to_string());
-        Self(
-            OpenAiClient::with_base_url(model, api_key, url)
-                .with_extra_headers(headers)
-                .with_provider_name("openrouter"),
-        )
+        Self::with_base_url_inner(model, api_key, url)
     }
 }
 
