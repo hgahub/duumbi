@@ -3,8 +3,14 @@
 //! Iterates over (showcase × provider × attempt), creating a temporary
 //! workspace for each run, executing the intent pipeline, and collecting
 //! [`BenchmarkResult`] entries.
+//!
+//! Providers are executed **concurrently** per showcase via `tokio::spawn`,
+//! so two providers with 3 attempts each take roughly the same time as one
+//! provider with 3 attempts (instead of 2×). Each provider gets its own
+//! isolated [`tempfile::TempDir`] per attempt — no shared-state conflicts.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agents::LlmProvider;
@@ -30,6 +36,9 @@ pub struct BenchmarkConfig {
 
 /// Runs the full benchmark suite.
 ///
+/// Providers are executed concurrently per showcase. Each attempt within a
+/// single provider runs sequentially to avoid rate-limit issues.
+///
 /// `init_workspace` is called to set up each temporary workspace (typically
 /// `cli::init::run_init`). It is passed as a callback because the `cli`
 /// module is binary-only and not available from `lib.rs`.
@@ -42,7 +51,7 @@ pub async fn run_benchmark<F>(
     init_workspace: F,
 ) -> Result<Vec<BenchmarkResult>, String>
 where
-    F: Fn(&Path) -> Result<(), anyhow::Error>,
+    F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync + 'static,
 {
     let showcase_refs: Vec<&Showcase> =
         showcases::filter_showcases(config.showcase_filter.as_deref());
@@ -67,61 +76,90 @@ where
     );
     eprintln!();
 
-    let mut results = Vec::with_capacity(total_runs);
-    let mut run_idx: usize = 0;
+    // Wrap init_workspace in Arc so it can be shared across spawned tasks.
+    let init_workspace = Arc::new(init_workspace);
+
+    let mut all_results: Vec<BenchmarkResult> = Vec::with_capacity(total_runs);
 
     for showcase in &showcase_refs {
         let spec =
             showcases::parse_showcase(showcase).map_err(|e| format!("invalid showcase: {e}"))?;
 
+        let spec = Arc::new(spec);
+        let showcase_name = showcase.name;
+
+        // Spawn one task per provider; attempts within each task are sequential.
+        let mut handles = Vec::with_capacity(provider_configs.len());
         for prov_config in &provider_configs {
-            let provider = factory::create_provider(prov_config).map_err(|e| {
-                format!(
-                    "failed to create provider '{}': {e}",
-                    provider_name(prov_config)
-                )
-            })?;
+            let provider: Arc<dyn LlmProvider> =
+                Arc::from(factory::create_provider(prov_config).map_err(|e| {
+                    format!(
+                        "failed to create provider '{}': {e}",
+                        provider_name(prov_config)
+                    )
+                })?);
 
-            for attempt in 1..=config.attempts {
-                run_idx += 1;
-                eprintln!(
-                    "[{run_idx}/{total_runs}] {} / {} (attempt {attempt}/{})",
-                    showcase.name,
-                    provider.name(),
-                    config.attempts,
-                );
+            let spec_clone = Arc::clone(&spec);
+            let init_clone = Arc::clone(&init_workspace);
+            let attempts = config.attempts;
+            let prov_name = provider.name().to_string();
 
-                let result = run_single(
-                    showcase.name,
-                    provider.as_ref(),
-                    &spec,
-                    attempt,
-                    &init_workspace,
-                )
-                .await;
+            let handle = tokio::spawn(async move {
+                let mut results = Vec::with_capacity(attempts as usize);
+                for attempt in 1..=attempts {
+                    eprintln!("  [{showcase_name} / {prov_name}] attempt {attempt}/{attempts}",);
 
-                if result.success {
-                    eprintln!(
-                        "  ✓ passed ({}/{} tests, {:.1}s)",
-                        result.tests_passed, result.tests_total, result.duration_secs,
-                    );
-                } else {
-                    eprintln!(
-                        "  ✗ failed: {} ({})",
-                        result
-                            .error_category
-                            .as_ref()
-                            .map_or_else(|| "unknown".to_string(), ToString::to_string),
-                        result.error_message.as_deref().unwrap_or("no details"),
-                    );
+                    let result = run_single(
+                        showcase_name,
+                        provider.as_ref(),
+                        &spec_clone,
+                        attempt,
+                        &*init_clone,
+                    )
+                    .await;
+
+                    if result.success {
+                        eprintln!(
+                            "    ✓ passed ({}/{} tests, {:.1}s)",
+                            result.tests_passed, result.tests_total, result.duration_secs,
+                        );
+                    } else {
+                        eprintln!(
+                            "    ✗ failed: {} ({})",
+                            result
+                                .error_category
+                                .as_ref()
+                                .map_or_else(|| "unknown".to_string(), ToString::to_string),
+                            result.error_message.as_deref().unwrap_or("no details"),
+                        );
+                    }
+
+                    results.push(result);
                 }
+                results
+            });
 
-                results.push(result);
-            }
+            handles.push(handle);
         }
+
+        // Await all provider tasks for this showcase.
+        for handle in handles {
+            let provider_results = handle.await.map_err(|e| format!("task panicked: {e}"))?;
+            all_results.extend(provider_results);
+        }
+
+        eprintln!();
     }
 
-    Ok(results)
+    // Sort results into deterministic order: showcase → provider → attempt.
+    all_results.sort_by(|a, b| {
+        a.showcase
+            .cmp(&b.showcase)
+            .then(a.provider.cmp(&b.provider))
+            .then(a.attempt.cmp(&b.attempt))
+    });
+
+    Ok(all_results)
 }
 
 /// Runs a single benchmark attempt in an isolated temp workspace.
@@ -133,7 +171,7 @@ async fn run_single<F>(
     init_workspace: &F,
 ) -> BenchmarkResult
 where
-    F: Fn(&Path) -> Result<(), anyhow::Error>,
+    F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync,
 {
     let start = Instant::now();
 
