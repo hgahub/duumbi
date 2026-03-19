@@ -8,7 +8,6 @@ on:
       - 'src/**'
       - 'crates/**'
       - 'Cargo.toml'
-      - 'sites/docs/**'
 
 permissions:
   contents: read
@@ -34,7 +33,7 @@ jobs:
             });
 
             const changed = files.map((f) => f.filename);
-            const docsChanged = changed.some((f) => f.startsWith("sites/docs/src/"));
+            const docsChanged = false; // Docs live in hgahub/duumbi-web repo
             const codeChanged = changed.some((f) =>
               f.startsWith("src/") ||
               f.startsWith("crates/") ||
@@ -44,10 +43,8 @@ jobs:
             let body;
             if (!codeChanged) {
               body = `${marker}\n✅ No code-level changes detected that require docs validation in this workflow.`;
-            } else if (docsChanged) {
-              body = `${marker}\n✅ Docs look up-to-date for this change (code + docs were updated together).`;
             } else {
-              body = `${marker}\n⚠️ Code changed without docs updates.\n\n@copilot Please update documentation under \`sites/docs/src/\` for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. Commit changes directly to this PR branch if updates are needed.`;
+              body = `${marker}\n⚠️ Code changed without docs updates.\n\n@copilot Please check if documentation needs updating in [hgahub/duumbi-web](https://github.com/hgahub/duumbi-web/tree/main/docs/src/content/docs) for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. If updates are needed, open a PR in that repo.`;
             }
 
             const comments = await github.paginate(github.rest.issues.listComments, {
