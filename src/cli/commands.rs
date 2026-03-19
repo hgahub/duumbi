@@ -281,15 +281,19 @@ fn emit_program_error_diagnostics(err: &deps::DepsError) {
 /// Emits a diagnostic as JSONL to stdout and a human-readable summary to stderr.
 ///
 /// The error code is highlighted in red and any node IDs in blue for visual clarity.
+/// Diagnostic Display format: `[E001] error: message (at duumbi:node/path)`
 pub(crate) fn emit_diagnostic(diag: &Diagnostic) {
     println!("{}", diag.to_jsonl());
-    // Colorize: error code in red, node in blue
+    // Colorize: [E001] → [colored_code]
     let msg = format!("{diag}");
-    let colored = if let Some(code) = msg.split_whitespace().next()
-        && code.starts_with('E')
-        && code.len() <= 5
+    let colored = if let Some((code_with_brackets, rest)) = msg.split_once(' ')
+        && code_with_brackets.starts_with('[')
+        && code_with_brackets.ends_with(']')
+        && code_with_brackets.len() > 2
     {
-        msg.replacen(code, &theme::error_code(code), 1)
+        let inner_code = &code_with_brackets[1..code_with_brackets.len() - 1];
+        let colored_code = format!("[{}]", theme::error_code(inner_code));
+        format!("{colored_code} {rest}")
     } else {
         msg
     };

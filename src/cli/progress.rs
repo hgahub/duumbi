@@ -30,12 +30,12 @@ pub fn spinner(message: &str) -> ProgressBar {
     pb
 }
 
-/// Creates a spinner and immediately finishes it with a success message.
-/// Useful for one-shot status updates.
+/// Creates a spinner and immediately finishes it with the message visible.
+/// Useful for one-shot status updates that should leave a trace.
 #[allow(dead_code)]
 pub fn spinner_done(message: &str) {
     let pb = spinner(message);
-    pb.finish_and_clear();
+    pb.finish_with_message(message.to_string());
 }
 
 // ---------------------------------------------------------------------------

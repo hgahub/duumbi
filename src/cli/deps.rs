@@ -32,11 +32,12 @@ pub fn run_deps_list(workspace: &Path) -> Result<()> {
             Ok(_) => theme::check_mark(),
             Err(e) => format!("{} {e}", theme::cross_mark()),
         };
-        let source = if dep_path.starts_with('/') || dep_path.starts_with('.') {
-            "path"
-        } else {
-            "registry"
-        };
+        let source =
+            if std::path::Path::new(dep_path.as_str()).is_absolute() || dep_path.starts_with('.') {
+                "path"
+            } else {
+                "registry"
+            };
         table.add_row(vec![name.as_str(), dep_path.as_str(), source, &status]);
     }
 

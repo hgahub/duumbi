@@ -281,7 +281,7 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     {
         let sp = cli::progress::spinner(&format!("Calling {}…", client.name()));
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         sp.finish_and_clear();
     }
 

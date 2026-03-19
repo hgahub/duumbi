@@ -488,8 +488,7 @@ impl Session {
 
         {
             let sp = progress::spinner(&format!("Thinking… (~{ctx_k:.1}k context)"));
-            // Brief pause to show spinner, then clear before streaming
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             sp.finish_and_clear();
         }
 
@@ -866,7 +865,10 @@ impl Session {
                     .archive()
                     .map_err(|e| anyhow::anyhow!("{e}"))
                     .unwrap_or_else(|e| eprintln!("Warning: {e}"));
-                eprintln!("{} History, session cleared.", theme::check_mark(),);
+                eprintln!(
+                    "{} Chat history cleared and session archived.",
+                    theme::check_mark(),
+                );
             }
             other => {
                 eprintln!(
@@ -989,9 +991,9 @@ fn list_archived_sessions(
 // Help text
 // ---------------------------------------------------------------------------
 
-/// Finds the closest matching command using Levenshtein distance.
+/// Finds the closest matching command using normalized Levenshtein similarity.
 ///
-/// Returns `Some(cmd)` if the closest match is within 3 edits, `None` otherwise.
+/// Returns `Some(cmd)` if the closest match has similarity > 0.5, `None` otherwise.
 fn find_closest_command<'a>(input: &str, commands: &[&'a str]) -> Option<&'a str> {
     let mut best: Option<(&str, f64)> = None;
     for &cmd in commands {

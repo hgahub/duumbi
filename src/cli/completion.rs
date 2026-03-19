@@ -43,7 +43,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/clear", "Clear session state"),
     ("/clear chat", "Clear current chat history"),
     ("/clear session", "Clear and archive current session"),
-    ("/clear all", "Clear history, session, and knowledge"),
+    ("/clear all", "Clear history and session state"),
     ("/help", "Show available commands"),
     ("/exit", "Exit the REPL"),
     ("/quit", "Exit the REPL"),
