@@ -24,6 +24,7 @@ use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::DuumbiConfig;
 use crate::intent;
+use crate::session::SessionManager;
 use crate::snapshot;
 
 use super::commands;
@@ -48,6 +49,8 @@ struct Session {
     client: Option<LlmClient>,
     /// Completed turns, used to build context for subsequent requests.
     history: Vec<Turn>,
+    /// Persistent session manager for cross-restart state.
+    session_mgr: SessionManager,
 }
 
 /// Minimal REPL prompt that renders a single `> ` marker.
@@ -91,6 +94,18 @@ impl Prompt for ReplPrompt {
 pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let client = build_client(&config);
 
+    // Initialize persistent session — always start fresh.
+    // Previous sessions are available via /resume.
+    let mut session_mgr = SessionManager::load_or_create(&workspace_root)
+        .map_err(|e| anyhow::anyhow!("session init: {e}"))?;
+
+    // If there's an unsaved session from a crash, archive it
+    if session_mgr.has_pending_session() {
+        session_mgr
+            .archive()
+            .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
+    }
+
     print_header(&config, &workspace_root);
 
     let mut session = Session {
@@ -98,6 +113,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
         config,
         client,
         history: Vec::new(),
+        session_mgr,
     };
 
     let mut editor = Reedline::create();
@@ -113,6 +129,11 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                 if input.starts_with('/') {
                     match session.handle_slash(&input).await {
                         Ok(true) => {
+                            // Archive session on exit
+                            session
+                                .session_mgr
+                                .archive()
+                                .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
                             eprintln!("Goodbye!");
                             break;
                         }
@@ -129,6 +150,10 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
                 eprintln!("(Use /exit or Ctrl+D to quit)");
             }
             Ok(Signal::CtrlD) => {
+                session
+                    .session_mgr
+                    .archive()
+                    .map_err(|e| anyhow::anyhow!("session archive: {e}"))?;
                 eprintln!("Goodbye!");
                 break;
             }
@@ -315,6 +340,14 @@ impl Session {
                 self.handle_registry_slash(arg);
             }
 
+            "/knowledge" => {
+                self.handle_knowledge_slash(arg);
+            }
+
+            "/resume" => {
+                self.handle_resume_slash(arg);
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
@@ -365,23 +398,60 @@ impl Session {
         // Build prompt with conversation history (#55)
         let prompt = build_prompt_with_history(request, &self.history);
 
+        // Detect multi-module workspace to skip Call validation for cross-module refs
+        let graph_dir = self.workspace_root.join(".duumbi/graph");
+        let is_multi_module = graph_dir
+            .read_dir()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        let p = e.path();
+                        p.extension().is_some_and(|ext| ext == "jsonld")
+                            && p.file_name().is_some_and(|n| n != "main.jsonld")
+                    })
+                    .count()
+                    > 0
+            })
+            .unwrap_or(false);
+
         eprint!("Thinking… (~{ctx_k:.1}k context)");
 
         // Run AI mutation with streaming text output
-        let result =
-            match orchestrator::mutate_streaming(client, &source, &prompt, 3, false, |text| {
+        let outcome = match orchestrator::mutate_streaming(
+            client,
+            &source,
+            &prompt,
+            3,
+            is_multi_module,
+            |text| {
                 eprint!("{text}");
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!();
-                    eprintln!("{e:#}");
-                    return Ok(());
-                }
-            };
+            },
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!();
+                eprintln!("{e:#}");
+                return Ok(());
+            }
+        };
         eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
+
+        // Handle clarification requests
+        let result = match outcome {
+            orchestrator::MutationOutcome::Success(r) => r,
+            orchestrator::MutationOutcome::NeedsClarification(question) => {
+                eprintln!("\n? {question}");
+                // The next user input will include this context
+                self.history.push(Turn {
+                    request: request.to_string(),
+                    summary: format!("Clarification needed: {question}"),
+                });
+                return Ok(());
+            }
+        };
 
         // Show diff summary
         let diff = orchestrator::describe_changes(&source, &result.patched);
@@ -414,10 +484,15 @@ impl Session {
         }
 
         // Record turn in session history (#55)
+        let diff_clone = diff.clone();
         self.history.push(Turn {
             request: request.to_string(),
             summary: diff,
         });
+
+        // Persist session state
+        self.session_mgr.add_turn(request, &diff_clone, "Mutation");
+        let _ = self.session_mgr.save();
 
         eprintln!();
         Ok(())
@@ -574,6 +649,120 @@ impl Session {
     }
 
     // -------------------------------------------------------------------------
+    // /knowledge handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/knowledge [subcommand]` within the REPL.
+    ///
+    /// Supported forms:
+    /// - `/knowledge` or `/knowledge stats` — show aggregated statistics
+    /// - `/knowledge list` — list all knowledge nodes
+    fn handle_knowledge_slash(&self, arg: &str) {
+        use crate::knowledge::learning;
+        use crate::knowledge::store::KnowledgeStore;
+
+        let sub = arg.split_whitespace().next().unwrap_or("stats");
+
+        match sub {
+            "list" => match KnowledgeStore::new(&self.workspace_root) {
+                Ok(store) => {
+                    let nodes = store.load_all();
+                    if nodes.is_empty() {
+                        eprintln!("No knowledge nodes found.");
+                    } else {
+                        eprintln!("{} knowledge node(s):", nodes.len());
+                        for node in &nodes {
+                            eprintln!("  [{}] {}", node.node_type(), node.id());
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Knowledge store error: {e}"),
+            },
+            "" | "stats" => match KnowledgeStore::new(&self.workspace_root) {
+                Ok(store) => {
+                    let stats = store.stats();
+                    let success_count = learning::success_count(&self.workspace_root);
+                    eprintln!(
+                        "Knowledge: {} success, {} decision, {} pattern ({} total)",
+                        stats.successes,
+                        stats.decisions,
+                        stats.patterns,
+                        stats.total()
+                    );
+                    eprintln!("Learning log: {success_count} entries");
+                }
+                Err(e) => eprintln!("Knowledge store error: {e}"),
+            },
+            _ => {
+                eprintln!("Usage: /knowledge [list|stats]");
+                eprintln!("  /knowledge list   — list all knowledge nodes");
+                eprintln!("  /knowledge stats  — show aggregated statistics");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // /resume handler
+    // -------------------------------------------------------------------------
+
+    /// Handles `/resume [N]` within the REPL.
+    ///
+    /// - `/resume` — list archived sessions with index numbers
+    /// - `/resume <N>` — load session N's turns into current history
+    fn handle_resume_slash(&mut self, arg: &str) {
+        let history_dir = self.workspace_root.join(".duumbi/session/history");
+
+        // List archived sessions
+        let mut sessions = list_archived_sessions(&history_dir);
+        if sessions.is_empty() {
+            eprintln!("No archived sessions found.");
+            return;
+        }
+
+        // Sort by filename (timestamp-based, newest first)
+        sessions.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let sub = arg.trim();
+        if sub.is_empty() {
+            // List mode
+            eprintln!("Archived sessions:");
+            for (i, (filename, turns, _)) in sessions.iter().enumerate() {
+                let display_name = filename.trim_end_matches(".json").replace('_', " ");
+                eprintln!("  [{}] {} ({} turn(s))", i + 1, display_name, turns);
+            }
+            eprintln!();
+            eprintln!("Use /resume <N> to load a session's context.");
+        } else {
+            // Load mode
+            let idx: usize = match sub.parse::<usize>() {
+                Ok(n) if n >= 1 && n <= sessions.len() => n - 1,
+                _ => {
+                    eprintln!(
+                        "Invalid session number. Use 1–{} (from /resume list).",
+                        sessions.len()
+                    );
+                    return;
+                }
+            };
+
+            let (filename, _turns, loaded_turns) = &sessions[idx];
+            // Merge loaded turns into current history
+            for turn in loaded_turns {
+                self.history.push(Turn {
+                    request: turn.request.clone(),
+                    summary: turn.summary.clone(),
+                });
+            }
+            let display_name = filename.trim_end_matches(".json").replace('_', " ");
+            eprintln!(
+                "Resumed session '{}' ({} turn(s) loaded into context).",
+                display_name,
+                loaded_turns.len()
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // /status helper
     // -------------------------------------------------------------------------
 
@@ -638,6 +827,41 @@ fn build_prompt_with_history(request: &str, history: &[Turn]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Session archive helpers
+// ---------------------------------------------------------------------------
+
+/// Lists archived session files, returning (filename, turn_count, turns) tuples.
+fn list_archived_sessions(
+    history_dir: &Path,
+) -> Vec<(String, usize, Vec<crate::session::PersistentTurn>)> {
+    let entries = match std::fs::read_dir(history_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(state) = serde_json::from_str::<crate::session::SessionState>(&content)
+        {
+            let turn_count = state.turns.len();
+            results.push((filename, turn_count, state.turns));
+        }
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Help text
 // ---------------------------------------------------------------------------
 
@@ -661,6 +885,15 @@ Intent commands:
   /intent review [name]          Show intent details
   /intent execute <name>         Execute an intent end-to-end
   /intent status [name]          Show intent execution status
+
+Knowledge commands:
+  /knowledge          Show knowledge statistics
+  /knowledge list     List all knowledge nodes
+  /knowledge stats    Show aggregated learning statistics
+
+Session commands:
+  /resume             List archived sessions
+  /resume <N>         Load session N's history into current context
 
 Registry & dependency commands:
   /search <query>     Search registries for modules

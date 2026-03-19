@@ -165,14 +165,39 @@ fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
         // Copy ALL modules including main.jsonld — run the workspace as-is
         copy_all_modules(&ws_graph, &tmp_graph)?;
     } else {
-        // Generate wrapper main and copy non-main modules
-        let wrapper = generate_wrapper_main(tc);
-        let wrapper_str =
-            serde_json::to_string_pretty(&wrapper).map_err(|e| format!("serialize: {e}"))?;
-        std::fs::write(tmp_graph.join("main.jsonld"), &wrapper_str)
-            .map_err(|e| format!("write wrapper: {e}"))?;
-
+        // Copy ALL non-main modules first
         copy_non_main_modules(&ws_graph, &tmp_graph)?;
+
+        // Check if the target function lives in main.jsonld
+        let main_path = ws_graph.join("main.jsonld");
+        let target_in_main = main_path.exists() && {
+            std::fs::read_to_string(&main_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .map(|v| has_function(&v, &tc.function))
+                .unwrap_or(false)
+        };
+
+        if target_in_main {
+            // The target function is defined in main.jsonld — inject the wrapper
+            // main() alongside existing functions instead of replacing the file
+            let main_content = std::fs::read_to_string(&main_path)
+                .map_err(|e| format!("read main.jsonld: {e}"))?;
+            let main_value: serde_json::Value = serde_json::from_str(&main_content)
+                .map_err(|e| format!("parse main.jsonld: {e}"))?;
+            let merged = inject_wrapper_main(main_value, tc);
+            let merged_str =
+                serde_json::to_string_pretty(&merged).map_err(|e| format!("serialize: {e}"))?;
+            std::fs::write(tmp_graph.join("main.jsonld"), &merged_str)
+                .map_err(|e| format!("write merged main: {e}"))?;
+        } else {
+            // Target function is in a separate module — generate a clean wrapper main
+            let wrapper = generate_wrapper_main(tc);
+            let wrapper_str =
+                serde_json::to_string_pretty(&wrapper).map_err(|e| format!("serialize: {e}"))?;
+            std::fs::write(tmp_graph.join("main.jsonld"), &wrapper_str)
+                .map_err(|e| format!("write wrapper: {e}"))?;
+        }
     }
 
     compile_and_run(tmp.path(), &tc.function)
@@ -340,6 +365,44 @@ fn generate_wrapper_main(tc: &TestCase) -> serde_json::Value {
     })
 }
 
+/// Checks if a JSON-LD module value contains a function with the given name.
+fn has_function(module: &serde_json::Value, function_name: &str) -> bool {
+    module["duumbi:functions"]
+        .as_array()
+        .map(|funcs| {
+            funcs
+                .iter()
+                .any(|f| f["duumbi:name"].as_str() == Some(function_name))
+        })
+        .unwrap_or(false)
+}
+
+/// Injects a wrapper main() function into an existing module, preserving all
+/// other functions. This is used when the target function is defined in
+/// main.jsonld — we need to keep it while replacing the main() body.
+fn inject_wrapper_main(mut module: serde_json::Value, tc: &TestCase) -> serde_json::Value {
+    // Build the wrapper main function (same logic as generate_wrapper_main)
+    let wrapper = generate_wrapper_main(tc);
+    let wrapper_main_fn = &wrapper["duumbi:functions"][0];
+
+    // Replace or append the main function in the module
+    if let Some(funcs) = module["duumbi:functions"].as_array_mut() {
+        // Find and replace existing main function
+        let main_idx = funcs
+            .iter()
+            .position(|f| f["duumbi:name"].as_str() == Some("main"));
+
+        if let Some(idx) = main_idx {
+            funcs[idx] = wrapper_main_fn.clone();
+        } else {
+            // No main function exists — append the wrapper
+            funcs.push(wrapper_main_fn.clone());
+        }
+    }
+
+    module
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -413,5 +476,142 @@ mod tests {
         let display = report.display();
         assert!(display.contains("✗ sub"));
         assert!(display.contains("expected 7"));
+    }
+
+    #[test]
+    fn has_function_finds_existing() {
+        let module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "main" },
+                { "duumbi:name": "double" }
+            ]
+        });
+        assert!(has_function(&module, "double"));
+        assert!(has_function(&module, "main"));
+        assert!(!has_function(&module, "nonexistent"));
+    }
+
+    #[test]
+    fn has_function_empty_module() {
+        let module = json!({ "duumbi:functions": [] });
+        assert!(!has_function(&module, "anything"));
+    }
+
+    #[test]
+    fn inject_wrapper_replaces_main_preserves_others() {
+        let module = json!({
+            "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+            "@type": "duumbi:Module",
+            "@id": "duumbi:main",
+            "duumbi:name": "main",
+            "duumbi:functions": [
+                {
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:main/double",
+                    "duumbi:name": "double",
+                    "duumbi:returnType": "i64",
+                    "duumbi:params": [{ "duumbi:name": "n", "duumbi:paramType": "i64" }],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block",
+                        "@id": "duumbi:main/double/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": []
+                    }]
+                },
+                {
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:main/main",
+                    "duumbi:name": "main",
+                    "duumbi:returnType": "i64",
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block",
+                        "@id": "duumbi:main/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": []
+                    }]
+                }
+            ]
+        });
+
+        let tc = TestCase {
+            name: "double_21".to_string(),
+            function: "double".to_string(),
+            args: vec![21],
+            expected_return: 42,
+        };
+
+        let merged = inject_wrapper_main(module, &tc);
+        let funcs = merged["duumbi:functions"]
+            .as_array()
+            .expect("functions array");
+
+        // Should have exactly 2 functions: double (preserved) + main (replaced)
+        assert_eq!(funcs.len(), 2, "must preserve double + replace main");
+
+        // double should still be there
+        assert!(
+            funcs
+                .iter()
+                .any(|f| f["duumbi:name"].as_str() == Some("double")),
+            "double function must be preserved"
+        );
+
+        // main should now contain the wrapper (Call to double)
+        let main_fn = funcs
+            .iter()
+            .find(|f| f["duumbi:name"].as_str() == Some("main"))
+            .expect("main function");
+        let ops = &main_fn["duumbi:blocks"][0]["duumbi:ops"];
+        // 1 Const(21) + 1 Call(double) + 1 Print + 1 Return = 4
+        assert_eq!(
+            ops.as_array().map(|a| a.len()).unwrap_or(0),
+            4,
+            "wrapper main should have 4 ops"
+        );
+        assert_eq!(ops[1]["duumbi:function"], "double");
+    }
+
+    #[test]
+    fn inject_wrapper_appends_main_if_missing() {
+        let module = json!({
+            "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+            "@type": "duumbi:Module",
+            "@id": "duumbi:main",
+            "duumbi:name": "main",
+            "duumbi:functions": [
+                {
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:main/helper",
+                    "duumbi:name": "helper",
+                    "duumbi:returnType": "i64",
+                    "duumbi:blocks": []
+                }
+            ]
+        });
+
+        let tc = TestCase {
+            name: "test".to_string(),
+            function: "helper".to_string(),
+            args: vec![5],
+            expected_return: 5,
+        };
+
+        let merged = inject_wrapper_main(module, &tc);
+        let funcs = merged["duumbi:functions"]
+            .as_array()
+            .expect("functions array");
+
+        // Should have 2 functions: helper (original) + main (appended)
+        assert_eq!(funcs.len(), 2);
+        assert!(
+            funcs
+                .iter()
+                .any(|f| f["duumbi:name"].as_str() == Some("main"))
+        );
+        assert!(
+            funcs
+                .iter()
+                .any(|f| f["duumbi:name"].as_str() == Some("helper"))
+        );
     }
 }

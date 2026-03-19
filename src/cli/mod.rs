@@ -181,6 +181,13 @@ pub enum Commands {
         #[arg(long)]
         dev: bool,
     },
+
+    /// Inspect and manage the knowledge graph.
+    Knowledge {
+        /// Knowledge subcommand.
+        #[command(subcommand)]
+        subcommand: KnowledgeSubcommand,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
@@ -283,6 +290,33 @@ pub enum RegistrySubcommand {
         /// Registry name (omit to log out from all).
         registry: Option<String>,
     },
+}
+
+/// Subcommands for `duumbi knowledge`.
+#[derive(Subcommand, Debug)]
+pub enum KnowledgeSubcommand {
+    /// List all knowledge nodes by type.
+    List {
+        /// Filter by type: success, decision, pattern.
+        #[arg(long)]
+        r#type: Option<String>,
+    },
+
+    /// Show details of a specific knowledge node.
+    Show {
+        /// Node `@id` to display.
+        id: String,
+    },
+
+    /// Remove old or low-value knowledge nodes.
+    Prune {
+        /// Remove nodes older than this many days.
+        #[arg(long, default_value_t = 90)]
+        older_than: u32,
+    },
+
+    /// Show aggregated learning statistics.
+    Stats,
 }
 
 /// Subcommands for `duumbi intent`.

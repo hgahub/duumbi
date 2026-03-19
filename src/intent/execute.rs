@@ -15,6 +15,8 @@ use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
+use crate::knowledge::learning;
+use crate::knowledge::types::SuccessRecord;
 use crate::snapshot;
 
 // ---------------------------------------------------------------------------
@@ -121,10 +123,62 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
         eprintln!(); // newline after streamed output
 
         match result {
-            Ok(mut mutation_result) => {
+            Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
+                eprintln!("  ⚠ Clarification needed: {question}");
+                eprintln!("    Intent execution does not support interactive clarification.");
+                task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
+
+                // Halt intent — can't proceed without user input
+                spec.status = IntentStatus::Failed;
+                save_intent(workspace, slug, &spec)
+                    .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
+
+                eprintln!();
+                eprintln!("Intent failed at task {}/{}.", task.id, total);
+                return Ok(false);
+            }
+            Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 // For library modules, ensure all functions are exported
                 if is_create_module {
                     ensure_exports(&mut mutation_result.patched);
+
+                    // Post-mutation validation: check all expected functions are present.
+                    // If the LLM only created some of the required functions, retry with
+                    // specific feedback about which ones are missing.
+                    let expected_fns = expected_exports_for_module(&spec, &task.kind);
+                    let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
+
+                    if !missing.is_empty() {
+                        eprintln!("  ⚠ Missing functions: [{}]. Retrying…", missing.join(", "));
+                        let retry_prompt = format!(
+                            "{}\n\nCRITICAL: The previous attempt only created some functions. \
+                             The following functions are STILL MISSING and MUST be added: [{}]. \
+                             Add ALL missing functions in this single response using add_function tool calls.",
+                            prompt,
+                            missing.join(", ")
+                        );
+                        // Use the partially-created module as source for the retry
+                        let retry_result = orchestrator::mutate_streaming(
+                            client,
+                            &mutation_result.patched,
+                            &retry_prompt,
+                            1,
+                            skip_call_validation,
+                            |text| {
+                                eprint!("{text}");
+                            },
+                        )
+                        .await;
+                        eprintln!();
+
+                        if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
+                            retry_result
+                        {
+                            ensure_exports(&mut retry_mr.patched);
+                            mutation_result = retry_mr;
+                        }
+                        // If retry fails, proceed with what we have — the verifier will catch it
+                    }
                 }
 
                 // Write patched graph to the appropriate file
@@ -146,6 +200,22 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                 );
                 task.status = TaskStatus::Completed;
                 tasks_completed += 1;
+
+                // Log success for few-shot learning (#363)
+                let task_type_str = match &task.kind {
+                    TaskKind::CreateModule { .. } => "CreateModule",
+                    TaskKind::AddFunction { .. } => "AddFunction",
+                    TaskKind::ModifyFunction { .. } => "ModifyFunction",
+                    TaskKind::ModifyMain { .. } => "ModifyMain",
+                };
+                let mut record = SuccessRecord::new(&task.description, task_type_str);
+                record.ops_count = mutation_result.ops_count;
+                record.module = match &task.kind {
+                    TaskKind::CreateModule { module_name } => module_name.clone(),
+                    _ => "main".to_string(),
+                };
+                // Best-effort: don't fail the intent if logging fails
+                let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
                 eprintln!("  ✗ Task failed: {e:#}");
@@ -377,6 +447,48 @@ fn archive_success(
         },
     )
     .map_err(|e: IntentError| anyhow::anyhow!("{e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Post-mutation validation helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the list of function names that a CreateModule task should produce,
+/// based on the intent spec's test cases.
+fn expected_exports_for_module(spec: &IntentSpec, task_kind: &TaskKind) -> Vec<String> {
+    let _module_name = match task_kind {
+        TaskKind::CreateModule { module_name } => module_name,
+        _ => return Vec::new(),
+    };
+
+    // Collect all non-main function names from test cases
+    spec.test_cases
+        .iter()
+        .map(|tc| tc.function.as_str())
+        .filter(|&f| f != "main")
+        .map(|f| f.to_string())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Checks which expected function names are missing from a module's duumbi:functions.
+fn find_missing_functions(module: &serde_json::Value, expected: &[String]) -> Vec<String> {
+    let present: std::collections::HashSet<&str> = module["duumbi:functions"]
+        .as_array()
+        .map(|funcs| {
+            funcs
+                .iter()
+                .filter_map(|f| f["duumbi:name"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    expected
+        .iter()
+        .filter(|name| !present.contains(name.as_str()))
+        .cloned()
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

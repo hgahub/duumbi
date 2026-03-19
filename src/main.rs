@@ -5,6 +5,7 @@
 //! Async runtime (tokio) is needed for `duumbi add` and the interactive REPL,
 //! which make LLM API calls.
 
+#[allow(dead_code)] // Binary uses streaming path; non-streaming API is used via lib crate
 mod agents;
 mod bench;
 mod cli;
@@ -16,10 +17,14 @@ mod examples;
 mod graph;
 mod hash;
 mod intent;
+#[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
+mod knowledge;
 mod manifest;
 mod parser;
 mod patch;
 mod registry;
+#[allow(dead_code)] // Binary uses a subset; full API used via lib crate
+mod session;
 mod snapshot;
 mod tools;
 mod types;
@@ -173,6 +178,10 @@ async fn run(cli: Cli) -> Result<()> {
             cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await
         }
         Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
+        Commands::Knowledge { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_knowledge(subcommand, workspace)
+        }
         Commands::Benchmark {
             showcase,
             provider,
@@ -242,9 +251,41 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 
     let client = require_llm_client(&workspace_root)?;
 
+    // Detect multi-module workspace: if there are other .jsonld files besides
+    // main.jsonld, skip Call validation (cross-module calls can't be resolved
+    // from main.jsonld alone).
+    let graph_dir = workspace_root.join(".duumbi/graph");
+    let is_multi_module = graph_dir
+        .read_dir()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.extension().is_some_and(|ext| ext == "jsonld")
+                        && p.file_name().is_some_and(|n| n != "main.jsonld")
+                })
+                .count()
+                > 0
+        })
+        .unwrap_or(false);
+
     eprintln!("Calling {}…", client.name());
 
-    let result = orchestrator::mutate(&client, &source, request, 3).await?;
+    let result =
+        orchestrator::mutate_streaming(&client, &source, request, 3, is_multi_module, |text| {
+            eprint!("{text}");
+        })
+        .await?;
+    eprintln!();
+
+    let result = match result {
+        orchestrator::MutationOutcome::Success(r) => r,
+        orchestrator::MutationOutcome::NeedsClarification(question) => {
+            eprintln!("? {question}");
+            return Ok(());
+        }
+    };
 
     let diff = orchestrator::describe_changes(&source, &result.patched);
     eprintln!(
@@ -314,6 +355,88 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             Some(ref slug) => intent::status::print_status_detail(&workspace, slug)
                 .map_err(|e| anyhow::anyhow!("{e}")),
         },
+    }
+}
+
+/// Dispatches `duumbi knowledge` subcommands.
+fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Result<()> {
+    use knowledge::learning;
+    use knowledge::store::KnowledgeStore;
+    use knowledge::types::KnowledgeNode;
+
+    match subcommand {
+        cli::KnowledgeSubcommand::List { r#type } => {
+            let store = KnowledgeStore::new(&workspace).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let nodes = if let Some(type_filter) = r#type {
+                let node_type = match type_filter.as_str() {
+                    "success" => knowledge::types::TYPE_SUCCESS,
+                    "decision" => knowledge::types::TYPE_DECISION,
+                    "pattern" => knowledge::types::TYPE_PATTERN,
+                    other => {
+                        anyhow::bail!("Unknown type '{other}'. Use: success, decision, pattern")
+                    }
+                };
+                store.query_by_type(node_type)
+            } else {
+                store.load_all()
+            };
+
+            if nodes.is_empty() {
+                eprintln!("No knowledge nodes found.");
+            } else {
+                eprintln!("{} knowledge node(s):", nodes.len());
+                for node in &nodes {
+                    eprintln!("  [{}] {}", node.node_type(), node.id());
+                }
+            }
+            Ok(())
+        }
+        cli::KnowledgeSubcommand::Show { id } => {
+            let store = KnowledgeStore::new(&workspace).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let all = store.load_all();
+            if let Some(node) = all.iter().find(|n| n.id() == id) {
+                let json = serde_json::to_string_pretty(node).context("serialize node")?;
+                println!("{json}");
+            } else {
+                eprintln!("Node not found: {id}");
+            }
+            Ok(())
+        }
+        cli::KnowledgeSubcommand::Prune { older_than } => {
+            let store = KnowledgeStore::new(&workspace).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(older_than));
+            let all = store.load_all();
+            let mut removed = 0u32;
+            for node in &all {
+                let ts = match node {
+                    KnowledgeNode::Success(r) => r.timestamp,
+                    KnowledgeNode::Decision(r) => r.timestamp,
+                    KnowledgeNode::Pattern(r) => r.timestamp,
+                };
+                if ts < cutoff
+                    && store
+                        .remove_node(node.id())
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                {
+                    removed += 1;
+                }
+            }
+            eprintln!("Pruned {removed} node(s) older than {older_than} days.");
+            Ok(())
+        }
+        cli::KnowledgeSubcommand::Stats => {
+            let store = KnowledgeStore::new(&workspace).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let stats = store.stats();
+            let success_count = learning::success_count(&workspace);
+            eprintln!("Knowledge store:");
+            eprintln!("  Success records:  {}", stats.successes);
+            eprintln!("  Decision records: {}", stats.decisions);
+            eprintln!("  Pattern records:  {}", stats.patterns);
+            eprintln!("  Total:            {}", stats.total());
+            eprintln!();
+            eprintln!("Learning log: {success_count} entries in successes.jsonl");
+            Ok(())
+        }
     }
 }
 
