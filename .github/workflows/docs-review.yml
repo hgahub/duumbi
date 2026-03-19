@@ -3,7 +3,7 @@ name: Docs Review (Copilot)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # Trigger on code changes, not just docs, because we want to check if docs NEED update
+    # Trigger when code changes — docs live in hgahub/duumbi-web, checked separately
     paths:
       - 'src/**'
       - 'crates/**'
@@ -25,27 +25,10 @@ jobs:
           script: |
             const marker = "<!-- duumbi-docs-review -->";
             const prNumber = context.payload.pull_request.number;
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              per_page: 100,
-            });
 
-            const changed = files.map((f) => f.filename);
-            const docsChanged = false; // Docs live in hgahub/duumbi-web repo
-            const codeChanged = changed.some((f) =>
-              f.startsWith("src/") ||
-              f.startsWith("crates/") ||
-              f === "Cargo.toml"
-            );
-
-            let body;
-            if (!codeChanged) {
-              body = `${marker}\n✅ No code-level changes detected that require docs validation in this workflow.`;
-            } else {
-              body = `${marker}\n⚠️ Code changed without docs updates.\n\n@copilot Please check if documentation needs updating in [hgahub/duumbi-web](https://github.com/hgahub/duumbi-web/tree/main/docs/src/content/docs) for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. If updates are needed, open a PR in that repo.`;
-            }
+            // This workflow only fires when src/**, crates/**, or Cargo.toml change,
+            // so code changes are guaranteed — docs live in hgahub/duumbi-web.
+            const body = `${marker}\n⚠️ Code changed; docs may need updates.\n\n@copilot Please check if documentation needs updating in [hgahub/duumbi-web](https://github.com/hgahub/duumbi-web/tree/main/docs/src/content/docs) for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. If updates are needed, open a PR in that repo.`;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
