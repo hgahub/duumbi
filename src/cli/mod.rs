@@ -3,12 +3,15 @@
 //! Command-line interface using `clap` for the duumbi compiler.
 
 pub mod commands;
+pub mod completion;
 pub mod deps;
 pub mod describe;
 pub mod init;
+pub mod progress;
 pub mod publish;
 pub mod registry;
 pub mod repl;
+pub mod theme;
 pub mod upgrade;
 pub mod yank;
 
@@ -169,6 +172,13 @@ pub enum Commands {
         /// Compare against a previous report JSON for regression detection.
         #[arg(long)]
         baseline: Option<std::path::PathBuf>,
+    },
+
+    /// Generate shell completion scripts for bash, zsh, fish, or powershell.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 
     /// Start the DUUMBI Studio web platform.

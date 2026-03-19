@@ -28,6 +28,9 @@ use crate::session::SessionManager;
 use crate::snapshot;
 
 use super::commands;
+use super::completion::{SlashCommandCompleter, SlashCommandHinter};
+use super::progress;
+use super::theme;
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -108,6 +111,30 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
 
     print_header(&config, &workspace_root);
 
+    // Empty workspace detection: if main.jsonld only has the skeleton (Const 0 + Return),
+    // show guided suggestions
+    let graph_path = workspace_root.join(".duumbi/graph/main.jsonld");
+    if let Ok(content) = fs::read_to_string(&graph_path)
+        && content.contains("\"duumbi:value\": 0")
+        && !content.contains("\"duumbi:Add\"")
+        && !content.contains("\"duumbi:Call\"")
+    {
+        eprintln!(
+            "{} This is an empty workspace. Try one of these:",
+            theme::info("Tip:"),
+        );
+        eprintln!(
+            "  {}  {}",
+            theme::command("/intent create"),
+            theme::dim("\"Build a calculator with add and multiply\""),
+        );
+        eprintln!(
+            "  {}",
+            theme::dim("  or type a request directly: \"Add a function that adds two numbers\""),
+        );
+        eprintln!();
+    }
+
     let mut session = Session {
         workspace_root,
         config,
@@ -116,7 +143,11 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
         session_mgr,
     };
 
-    let mut editor = Reedline::create();
+    let completer = Box::new(SlashCommandCompleter::new(session.workspace_root.clone()));
+    let hinter = Box::new(SlashCommandHinter::new());
+    let mut editor = Reedline::create()
+        .with_completer(completer)
+        .with_hinter(hinter);
     let prompt = ReplPrompt;
 
     loop {
@@ -209,8 +240,18 @@ fn print_header(config: &DuumbiConfig, workspace_root: &Path) {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "workspace".to_string());
 
-    eprintln!("duumbi v{version} · {model} · workspace: {workspace_name}");
-    eprintln!("Type a request or /help for commands. Ctrl+D to exit.");
+    eprintln!(
+        "{} {} · {} · workspace: {}",
+        theme::bold("duumbi"),
+        theme::dim(&format!("v{version}")),
+        theme::info(model),
+        theme::bold(&workspace_name),
+    );
+    eprintln!(
+        "Type a request or {} for commands. {} to exit.",
+        theme::command("/help"),
+        theme::dim("Ctrl+D"),
+    );
     eprintln!();
 }
 
@@ -348,13 +389,31 @@ impl Session {
                 self.handle_resume_slash(arg);
             }
 
+            "/clear" => {
+                self.handle_clear(arg);
+            }
+
             "/help" => print_help(),
 
             "/exit" | "/quit" => return Ok(true),
 
             _ => {
-                eprintln!("Unknown command: {cmd}");
-                eprintln!("Try /help for available commands.");
+                // "Did you mean?" suggestion using Levenshtein distance
+                let known_cmds: Vec<&str> = super::completion::SLASH_COMMANDS
+                    .iter()
+                    .filter(|(c, _)| !c.contains(' ')) // only top-level commands
+                    .map(|(c, _)| *c)
+                    .collect();
+                if let Some(suggestion) = find_closest_command(cmd, &known_cmds) {
+                    eprintln!(
+                        "Unknown command: {}. Did you mean {}?",
+                        theme::warning(cmd),
+                        theme::command(suggestion),
+                    );
+                } else {
+                    eprintln!("Unknown command: {}", theme::warning(cmd));
+                }
+                eprintln!("Try {} for available commands.", theme::command("/help"));
             }
         }
 
@@ -372,8 +431,20 @@ impl Session {
     async fn handle_ai_request(&mut self, request: &str) -> Result<()> {
         let Some(ref client) = self.client else {
             eprintln!(
-                "AI mutations are not available.\n\
-                 Add an [llm] section to .duumbi/config.toml and restart."
+                "{} AI mutations are not available.",
+                theme::warning("Warning:")
+            );
+            eprintln!();
+            eprintln!("Add a provider to {}:", theme::bold(".duumbi/config.toml"));
+            eprintln!("{}", theme::dim("  [[providers]]"));
+            eprintln!("{}", theme::dim("  provider = \"anthropic\""));
+            eprintln!("{}", theme::dim("  role = \"primary\""));
+            eprintln!("{}", theme::dim("  model = \"claude-sonnet-4-6\""));
+            eprintln!("{}", theme::dim("  api_key_env = \"ANTHROPIC_API_KEY\""));
+            eprintln!();
+            eprintln!(
+                "Then set {} and restart the REPL.",
+                theme::info("ANTHROPIC_API_KEY"),
             );
             return Ok(());
         };
@@ -415,7 +486,12 @@ impl Session {
             })
             .unwrap_or(false);
 
-        eprint!("Thinking… (~{ctx_k:.1}k context)");
+        {
+            let sp = progress::spinner(&format!("Thinking… (~{ctx_k:.1}k context)"));
+            // Brief pause to show spinner, then clear before streaming
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            sp.finish_and_clear();
+        }
 
         // Run AI mutation with streaming text output
         let outcome = match orchestrator::mutate_streaming(
@@ -433,11 +509,11 @@ impl Session {
             Ok(o) => o,
             Err(e) => {
                 eprintln!();
-                eprintln!("{e:#}");
+                eprintln!("{}", theme::error(&format!("{e:#}")));
                 return Ok(());
             }
         };
-        eprintln!(); // newline after streamed text (or after "Thinking…" if no text)
+        eprintln!(); // newline after streamed text
 
         // Handle clarification requests
         let result = match outcome {
@@ -670,10 +746,13 @@ impl Session {
                     if nodes.is_empty() {
                         eprintln!("No knowledge nodes found.");
                     } else {
-                        eprintln!("{} knowledge node(s):", nodes.len());
+                        let mut table = comfy_table::Table::new();
+                        table.load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
+                        table.set_header(vec!["Type", "ID"]);
                         for node in &nodes {
-                            eprintln!("  [{}] {}", node.node_type(), node.id());
+                            table.add_row(vec![node.node_type(), node.id()]);
                         }
+                        eprintln!("{table}");
                     }
                 }
                 Err(e) => eprintln!("Knowledge store error: {e}"),
@@ -766,6 +845,41 @@ impl Session {
     // /status helper
     // -------------------------------------------------------------------------
 
+    /// Handles `/clear [chat|session|all]` command.
+    fn handle_clear(&mut self, arg: &str) {
+        match arg.trim() {
+            "" | "chat" => {
+                self.history.clear();
+                eprintln!("{} Chat history cleared.", theme::check_mark());
+            }
+            "session" => {
+                self.history.clear();
+                self.session_mgr
+                    .archive()
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                    .unwrap_or_else(|e| eprintln!("Warning: {e}"));
+                eprintln!("{} Session archived and cleared.", theme::check_mark());
+            }
+            "all" => {
+                self.history.clear();
+                self.session_mgr
+                    .archive()
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                    .unwrap_or_else(|e| eprintln!("Warning: {e}"));
+                eprintln!("{} History, session cleared.", theme::check_mark(),);
+            }
+            other => {
+                eprintln!(
+                    "Unknown clear target: {}. Use: {}, {}, or {}",
+                    theme::warning(other),
+                    theme::command("/clear chat"),
+                    theme::command("/clear session"),
+                    theme::command("/clear all"),
+                );
+            }
+        }
+    }
+
     /// Prints workspace status: graph path, binary, history depth, model.
     fn print_status(&self) {
         let graph_path = self.workspace_root.join(".duumbi/graph/main.jsonld");
@@ -773,31 +887,41 @@ impl Session {
         let history_count = snapshot::snapshot_count(&self.workspace_root).unwrap_or(0);
         let session_turns = self.history.len();
 
-        eprintln!("Workspace: {}", self.workspace_root.display());
+        eprintln!(
+            "{}",
+            theme::bold(&format!("Workspace: {}", self.workspace_root.display()))
+        );
         eprintln!(
             "  Graph:        {} {}",
-            graph_path.display(),
+            theme::dim(&graph_path.display().to_string()),
             if graph_path.exists() {
-                "✓"
+                theme::check_mark()
             } else {
-                "✗ missing"
+                theme::cross_mark() + " missing"
             }
         );
         eprintln!(
             "  Binary:       {} {}",
-            output_path.display(),
+            theme::dim(&output_path.display().to_string()),
             if output_path.exists() {
-                "✓"
+                theme::check_mark()
             } else {
-                "(not built)"
+                theme::dim("(not built)")
             }
         );
-        eprintln!("  Snapshots:    {history_count} (undo depth)");
+        eprintln!(
+            "  Snapshots:    {history_count} {}",
+            theme::dim("(undo depth)")
+        );
         eprintln!("  Session turns: {session_turns}");
         if let Some(llm) = &self.config.llm {
-            eprintln!("  Model:        {} ({})", llm.model, llm.provider);
+            eprintln!(
+                "  Model:        {} {}",
+                theme::info(&llm.model),
+                theme::dim(&format!("({})", llm.provider))
+            );
         } else {
-            eprintln!("  Model:        not configured");
+            eprintln!("  Model:        {}", theme::warning("not configured"));
         }
     }
 }
@@ -865,49 +989,187 @@ fn list_archived_sessions(
 // Help text
 // ---------------------------------------------------------------------------
 
+/// Finds the closest matching command using Levenshtein distance.
+///
+/// Returns `Some(cmd)` if the closest match is within 3 edits, `None` otherwise.
+fn find_closest_command<'a>(input: &str, commands: &[&'a str]) -> Option<&'a str> {
+    let mut best: Option<(&str, f64)> = None;
+    for &cmd in commands {
+        let dist = strsim::normalized_levenshtein(input, cmd);
+        if let Some((_, best_dist)) = best {
+            if dist > best_dist {
+                best = Some((cmd, dist));
+            }
+        } else {
+            best = Some((cmd, dist));
+        }
+    }
+    // Only suggest if similarity > 0.5
+    best.filter(|(_, d)| *d > 0.5).map(|(cmd, _)| cmd)
+}
+
 /// Prints the available slash commands to stderr.
 fn print_help() {
+    let c = theme::command;
+    let d = theme::dim;
+    eprintln!("{}", theme::bold("Slash commands:"));
     eprintln!(
-        "\
-Slash commands:
-  /build              Compile the current graph to a native binary
-  /run [args]         Run the compiled binary
-  /check              Validate the graph without compiling
-  /describe           Print human-readable pseudocode of the graph
-  /undo               Restore the previous graph snapshot
-  /status             Show workspace, model, and session information
-  /history            Show session conversation history (sent as context to LLM)
-  /model              Show the current LLM model
-
-Intent commands:
-  /intent             List all active intents
-  /intent create <description>   Generate and save a new intent spec
-  /intent review [name]          Show intent details
-  /intent execute <name>         Execute an intent end-to-end
-  /intent status [name]          Show intent execution status
-
-Knowledge commands:
-  /knowledge          Show knowledge statistics
-  /knowledge list     List all knowledge nodes
-  /knowledge stats    Show aggregated learning statistics
-
-Session commands:
-  /resume             List archived sessions
-  /resume <N>         Load session N's history into current context
-
-Registry & dependency commands:
-  /search <query>     Search registries for modules
-  /publish            Package and publish the current module
-  /registry list      List configured registries
-  /deps list          List declared dependencies
-  /deps audit         Verify dependency integrity
-  /deps tree          Show the dependency tree
-  /deps update [name] Update dependencies to latest compatible versions
-  /deps vendor        Copy cached dependencies into vendor/
-
-  /help               Show this help text
-  /exit               Exit the REPL
-
-Any other input is sent to the AI as a mutation request."
+        "  {}              {}",
+        c("/build"),
+        d("Compile the current graph to a native binary")
+    );
+    eprintln!(
+        "  {} {}       {}",
+        c("/run"),
+        d("[args]"),
+        d("Run the compiled binary")
+    );
+    eprintln!(
+        "  {}              {}",
+        c("/check"),
+        d("Validate the graph without compiling")
+    );
+    eprintln!(
+        "  {}           {}",
+        c("/describe"),
+        d("Print human-readable pseudocode of the graph")
+    );
+    eprintln!(
+        "  {}               {}",
+        c("/undo"),
+        d("Restore the previous graph snapshot")
+    );
+    eprintln!(
+        "  {}             {}",
+        c("/status"),
+        d("Show workspace, model, and session information")
+    );
+    eprintln!(
+        "  {}            {}",
+        c("/history"),
+        d("Show session conversation history")
+    );
+    eprintln!(
+        "  {}              {}",
+        c("/model"),
+        d("Show the current LLM model")
+    );
+    eprintln!(
+        "  {} {}   {}",
+        c("/clear"),
+        d("[chat|session|all]"),
+        d("Clear session state")
+    );
+    eprintln!();
+    eprintln!("{}", theme::bold("Intent commands:"));
+    eprintln!(
+        "  {}             {}",
+        c("/intent"),
+        d("List all active intents")
+    );
+    eprintln!(
+        "  {} {}   {}",
+        c("/intent create"),
+        d("<desc>"),
+        d("Generate and save a new intent spec")
+    );
+    eprintln!(
+        "  {} {}  {}",
+        c("/intent review"),
+        d("[name]"),
+        d("Show intent details")
+    );
+    eprintln!(
+        "  {} {} {}",
+        c("/intent execute"),
+        d("<name>"),
+        d("Execute an intent end-to-end")
+    );
+    eprintln!(
+        "  {} {}  {}",
+        c("/intent status"),
+        d("[name]"),
+        d("Show intent execution status")
+    );
+    eprintln!();
+    eprintln!("{}", theme::bold("Knowledge commands:"));
+    eprintln!(
+        "  {}          {}",
+        c("/knowledge"),
+        d("Show knowledge statistics")
+    );
+    eprintln!(
+        "  {}     {}",
+        c("/knowledge list"),
+        d("List all knowledge nodes")
+    );
+    eprintln!();
+    eprintln!("{}", theme::bold("Session commands:"));
+    eprintln!(
+        "  {}             {}",
+        c("/resume"),
+        d("List archived sessions")
+    );
+    eprintln!(
+        "  {} {}        {}",
+        c("/resume"),
+        d("<N>"),
+        d("Load session N's history into current context")
+    );
+    eprintln!();
+    eprintln!("{}", theme::bold("Registry & dependency commands:"));
+    eprintln!(
+        "  {} {}   {}",
+        c("/search"),
+        d("<query>"),
+        d("Search registries for modules")
+    );
+    eprintln!(
+        "  {}            {}",
+        c("/publish"),
+        d("Package and publish the current module")
+    );
+    eprintln!(
+        "  {}      {}",
+        c("/registry list"),
+        d("List configured registries")
+    );
+    eprintln!(
+        "  {}          {}",
+        c("/deps list"),
+        d("List declared dependencies")
+    );
+    eprintln!(
+        "  {}         {}",
+        c("/deps audit"),
+        d("Verify dependency integrity")
+    );
+    eprintln!(
+        "  {}          {}",
+        c("/deps tree"),
+        d("Show the dependency tree")
+    );
+    eprintln!(
+        "  {} {} {}",
+        c("/deps update"),
+        d("[name]"),
+        d("Update dependencies")
+    );
+    eprintln!(
+        "  {}        {}",
+        c("/deps vendor"),
+        d("Vendor cached dependencies")
+    );
+    eprintln!();
+    eprintln!(
+        "  {}               {}",
+        c("/help"),
+        d("Show this help text")
+    );
+    eprintln!("  {}               {}", c("/exit"), d("Exit the REPL"));
+    eprintln!();
+    eprintln!(
+        "{}",
+        theme::dim("Any other input is sent to the AI as a mutation request.")
     );
 }

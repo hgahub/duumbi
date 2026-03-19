@@ -6,10 +6,13 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use comfy_table::{Table, presets};
 
 use crate::config::{self, DependencyConfig};
 use crate::deps;
 use crate::registry::client::RegistryClient;
+
+use super::theme;
 
 /// Lists all declared dependencies and their resolution status.
 pub fn run_deps_list(workspace: &Path) -> Result<()> {
@@ -20,13 +23,24 @@ pub fn run_deps_list(workspace: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let mut table = Table::new();
+    table.load_preset(presets::UTF8_FULL_CONDENSED);
+    table.set_header(vec!["Name", "Version/Path", "Source", "Status"]);
+
     for (name, dep_path, resolution) in &entries {
-        match resolution {
-            Ok(resolved) => eprintln!("  {name}: {dep_path} → {}", resolved.display()),
-            Err(e) => eprintln!("  {name}: {dep_path} [ERROR: {e}]"),
-        }
+        let status = match resolution {
+            Ok(_) => theme::check_mark(),
+            Err(e) => format!("{} {e}", theme::cross_mark()),
+        };
+        let source = if dep_path.starts_with('/') || dep_path.starts_with('.') {
+            "path"
+        } else {
+            "registry"
+        };
+        table.add_row(vec![name.as_str(), dep_path.as_str(), source, &status]);
     }
 
+    eprintln!("{table}");
     Ok(())
 }
 
@@ -242,26 +256,34 @@ pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -
         found_any = true;
 
         if registries_to_search.len() > 1 {
-            eprintln!("Registry: {reg_name}");
+            eprintln!("{}", theme::bold(&format!("Registry: {reg_name}")));
         }
 
-        // Table header
-        eprintln!("{:<40} {:<12} DESCRIPTION", "NAME", "VERSION");
-        eprintln!("{}", "─".repeat(72));
+        let mut table = Table::new();
+        table.load_preset(presets::UTF8_FULL_CONDENSED);
+        table.set_header(vec!["Name", "Version", "Description", "Registry"]);
 
         for hit in &result.results {
             let desc = hit.description.as_deref().unwrap_or("");
-            let truncated = if desc.len() > 40 {
-                format!("{}…", &desc[..39])
+            let truncated = if desc.len() > 50 {
+                format!("{}…", &desc[..49])
             } else {
                 desc.to_string()
             };
-            eprintln!("{:<40} {:<12} {truncated}", hit.name, hit.latest_version);
+            table.add_row(vec![
+                &hit.name,
+                &hit.latest_version,
+                &truncated,
+                reg_name.as_str(),
+            ]);
         }
+
+        eprintln!("{table}");
 
         if result.total > result.results.len() as u64 {
             eprintln!(
-                "\n  ({} of {} results shown)",
+                "  {} ({} of {} results shown)",
+                theme::dim("…"),
                 result.results.len(),
                 result.total
             );

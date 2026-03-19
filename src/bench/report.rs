@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use comfy_table::{Table, presets};
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -228,35 +230,51 @@ impl BenchmarkReport {
     /// Prints a human-readable summary table to stderr.
     pub fn print_summary(&self) {
         eprintln!();
-        eprintln!("╔══════════════════╦══════════════════╦══════════╦═══════════╗");
-        eprintln!("║ Showcase         ║ Provider         ║ Success  ║ Rate      ║");
-        eprintln!("╠══════════════════╬══════════════════╬══════════╬═══════════╣");
+
+        let mut table = Table::new();
+        table.load_preset(presets::UTF8_FULL);
+        table.set_header(vec!["Showcase", "Provider", "Success", "Rate"]);
 
         for showcase in &self.showcases {
             for prov in &showcase.providers {
-                eprintln!(
-                    "║ {:<16} ║ {:<16} ║ {:>3}/{:<4} ║ {:>6.1}%   ║",
+                let rate = prov.success_rate * 100.0;
+                let rate_str = if rate >= 95.0 {
+                    format!("{rate:>6.1}%").green().bold().to_string()
+                } else if rate >= 50.0 {
+                    format!("{rate:>6.1}%").yellow().to_string()
+                } else {
+                    format!("{rate:>6.1}%").red().bold().to_string()
+                };
+                table.add_row(vec![
                     truncate(&showcase.name, 16),
                     truncate(&prov.name, 16),
-                    prov.successes,
-                    prov.attempts,
-                    prov.success_rate * 100.0,
-                );
+                    format!("{}/{}", prov.successes, prov.attempts),
+                    rate_str,
+                ]);
             }
         }
 
-        eprintln!("╚══════════════════╩══════════════════╩══════════╩═══════════╝");
+        eprintln!("{table}");
         eprintln!();
 
         let total_showcases = self.showcases.len();
         if total_showcases < 6 {
             eprintln!(
-                "Kill criterion: N/A (only {total_showcases}/6 showcases — run all 6 to evaluate)"
+                "Kill criterion: {} (only {total_showcases}/6 showcases — run all 6 to evaluate)",
+                "N/A".dimmed(),
             );
         } else if self.kill_criterion_met {
-            eprintln!("Kill criterion: PASSED (5/6 showcases × 2+ providers ≥ 95%)");
+            eprintln!(
+                "Kill criterion: {}",
+                "PASSED (5/6 showcases × 2+ providers ≥ 95%)".green().bold(),
+            );
         } else {
-            eprintln!("Kill criterion: NOT MET (need 5/6 showcases × 2+ providers ≥ 95%)");
+            eprintln!(
+                "Kill criterion: {}",
+                "NOT MET (need 5/6 showcases × 2+ providers ≥ 95%)"
+                    .red()
+                    .bold(),
+            );
         }
         eprintln!();
     }

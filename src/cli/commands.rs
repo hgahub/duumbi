@@ -15,6 +15,8 @@ use crate::graph::{self, builder, program::ProgramError, validator};
 use crate::parser;
 use crate::types;
 
+use super::theme;
+
 /// The C runtime source, embedded at compile time.
 const RUNTIME_C_SOURCE: &str = include_str!("../../runtime/duumbi_runtime.c");
 
@@ -108,7 +110,11 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
-    eprintln!("Build successful: {}", output.display());
+    eprintln!(
+        "{} Build successful: {}",
+        theme::check_mark(),
+        output.display()
+    );
     Ok(())
 }
 
@@ -155,7 +161,11 @@ fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) 
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
-    eprintln!("Build successful: {}", output.display());
+    eprintln!(
+        "{} Build successful: {}",
+        theme::check_mark(),
+        output.display()
+    );
     Ok(())
 }
 
@@ -167,7 +177,7 @@ pub(crate) fn check(input: &Path) -> Result<()> {
 
     match parse_and_validate(input) {
         Ok(_) => {
-            eprintln!("Validation passed.");
+            eprintln!("{} Validation passed.", theme::check_mark());
             Ok(())
         }
         Err(e) => Err(e),
@@ -202,7 +212,7 @@ fn workspace_root_for_graph_input(input: &Path) -> Option<std::path::PathBuf> {
 fn check_workspace_program(workspace_root: &Path) -> Result<()> {
     match deps::load_program_with_deps(workspace_root) {
         Ok(_) => {
-            eprintln!("Validation passed.");
+            eprintln!("{} Validation passed.", theme::check_mark());
             Ok(())
         }
         Err(e) => {
@@ -269,9 +279,32 @@ fn emit_program_error_diagnostics(err: &deps::DepsError) {
 }
 
 /// Emits a diagnostic as JSONL to stdout and a human-readable summary to stderr.
+///
+/// The error code is highlighted in red and any node IDs in blue for visual clarity.
 pub(crate) fn emit_diagnostic(diag: &Diagnostic) {
     println!("{}", diag.to_jsonl());
-    eprintln!("{diag}");
+    // Colorize: error code in red, node in blue
+    let msg = format!("{diag}");
+    let colored = if let Some(code) = msg.split_whitespace().next()
+        && code.starts_with('E')
+        && code.len() <= 5
+    {
+        msg.replacen(code, &theme::error_code(code), 1)
+    } else {
+        msg
+    };
+    // Colorize node IDs (duumbi:...)
+    let colored = if let Some(pos) = colored.find("duumbi:") {
+        let end = colored[pos..]
+            .find(|c: char| c.is_whitespace() || c == ')' || c == ']')
+            .map(|i| pos + i)
+            .unwrap_or(colored.len());
+        let node = &colored[pos..end];
+        colored.replacen(node, &theme::node_id(node), 1)
+    } else {
+        colored
+    };
+    eprintln!("{colored}");
 }
 
 /// Provides the `duumbi_runtime.c` source file path.

@@ -10,6 +10,8 @@ use anyhow::{Context, Result};
 
 use serde_json::json;
 
+use owo_colors::OwoColorize;
+
 use crate::agents::{LlmProvider, orchestrator};
 use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
@@ -189,7 +191,8 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
 
                 let diff = orchestrator::describe_changes(&source, &mutation_result.patched);
                 eprintln!(
-                    "  ✓ Done ({} op{}). {}",
+                    "  {} Done ({} op{}). {}",
+                    "\u{2713}".green().bold(),
                     mutation_result.ops_count,
                     if mutation_result.ops_count == 1 {
                         ""
@@ -218,7 +221,7 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                 let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
-                eprintln!("  ✗ Task failed: {e:#}");
+                eprintln!("  {} Task failed: {e:#}", "\u{2717}".red().bold());
                 task.status = TaskStatus::Failed(e.to_string());
 
                 // Mark intent failed and exit

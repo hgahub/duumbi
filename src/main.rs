@@ -190,6 +190,15 @@ async fn run(cli: Cli) -> Result<()> {
             ci,
             baseline,
         } => run_benchmark(showcase, provider, attempts, output, ci, baseline).await,
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut <Cli as clap::CommandFactory>::command(),
+                "duumbi",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
         Commands::Studio { port, dev } => studio(port, dev).await,
     }
 }
@@ -270,7 +279,11 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         })
         .unwrap_or(false);
 
-    eprintln!("Calling {}…", client.name());
+    {
+        let sp = cli::progress::spinner(&format!("Calling {}…", client.name()));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        sp.finish_and_clear();
+    }
 
     let result =
         orchestrator::mutate_streaming(&client, &source, request, 3, is_multi_module, |text| {
@@ -384,10 +397,13 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             if nodes.is_empty() {
                 eprintln!("No knowledge nodes found.");
             } else {
-                eprintln!("{} knowledge node(s):", nodes.len());
+                let mut table = comfy_table::Table::new();
+                table.load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
+                table.set_header(vec!["Type", "ID"]);
                 for node in &nodes {
-                    eprintln!("  [{}] {}", node.node_type(), node.id());
+                    table.add_row(vec![node.node_type(), node.id()]);
                 }
+                eprintln!("{table}");
             }
             Ok(())
         }
