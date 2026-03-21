@@ -43,7 +43,7 @@ cd /tmp/duumbi-p10-test
 $DUUMBI init .
 
 # 4. Konfiguralod a provider(eke)t
-nano .duumbi/config.toml
+code .duumbi/config.toml
 ```
 
 **Config template:**

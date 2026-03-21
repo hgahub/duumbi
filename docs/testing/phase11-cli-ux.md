@@ -42,7 +42,7 @@ cd /tmp/duumbi-p11-test
 $DUUMBI init .
 
 # 4. Konfiguralod a provider(eke)t
-nano .duumbi/config.toml
+code .duumbi/config.toml
 ```
 
 **Config template:**
@@ -75,11 +75,11 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 1.1 | `mkdir /tmp/p11-init-test && cd /tmp/p11-init-test && $DUUMBI init .` | "✓ Project initialized at ..." megjelenik | | |
-| 1.2 | Az init kimenet tartalmaz "Next steps:" szekciót | Lepesek listaja: API key, config.toml, REPL | | |
+| 1.1 | `mkdir /tmp/p11-init-test && cd /tmp/p11-init-test && $DUUMBI init .` | "✓ Project initialized at ..." megjelenik | ✓ | |
+| 1.2 | Az init kimenet tartalmaz "Next steps:" szekciót | Lepesek listaja: API key, config.toml, REPL | ✓ | |
 | 1.3 | Ha `ANTHROPIC_API_KEY` be van allitva: "Uncomment a [[providers]] section" az elso lepes | Felismeri a meglévo API key-t | | |
-| 1.4 | Ha `ANTHROPIC_API_KEY` NINCS beallitva: "Set an API key: export ANTHROPIC_API_KEY=sk-..." az elso lepes | Utmutatast ad az API key beallitasahoz | | |
-| 1.5 | Takaritas: `cd ~ && rm -rf /tmp/p11-init-test` | | | |
+| 1.4 | Ha `ANTHROPIC_API_KEY` NINCS beallitva: "Set an API key: export ANTHROPIC_API_KEY=sk-..." az elso lepes | Utmutatast ad az API key beallitasahoz | ✓ | |
+| 1.5 | Takaritas: `cd ~ && rm -rf /tmp/p11-init-test` |  | | |
 
 ---
 
@@ -89,13 +89,13 @@ unset DUUMBI
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
-| 2.1 | `$DUUMBI` (REPL indul) | Header sor megjelenik: "**duumbi** v0.1.1 · *model* · workspace: **p11-test**" | | |
-| 2.2 | A "duumbi" szo **bold**, a verzio **dim**, a model **cyan** | Szinek lathatok terminálban | | |
-| 2.3 | Header masodik sora: "/help" cyan+bold-dal kiemelve | Parancs kiemelés mukodik | | |
-| 2.4 | REPL-ben: `/status` | Workspace sor **bold**, graph/binary utak **dim** | | |
-| 2.5 | Graph ✓ **zold**, Binary "(not built)" **dim** | Szines statusz jelolok | | |
+| 2.1 | `$DUUMBI` (REPL indul) | Header sor megjelenik: "**duumbi** v0.1.1 · *model* · workspace: **p11-test**" | ✓ | |
+| 2.2 | A "duumbi" szo **bold**, a verzio **dim**, a model **cyan** | Szinek lathatok terminálban | ✓ | |
+| 2.3 | Header masodik sora: "/help" cyan+bold-dal kiemelve | Parancs kiemelés mukodik | ✓ | |
+| 2.4 | REPL-ben: `/status` | Workspace sor **bold**, graph/binary utak **dim** | ✓ | |
+| 2.5 | Graph ✓ **zold**, Binary "(not built)" **dim** | Szines statusz jelolok | ✓ | |
 | 2.6 | Model nev **cyan**, provider **dim** zárójelben | | | |
-| 2.7 | Ha nincs LLM konfigurálva: Model "not configured" **sarga** | Warning szin | | |
+| 2.7 | Ha nincs LLM konfigurálva: Model "not configured" **sarga** | Warning szin | ✓ | |
 | 2.8 | REPL-ben: `/exit` | | | |
 
 ---
