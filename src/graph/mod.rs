@@ -168,3 +168,53 @@ pub struct SemanticGraph {
     /// Module name from the JSON-LD `duumbi:name` field.
     pub module_name: ModuleName,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_error_code_returns_variant_code() {
+        let duplicate = GraphError::DuplicateId {
+            code: "E005",
+            node_id: "duumbi:test/main".to_string(),
+        };
+        let orphan = GraphError::OrphanRef {
+            code: "E004",
+            from_node: "duumbi:test/from".to_string(),
+            target: "duumbi:test/target".to_string(),
+        };
+        let no_entry = GraphError::NoEntry { code: "E006" };
+
+        assert_eq!(duplicate.code(), "E005");
+        assert_eq!(orphan.code(), "E004");
+        assert_eq!(no_entry.code(), "E006");
+    }
+
+    #[test]
+    fn graph_error_display_includes_contextual_details() {
+        let duplicate = GraphError::DuplicateId {
+            code: "E005",
+            node_id: "duumbi:test/main/entry/0".to_string(),
+        };
+        let orphan = GraphError::OrphanRef {
+            code: "E004",
+            from_node: "duumbi:test/main/entry/1".to_string(),
+            target: "duumbi:test/helper".to_string(),
+        };
+        let no_entry = GraphError::NoEntry { code: "E006" };
+
+        assert_eq!(
+            duplicate.to_string(),
+            "[E005] Duplicate @id: 'duumbi:test/main/entry/0'"
+        );
+        assert_eq!(
+            orphan.to_string(),
+            "[E004] Orphan reference to 'duumbi:test/helper' from node 'duumbi:test/main/entry/1'"
+        );
+        assert_eq!(
+            no_entry.to_string(),
+            "[E006] No entry function 'main' found"
+        );
+    }
+}

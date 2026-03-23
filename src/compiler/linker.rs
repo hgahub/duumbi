@@ -155,6 +155,7 @@ pub fn link(output_o: &Path, runtime_o: &Path, binary_path: &Path) -> Result<(),
 mod tests {
     use super::*;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn find_cc_returns_something() {
@@ -198,5 +199,42 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn platform_link_args_match_current_target() {
+        let args = platform_link_args();
+        assert!(args.contains(&"-lm"));
+
+        #[cfg(target_os = "macos")]
+        assert!(args.contains(&"-Wl,-w"));
+
+        #[cfg(not(target_os = "macos"))]
+        assert!(!args.contains(&"-Wl,-w"));
+    }
+
+    #[test]
+    fn link_multi_invalid_objects_fails() {
+        let tmp_dir = TempDir::new().expect("invariant: temp dir must be creatable");
+
+        let fake_module_a = tmp_dir.path().join("module_a.o");
+        fs::write(&fake_module_a, b"not a real object file")
+            .expect("invariant: must be able to write temp file");
+
+        let fake_module_b = tmp_dir.path().join("module_b.o");
+        fs::write(&fake_module_b, b"still not a real object file")
+            .expect("invariant: must be able to write temp file");
+
+        let runtime_o = tmp_dir.path().join("runtime.o");
+        fs::write(&runtime_o, b"also not real")
+            .expect("invariant: must be able to write temp file");
+
+        let object_paths = [fake_module_a.as_path(), fake_module_b.as_path()];
+        let output = tmp_dir.path().join("output_binary");
+        let result = link_multi(&object_paths, &runtime_o, &output);
+        assert!(
+            result.is_err(),
+            "Linking multiple garbage objects should fail"
+        );
     }
 }
