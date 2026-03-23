@@ -197,6 +197,8 @@ fn effective_providers_prefers_providers_over_llm() {
             api_key_env: "XAI_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
         }],
         ..Default::default()
     };
@@ -292,6 +294,8 @@ fn config_providers_roundtrip_toml() {
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
             },
             ProviderConfig {
                 provider: ProviderKind::Grok,
@@ -300,6 +304,8 @@ fn config_providers_roundtrip_toml() {
                 api_key_env: "XAI_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: Some(30),
+                key_storage: None,
+                auth_token_env: None,
             },
         ],
         ..Default::default()

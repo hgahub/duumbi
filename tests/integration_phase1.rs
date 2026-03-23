@@ -125,7 +125,24 @@ fn phase1_describe_produces_output() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let raw = String::from_utf8_lossy(&output.stdout);
+    // Strip ANSI escape codes for content comparison.
+    let stdout: String = {
+        let mut out = String::with_capacity(raw.len());
+        let mut esc = false;
+        for c in raw.chars() {
+            if c == '\x1b' {
+                esc = true;
+            } else if esc {
+                if c == 'm' {
+                    esc = false;
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
     assert!(
         stdout.contains("function main"),
         "Describe output should contain 'function main'"

@@ -22,6 +22,9 @@ pub struct AnthropicClient {
     model: String,
     api_key: String,
     http: Client,
+    /// When `true`, send `Authorization: Bearer` instead of `X-Api-Key`.
+    /// Enables subscription-based access (e.g. Claude Max OAuth token).
+    use_bearer: bool,
 }
 
 impl AnthropicClient {
@@ -32,6 +35,23 @@ impl AnthropicClient {
             model: model.into(),
             api_key: api_key.into(),
             http: Client::new(),
+            use_bearer: false,
+        }
+    }
+
+    /// Enables Bearer token authentication (for subscription tokens).
+    #[must_use]
+    pub fn with_bearer_auth(mut self, use_bearer: bool) -> Self {
+        self.use_bearer = use_bearer;
+        self
+    }
+
+    /// Adds the appropriate auth header to a request builder.
+    fn auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if self.use_bearer {
+            req.bearer_auth(&self.api_key)
+        } else {
+            req.header("x-api-key", &self.api_key)
         }
     }
 
@@ -55,15 +75,12 @@ impl AnthropicClient {
             ]
         });
 
-        let resp = self
+        let req = self
             .http
             .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .header("content-type", "application/json");
+        let resp = self.auth_header(req).json(&body).send().await?;
 
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
@@ -100,15 +117,12 @@ impl AnthropicClient {
             ]
         });
 
-        let resp = self
+        let req = self
             .http
             .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .header("content-type", "application/json");
+        let resp = self.auth_header(req).json(&body).send().await?;
 
         let status = resp.status().as_u16();
         if !resp.status().is_success() {

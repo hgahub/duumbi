@@ -3,12 +3,16 @@
 //! Walks the graph's function/block/node structure and outputs a readable
 //! summary of the program.
 
+use owo_colors::OwoColorize;
 use petgraph::visit::EdgeRef;
 
 use crate::graph::{GraphEdge, SemanticGraph};
 use crate::types::Op;
 
-/// Prints a human-readable pseudo-code description of the semantic graph.
+/// Prints a colorized human-readable pseudo-code description of the semantic graph.
+///
+/// Colors: cyan bold = keywords/structure, magenta = op names,
+/// green = literals, dimmed = node ID references.
 pub fn describe(graph: &SemanticGraph) {
     for func in &graph.functions {
         let params: Vec<String> = func
@@ -17,21 +21,23 @@ pub fn describe(graph: &SemanticGraph) {
             .map(|p| format!("{}: {}", p.name, p.param_type))
             .collect();
         println!(
-            "function {}({}) -> {} {{",
-            func.name,
+            "{} {}({}) {} {} {{",
+            "function".cyan().bold(),
+            func.name.cyan().bold(),
             params.join(", "),
+            "->".cyan().bold(),
             func.return_type
         );
 
         for block in &func.blocks {
-            println!("  {}:", block.label);
+            println!("  {}{}", block.label.cyan().bold(), ":".cyan().bold(),);
             for &node_idx in &block.nodes {
                 let node = &graph.graph[node_idx];
                 let desc = describe_op(graph, node_idx, &node.op);
-                println!("    %{} = {}", node.id, desc);
+                println!("    {} = {}", format!("%{}", node.id).dimmed(), desc,);
             }
         }
-        println!("}}");
+        println!("{}", "}".cyan().bold());
     }
 }
 
@@ -48,22 +54,34 @@ fn describe_op(
         .edges_directed(node_idx, Direction::Incoming)
         .collect();
 
+    /// Formats a node reference as a dimmed `%id` string.
+    fn ref_dim(id: &crate::types::NodeId) -> String {
+        format!("{}", format!("%{}", id.0).dimmed())
+    }
+
     match op {
-        Op::Const(v) => format!("Const({v})"),
-        Op::ConstF64(v) => format!("ConstF64({v})"),
-        Op::ConstBool(v) => format!("ConstBool({v})"),
+        Op::Const(v) => format!("{}({})", "Const".magenta(), v.to_string().green()),
+        Op::ConstF64(v) => format!("{}({})", "ConstF64".magenta(), v.to_string().green()),
+        Op::ConstBool(v) => format!("{}({})", "ConstBool".magenta(), v.to_string().green()),
+        Op::ConstString(s) => {
+            format!(
+                "{}({})",
+                "ConstString".magenta(),
+                format!("\"{s}\"").green()
+            )
+        }
         Op::Add | Op::Sub | Op::Mul | Op::Div => {
             let mut left = String::from("?");
             let mut right = String::from("?");
             for e in &incoming {
                 let src = &graph.graph[e.source()];
                 match e.weight() {
-                    GraphEdge::Left => left = format!("%{}", src.id),
-                    GraphEdge::Right => right = format!("%{}", src.id),
+                    GraphEdge::Left => left = ref_dim(&src.id),
+                    GraphEdge::Right => right = ref_dim(&src.id),
                     _ => {}
                 }
             }
-            format!("{op}({left}, {right})")
+            format!("{}({left}, {right})", op.to_string().magenta())
         }
         Op::Compare(cmp_op) => {
             let mut left = String::from("?");
@@ -71,12 +89,12 @@ fn describe_op(
             for e in &incoming {
                 let src = &graph.graph[e.source()];
                 match e.weight() {
-                    GraphEdge::Left => left = format!("%{}", src.id),
-                    GraphEdge::Right => right = format!("%{}", src.id),
+                    GraphEdge::Left => left = ref_dim(&src.id),
+                    GraphEdge::Right => right = ref_dim(&src.id),
                     _ => {}
                 }
             }
-            format!("Compare({left}, {right}, {cmp_op})")
+            format!("{}({left}, {right}, {cmp_op})", "Compare".magenta())
         }
         Op::Branch => {
             let mut cond = String::from("?");
@@ -84,55 +102,65 @@ fn describe_op(
             {
                 for e in &incoming {
                     if matches!(e.weight(), GraphEdge::Condition) {
-                        cond = format!("%{}", graph.graph[e.source()].id);
+                        cond = ref_dim(&graph.graph[e.source()].id);
                     }
                 }
-                format!("Branch({cond}, {true_lbl}, {false_lbl})")
+                format!(
+                    "{}({cond}, {}, {})",
+                    "Branch".magenta(),
+                    true_lbl.cyan(),
+                    false_lbl.cyan()
+                )
             } else {
-                format!("Branch({cond}, ?, ?)")
+                format!("{}({cond}, ?, ?)", "Branch".magenta())
             }
         }
         Op::Call { function } => {
             let mut args: Vec<(usize, String)> = Vec::new();
             for e in &incoming {
                 if let GraphEdge::Arg(i) = e.weight() {
-                    args.push((*i, format!("%{}", graph.graph[e.source()].id)));
+                    args.push((*i, ref_dim(&graph.graph[e.source()].id)));
                 }
             }
             args.sort_by_key(|(i, _)| *i);
             let arg_strs: Vec<String> = args.into_iter().map(|(_, s)| s).collect();
-            format!("Call({function}, [{}])", arg_strs.join(", "))
+            format!(
+                "{}({}, [{}])",
+                "Call".magenta(),
+                function.cyan(),
+                arg_strs.join(", ")
+            )
         }
-        Op::Load { variable } => format!("Load({variable})"),
+        Op::Load { variable } => format!("{}({variable})", "Load".magenta()),
         Op::Store { variable } => {
             let mut val = String::from("?");
             for e in &incoming {
                 if matches!(e.weight(), GraphEdge::Operand) {
-                    val = format!("%{}", graph.graph[e.source()].id);
+                    val = ref_dim(&graph.graph[e.source()].id);
                 }
             }
-            format!("Store({variable}, {val})")
+            format!("{}({variable}, {val})", "Store".magenta())
         }
         Op::Print => {
             let mut val = String::from("?");
             for e in &incoming {
                 if matches!(e.weight(), GraphEdge::Operand) {
-                    val = format!("%{}", graph.graph[e.source()].id);
+                    val = ref_dim(&graph.graph[e.source()].id);
                 }
             }
-            format!("Print({val})")
+            format!("{}({val})", "Print".magenta())
         }
         Op::Return => {
             let mut val = String::from("?");
             for e in &incoming {
                 if matches!(e.weight(), GraphEdge::Operand) {
-                    val = format!("%{}", graph.graph[e.source()].id);
+                    val = ref_dim(&graph.graph[e.source()].id);
                 }
             }
-            format!("Return({val})")
+            format!("{}({val})", "Return".magenta())
         }
-        // Phase 9a-1 ops — use Display impl for describe output
-        other => format!("{other}"),
+        // Phase 9a+ ops — use Display impl with magenta op name
+        other => format!("{}", other.to_string().magenta()),
     }
 }
 
@@ -141,6 +169,24 @@ mod tests {
     use super::*;
     use crate::graph::builder::build_graph_no_call_check;
     use crate::parser::parse_jsonld;
+
+    /// Strips ANSI escape sequences from a string for comparison.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut in_escape = false;
+        for c in s.chars() {
+            if c == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if c == 'm' {
+                    in_escape = false;
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
 
     fn make_graph(jsonld: &str) -> SemanticGraph {
         let module = parse_jsonld(jsonld).expect("fixture must parse");
@@ -191,7 +237,7 @@ mod tests {
             .find(|&i| matches!(graph.graph[i].op, Op::Const(42)))
             .expect("Const(42) node must exist");
         let result = describe_op(&graph, node_idx, &Op::Const(42));
-        assert_eq!(result, "Const(42)");
+        assert_eq!(strip_ansi(&result), "Const(42)");
     }
 
     #[test]
@@ -235,7 +281,7 @@ mod tests {
             .find(|&i| matches!(graph.graph[i].op, Op::ConstBool(true)))
             .expect("ConstBool(true) node must exist");
         let result = describe_op(&graph, node_idx, &Op::ConstBool(true));
-        assert_eq!(result, "ConstBool(true)");
+        assert_eq!(strip_ansi(&result), "ConstBool(true)");
     }
 
     #[test]
@@ -247,8 +293,9 @@ mod tests {
             .find(|&i| matches!(graph.graph[i].op, Op::Return))
             .expect("Return node must exist");
         let result = describe_op(&graph, node_idx, &Op::Return);
-        // Return should show its operand
-        assert!(result.starts_with("Return("), "got: {result}");
+        // Return should show its operand (strip ANSI for comparison)
+        let plain = strip_ansi(&result);
+        assert!(plain.starts_with("Return("), "got: {plain}");
     }
 
     #[test]
@@ -302,11 +349,9 @@ mod tests {
             .find(|&i| matches!(graph.graph[i].op, Op::Add))
             .expect("Add node must exist");
         let result = describe_op(&graph, node_idx, &Op::Add);
-        assert!(result.starts_with("Add("), "got: {result}");
-        assert!(
-            result.contains('%'),
-            "must reference operand nodes: {result}"
-        );
+        let plain = strip_ansi(&result);
+        assert!(plain.starts_with("Add("), "got: {plain}");
+        assert!(plain.contains('%'), "must reference operand nodes: {plain}");
     }
 
     #[test]

@@ -25,6 +25,7 @@ pub fn success(text: &str) -> String {
 
 /// Renders text in yellow (warnings).
 #[must_use]
+#[allow(dead_code)]
 pub fn warning(text: &str) -> String {
     format!("{}", text.yellow())
 }

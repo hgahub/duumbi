@@ -9,6 +9,7 @@ pub mod anthropic;
 pub mod factory;
 pub mod fallback;
 pub mod grok;
+pub mod minimax;
 pub mod openai;
 pub mod openrouter;
 pub mod orchestrator;

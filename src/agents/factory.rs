@@ -15,15 +15,28 @@ use crate::config::{ProviderConfig, ProviderKind};
 ///
 /// Returns an error if the API key env var is not set.
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, AgentError> {
-    let api_key = config.resolve_api_key().map_err(|e| {
-        AgentError::Parse(format!("Cannot create {} provider: {e}", config.provider))
-    })?;
+    // Resolve credential: prefer auth_token_env (subscription) over api_key_env.
+    let (api_key, use_auth_token) = if let Some(ref token_env) = config.auth_token_env {
+        if let Ok(token) = std::env::var(token_env) {
+            (token, true)
+        } else {
+            let key = config.resolve_api_key().map_err(|e| {
+                AgentError::Parse(format!("Cannot create {} provider: {e}", config.provider))
+            })?;
+            (key, false)
+        }
+    } else {
+        let key = config.resolve_api_key().map_err(|e| {
+            AgentError::Parse(format!("Cannot create {} provider: {e}", config.provider))
+        })?;
+        (key, false)
+    };
 
     let provider: Box<dyn LlmProvider> = match config.provider {
-        ProviderKind::Anthropic => Box::new(super::anthropic::AnthropicClient::new(
-            &config.model,
-            api_key,
-        )),
+        ProviderKind::Anthropic => Box::new(
+            super::anthropic::AnthropicClient::new(&config.model, &api_key)
+                .with_bearer_auth(use_auth_token),
+        ),
         ProviderKind::OpenAI => {
             // Reuse the already-resolved api_key to avoid a redundant env var read.
             let client = if let Some(ref url) = config.base_url {
@@ -56,6 +69,16 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, 
                 &config.model,
                 api_key,
             ))
+        }
+        ProviderKind::MiniMax => {
+            if let Some(ref url) = config.base_url {
+                Box::new(
+                    super::openai::OpenAiClient::with_base_url(&config.model, api_key, url)
+                        .with_provider_name("minimax"),
+                )
+            } else {
+                Box::new(super::minimax::MiniMaxClient::new(&config.model, api_key))
+            }
         }
     };
 
@@ -123,6 +146,8 @@ mod tests {
             api_key_env: env_var.to_string(),
             base_url: None,
             timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
         }
     }
 
@@ -176,6 +201,8 @@ mod tests {
             api_key_env: "DUUMBI_DEFINITELY_NOT_SET_FACTORY".to_string(),
             base_url: None,
             timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
         };
         match create_provider(&config) {
             Err(AgentError::Parse(_)) => {} // expected
@@ -217,6 +244,8 @@ mod tests {
             api_key_env: "DUUMBI_TEST_CHAIN_MULTI_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
         };
         let configs = vec![
             make(ProviderKind::Anthropic, ProviderRole::Primary),

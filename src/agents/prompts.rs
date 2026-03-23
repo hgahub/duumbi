@@ -20,7 +20,7 @@ pub fn provider_prompt_suffix(provider_name: &str) -> &'static str {
             "\n\nReminder: respond ONLY with tool calls. Do not include explanatory \
                    text before or after the tool calls. Each tool call must have valid JSON arguments."
         }
-        "openrouter" => {
+        "openrouter" | "minimax" => {
             "\n\nReminder: emit tool calls using the function calling format. \
                          Each tool call's `arguments` must be a valid JSON string. \
                          Respond ONLY with tool calls for the requested mutation."
