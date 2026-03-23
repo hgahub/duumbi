@@ -46,6 +46,7 @@ pub(crate) fn parse_and_validate(input: &Path) -> Result<graph::SemanticGraph> {
                 }
             };
             emit_diagnostic(&diag);
+            emit_error_suggestions(ErrorKind::Graph);
             anyhow::bail!("Parse failed");
         }
     };
@@ -57,6 +58,7 @@ pub(crate) fn parse_and_validate(input: &Path) -> Result<graph::SemanticGraph> {
                 let diag = Diagnostic::error(err.code(), err.to_string());
                 emit_diagnostic(&diag);
             }
+            emit_error_suggestions(ErrorKind::Graph);
             anyhow::bail!("Graph construction failed with {} error(s)", errors.len());
         }
     };
@@ -66,6 +68,7 @@ pub(crate) fn parse_and_validate(input: &Path) -> Result<graph::SemanticGraph> {
         for diag in &diagnostics {
             emit_diagnostic(diag);
         }
+        emit_error_suggestions(ErrorKind::Graph);
         anyhow::bail!("Validation failed with {} error(s)", diagnostics.len());
     }
 
@@ -89,8 +92,12 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 
     let semantic_graph = parse_and_validate(input)?;
 
-    let obj_bytes =
-        lowering::compile_to_object(&semantic_graph).context("Cranelift compilation failed")?;
+    let obj_bytes = lowering::compile_to_object(&semantic_graph)
+        .map_err(|e| {
+            emit_error_suggestions(ErrorKind::Compilation);
+            anyhow::Error::new(e)
+        })
+        .context("Cranelift compilation failed")?;
 
     let unique_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -106,7 +113,12 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
     let runtime_o = tmp_dir.join("duumbi_runtime.o");
     linker::compile_runtime(&runtime_c, &runtime_o).context("Failed to compile C runtime")?;
 
-    linker::link(&obj_path, &runtime_o, output).context("Failed to link binary")?;
+    linker::link(&obj_path, &runtime_o, output)
+        .map_err(|e| {
+            emit_error_suggestions(ErrorKind::Link);
+            anyhow::Error::new(e)
+        })
+        .context("Failed to link binary")?;
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
@@ -122,10 +134,16 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) -> Result<()> {
     let program = deps::load_program_with_deps_opts(workspace_root, offline).map_err(|e| {
         emit_program_error_diagnostics(&e);
+        emit_error_suggestions(ErrorKind::Graph);
         anyhow::anyhow!("Graph construction failed: {e}")
     })?;
 
-    let objects = lowering::compile_program(&program).context("Cranelift compilation failed")?;
+    let objects = lowering::compile_program(&program)
+        .map_err(|e| {
+            emit_error_suggestions(ErrorKind::Compilation);
+            anyhow::Error::new(e)
+        })
+        .context("Cranelift compilation failed")?;
 
     let unique_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -157,7 +175,12 @@ fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) 
     linker::compile_runtime(&runtime_c, &runtime_o).context("Failed to compile C runtime")?;
 
     let object_path_refs: Vec<&Path> = object_paths.iter().map(|p| p.as_path()).collect();
-    linker::link_multi(&object_path_refs, &runtime_o, output).context("Failed to link binary")?;
+    linker::link_multi(&object_path_refs, &runtime_o, output)
+        .map_err(|e| {
+            emit_error_suggestions(ErrorKind::Link);
+            anyhow::Error::new(e)
+        })
+        .context("Failed to link binary")?;
 
     let _ = fs::remove_dir_all(&tmp_dir);
 
@@ -217,6 +240,7 @@ fn check_workspace_program(workspace_root: &Path) -> Result<()> {
         }
         Err(e) => {
             emit_program_error_diagnostics(&e);
+            emit_error_suggestions(ErrorKind::Graph);
             anyhow::bail!("Graph construction failed: {e}");
         }
     }
@@ -278,6 +302,49 @@ fn emit_program_error_diagnostics(err: &deps::DepsError) {
     }
 }
 
+/// Classifies a build/check failure for actionable suggestion lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ErrorKind {
+    /// Parse, validation, or graph construction error.
+    Graph,
+    /// Cranelift compilation error.
+    Compilation,
+    /// Linker invocation failure.
+    Link,
+}
+
+/// Returns contextual suggestions for a given error kind.
+///
+/// The returned slice contains human-readable next-step hints.
+#[must_use]
+pub(crate) fn suggestions_for(kind: ErrorKind) -> &'static [&'static str] {
+    match kind {
+        ErrorKind::Graph => &[
+            "duumbi add \"fix the error\" — ask the AI to fix it",
+            "duumbi undo                 — revert the last change",
+            "duumbi describe             — inspect the current graph",
+        ],
+        ErrorKind::Compilation => &[
+            "duumbi check                — validate graph without compiling",
+            "duumbi describe             — inspect the graph structure",
+        ],
+        ErrorKind::Link => &[
+            "Ensure a C compiler (cc) is on PATH, or set $CC",
+            "duumbi check                — validate graph without linking",
+        ],
+    }
+}
+
+/// Prints actionable next-step suggestions to stderr after a build or check failure.
+pub(crate) fn emit_error_suggestions(kind: ErrorKind) {
+    let suggestions = suggestions_for(kind);
+    eprintln!();
+    eprintln!("  {}", theme::dim("Suggestions:"));
+    for s in suggestions {
+        eprintln!("    {} {}", theme::dim("\u{2192}"), theme::info(s));
+    }
+}
+
 /// Emits a diagnostic as JSONL to stdout and a human-readable summary to stderr.
 ///
 /// The error code is highlighted in red and any node IDs in blue for visual clarity.
@@ -335,4 +402,42 @@ pub(crate) fn find_runtime_c() -> Result<std::path::PathBuf> {
     let runtime_path = tmp_dir.join("duumbi_runtime.c");
     fs::write(&runtime_path, RUNTIME_C_SOURCE).context("Failed to write embedded runtime")?;
     Ok(runtime_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_error_suggests_add_undo_describe() {
+        let s = suggestions_for(ErrorKind::Graph);
+        assert_eq!(s.len(), 3);
+        assert!(s[0].contains("duumbi add"));
+        assert!(s[1].contains("duumbi undo"));
+        assert!(s[2].contains("duumbi describe"));
+    }
+
+    #[test]
+    fn compilation_error_suggests_check_describe() {
+        let s = suggestions_for(ErrorKind::Compilation);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].contains("duumbi check"));
+        assert!(s[1].contains("duumbi describe"));
+    }
+
+    #[test]
+    fn link_error_suggests_cc_and_check() {
+        let s = suggestions_for(ErrorKind::Link);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].contains("$CC"));
+        assert!(s[1].contains("duumbi check"));
+    }
+
+    #[test]
+    fn emit_does_not_panic() {
+        // Verify all variants can be printed without panicking.
+        emit_error_suggestions(ErrorKind::Graph);
+        emit_error_suggestions(ErrorKind::Compilation);
+        emit_error_suggestions(ErrorKind::Link);
+    }
 }
