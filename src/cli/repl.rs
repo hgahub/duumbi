@@ -450,7 +450,7 @@ fn run_with_terminal_restore<F>(
 
     // Prompt the user to return to the TUI.
     eprintln!("\n[Press Enter to return to the REPL]");
-    let _ = std::io::stdin().lines().next();
+    let _ = std::io::stdin().read_line(&mut String::new());
 
     // Re-enter alternate screen.
     *terminal = ratatui::init();
@@ -527,7 +527,7 @@ async fn handle_ai_request(
     let _ = terminal.draw(|frame| app.render(frame, textarea));
 
     // Build prompt with conversation history.
-    let prompt = build_prompt_with_history(request, &app.history.clone());
+    let prompt = build_prompt_with_history(request, &app.history);
 
     // Detect multi-module workspace.
     let graph_dir = app.workspace_root.join(".duumbi/graph");

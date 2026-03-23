@@ -323,8 +323,9 @@ fn parse_provider_kind(s: &str) -> Result<ProviderKind, String> {
         "openai" => Ok(ProviderKind::OpenAI),
         "grok" => Ok(ProviderKind::Grok),
         "openrouter" => Ok(ProviderKind::OpenRouter),
+        "minimax" => Ok(ProviderKind::MiniMax),
         other => Err(format!(
-            "Unknown provider type '{other}'. Use: anthropic, openai, grok, openrouter"
+            "Unknown provider type '{other}'. Use: anthropic, openai, grok, openrouter, minimax"
         )),
     }
 }
@@ -449,6 +450,7 @@ mod tests {
             parse_provider_kind("openrouter"),
             Ok(ProviderKind::OpenRouter)
         );
+        assert_eq!(parse_provider_kind("minimax"), Ok(ProviderKind::MiniMax));
         assert!(parse_provider_kind("unknown").is_err());
     }
 
