@@ -99,6 +99,9 @@ pub enum ProviderKind {
     /// OpenRouter API (OpenAI-compatible).
     #[serde(rename = "openrouter")]
     OpenRouter,
+    /// MiniMax API (OpenAI-compatible).
+    #[serde(rename = "minimax")]
+    MiniMax,
 }
 
 impl fmt::Display for ProviderKind {
@@ -108,6 +111,7 @@ impl fmt::Display for ProviderKind {
             ProviderKind::OpenAI => f.write_str("openai"),
             ProviderKind::Grok => f.write_str("grok"),
             ProviderKind::OpenRouter => f.write_str("openrouter"),
+            ProviderKind::MiniMax => f.write_str("minimax"),
         }
     }
 }
@@ -121,6 +125,16 @@ pub enum ProviderRole {
     Primary,
     /// Fallback provider — tried when the primary fails with a transient error.
     Fallback,
+}
+
+/// Storage method for API keys.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyStorage {
+    /// Stored in `~/.duumbi/credentials.toml` (0600 perms).
+    File,
+    /// Read from environment variable (default behavior).
+    Env,
 }
 
 /// Configuration for a single LLM provider entry in `[[providers]]`.
@@ -146,6 +160,18 @@ pub struct ProviderConfig {
     /// Optional per-provider timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+
+    /// How the API key is stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_storage: Option<KeyStorage>,
+
+    /// Optional env var name for subscription/auth token (Bearer token).
+    ///
+    /// When set and the env var exists, this token is used for authentication
+    /// instead of the API key. Enables subscription-based access
+    /// (e.g. Claude Max OAuth token via `ANTHROPIC_AUTH_TOKEN`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token_env: Option<String>,
 }
 
 impl ProviderConfig {
@@ -362,6 +388,8 @@ impl DuumbiConfig {
                 api_key_env: llm.api_key_env.clone(),
                 base_url: None,
                 timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
             }];
         }
 

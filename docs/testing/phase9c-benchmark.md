@@ -46,7 +46,7 @@ cd /tmp/duumbi-test
 $DUUMBI init .
 
 # 4. Konfiguráld a provider(eke)t (lásd template lent)
-nano .duumbi/config.toml   # vagy: code .duumbi/config.toml
+code .duumbi/config.toml
 ```
 
 **Takarítás a tesztelés után:**

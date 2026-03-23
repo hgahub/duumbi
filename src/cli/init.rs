@@ -245,7 +245,42 @@ pub fn run_init(base: &Path) -> Result<()> {
         fs::write(&gitignore, GITIGNORE).context("Failed to write .gitignore")?;
     }
 
-    eprintln!("Project initialized at {}", duumbi_dir.display());
+    eprintln!(
+        "{} Project initialized at {}",
+        super::theme::check_mark(),
+        duumbi_dir.display()
+    );
+    eprintln!();
+
+    // Post-init guidance: check for common API key env vars
+    let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || std::env::var("OPENAI_API_KEY").is_ok()
+        || std::env::var("XAI_API_KEY").is_ok();
+
+    if has_api_key {
+        eprintln!("{}", super::theme::bold("Next steps:"));
+        eprintln!("  1. Uncomment a [[providers]] section in .duumbi/config.toml");
+        eprintln!(
+            "  2. Run {} to start the REPL",
+            super::theme::command("duumbi")
+        );
+        eprintln!(
+            "  3. Try: {}",
+            super::theme::info("\"Add a function that adds two numbers\""),
+        );
+    } else {
+        eprintln!("{}", super::theme::bold("Next steps:"));
+        eprintln!(
+            "  1. Set an API key: {}",
+            super::theme::dim("export ANTHROPIC_API_KEY=sk-..."),
+        );
+        eprintln!("  2. Uncomment a [[providers]] section in .duumbi/config.toml");
+        eprintln!(
+            "  3. Run {} to start the REPL",
+            super::theme::command("duumbi")
+        );
+    }
+
     Ok(())
 }
 

@@ -72,7 +72,7 @@ pub async fn generate_spec_with_llm(
 ///
 /// Returns a slice of `raw` containing just the JSON object, or `None` if
 /// no balanced `{ ... }` is found.
-fn extract_json(raw: &str) -> Option<&str> {
+pub(crate) fn extract_json(raw: &str) -> Option<&str> {
     // Strip markdown code fences if present
     let stripped = raw.trim();
     let content = if stripped.starts_with("```") {
@@ -119,7 +119,7 @@ fn extract_json(raw: &str) -> Option<&str> {
 }
 
 /// Parses the LLM's JSON response into an `IntentSpec`.
-fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
+pub(crate) fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
     let json_str = extract_json(raw)
         .context("Failed to parse LLM response as JSON: no valid JSON object found")?;
 
@@ -238,7 +238,7 @@ fn chrono_now() -> String {
 ///
 /// This bypasses the graph mutation tool infrastructure and returns the raw
 /// assistant message text.
-async fn call_plain_completion(
+pub(crate) async fn call_plain_completion(
     client: &dyn LlmProvider,
     system: &str,
     user: &str,

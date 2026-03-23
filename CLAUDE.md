@@ -74,6 +74,7 @@ cargo fmt --check                    # Format check
 - `duumbi deps tree [--depth N]` — display dependency tree
 - `duumbi registry add|list|remove|default|login|logout` — manage registries
 - `duumbi upgrade` — migrate Phase 4-5 workspace to Phase 7 format
+- `duumbi provider list|add|remove|set` — manage LLM provider configurations
 
 @docs/architecture.md
 @docs/coding-conventions.md
