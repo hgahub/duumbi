@@ -2,12 +2,16 @@
 //!
 //! Command-line interface using `clap` for the duumbi compiler.
 
+pub mod app;
 pub mod commands;
 pub mod completion;
 pub mod deps;
 pub mod describe;
 pub mod init;
+pub mod keystore;
+pub mod mode;
 pub mod progress;
+pub mod provider;
 pub mod publish;
 pub mod registry;
 pub mod repl;
@@ -198,6 +202,13 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: KnowledgeSubcommand,
     },
+
+    /// Manage LLM provider configurations.
+    Provider {
+        /// Provider subcommand.
+        #[command(subcommand)]
+        subcommand: ProviderSubcommand,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
@@ -327,6 +338,50 @@ pub enum KnowledgeSubcommand {
 
     /// Show aggregated learning statistics.
     Stats,
+}
+
+/// Subcommands for `duumbi provider`.
+#[derive(Subcommand, Debug)]
+pub enum ProviderSubcommand {
+    /// List all configured LLM providers.
+    List,
+
+    /// Add a new LLM provider.
+    ///
+    /// Example: `duumbi provider add anthropic claude-sonnet-4-6 ANTHROPIC_API_KEY`
+    Add {
+        /// Provider type: anthropic, openai, grok, openrouter.
+        #[arg(value_name = "TYPE")]
+        provider_type: String,
+        /// Model identifier (e.g. claude-sonnet-4-6).
+        model: String,
+        /// Environment variable name for the API key.
+        api_key_env: String,
+        /// Provider role: primary (default) or fallback.
+        #[arg(long, default_value = "primary")]
+        role: String,
+        /// Custom base URL for the API endpoint.
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+
+    /// Remove a provider by 1-based index or model name.
+    Remove {
+        /// 1-based index number or model name.
+        selector: String,
+    },
+
+    /// Update a field on an existing provider.
+    ///
+    /// Example: `duumbi provider set 1 model claude-opus-4-6`
+    Set {
+        /// 1-based provider index.
+        index: usize,
+        /// Field to update: model, api_key_env, role, base_url.
+        field: String,
+        /// New value for the field.
+        value: String,
+    },
 }
 
 /// Subcommands for `duumbi intent`.

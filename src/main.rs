@@ -50,18 +50,15 @@ async fn main() {
         .init();
 
     // If invoked with no arguments and stdin is a terminal, enter the
-    // interactive REPL instead of showing help.
+    // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
         let workspace_root = PathBuf::from(".");
-        if workspace_root.join(".duumbi").exists() {
-            let config = config::load_config(&workspace_root).unwrap_or_default();
-            if let Err(e) = cli::repl::run(workspace_root, config).await {
-                eprintln!("error: {e:#}");
-                process::exit(1);
-            }
-            return;
+        let config = config::load_config(&workspace_root).unwrap_or_default();
+        if let Err(e) = cli::repl::run(workspace_root, config).await {
+            eprintln!("error: {e:#}");
+            process::exit(1);
         }
-        // No workspace — fall through to normal CLI parsing (shows help).
+        return;
     }
 
     let cli = Cli::parse();
@@ -200,6 +197,10 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Studio { port, dev } => studio(port, dev).await,
+        Commands::Provider { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_provider(subcommand, &workspace)
+        }
     }
 }
 
@@ -454,6 +455,52 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             Ok(())
         }
     }
+}
+
+/// Dispatches `duumbi provider` subcommands.
+fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result<()> {
+    let mut cfg = config::load_config(workspace).unwrap_or_default();
+
+    let lines = match subcommand {
+        cli::ProviderSubcommand::List => cli::provider::list_providers(&cfg),
+        cli::ProviderSubcommand::Add {
+            provider_type,
+            model,
+            api_key_env,
+            role,
+            base_url,
+        } => {
+            let mut args = format!("{provider_type} {model} {api_key_env}");
+            if role != "primary" {
+                args.push_str(&format!(" --role {role}"));
+            }
+            if let Some(ref url) = base_url {
+                args.push_str(&format!(" --base-url {url}"));
+            }
+            cli::provider::add_provider(&mut cfg, &args)
+        }
+        cli::ProviderSubcommand::Remove { selector } => {
+            cli::provider::remove_provider(&mut cfg, &selector)
+        }
+        cli::ProviderSubcommand::Set {
+            index,
+            field,
+            value,
+        } => cli::provider::set_provider_field(&mut cfg, &format!("{index} {field} {value}")),
+    };
+
+    cli::provider::print_output_lines(&lines);
+
+    // Persist config if a mutation succeeded.
+    if lines
+        .iter()
+        .any(|l| l.style == cli::mode::OutputStyle::Success)
+    {
+        config::save_config(workspace, &cfg)
+            .map_err(|e| anyhow::anyhow!("Failed to save config: {e}"))?;
+    }
+
+    Ok(())
 }
 
 /// Dispatches `duumbi registry` subcommands.
