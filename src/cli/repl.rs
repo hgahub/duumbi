@@ -1552,14 +1552,13 @@ fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
 
     // Load API keys from keychain for providers that use it.
     for p in &providers {
-        if matches!(p.key_storage, Some(crate::config::KeyStorage::File)) {
-            if std::env::var(&p.api_key_env).is_err() {
-                if let Some(key) = super::keystore::load_api_key(&p.api_key_env) {
-                    // SAFETY: single-threaded CLI — no concurrent env access.
-                    unsafe {
-                        std::env::set_var(&p.api_key_env, &key);
-                    }
-                }
+        if matches!(p.key_storage, Some(crate::config::KeyStorage::File))
+            && std::env::var(&p.api_key_env).is_err()
+            && let Some(key) = super::keystore::load_api_key(&p.api_key_env)
+        {
+            // SAFETY: single-threaded CLI — no concurrent env access.
+            unsafe {
+                std::env::set_var(&p.api_key_env, &key);
             }
         }
     }

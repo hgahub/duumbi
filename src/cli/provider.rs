@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn add_with_role_fallback_flag() {
         let mut cfg = empty_config();
-        add_provider(&mut cfg, "grok grok-3 XAI_API_KEY --role fallback");
+        let _ = add_provider(&mut cfg, "grok grok-3 XAI_API_KEY --role fallback");
         assert_eq!(cfg.providers.len(), 1);
         assert_eq!(cfg.providers[0].role, ProviderRole::Fallback);
     }
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn add_with_base_url_flag() {
         let mut cfg = empty_config();
-        add_provider(
+        let _ = add_provider(
             &mut cfg,
             "openai gpt-4o OPENAI_API_KEY --base-url https://api.openai.com",
         );

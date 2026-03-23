@@ -545,9 +545,8 @@ impl ReplApp {
                                 self.save_config_and_rebuild_client();
                                 selected = self.config.providers.len() - 1;
                                 new_status_msg = Some((
-                                    format!(
-                                        "Provider added. Key saved to ~/.duumbi/credentials.toml."
-                                    ),
+                                    "Provider added. Key saved to ~/.duumbi/credentials.toml."
+                                        .to_string(),
                                     OutputStyle::Success,
                                 ));
                             }
@@ -642,9 +641,7 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Up => {
-                if selected > 0 {
-                    selected -= 1;
-                }
+                selected = selected.saturating_sub(1);
                 self.panel = PanelState::ModelSelector {
                     selected,
                     input_mode: None,
@@ -1171,9 +1168,7 @@ impl ReplApp {
         let row_count = if has_indicator { visible + 1 } else { visible };
 
         let row_areas = Layout::vertical(
-            std::iter::repeat(Constraint::Length(1))
-                .take(row_count)
-                .collect::<Vec<_>>(),
+            std::iter::repeat_n(Constraint::Length(1), row_count).collect::<Vec<_>>(),
         )
         .split(area);
 

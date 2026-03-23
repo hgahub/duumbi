@@ -5,9 +5,10 @@
 //! - **Intent** — intent-focused planning and modification
 
 /// The two REPL interaction modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplMode {
     /// Free-form AI mutation mode (default).
+    #[default]
     Agent,
     /// Intent-focused mode: input is interpreted in context of a focused intent.
     Intent,
@@ -21,12 +22,6 @@ impl ReplMode {
             Self::Agent => "agent",
             Self::Intent => "intent",
         }
-    }
-}
-
-impl Default for ReplMode {
-    fn default() -> Self {
-        Self::Agent
     }
 }
 
