@@ -378,6 +378,24 @@ pub struct DuumbiConfig {
     /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
 
+    /// External MCP server configurations for agent tool access.
+    ///
+    /// Keys are short server names used in logs and error messages.
+    /// Values describe the connection URL and trust level.
+    ///
+    /// ```toml
+    /// [mcp-clients.my-server]
+    /// url = "http://localhost:3000/sse"
+    /// description = "Local tool server"
+    /// trusted = true
+    /// ```
+    #[serde(
+        default,
+        rename = "mcp-clients",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub mcp_clients: HashMap<String, crate::mcp::client::config::McpClientConfig>,
+
     /// LLM provider settings (legacy `[llm]` section — use `[[providers]]` instead).
     ///
     /// Omitting this section is allowed; the CLI will return a clear error

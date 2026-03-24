@@ -7,5 +7,6 @@
 //! object read from stdin; each response is written as a newline-delimited
 //! JSON object to stdout.
 
+pub mod client;
 pub mod server;
 pub mod tools;
