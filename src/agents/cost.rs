@@ -168,8 +168,9 @@ impl CircuitBreaker {
 
     /// Records a successful agent call.
     ///
-    /// - `Closed` or `HalfOpen` → resets failure counter and moves to `Closed`.
-    /// - `Open` → no-op (call [`reset`](CircuitBreaker::reset) first).
+    /// - `Closed` or `HalfOpen` → resets the failure counter and moves to `Closed`.
+    /// - `Open` → resets the failure counter but leaves the state as `Open`
+    ///   (call [`reset`](CircuitBreaker::reset) to re-allow spawning).
     pub fn record_success(&mut self) {
         self.consecutive_failures = 0;
         if self.state != CircuitState::Open {

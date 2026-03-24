@@ -2,8 +2,10 @@
 //!
 //! Persists successful strategies and observed failure patterns to
 //! `.duumbi/knowledge/strategies/` and `.duumbi/knowledge/failure-patterns/`
-//! respectively.  Records are never deleted — deprecated entries are marked
-//! with `deprecated = true` so the history remains auditable.
+//! respectively.  Saving a strategy with the same derived ID (template + description)
+//! overwrites the existing file so counters are updated in place.  Records are
+//! never explicitly deleted — deprecated entries are marked with `deprecated = true`
+//! so the history remains auditable.
 
 use std::path::Path;
 

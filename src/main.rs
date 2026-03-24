@@ -703,17 +703,17 @@ async fn run_mcp(sse: bool, port: u16) -> Result<()> {
     let workspace = PathBuf::from(".");
 
     if sse {
-        anyhow::bail!(
-            "SSE transport is not yet implemented. \
-             Run without --sse to use stdio transport (the MCP default).\n\
-             Port {port} was requested."
+        eprintln!(
+            "Warning: SSE transport is not yet implemented. \
+             Falling back to stdio transport (the MCP default). \
+             (Requested port: {port})"
         );
     }
 
     let server = mcp::server::McpServer::new(workspace);
-    server
-        .run_stdio()
+    tokio::task::spawn_blocking(move || server.run_stdio())
         .await
+        .context("MCP server task panicked")?
         .context("MCP server exited with error")
 }
 

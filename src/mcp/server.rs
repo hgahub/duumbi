@@ -194,7 +194,7 @@ impl McpServer {
                                         "type": "string",
                                         "enum": [
                                             "add_function", "add_block", "add_op",
-                                            "modify_op", "remove_node", "set_edge"
+                                            "modify_op", "replace_block", "remove_node", "set_edge"
                                         ]
                                     }
                                 }
@@ -327,7 +327,11 @@ impl McpServer {
     ///
     /// Each line is a JSON-RPC request; each non-notification response is
     /// written as a single line. Blank lines are ignored.
-    pub async fn run_stdio(&self) -> io::Result<()> {
+    ///
+    /// This is a **synchronous** (blocking) function. Call it from an async
+    /// context via `tokio::task::spawn_blocking` to avoid blocking the Tokio
+    /// executor thread.
+    pub fn run_stdio(&self) -> io::Result<()> {
         let stdin = io::stdin();
         let stdout = io::stdout();
         let mut stdout = stdout.lock();

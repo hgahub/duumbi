@@ -2,8 +2,10 @@
 //!
 //! [`WorkspaceSnapshot`] captures the state of all `.jsonld` files in a
 //! workspace graph directory before a multi-agent team begins executing.
-//! If any step fails the snapshot can be restored, leaving the workspace
-//! in exactly the state it was before the team ran.
+//! If any step fails the snapshot can be restored, writing back all
+//! files that existed at snapshot time.  Files that were **created after**
+//! the snapshot was taken are not removed by [`WorkspaceSnapshot::restore`];
+//! callers are responsible for cleaning up any newly created files.
 
 use std::collections::HashMap;
 use std::fs;

@@ -1,8 +1,9 @@
 # Phase 12: Dynamic Agent System & MCP — Felhasznaloi Utmutato
 
-**Version:** 2.0
+**Version:** 3.0
 **Date:** 2026-03-24
 **Branch:** `phase12/dynamic-agent-mcp`
+**LLM provider:** MiniMax M2.7 (Token Plan — Starter)
 
 ---
 
@@ -51,12 +52,67 @@ Sikeres kimenet:
 ✓ Project initialized at /tmp/duumbi-p12-test
 ```
 
-### 3. lepes: LLM provider beallitasa
+### 3. lepes: MiniMax M2.7 provider beallitasa
 
-Nyisd meg a config fajlt (ez csak a 4. es 5. forgatokonyvhoz kell):
+A DUUMBI teszteleshez a **MiniMax M2.7** modellt hasznaljuk a
+**Token Plan — Starter** elofizetes keresztul. Ez az Anthropic
+API-val kompatibilis vegpontot nyujt, igy a DUUMBI beepitett
+Anthropic providere tortenetis valtoztatas nelkul mukodik.
+
+#### 3a. Regisztracio a MiniMax platformon
+
+1. Nyisd meg a bongeszoben: **https://platform.minimax.io**
+2. Kattints a **"Sign Up"** gombra (jobb felso sarok)
+3. Regisztralj e-mail cimmel **vagy** Google/GitHub fiokkal
+4. Erosítsd meg az e-mail cimedet a kapott levellen
+
+#### 3b. Token Plan feliratkozas (Starter)
+
+1. A belépés utan menj ide:
+   **https://platform.minimax.io/subscribe/token-plan**
+2. Valassza a **Starter** csomagot:
+   - **$10 / ho** (vagy $100 / ev — 2 honap ingyen)
+   - 1 500 keres / 5 ora (M2.7 modell)
+   - Hozzafers az osszes modalitashoz (szoveg, video, hang, kep)
+3. Add meg a fizetesi adatokat es kattints a **"Subscribe"** gombra
+4. Visszakerul a Dashboard-ra — a status **"Active"** legyen
+
+> **Megjegyzes:** A Token Plan API kulcs **kulon kulcs** a pay-as-you-go
+> API kulcstol. Ne keverd ossze a kettot!
+
+#### 3c. API kulcs letrehozasa
+
+1. A Dashboard bal oldalan valaszd: **API Keys** (vagy Settings → API Keys)
+2. Kattints a **"Create new key"** gombra
+3. Adj nevet a kulcsnak, pl. `duumbi-test`
+4. Kattints a **"Create"** gombra
+5. **Masold ki azonnal** — csak egyszer lathatod!
+   A kulcs formatum: `eyJ...` (JWT forma)
+
+#### 3d. Kornyezeti valtozok beallitasa
+
+Nyiss uj terminalt (vagy add hozza a shell profiljaihoz), es futtasd:
 
 ```bash
-nano .duumbi/config.toml
+export MINIMAX_API_KEY="eyJ..."          # a 3c. lepesben masolt kulcs
+export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
+```
+
+> **Ellenorzes:**
+> ```bash
+> echo $MINIMAX_API_KEY | head -c 20
+> echo $ANTHROPIC_BASE_URL
+> ```
+> Kimenet (pelda):
+> ```
+> eyJhbGciOiJSUzI1N
+> https://api.minimax.io/anthropic
+> ```
+
+#### 3e. DUUMBI config beallitasa
+
+```bash
+nano /tmp/duumbi-p12-test/.duumbi/config.toml
 ```
 
 Add hozza a fajl vegehez:
@@ -65,18 +121,17 @@ Add hozza a fajl vegehez:
 [[providers]]
 provider = "Anthropic"
 role = "Primary"
-model = "claude-sonnet-4-20250514"
-api_key_env = "ANTHROPIC_API_KEY"
+model = "MiniMax-M2.7"
+api_key_env = "MINIMAX_API_KEY"
 ```
 
 Mentsd el (Ctrl+O, Enter, Ctrl+X).
 
-Gyozodj meg rola, hogy az API kulcs be van allitva:
-```bash
-echo $ANTHROPIC_API_KEY
-```
-
-Ha ures → allitsd be: `export ANTHROPIC_API_KEY="sk-ant-..."`
+> **Miert mukodik ez?** A MiniMax az Anthropic API formatumot valositja
+> meg (`/anthropic` vegpont), ezert a DUUMBI Anthropic providere
+> valtozatlan kodokkal mukodik — csak a vegpont URL es az API kulcs
+> kulonbozik. Az `ANTHROPIC_BASE_URL` kornyezeti valtozot az Anthropic
+> SDK automatikusan felhasznalia.
 
 ---
 
@@ -100,7 +155,7 @@ Nyisd meg a Claude Desktop beallitasait:
 - **Fajl helye:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 Add hozza a `"mcpServers"` szekciohoz (ha mar van mas szerver, vesszot
-rakj elé):
+rakj ele):
 
 ```json
 {
@@ -166,7 +221,11 @@ Ha Cursor-t hasznalsz Claude Desktop helyett:
 ## 2. forgatokonyv: Koltsegvedelem beallitasa
 
 **Cel:** Korlatozzuk, mennyi tokent hasznalhatnak az AI agentek,
-hogy ne fusson el a koltseg.
+hogy ne lepje tul a Token Plan keretet.
+
+> **Token Plan Starter limit:** 1 500 keres / 5 ora. Az alabb
+> beallitott token korlatok segítenek elosztani a keretet, hogy egy
+> nagy intent ne hasznaljon el mindent egyszeriben.
 
 ### 2.1 lepes: Nyisd meg a config fajlt
 
@@ -310,7 +369,7 @@ tester.json
 **Cel:** Letrehozol egy intent-et (feladat-spec), amit a rendszer
 automatikusan elemez es a megfelelo agent-csapatot allitja ossze.
 
-> **Elofeltetel:** LLM provider konfigurálva (lasd: Elokeszites 3. lepes).
+> **Elofeltetel:** A 3. lepes elvegzese (MiniMax M2.7 beallitasa).
 
 ### 4.1 lepes: Intent letrehozasa
 
@@ -401,7 +460,8 @@ Intent completed successfully.
 1. **TaskAnalyzer** elemezte a spec-et (LLM-hivas nelkul!)
 2. **TeamAssembler** a 9-soros lookup tablabol kivalasztotta a csapatot
 3. A **Planner** szetbontotta a feladatot reszfeladatokra
-4. A **Coder** legeneralta a kodot (LLM-hivas)
+   (→ MiniMax M2.7 API-hivas: `POST https://api.minimax.io/anthropic/v1/messages`)
+4. A **Coder** legeneralta a kodot (MiniMax M2.7 API-hivas)
 5. A **Reviewer** ellenorizte a patcht (ha a kockazat ≥ Medium)
 6. A **Tester** futtatta a teszteket (forditas + vegrehajtas)
 
@@ -510,10 +570,12 @@ magyarazatat:
 | Hibauzenet | Mit jelent | Mit tegyel |
 |------------|------------|------------|
 | `E040 BUDGET_EXCEEDED` | Elfogyott a token keret | Noveld a `budget-per-intent` erteket a config-ban, vagy bontsd kisebb intent-ekre |
-| `E041 CIRCUIT_OPEN` | Tul sok egymast koveto hiba | Ellenorizd az API kulcsot es a halozati kapcsolatot, majd probalj ujra |
+| `E041 CIRCUIT_OPEN` | Tul sok egymast koveto hiba | Ellenorizd a `MINIMAX_API_KEY`-t es az `ANTHROPIC_BASE_URL`-t, majd probalj ujra |
 | `E044 AGENT_TIMEOUT` | Tul sokaig vart szabad slotra | Csokkentsd a parhuzamos feladatokat, vagy noveld `max-parallel-agents`-et |
 | `E045 TEMPLATE_NOT_FOUND` | Ismeretlen agent template | Ellenorizd a `.duumbi/knowledge/agent-templates/` mappat |
 | `E047 MCP_CLIENT_UNREACHABLE` | Kulso szerver nem erheto el | Ellenorizd a `[mcp-clients]` URL-eket a config-ban |
+| `401 Unauthorized` | Ervenytelen MiniMax API kulcs | Ellenorizd az `MINIMAX_API_KEY` erteket; generalj uj kulcsot a platform.minimax.io-n |
+| `429 Too Many Requests` | Tullepted a Token Plan limitet (1500 keres/5 ora) | Varj a limit visszaallasara, vagy bontsd kisebb feladatokra az intent-et |
 
 ---
 
@@ -524,7 +586,7 @@ Amikor befejezted a tesztelest:
 ```bash
 cd ~
 rm -rf /tmp/duumbi-p12-test
-unset DUUMBI
+unset DUUMBI MINIMAX_API_KEY ANTHROPIC_BASE_URL
 ```
 
 ---
@@ -533,7 +595,7 @@ unset DUUMBI
 
 ```
 .duumbi/
-  config.toml                         ← [cost] es [mcp-clients] szekciok
+  config.toml                         ← [[providers]], [cost] es [mcp-clients] szekciok
   knowledge/
     agent-templates/                  ← Agent template-ek (JSON)
       coder.json
@@ -551,3 +613,12 @@ unset DUUMBI
 - `duumbi intent create "..."` — Intent spec letrehozasa
 - `duumbi intent execute <name>` — Intent vegrehajtasa (dinamikus csapattal)
 - `duumbi knowledge list` — Tudasbazis megtekintese
+
+---
+
+## Hasznos linkek
+
+- MiniMax platform (regisztracio, API kulcs): https://platform.minimax.io
+- Token Plan feliratkozas: https://platform.minimax.io/subscribe/token-plan
+- MiniMax M2.7 dokumentacio: https://platform.minimax.io/docs/guides/text-ai-coding-tools
+- MiniMax M2.7 modell leiras: https://www.minimax.io/models/text/m27

@@ -201,7 +201,7 @@ export DUUMBI="$(pwd)/target/debug/duumbi"
 | 24 | `strategy_should_deprecate_high_fail_rate` | >70% @10+ → true | ✅ |
 | 25 | `strategy_should_not_deprecate_low_fail_rate` | <70% → false | ✅ |
 | 26 | `strategy_should_not_deprecate_below_min_attempts` | <10 attempts → false | ✅ |
-| 27 | `strategy_should_deprecate_exactly_at_boundary` | 7/10 → true | ✅ |
+| 27 | `strategy_should_deprecate_exactly_at_boundary` | 7/10 (boundary, no deprecate) → false | ✅ |
 | 28 | `strategy_serialization_roundtrip` | JSON ↔ struct | ✅ |
 | 29 | `failure_pattern_new_defaults` | Zero counters | ✅ |
 | 30 | `failure_pattern_should_deprecate` | >70% @10+ → true | ✅ |

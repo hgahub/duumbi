@@ -187,8 +187,9 @@ pub fn score_risk(spec: &IntentSpec) -> Risk {
 /// Analyse an intent spec and produce a [`TaskProfile`].
 ///
 /// This is fully deterministic — no LLM calls, no I/O, no panics.
-/// On any unexpected internal error a safe default profile is returned:
-/// `Simple + Create + SingleModule + Low`.
+/// Each of the four dimension scores is computed independently from the
+/// spec fields; the result reflects the actual spec content and may
+/// produce any valid combination of dimension values.
 #[must_use]
 pub fn analyze(spec: &IntentSpec) -> TaskProfile {
     tracing::debug!(intent = %spec.intent, "analyzing intent spec");
