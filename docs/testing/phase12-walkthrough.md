@@ -1,485 +1,553 @@
-# Phase 12: Dynamic Agent System & MCP — Feature Walkthrough
+# Phase 12: Dynamic Agent System & MCP — Felhasznaloi Utmutato
 
-**Version:** 1.0
+**Version:** 2.0
 **Date:** 2026-03-24
 **Branch:** `phase12/dynamic-agent-mcp`
 
-Ez a dokumentum vegigvezet a Phase 12 uj funkcioin. Nem szukseges korabbi
-DUUMBI ismeret — minden lepest a nullarol magyarazunk.
+---
+
+## Bevezetes
+
+A Phase 12 elott a DUUMBI minden AI-feladatot egyetlen agent-tel,
+sorban hajtott vegre. A Phase 12 utan a rendszer **automatikusan
+csapatot allit ossze** a feladat bonyolultsaga alapjan, es
+**kulso eszkozokbol is elerheto** (Claude Desktop, Cursor).
+
+Ez az utmutato vegigvezet 5 gyakorlati forgatokonyven — mindenhol
+pontosan leírjuk, mit kell csinalnod.
 
 ---
 
-## Elofeltetelek
+## Elokeszites (egyszer kell megcsinalni)
 
-1. **Rust toolchain** telepitve (`rustup show` → stable)
-2. Forditsd le a projektet:
-   ```bash
-   cd /path/to/duumbi
-   git checkout phase12/dynamic-agent-mcp
-   cargo build
-   ```
-3. Exportald a binaris eleresi utjat:
-   ```bash
-   export DUUMBI="$(pwd)/target/debug/duumbi"
-   ```
-4. Hozz letre egy test workspace-t (NE a repo mappajaban):
-   ```bash
-   mkdir -p /tmp/duumbi-p12-walkthrough
-   cd /tmp/duumbi-p12-walkthrough
-   $DUUMBI init .
-   ```
+### 1. lepes: Forditas
 
----
-
-## 1. MCP Server — A DUUMBI mint kulso eszkoz
-
-A Phase 12 leglathatobb ujdonsaga: a DUUMBI CLI mostantol MCP
-(Model Context Protocol) szerverkent is mukodik. Ez azt jelenti, hogy
-barmely MCP-kompatibilis kliens (Claude Desktop, Cursor, sajat script)
-tavvezerelheti a graf-muveletet.
-
-### 1.1 Az MCP szerver inditasa
+Nyiss terminalt a DUUMBI repo gyokereben:
 
 ```bash
-$DUUMBI mcp
+cargo build
 ```
 
-A szerver elindul es JSON-RPC 2.0 keresekre var a stdin-en.
-A valaszok a stdout-ra erkeznek. Minden uzenet egy sor (newline-terminated JSON).
-
-### 1.2 Elso keres: inicializalas
-
-Kuldj egy `initialize` kerest a stdin-re (egy sor!):
-
-```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+Sikeres kimenet:
+```
+   Compiling duumbi v0.1.1
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.42s
 ```
 
-**Elvart valasz** (formatazva az olvashatosag kedveert):
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "serverInfo": {
-      "name": "duumbi-mcp",
-      "version": "0.1.1"
-    },
-    "capabilities": {
-      "tools": {}
-    }
-  }
-}
+### 2. lepes: Test workspace letrehozasa
+
+**Fontos:** NE a repo mappajaban dolgozz — kulon test konyvtarat
+hasznalunk.
+
+```bash
+export DUUMBI="$(pwd)/target/debug/duumbi"
+mkdir -p /tmp/duumbi-p12-test
+cd /tmp/duumbi-p12-test
+$DUUMBI init .
 ```
 
-### 1.3 Eszkozok listazasa
-
-```json
-{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+Sikeres kimenet:
+```
+✓ Project initialized at /tmp/duumbi-p12-test
 ```
 
-A valasz tartalmazza mind a 10 elerheto eszkozt:
+### 3. lepes: LLM provider beallitasa
 
-| Eszkoz | Leiras |
-|--------|--------|
-| `graph_query` | Graf lekerdezes (node ID, @type, nev minta alapjan) |
-| `graph_mutate` | Atomikus patch muveletek a grafon |
-| `graph_validate` | Validacio: parse → build → validate pipeline |
-| `graph_describe` | Pszeuodokoddá alakitas (ember altal olvashato) |
-| `build_compile` | Forditas nativ binaris-sa (CLI kell hozza) |
-| `build_run` | Forditas + futtatas (CLI kell hozza) |
-| `deps_search` | Modul kereses a registry-ben |
-| `deps_install` | Fuggosegek telepitese |
-| `intent_create` | Intent spec generalas termeszetes nyelvi leirasbol |
-| `intent_execute` | Intent vegrehajtasa (decompose → mutate → verify) |
+Nyisd meg a config fajlt (ez csak a 4. es 5. forgatokonyvhoz kell):
 
-### 1.4 Graf lekerdezes
-
-Kerdezd le a workspace grafot @type alapjan:
-
-```json
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"graph_query","arguments":{"type_filter":"duumbi:Function"}}}
+```bash
+nano .duumbi/config.toml
 ```
 
-A valasz tartalmazza az osszes fuggvenyt a grafbol:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "result": {
-    "content": [{ "type": "text", "text": "{\"nodes\": [...]}" }]
-  }
-}
+Add hozza a fajl vegehez:
+
+```toml
+[[providers]]
+provider = "Anthropic"
+role = "Primary"
+model = "claude-sonnet-4-20250514"
+api_key_env = "ANTHROPIC_API_KEY"
 ```
 
-Egyedi node lekerdezes `node_id`-val:
+Mentsd el (Ctrl+O, Enter, Ctrl+X).
 
-```json
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"graph_query","arguments":{"node_id":"duumbi:test/main"}}}
+Gyozodj meg rola, hogy az API kulcs be van allitva:
+```bash
+echo $ANTHROPIC_API_KEY
 ```
 
-### 1.5 Graf validacio
+Ha ures → allitsd be: `export ANTHROPIC_API_KEY="sk-ant-..."`
 
-```json
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"graph_validate","arguments":{}}}
+---
+
+## 1. forgatokonyv: DUUMBI csatlakoztatasa a Claude Desktop-hoz
+
+**Cel:** A Claude Desktop (vagy Cursor) eszkozkent latja a DUUMBI-t
+es termeszetes nyelven kezelhetod a programod grafjat.
+
+### 1.1 lepes: Keresd meg a duumbi binarist
+
+```bash
+which duumbi || echo "$(pwd)/target/debug/duumbi"
 ```
 
-A valasz `valid: true/false` es egy `diagnostics` tombot tartalmaz.
+Jegyezd meg az eleresi utat, pl.: `/Users/te/duumbi/target/debug/duumbi`
 
-### 1.6 Leallit
+### 1.2 lepes: Claude Desktop MCP konfiguracio
 
-Nyomj Ctrl+D-t (EOF) a szerver leallitasahoz.
+Nyisd meg a Claude Desktop beallitasait:
+- **macOS:** Claude menu → Settings → Developer → Edit Config
+- **Fajl helye:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-### 1.7 Claude Desktop / Cursor integracio
-
-Adj hozza a `.mcp.json` (vagy a kliens konfiguracios fajljaba):
+Add hozza a `"mcpServers"` szekciohoz (ha mar van mas szerver, vesszot
+rakj elé):
 
 ```json
 {
   "mcpServers": {
     "duumbi": {
-      "command": "/path/to/duumbi",
+      "command": "/Users/te/duumbi/target/debug/duumbi",
       "args": ["mcp"],
-      "cwd": "/path/to/your/workspace"
+      "cwd": "/tmp/duumbi-p12-test"
     }
   }
 }
 ```
 
-Ezutan a Claude Desktop-ban (vagy Cursor-ben) lathatod a 10 DUUMBI eszkozt
-es termeszetes nyelven kerhetsz graf-muveletet.
+> **Fontos:** A `command` legyen a teljes abszolut eleresi ut, ne
+> `$DUUMBI`. A `cwd` az a mappa, ahol a `.duumbi/` konyvtar van.
+
+### 1.3 lepes: Claude Desktop ujrainditasa
+
+Zard be es nyisd ujra a Claude Desktop-ot.
+
+### 1.4 lepes: Ellenorizd az integraciot
+
+A Claude Desktop chat ablakaban ird be:
+
+> _"Milyen fuggvenyek vannak a DUUMBI workspace-ben?"_
+
+A Claude most a `graph_query` eszkozt fogja hasznalni. A valaszban
+latni fogod a workspace grafjanak fuggvenyeit (a `duumbi init` altal
+letrehozott `main` fuggvenyt).
+
+### 1.5 lepes: Probalj ki tobb muveletet
+
+Kerdd a Claude-ot termeszetes nyelven:
+
+- _"Validald a DUUMBI grafot"_ → a `graph_validate` eszkozt hívja
+- _"Ird le, mit csinal a program"_ → a `graph_describe` eszkozt hívja
+
+**Igy nezel ki a Claude Desktop-ban:** A DUUMBI 10 eszkozt kinal
+(graph_query, graph_mutate, graph_validate, stb.) — a Claude
+automatikusan valasztja ki a megfelelot a kerdésed alapjan.
+
+### Cursor integracio
+
+Ha Cursor-t hasznalsz Claude Desktop helyett:
+
+1. Hozz letre `.cursor/mcp.json` fajlt a projekt gyokereben:
+   ```json
+   {
+     "mcpServers": {
+       "duumbi": {
+         "command": "/Users/te/duumbi/target/debug/duumbi",
+         "args": ["mcp"],
+         "cwd": "/tmp/duumbi-p12-test"
+       }
+     }
+   }
+   ```
+2. Inditsd ujra a Cursor-t
+3. A Composer-ben (Cmd+I) lathatod a DUUMBI eszkozokat
 
 ---
 
-## 2. Task Analysis Engine — Hogyan dont a rendszer?
+## 2. forgatokonyv: Koltsegvedelem beallitasa
 
-A Phase 12 bevezette a dinamikus csapatosszeallitast. Amikor egy intent
-spec erkezik, a rendszer **LLM-hivas nelkul, determinisztikusan** elemzi
-negy dimenzio menten:
+**Cel:** Korlatozzuk, mennyi tokent hasznalhatnak az AI agentek,
+hogy ne fusson el a koltseg.
 
-### 2.1 A negy dimenzio
+### 2.1 lepes: Nyisd meg a config fajlt
 
-| Dimenzio | Ertekek | Szamitas |
-|----------|---------|----------|
-| **Complexity** | Simple / Moderate / Complex | Test case-ek szama: 0-1 → Simple, 2-5 → Moderate, 6+ → Complex |
-| **TaskType** | Create / Modify / Test / Refactor / Fix | Intent szoveg kulcsszavai ("fix", "refactor", "test") + strukturalis jelek |
-| **Scope** | SingleModule / MultiModule | modules.create + modules.modify szama: 0-1 → Single, 2+ → Multi |
-| **Risk** | Low / Medium / High | Main modul erintett? Exports valtozik? Tobb modul modosul? |
-
-### 2.2 Peldak
-
-**Egyszeru feladat** — `"Add an add function"`, 1 test case, 1 modul:
-```
-Complexity: Simple, TaskType: Create, Scope: SingleModule, Risk: Low
-→ Csapat: 1× Coder, szekvencialisan
-```
-
-**Kozepes multi-modul feladat** — `"Build a calculator with ops and display"`,
-3 test case, 2 modules.create:
-```
-Complexity: Moderate, TaskType: Create, Scope: MultiModule, Risk: Low
-→ Csapat: Planner → 2× Coder (parhuzamosan!) → Tester
-```
-
-**Komplex refaktoralas** — `"Refactor the authentication module"`, 8 test case:
-```
-Complexity: Complex, TaskType: Refactor, Scope: SingleModule, Risk: Medium
-→ Csapat: Planner → Coder → Reviewer → Tester (pipeline)
-```
-
-### 2.3 A 9-soros lookup tabla
-
-| # | Profil | Csapat | Strategia |
-|---|--------|--------|-----------|
-| 1 | Simple + Create + Single + Low | 1× Coder | Szekvenciális |
-| 2 | Simple + Modify + Single + Low | 1× Coder | Szekvenciális |
-| 3 | \* + Test + \* + \* | 1× Tester | Szekvenciális |
-| 4 | Moderate + Create + Single + \* | Planner → Coder → Tester | Pipeline |
-| 5 | Moderate + Create + Multi + \* | Planner → N× Coder → Tester | **Parhuzamos** |
-| 6 | Moderate + Modify + \* + Medium/High | Planner → Coder → Reviewer → Tester | Pipeline |
-| 7 | Complex + \* + Multi + \* | Planner → N× Coder → Reviewer → Tester | **Parhuzamos** |
-| 8 | \* + Refactor + \* + \* | Planner → Coder → Reviewer → Tester | Pipeline |
-| 9 | \* + Fix + \* + \* | 1× Coder (hiba kontextussal) | Szekvenciális |
-
-Ha az elemzes barmi okbol kudarcot vall → visszaesik az egyszeru 1× Coder
-modba (graceful degradation).
-
----
-
-## 3. Agent Templates — 5 beepitett szerepkor
-
-A Phase 12 ot beepitett agent template-tel erkezik. Ezek nem
-hardkodolt tipusok, hanem **JSON-LD grafcsomópontok** — bovithetok.
-
-### 3.1 A seed template-ek
-
-| Szerep | Eszkozei | Specializacio |
-|--------|----------|---------------|
-| **Planner** | — | Feladat dekompozicio, tervezes |
-| **Coder** | add_function, add_block, add_op, modify_op, remove_node, set_edge, replace_block | Kod generalas, modositas |
-| **Reviewer** | — | Patch validacio, code review |
-| **Tester** | — | Teszt vegrehajttas, verifikacio |
-| **Repair** | (mint Coder) | Hibajavitas, error recovery |
-
-### 3.2 Template-ek megtekintese
-
-Az init utan a seed template-ek ide kerulnek:
-```
-.duumbi/knowledge/agent-templates/
-  planner.json
-  coder.json
-  reviewer.json
-  tester.json
-  repair.json
-```
-
-Egy template tartalma (pelda):
-```json
-{
-  "@type": "duumbi:AgentTemplate",
-  "@id": "duumbi:template/coder",
-  "duumbi:name": "Coder",
-  "duumbi:role": "coder",
-  "duumbi:systemPrompt": "You are a code generation agent...",
-  "duumbi:tools": [
-    "add_function", "add_block", "add_op",
-    "modify_op", "remove_node", "set_edge", "replace_block"
-  ],
-  "duumbi:specialization": ["create", "modify"],
-  "duumbi:tokenBudget": 4096,
-  "duumbi:templateVersion": "1.0.0"
-}
-```
-
-### 3.3 Sajat template keszitese
-
-Masolj egy meglevo template-et es modositsd:
 ```bash
-cp .duumbi/knowledge/agent-templates/coder.json \
-   .duumbi/knowledge/agent-templates/security_auditor.json
+cd /tmp/duumbi-p12-test
+nano .duumbi/config.toml
 ```
 
-Szerkeszd a fajlt — valtoztasd meg a nevet, szerepet, promptot.
-A rendszer automatikusan betolti a kovetkezo futasnal.
+### 2.2 lepes: Add hozza a [cost] szekciót
 
----
-
-## 4. Agent Knowledge — Onjavito tudasbazis
-
-Az agentek minden futatasbol tanulnak. A sikereket es kudarcokat
-JSON-LD csomópontkent tarolják.
-
-### 4.1 Strategiak es hibamitak
-
-A `.duumbi/knowledge/` mappastruktua:
-```
-.duumbi/knowledge/
-  strategies/          # Sikeres megkozelitesek
-    strategy-1711234567890-1.json
-  failure-patterns/    # Ismetlodo hibak
-    pattern-1711234567891-1.json
-```
-
-**Strategy pelda:**
-```json
-{
-  "@type": "duumbi:Strategy",
-  "@id": "duumbi:strategy/1711234567890-1",
-  "templateId": "duumbi:template/coder",
-  "description": "Multi-function modules: create all at once",
-  "triggerPattern": "create task with 3+ functions",
-  "approach": "Use add_function for each, then wire exports",
-  "successCount": 5,
-  "failCount": 1,
-  "deprecated": false
-}
-```
-
-### 4.2 Automatikus pruning
-
-Ha egy strategia tobb mint 70%-ban kudarcot vall (es legalabb 10
-kiserlet utan), a rendszer **deprecated** allapotba helyezi — de
-**soha nem torli**. Igy az audit trail megmarad.
-
-```
-successCount: 2, failCount: 8, total: 10 → 80% fail → deprecated=true
-successCount: 4, failCount: 3, total: 7  → <10 attempt → nem deprecated
-successCount: 6, failCount: 4, total: 10 → 40% fail → aktiv marad
-```
-
----
-
-## 5. Cost Control — Koltsegvedelem
-
-A Phase 12 kemeny koltsegkorlatokat vezet be, hogy az agent csapatok ne
-futtatassak ki a tokenburgeted.
-
-### 5.1 Konfiguracio
-
-Add hozza a `.duumbi/config.toml`-hoz:
+Illesszd be a fajl vegehez:
 
 ```toml
 [cost]
-budget-per-intent = 50000       # Max token egy intent vegrehajtas soran
-budget-per-session = 200000     # Max token egy CLI session soran
-max-parallel-agents = 3         # Egyszerre futo LLM hivasok szama
-circuit-breaker-failures = 5    # Ennyszer egymst után kudarcra → leállás
-alert-threshold-pct = 80        # Figyelmeztet ennyi %-nal
+budget-per-intent = 50000
+budget-per-session = 200000
+max-parallel-agents = 3
+circuit-breaker-failures = 5
+alert-threshold-pct = 80
 ```
 
-Mind a 5 mezo **opcionalis** — ha nem adod meg, az alapertelmezett
-ertekek lepnek eletbe. A `[cost]` szekciót is elhagyhatod — a regi
-config.toml-ok tovabbra is mukodnek.
+Mentsd el.
 
-### 5.2 Budget enforcement
+### Mit jelentenek ezek?
 
-Minden LLM hivas elott a rendszer ellenorzi: `check_budget()`.
-Ha tullepne a korlátot → **E040 BUDGET_EXCEEDED** hiba, a feladat
-leall, de a korabbi sikeresen vegzett munka megmarad.
+| Beallitas | Mit csinal | Alapertek |
+|-----------|------------|-----------|
+| `budget-per-intent` | Egy `intent execute` parancs max ennyi tokent hasznalhat | 50 000 |
+| `budget-per-session` | Egy teljes CLI session (REPL) max ennyi tokent hasznalhat | 200 000 |
+| `max-parallel-agents` | Hany AI agent futhat egyszerre (parhuzamos feladatoknal) | 3 |
+| `circuit-breaker-failures` | Ennyi egymast koveto hiba utan leall az agent-inditas | 5 |
+| `alert-threshold-pct` | Figyelmeztes %-ban (pl. 80% = 40 000 token utan szol) | 80 |
 
-### 5.3 Circuit Breaker
+### Mi tortenik, ha tullepjuk?
 
-Ha 5 egymast koveto LLM hivas kudarcot vall (halozati hiba, timeout,
-rate limit), a circuit breaker **Open** allapotba kerul es nem enged
-tobb agent-et inditani. Ez vedi a koltsegkeretet a vegtelen ujraprobas
-ellen.
+- **Budget tullepes:** `E040 BUDGET_EXCEEDED` hiba. A mar elkeszult
+  munka megmarad, de uj agent nem indul.
+- **Tul sok hiba egymas utan:** `E041 CIRCUIT_OPEN`. A rendszer
+  blokkol minden uj agent-inditast, amig nem reseteled.
+- **Nincs szabad slot:** `E044 AGENT_TIMEOUT`. Az agent 60
+  masodpercig var, utana lemond.
 
-```
-Closed  ─── 5 failures ──→  Open (block)
-                              │
-                          reset()
-                              │
-                              ▼
-                          HalfOpen ─── success ──→ Closed
-                              │
-                           failure
-                              │
-                              ▼
-                            Open
-```
+### Ha nem kell koltsegvedelem
 
-### 5.4 Rate Limiter
-
-A `max-parallel-agents` mezo korlatozza az egyideju LLM hivasokat.
-Ha minden slot foglalt, az uj agent max 60 masodpercig var → **E044
-AGENT_TIMEOUT** ha nem szabadul fel hely.
+A `[cost]` szekció teljesen **opcionalis**. Ha nem adod meg, a
+rendszer az alapertelmezett ertekekkel mukodik. A regi config.toml
+fajlok valtozatas nelkul tovabb mukodnek.
 
 ---
 
-## 6. Concurrent Merge — Parhuzamos agentek eredmenyeinek osszefesulese
+## 3. forgatokonyv: Agent template-ek testreszabasa
 
-Amikor tobb Coder agent parhuzamosan dolgozik kulonbozo modulokon,
-az eredmenyeiket ossze kell fusulni.
+**Cel:** Letrehozol egy sajat agent-tipust, ami mas promptot es
+mas eszkozokat hasznal, mint a beepitett Coder.
 
-### 6.1 Az 5 merge szabaly
+### 3.1 lepes: Nezd meg a beepitett template-eket
 
-| # | Eset | Strategia |
-|---|------|-----------|
-| 1 | Kulonbozo modulok | Mindketto alkalmazva — nincs konfliktus |
-| 2 | Kozos import | Import-ok halmaz-unioja |
-| 3 | Mindketto modositja main.jsonld-t | Szekvencialis merge, ujravalidalas kozott |
-| 4 | Azonos node @id | **Mindket patch elutasitva** → Planner ujratervez |
-| 5 | Cross-module referencia | Topologiai sorrend (letrehozo elobb, hivo utana) |
+```bash
+ls .duumbi/knowledge/agent-templates/
+```
 
-### 6.2 Atomic rollback
+Kimenet:
+```
+coder.json
+planner.json
+repair.json
+reviewer.json
+tester.json
+```
 
-A rendszer a csapat-vegrehajtas elott **snapshot-ot** ment az osszes
-`.jsonld` fajlrol. Ha barmely agent veglegesen megakad (max retry utan):
+Ez az 5 beepitett szerepkor, amit a `duumbi init` letrehozott.
 
-1. Az osszes `.jsonld` fajl visszaall a snapshot-bol
-2. A kudarc felkerul a knowledge graph-ba (tanulsag)
-3. A felhasznalo ertesitest kap, mit probalt es mi nem sikerult
+### 3.2 lepes: Nezz bele egy template-be
+
+```bash
+cat .duumbi/knowledge/agent-templates/coder.json | python3 -m json.tool
+```
+
+Kimenet (roviden):
+```json
+{
+    "@type": "duumbi:AgentTemplate",
+    "@id": "duumbi:template/coder",
+    "duumbi:name": "Coder",
+    "duumbi:role": "coder",
+    "duumbi:systemPrompt": "You are a code generation agent...",
+    "duumbi:tools": [
+        "add_function", "add_block", "add_op",
+        "modify_op", "remove_node", "set_edge", "replace_block"
+    ],
+    "duumbi:specialization": ["create", "modify"],
+    "duumbi:tokenBudget": 4096,
+    "duumbi:templateVersion": "1.0.0"
+}
+```
+
+### 3.3 lepes: Hozz letre sajat template-et
+
+Peldaul egy "Security Auditor" agentet, aki biztonsagi szempontbol
+vizsgalja a kodot:
+
+```bash
+cp .duumbi/knowledge/agent-templates/reviewer.json \
+   .duumbi/knowledge/agent-templates/security_auditor.json
+```
+
+### 3.4 lepes: Szerkeszd a template-et
+
+```bash
+nano .duumbi/knowledge/agent-templates/security_auditor.json
+```
+
+Valtoztasd meg:
+- `"@id"` → `"duumbi:template/security_auditor"`
+- `"duumbi:name"` → `"Security Auditor"`
+- `"duumbi:systemPrompt"` → `"You are a security auditor agent. Review code for injection vulnerabilities, unsafe operations, and authentication issues."`
+- `"duumbi:specialization"` → `["review", "security"]`
+
+Mentsd el. A rendszer a kovetkezo futasnal automatikusan betolti
+az uj template-et.
+
+### 3.5 lepes: Ellenorizd
+
+```bash
+ls .duumbi/knowledge/agent-templates/
+```
+
+```
+coder.json
+planner.json
+repair.json
+reviewer.json
+security_auditor.json   ← az uj template
+tester.json
+```
 
 ---
 
-## 7. MCP Client — Kulso szerverek integracioja
+## 4. forgatokonyv: Intent vegrehajtasa dinamikus csapattal
 
-A DUUMBI agentek nemcsak MCP szervert nyujtanak, hanem **kliens**kent
-is kapcsolodhatnak kulso MCP szerverekhez (Figma, GitHub, bongeszo, DB).
+**Cel:** Letrehozol egy intent-et (feladat-spec), amit a rendszer
+automatikusan elemez es a megfelelo agent-csapatot allitja ossze.
 
-### 7.1 Konfiguracio
+> **Elofeltetel:** LLM provider konfigurálva (lasd: Elokeszites 3. lepes).
+
+### 4.1 lepes: Intent letrehozasa
+
+```bash
+$DUUMBI intent create "Build a calculator module with add and multiply functions"
+```
+
+A rendszer egy YAML fajlt general:
+```
+✓ Intent spec created: .duumbi/intents/build-a-calculator-module.yaml
+```
+
+### 4.2 lepes: Nezd meg a spec-et
+
+```bash
+cat .duumbi/intents/build-a-calculator-module.yaml
+```
+
+Pelda kimenet:
+```yaml
+intent: "Build a calculator module with add and multiply functions"
+version: 1
+status: Pending
+acceptance_criteria:
+  - "add(a, b) returns a + b for i64 inputs"
+  - "multiply(a, b) returns a * b for i64 inputs"
+modules:
+  create: ["calculator/ops"]
+  modify: ["app/main"]
+test_cases:
+  - name: basic_add
+    function: add
+    args: [3, 5]
+    expected_return: 8
+  - name: basic_multiply
+    function: multiply
+    args: [4, 7]
+    expected_return: 28
+```
+
+### 4.3 lepes: A rendszer igy elemzi a feladatot
+
+A Phase 12 Task Analysis Engine ertekeli a spec-et:
+
+```
+Complexity:  Moderate   (2 test case → 2-5 tartomany)
+TaskType:    Create     (van modules.create)
+Scope:       MultiModule (1 create + 1 modify = 2 modul)
+Risk:        Medium     (main modosul)
+
+→ Csapat: Planner → Coder → Reviewer → Tester
+→ Strategia: Pipeline
+```
+
+Ezt nem kell te beallitanod — a rendszer automatikusan donti el.
+
+### 4.4 lepes: Futtasd a spec-et
+
+```bash
+$DUUMBI intent execute build-a-calculator-module
+```
+
+A kimenet mutatja, hogyan halad vegig a csapaton:
+```
+Executing intent: "Build a calculator module with add and multiply functions"
+
+Plan (3 tasks):
+  [1/3] Create module calculator/ops with functions: add, multiply
+  [2/3] Add function: wire calculator functions into main
+  [3/3] Verify all test cases
+
+[1/3] Create module calculator/ops…
+  ✓ Done (2 ops). Added 2 functions: add, multiply
+
+[2/3] Wire into main…
+  ✓ Done (3 ops). Modified main to call add and multiply
+
+[3/3] Running 2 tests…
+  ✓ basic_add: add(3, 5) = 8
+  ✓ basic_multiply: multiply(4, 7) = 28
+
+All 3 tasks completed.
+Intent completed successfully.
+```
+
+### Mi tortent a hatterben?
+
+1. **TaskAnalyzer** elemezte a spec-et (LLM-hivas nelkul!)
+2. **TeamAssembler** a 9-soros lookup tablabol kivalasztotta a csapatot
+3. A **Planner** szetbontotta a feladatot reszfeladatokra
+4. A **Coder** legeneralta a kodot (LLM-hivas)
+5. A **Reviewer** ellenorizte a patcht (ha a kockazat ≥ Medium)
+6. A **Tester** futtatta a teszteket (forditas + vegrehajtas)
+
+### Ha valami nem sikerul
+
+A rendszer automatikusan kezeli:
+- **Retry**: max 3 probalkozas, egyre reszletesebb hibauzenettel
+- **Rollback**: ha a csapat megakad, az osszes fajl visszaall
+- **Knowledge**: a sikerek es kudarcok felkerulnek a tudasbazisba
+
+---
+
+## 5. forgatokonyv: A tudasbazis megtekintese
+
+**Cel:** Megnezed, mit tanult a rendszer a korabbi futatasokból.
+
+### 5.1 lepes: Tudasbazis listazasa
+
+```bash
+$DUUMBI knowledge list
+```
+
+Pelda kimenet (ha mar futtattad az intent-et):
+```
+Success records: 3
+  duumbi:success/1711234567890-1  CreateModule  calculator/ops  (2 ops)
+  duumbi:success/1711234567891-2  ModifyMain    main           (3 ops)
+  duumbi:success/1711234567892-3  AddFunction   main           (1 ops)
+
+Decision records: 0
+Pattern records: 0
+```
+
+### 5.2 lepes: Strategiak megtekintese
+
+A strategiak a `.duumbi/knowledge/strategies/` mappaban vannak:
+
+```bash
+ls .duumbi/knowledge/strategies/ 2>/dev/null || echo "Meg nincs strategia"
+```
+
+A strategiak az ido elorehaladasaval gyulnek — minden sikeres es
+sikertelen feladat utan a rendszer frissiti a szamlalokat.
+
+### 5.3 lepes: Hogyan mukodik a tanulas?
+
+Kepzeld el, hogy 10-szer futtattad az `intent execute`-ot:
+
+```
+Strategy: "Multi-function module: use add_function for each"
+  successCount: 7    (7x sikeres volt ez a megkozelites)
+  failCount: 3       (3x nem mukodott)
+  deprecated: false  (30% fail < 70% → meg aktiv)
+```
+
+Ha a fail rate tullep 70%-ot (minimum 10 probalkozas utan):
+
+```
+Strategy: "Single block for everything"
+  successCount: 2
+  failCount: 8
+  deprecated: true   (80% fail → a rendszer mar nem hasznalja)
+```
+
+A deprecated strategiak **soha nem torlodnek** — az audit trail
+megmarad, de a rendszer nem ajánlja oket tobbe uj feladatokhoz.
+
+---
+
+## Kulso MCP szerverek csatlakoztatasa (halado)
+
+Ha a DUUMBI agentjeit szeretned osszekotni kulso eszkozokkel
+(pl. Figma, GitHub, bongeszo), add hozza a config.toml-hoz:
+
+### Konfiguracio
+
+```bash
+nano .duumbi/config.toml
+```
+
+Add hozza:
 
 ```toml
 [mcp-clients]
+github = { url = "https://github.mcp.example.com/sse", description = "GitHub repository" }
 figma = { url = "https://figma.mcp.example.com/sse", description = "Figma design data" }
-github = { url = "https://github.mcp.example.com/sse", description = "GitHub repos" }
-browser = { url = "http://localhost:3001/sse", description = "Browser automation" }
 ```
 
-### 7.2 Biztonsag
+### Biztonsag
 
-Csak a `[mcp-clients]` szekcioban explicit konfiguralt szerverek
-erhetok el. Nincs implicit trust — a felhasznalo donti el, mely
-kulso szerverek megbizhatoak.
+Csak az itt felsorolt szerverek erhetok el. Ha le akarsz tiltani
+egy szervert anelkul, hogy torolned:
 
-Egy szerver `trusted = false` jelolessel letiltható:
 ```toml
 [mcp-clients]
-untrusted-server = { url = "...", trusted = false }
+old-server = { url = "...", trusted = false }
 ```
 
 ---
 
-## 8. Uj Error Kodok
+## Hibauzenetek es megoldasuk
 
-A Phase 12 a kovetkezo uj hibakodokkal boviti a rendszert:
+Ha valamelyik forgatokonyvben hibat kapsz, itt megtalálod a
+magyarazatat:
 
-| Kod | Nev | Mikor jelenik meg |
-|-----|-----|-------------------|
-| E040 | BUDGET_EXCEEDED | LLM token budget tullepes |
-| E041 | CIRCUIT_OPEN | Circuit breaker nyitott — tul sok egymast koveto kudarc |
-| E042 | MERGE_CONFLICT | Parhuzamos patchek osszeferhetetlen konfliktusa |
-| E043 | NODE_ID_COLLISION | Ket patch azonos @id-vel hoz letre node-ot |
-| E044 | AGENT_TIMEOUT | Agent inditas timeout (60s queue) |
-| E045 | TEMPLATE_NOT_FOUND | Hivatkozott agent template nem talalhato |
-| E046 | MCP_TOOL_ERROR | MCP eszkoz hivas sikertelen |
-| E047 | MCP_CLIENT_UNREACHABLE | Kulso MCP szerver nem erheto el |
-| E048 | MCP_CLIENT_TOOL_NOT_FOUND | Igenyelt eszkoz nem lezezik a kulso szerveren |
-
----
-
-## 9. Gyorstalpaló — Amit kiprobalhatsz 5 percben
-
-### 9a. MCP szerver teszt (2 perc)
-
-```bash
-cd /tmp/duumbi-p12-walkthrough
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | $DUUMBI mcp
-```
-
-Latni fogod az inicializacios valaszt a szervero nevevel es verziojával.
-
-### 9b. Graf lekerdezes MCP-n at (1 perc)
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"graph_query","arguments":{"type_filter":"duumbi:Function"}}}' | $DUUMBI mcp
-```
-
-A valasz tartalmazza a workspace graph fuggvenyeit.
-
-### 9c. Graf validacio (1 perc)
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"graph_validate","arguments":{}}}' | $DUUMBI mcp
-```
-
-`valid: true` ha a graf helyes, kulonben `diagnostics` tombben latod a hibakat.
-
-### 9d. Eszkoz lista (1 perc)
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | $DUUMBI mcp
-```
-
-Mind a 10 eszkozt latod nevvel, leirassal es JSON Schema-val.
+| Hibauzenet | Mit jelent | Mit tegyel |
+|------------|------------|------------|
+| `E040 BUDGET_EXCEEDED` | Elfogyott a token keret | Noveld a `budget-per-intent` erteket a config-ban, vagy bontsd kisebb intent-ekre |
+| `E041 CIRCUIT_OPEN` | Tul sok egymast koveto hiba | Ellenorizd az API kulcsot es a halozati kapcsolatot, majd probalj ujra |
+| `E044 AGENT_TIMEOUT` | Tul sokaig vart szabad slotra | Csokkentsd a parhuzamos feladatokat, vagy noveld `max-parallel-agents`-et |
+| `E045 TEMPLATE_NOT_FOUND` | Ismeretlen agent template | Ellenorizd a `.duumbi/knowledge/agent-templates/` mappat |
+| `E047 MCP_CLIENT_UNREACHABLE` | Kulso szerver nem erheto el | Ellenorizd a `[mcp-clients]` URL-eket a config-ban |
 
 ---
 
 ## Takaritas
 
+Amikor befejezted a tesztelest:
+
 ```bash
 cd ~
-rm -rf /tmp/duumbi-p12-walkthrough
+rm -rf /tmp/duumbi-p12-test
 unset DUUMBI
 ```
+
+---
+
+## Osszefoglalo: Hol talalhatok a Phase 12 fajlok?
+
+```
+.duumbi/
+  config.toml                         ← [cost] es [mcp-clients] szekciok
+  knowledge/
+    agent-templates/                  ← Agent template-ek (JSON)
+      coder.json
+      planner.json
+      reviewer.json
+      tester.json
+      repair.json
+      security_auditor.json           ← sajat template (ha letrehoztad)
+    strategies/                       ← Tanult strategiak (JSON-LD)
+    failure-patterns/                 ← Tanult hibamitak (JSON-LD)
+```
+
+**CLI parancsok:**
+- `duumbi mcp` — MCP szerver inditasa (Claude Desktop / Cursor integracio)
+- `duumbi intent create "..."` — Intent spec letrehozasa
+- `duumbi intent execute <name>` — Intent vegrehajtasa (dinamikus csapattal)
+- `duumbi knowledge list` — Tudasbazis megtekintese
