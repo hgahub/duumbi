@@ -368,6 +368,7 @@ fn load_block_ops_with(
         let node = &graph.graph[node_idx];
         let result_type = node
             .result_type
+            .as_ref()
             .map_or("void".to_string(), |t| t.to_string());
 
         let op_type = server_fns::op_type_name_str(&node.op);

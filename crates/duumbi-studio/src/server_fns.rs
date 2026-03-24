@@ -489,6 +489,7 @@ pub async fn get_block_ops(
         let op_type = op_type_name_str(&node.op);
         let result_type = node
             .result_type
+            .as_ref()
             .map_or("void".to_string(), |t| t.to_string());
 
         nodes.push(GraphNode {
@@ -639,6 +640,40 @@ pub fn op_type_name_str(op: &duumbi::types::Op) -> &'static str {
         Op::Store { .. } => "Store",
         Op::Print => "Print",
         Op::Return => "Return",
+        Op::ConstString(_) => "ConstString",
+        Op::PrintString => "PrintString",
+        Op::StringConcat => "StringConcat",
+        Op::StringEquals => "StringEquals",
+        Op::StringCompare(_) => "StringCompare",
+        Op::StringLength => "StringLength",
+        Op::StringSlice => "StringSlice",
+        Op::StringContains => "StringContains",
+        Op::StringFind => "StringFind",
+        Op::StringFromI64 => "StringFromI64",
+        Op::ArrayNew { .. } => "ArrayNew",
+        Op::ArrayPush => "ArrayPush",
+        Op::ArrayGet => "ArrayGet",
+        Op::ArraySet => "ArraySet",
+        Op::ArrayLength => "ArrayLength",
+        Op::StructNew { .. } => "StructNew",
+        Op::FieldGet { .. } => "FieldGet",
+        Op::FieldSet { .. } => "FieldSet",
+        Op::Alloc { .. } => "Alloc",
+        Op::Move { .. } => "Move",
+        Op::Borrow { mutable: false, .. } => "Borrow",
+        Op::Borrow { mutable: true, .. } => "BorrowMut",
+        Op::Drop { .. } => "Drop",
+        Op::ResultOk => "ResultOk",
+        Op::ResultErr => "ResultErr",
+        Op::ResultIsOk => "ResultIsOk",
+        Op::ResultUnwrap => "ResultUnwrap",
+        Op::ResultUnwrapErr => "ResultUnwrapErr",
+        Op::OptionSome => "OptionSome",
+        Op::OptionNone { .. } => "OptionNone",
+        Op::OptionIsSome => "OptionIsSome",
+        Op::OptionUnwrap => "OptionUnwrap",
+        Op::Match { .. } => "Match",
+        _ => "Unknown",
     }
 }
 
@@ -659,22 +694,13 @@ pub async fn send_chat_message(
     let config = duumbi::config::load_config(&ws.root)
         .map_err(|e| ServerFnError::new(format!("Config error: {e}")))?;
 
-    let llm_cfg = config
-        .llm
-        .ok_or_else(|| ServerFnError::new("No [llm] section in config.toml".to_string()))?;
+    let providers = config.effective_providers();
+    let provider_cfg = providers.first().ok_or_else(|| {
+        ServerFnError::new("No LLM provider configured in config.toml".to_string())
+    })?;
 
-    let api_key = llm_cfg
-        .resolve_api_key()
-        .map_err(|e| ServerFnError::new(format!("API key error: {e}")))?;
-
-    let client = match llm_cfg.provider {
-        duumbi::config::LlmProvider::Anthropic => {
-            duumbi::agents::LlmClient::anthropic(&llm_cfg.model, api_key)
-        }
-        duumbi::config::LlmProvider::OpenAI => {
-            duumbi::agents::LlmClient::openai(&llm_cfg.model, api_key)
-        }
-    };
+    let client = duumbi::agents::factory::create_provider(provider_cfg)
+        .map_err(|e| ServerFnError::new(format!("LLM provider error: {e}")))?;
 
     let graph_path = ws.root.join(".duumbi/graph/main.jsonld");
     let source_str = fs::read_to_string(&graph_path)
@@ -999,5 +1025,9 @@ pub fn edge_label_pair(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'stat
             2 => ("arg[2]", "Arg"),
             _ => ("arg[N]", "Arg"),
         },
+        GraphEdge::Owns => ("owns", "Owns"),
+        GraphEdge::MovesFrom => ("moves", "MovesFrom"),
+        GraphEdge::BorrowsFrom => ("borrows", "BorrowsFrom"),
+        GraphEdge::Drops => ("drops", "Drops"),
     }
 }
