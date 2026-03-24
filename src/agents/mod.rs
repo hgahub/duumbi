@@ -13,11 +13,13 @@ pub mod cost;
 pub mod factory;
 pub mod fallback;
 pub mod grok;
+pub mod merger;
 pub mod minimax;
 pub mod openai;
 pub mod openrouter;
 pub mod orchestrator;
 pub mod prompts;
+pub mod rollback;
 pub mod template;
 
 use std::future::Future;

@@ -18,6 +18,7 @@ pub mod hash;
 pub mod intent;
 pub mod knowledge;
 pub mod manifest;
+pub mod mcp;
 pub mod parser;
 pub mod patch;
 pub mod registry;

@@ -209,6 +209,20 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: ProviderSubcommand,
     },
+
+    /// Start the MCP (Model Context Protocol) server for external tool integration.
+    ///
+    /// Listens on stdin/stdout using JSON-RPC 2.0 by default. Use `--sse` for
+    /// Server-Sent Events transport.
+    Mcp {
+        /// Use SSE transport instead of stdio.
+        #[arg(long)]
+        sse: bool,
+
+        /// Port for SSE transport (default: 8421).
+        #[arg(long, default_value_t = 8421)]
+        port: u16,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
