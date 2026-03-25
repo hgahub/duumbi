@@ -295,6 +295,70 @@ pub enum VendorStrategy {
     Selective,
 }
 
+// ---------------------------------------------------------------------------
+// Phase 12: Cost control configuration
+// ---------------------------------------------------------------------------
+
+fn default_budget_per_intent() -> usize {
+    50_000
+}
+
+fn default_budget_per_session() -> usize {
+    200_000
+}
+
+fn default_max_parallel() -> usize {
+    3
+}
+
+fn default_circuit_breaker() -> u32 {
+    5
+}
+
+fn default_alert_threshold() -> u8 {
+    80
+}
+
+/// Cost control settings for the dynamic agent system.
+///
+/// All fields are optional in `config.toml`; omitted keys fall back to the
+/// defaults listed below. An entirely absent `[cost]` section is also valid.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CostSection {
+    /// Maximum total tokens allowed for one intent execution.
+    #[serde(default = "default_budget_per_intent")]
+    pub budget_per_intent: usize,
+
+    /// Maximum total tokens allowed across an entire CLI session.
+    #[serde(default = "default_budget_per_session")]
+    pub budget_per_session: usize,
+
+    /// Maximum number of LLM agent calls that may run concurrently.
+    #[serde(default = "default_max_parallel")]
+    pub max_parallel_agents: usize,
+
+    /// Number of consecutive failures before the circuit breaker opens.
+    #[serde(default = "default_circuit_breaker")]
+    pub circuit_breaker_failures: u32,
+
+    /// Alert when this percentage of the intent budget has been consumed.
+    #[serde(default = "default_alert_threshold")]
+    pub alert_threshold_pct: u8,
+}
+
+impl Default for CostSection {
+    fn default() -> Self {
+        Self {
+            budget_per_intent: default_budget_per_intent(),
+            budget_per_session: default_budget_per_session(),
+            max_parallel_agents: default_max_parallel(),
+            circuit_breaker_failures: default_circuit_breaker(),
+            alert_threshold_pct: default_alert_threshold(),
+        }
+    }
+}
+
 /// Optional `[vendor]` section in `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VendorSection {
@@ -313,6 +377,24 @@ pub struct VendorSection {
 pub struct DuumbiConfig {
     /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
+
+    /// External MCP server configurations for agent tool access.
+    ///
+    /// Keys are short server names used in logs and error messages.
+    /// Values describe the connection URL and trust level.
+    ///
+    /// ```toml
+    /// [mcp-clients.my-server]
+    /// url = "http://localhost:3000/sse"
+    /// description = "Local tool server"
+    /// trusted = true
+    /// ```
+    #[serde(
+        default,
+        rename = "mcp-clients",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub mcp_clients: HashMap<String, crate::mcp::client::config::McpClientConfig>,
 
     /// LLM provider settings (legacy `[llm]` section — use `[[providers]]` instead).
     ///
@@ -360,6 +442,12 @@ pub struct DuumbiConfig {
 
     /// Vendor configuration.
     pub vendor: Option<VendorSection>,
+
+    /// Cost control settings for the dynamic agent system (Phase 12).
+    ///
+    /// All sub-fields have safe defaults; omitting the `[cost]` section is valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostSection>,
 }
 
 impl DuumbiConfig {

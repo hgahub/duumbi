@@ -5,15 +5,22 @@
 //! The orchestrator in [`orchestrator`] drives the full
 //! prompt → LLM → patch → validate → retry loop.
 
+pub mod agent_knowledge;
+pub mod analyzer;
 pub mod anthropic;
+pub mod assembler;
+pub mod cost;
 pub mod factory;
 pub mod fallback;
 pub mod grok;
+pub mod merger;
 pub mod minimax;
 pub mod openai;
 pub mod openrouter;
 pub mod orchestrator;
 pub mod prompts;
+pub mod rollback;
+pub mod template;
 
 use std::future::Future;
 use std::pin::Pin;

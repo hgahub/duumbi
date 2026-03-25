@@ -19,6 +19,10 @@ src/
   compiler/    # Graph → Cranelift IR lowering (cranelift-codegen, cranelift-frontend)
                  # CodegenBackend trait — Cranelift types never leak outside src/compiler/
   agents/      # AI agent framework for graph mutation (async, reqwest)
+               # Phase 12: analyzer, assembler, template, cost, merger, rollback
+               # agent_knowledge — strategy/failure-pattern persistence
+  mcp/         # MCP server + client (JSON-RPC, 10 tools, external server proxy)
+               # Phase 12: graph_query, graph_mutate, graph_validate, graph_describe
   intent/      # Intent-Driven Development (Phase 5): spec, coordinator, verifier, execute
   registry/    # Registry client, credentials, module packaging (Phase 7)
   types.rs     # DuumbiType (I64, F64, Bool, Void, String, Array<T>, Struct, &T, &mut T), Op enum
@@ -62,7 +66,8 @@ cargo fmt --check                    # Format check
   lockfile v1 with integrity hashes, vendor layer for offline builds
 - Dependency resolution: workspace → vendor → cache → registry (E011 if not found)
 
-## CLI commands (Phase 7)
+## CLI commands (Phase 7 + 12)
+- `duumbi mcp` — start the MCP server (JSON-RPC over stdio, 10 tools)
 - `duumbi search <query>` — search modules in configured registries
 - `duumbi publish [--registry R] [--dry-run] [-y]` — package and upload module
 - `duumbi yank <@scope/name@version> [--registry R] [-y]` — mark version as yanked

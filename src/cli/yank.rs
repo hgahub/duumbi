@@ -175,6 +175,8 @@ mod tests {
             registries: reg_map,
             dependencies: HashMap::new(),
             vendor: None,
+            cost: None,
+            mcp_clients: HashMap::new(),
         }
     }
 

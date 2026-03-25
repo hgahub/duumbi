@@ -1,7 +1,12 @@
 //! Error types, diagnostic codes, and structured JSONL reporting.
 //!
-//! All duumbi errors use error codes E001–E029. The `Diagnostic` struct
-//! serializes to JSONL for machine-readable output.
+//! All duumbi errors use error codes E001–E035 and E040–E048. The `Diagnostic`
+//! struct serializes to JSONL for machine-readable output.
+//!
+//! E001–E016: core compiler and registry errors.
+//! E020–E029: ownership and lifetime errors.
+//! E030–E035: error-handling (Result/Option) errors.
+//! E040–E048: agent execution, graph-merge, MCP integration errors.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -97,6 +102,33 @@ pub mod codes {
     /// Result construction with wrong payload: ResultOk/ResultErr payload doesn't match T or E.
     #[allow(dead_code)] // Used by error handling validator (Phase 9a-3)
     pub const E035_RESULT_PAYLOAD_TYPE_MISMATCH: &str = "E035";
+    /// Agent token budget exceeded.
+    #[allow(dead_code)] // Used by agent execution pipeline (Phase 12)
+    pub const E040_BUDGET_EXCEEDED: &str = "E040";
+    /// Circuit breaker open — too many consecutive agent failures.
+    #[allow(dead_code)] // Used by agent execution pipeline (Phase 12)
+    pub const E041_CIRCUIT_OPEN: &str = "E041";
+    /// Concurrent graph patches have irreconcilable conflicts.
+    #[allow(dead_code)] // Used by patch merge pipeline (Phase 12)
+    pub const E042_MERGE_CONFLICT: &str = "E042";
+    /// Two patches create nodes with the same `@id`.
+    #[allow(dead_code)] // Used by patch merge pipeline (Phase 12)
+    pub const E043_NODE_ID_COLLISION: &str = "E043";
+    /// Agent execution or spawn queue wait timed out.
+    #[allow(dead_code)] // Used by agent execution pipeline (Phase 12)
+    pub const E044_AGENT_TIMEOUT: &str = "E044";
+    /// Referenced agent template not found in store.
+    #[allow(dead_code)] // Used by agent template resolver (Phase 12)
+    pub const E045_TEMPLATE_NOT_FOUND: &str = "E045";
+    /// MCP tool invocation failed.
+    #[allow(dead_code)] // Used by MCP integration layer (Phase 12)
+    pub const E046_MCP_TOOL_ERROR: &str = "E046";
+    /// External MCP server connection failed.
+    #[allow(dead_code)] // Used by MCP integration layer (Phase 12)
+    pub const E047_MCP_CLIENT_UNREACHABLE: &str = "E047";
+    /// Requested tool not available on external MCP server.
+    #[allow(dead_code)] // Used by MCP integration layer (Phase 12)
+    pub const E048_MCP_CLIENT_TOOL_NOT_FOUND: &str = "E048";
 }
 
 /// Severity level for a diagnostic message.
@@ -271,6 +303,15 @@ mod tests {
             codes::E033_RESULT_TYPE_PARAM_MISMATCH,
             codes::E034_UNWRAP_WITHOUT_CHECK,
             codes::E035_RESULT_PAYLOAD_TYPE_MISMATCH,
+            codes::E040_BUDGET_EXCEEDED,
+            codes::E041_CIRCUIT_OPEN,
+            codes::E042_MERGE_CONFLICT,
+            codes::E043_NODE_ID_COLLISION,
+            codes::E044_AGENT_TIMEOUT,
+            codes::E045_TEMPLATE_NOT_FOUND,
+            codes::E046_MCP_TOOL_ERROR,
+            codes::E047_MCP_CLIENT_UNREACHABLE,
+            codes::E048_MCP_CLIENT_TOOL_NOT_FOUND,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(codes.len(), unique.len(), "Error codes must be unique");
@@ -472,5 +513,103 @@ mod tests {
 
         assert_eq!(parsed["details"]["expected"], "i64");
         assert_eq!(parsed["details"]["found"], "f64");
+    }
+
+    /// Verify that every E040-E048 code serializes with the correct `"code"` value
+    /// and that the numeric portion is properly formatted (four-digit zero-padded).
+    #[test]
+    fn e040_e048_codes_serialize_correctly() {
+        let test_cases = [
+            (codes::E040_BUDGET_EXCEEDED, "E040"),
+            (codes::E041_CIRCUIT_OPEN, "E041"),
+            (codes::E042_MERGE_CONFLICT, "E042"),
+            (codes::E043_NODE_ID_COLLISION, "E043"),
+            (codes::E044_AGENT_TIMEOUT, "E044"),
+            (codes::E045_TEMPLATE_NOT_FOUND, "E045"),
+            (codes::E046_MCP_TOOL_ERROR, "E046"),
+            (codes::E047_MCP_CLIENT_UNREACHABLE, "E047"),
+            (codes::E048_MCP_CLIENT_TOOL_NOT_FOUND, "E048"),
+        ];
+
+        for (code, expected) in test_cases {
+            // Constant value matches expected string.
+            assert_eq!(
+                code, expected,
+                "Code constant value mismatch for {expected}"
+            );
+
+            // Properly formatted: one uppercase letter followed by exactly three digits.
+            let mut chars = code.chars();
+            let letter = chars.next().expect("invariant: code must be non-empty");
+            assert!(
+                letter.is_ascii_uppercase(),
+                "Code {expected} must start with an uppercase letter"
+            );
+            let digits: String = chars.collect();
+            assert_eq!(
+                digits.len(),
+                3,
+                "Code {expected} must have exactly three digits"
+            );
+            assert!(
+                digits.chars().all(|c| c.is_ascii_digit()),
+                "Code {expected} suffix must be all digits"
+            );
+
+            // Serialization round-trip.
+            let diag = Diagnostic::error(code, format!("Test for {expected}"));
+            let json = diag.to_jsonl();
+            let parsed: serde_json::Value = serde_json::from_str(&json)
+                .expect("invariant: diagnostic must serialize to valid JSON");
+            assert_eq!(parsed["code"], expected);
+            assert_eq!(parsed["level"], "error");
+        }
+    }
+
+    #[test]
+    fn e040_budget_exceeded_with_details() {
+        let mut details = HashMap::new();
+        details.insert("budget_tokens".to_string(), "8192".to_string());
+        details.insert("used_tokens".to_string(), "9100".to_string());
+        let diag = Diagnostic::error(codes::E040_BUDGET_EXCEEDED, "Agent token budget exceeded")
+            .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E040");
+        assert_eq!(parsed["details"]["budget_tokens"], "8192");
+    }
+
+    #[test]
+    fn e042_merge_conflict_with_node() {
+        let diag = Diagnostic::error(
+            codes::E042_MERGE_CONFLICT,
+            "Concurrent patches have irreconcilable conflicts",
+        )
+        .with_node(&NodeId("duumbi:main/main/entry/5".to_string()));
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E042");
+        assert_eq!(parsed["nodeId"], "duumbi:main/main/entry/5");
+    }
+
+    #[test]
+    fn e047_mcp_client_unreachable_with_url() {
+        let mut details = HashMap::new();
+        details.insert(
+            "server_url".to_string(),
+            "http://localhost:9000".to_string(),
+        );
+        let diag = Diagnostic::error(
+            codes::E047_MCP_CLIENT_UNREACHABLE,
+            "MCP server connection failed",
+        )
+        .with_details(details);
+        let json = diag.to_jsonl();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("invariant: diagnostic must serialize to valid JSON");
+        assert_eq!(parsed["code"], "E047");
+        assert_eq!(parsed["details"]["server_url"], "http://localhost:9000");
     }
 }

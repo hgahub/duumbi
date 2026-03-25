@@ -20,6 +20,7 @@ mod intent;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
 mod manifest;
+mod mcp;
 mod parser;
 mod patch;
 mod registry;
@@ -201,6 +202,7 @@ async fn run(cli: Cli) -> Result<()> {
             let workspace = PathBuf::from(".");
             run_provider(subcommand, &workspace)
         }
+        Commands::Mcp { sse, port } => run_mcp(sse, port).await,
     }
 }
 
@@ -691,6 +693,28 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+/// Starts the MCP server using stdio (or SSE when `--sse` is passed).
+///
+/// Creates an [`mcp::server::McpServer`] rooted at the current working
+/// directory and runs the JSON-RPC 2.0 stdio loop.
+async fn run_mcp(sse: bool, port: u16) -> Result<()> {
+    let workspace = PathBuf::from(".");
+
+    if sse {
+        eprintln!(
+            "Warning: SSE transport is not yet implemented. \
+             Falling back to stdio transport (the MCP default). \
+             (Requested port: {port})"
+        );
+    }
+
+    let server = mcp::server::McpServer::new(workspace);
+    tokio::task::spawn_blocking(move || server.run_stdio())
+        .await
+        .context("MCP server task panicked")?
+        .context("MCP server exited with error")
 }
 
 /// Reverts the last AI mutation by restoring the most recent snapshot.
