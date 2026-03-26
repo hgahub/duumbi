@@ -9,10 +9,66 @@
 ## Prerequisites
 
 - [ ] Rust toolchain: `rustup show` → stable
-- [ ] Project builds: `cargo build`
-- [ ] LLM provider configured: `ANTHROPIC_API_KEY` (or other) set in environment
-- [ ] Config exists: `.duumbi/config.toml` with `[[providers]]` section
-- [ ] All existing tests pass: `cargo test --all`
+- [ ] C compiler on PATH: `cc --version` (needed for linking compiled binaries)
+- [ ] LLM provider API key in environment: `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`, etc.)
+
+---
+
+## Build Setup
+
+Build both the `duumbi` CLI and the `studio` SSR server from the workspace root:
+
+```bash
+# 1. Build the main CLI binary
+cargo build
+
+# 2. Build the Studio SSR server (separate binary, requires "ssr" feature)
+cargo build -p duumbi-studio --features ssr
+
+# 3. Verify both binaries exist
+ls -la target/debug/duumbi target/debug/studio
+
+# 4. Export the CLI path for convenience
+export DUUMBI="$(pwd)/target/debug/duumbi"
+
+# 5. Run the test suite to confirm a clean baseline
+cargo test --all
+# Expected: 1747+ tests green, 0 failed
+
+# 6. Clippy clean
+cargo clippy --all-targets -- -D warnings
+# Expected: 0 warnings
+```
+
+## Create a Test Workspace
+
+```bash
+# Create an isolated test directory
+mkdir -p /tmp/duumbi-p15-test
+cd /tmp/duumbi-p15-test
+
+# Initialize a fresh duumbi workspace
+$DUUMBI init .
+# Expected: ".duumbi/ workspace created with main module"
+
+# Configure an LLM provider (if not already in config)
+cat >> .duumbi/config.toml << 'TOML'
+
+[[providers]]
+provider = "Anthropic"
+role = "Primary"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+TOML
+
+# Verify the workspace is ready
+$DUUMBI check
+# Expected: no errors (empty project validates fine)
+```
+
+> **Note:** Each sample task below assumes a **fresh workspace**. Either
+> re-run `$DUUMBI init .` in a new directory per sample, or clean up
+> between samples with `rm -rf .duumbi && $DUUMBI init .`
 
 ---
 
@@ -26,12 +82,12 @@
 
 ```bash
 # 1. Create fresh workspace
-mkdir calculator-test && cd calculator-test
-duumbi init
+mkdir -p /tmp/duumbi-p15-calculator && cd /tmp/duumbi-p15-calculator
+$DUUMBI init .
 # Expected: ".duumbi/ workspace created with main module"
 
 # 2. Launch REPL (no arguments = interactive mode)
-duumbi
+$DUUMBI
 
 # 3. In REPL — create intent
 /intent create "Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers"
@@ -78,9 +134,11 @@ y
 ### Studio Walkthrough
 
 ```
-# 1. Launch Studio (in the calculator-test directory)
-duumbi studio
-# Expected: browser opens at http://localhost:8421
+# 1. Launch Studio (in the calculator workspace directory)
+cd /tmp/duumbi-p15-calculator
+$DUUMBI studio
+# Expected: "DUUMBI Studio running at http://localhost:8421"
+# Open http://localhost:8421 in your browser
 
 # 2. Intents panel (default view)
 # → Click "+" button
@@ -122,9 +180,9 @@ duumbi studio
 ### CLI REPL Walkthrough
 
 ```bash
-mkdir string-utils-test && cd string-utils-test
-duumbi init
-duumbi
+mkdir -p /tmp/duumbi-p15-strings && cd /tmp/duumbi-p15-strings
+$DUUMBI init .
+$DUUMBI
 
 /intent create "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main."
 y
@@ -160,9 +218,9 @@ Same as Sample 1, but observe:
 ### CLI REPL Walkthrough
 
 ```bash
-mkdir math-lib-test && cd math-lib-test
-duumbi init
-duumbi
+mkdir -p /tmp/duumbi-p15-math && cd /tmp/duumbi-p15-math
+$DUUMBI init .
+$DUUMBI
 
 /intent create "Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions. The main function should compute factorial(10), fibonacci(15), and check if 97 is prime."
 y
