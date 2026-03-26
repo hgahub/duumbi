@@ -251,7 +251,7 @@ pub fn App() -> impl IntoView {
                 <svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3" stroke="currentColor" fill="none" stroke-width="1.3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" fill="none" stroke-width="1.3"/></svg>
                 "Profile"
             </div>
-            <div class="um-item" onclick="window.__studio.closeUserMenu();window.__studio.openSettings()">
+            <div class="um-item" id="settingsBtn" onclick="window.__studio.openSettings()">
                 <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" stroke="currentColor" fill="none" stroke-width="1.3"/><path d="M8 5.5v5M5.5 8h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 "Settings"
             </div>

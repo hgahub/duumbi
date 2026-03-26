@@ -492,6 +492,7 @@
   var PROVIDER_NAMES = ['anthropic', 'openai', 'grok', 'openrouter', 'minimax'];
 
   function openSettings() {
+    closeUserMenu();
     var bd = document.getElementById('settingsBackdrop');
     if (!bd) return;
     bd.classList.add('open');
