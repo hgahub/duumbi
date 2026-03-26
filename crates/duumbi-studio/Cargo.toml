@@ -1,6 +1,6 @@
 [package]
 name = "duumbi-studio"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MPL-2.0"
 
@@ -19,6 +19,7 @@ serde_json = "1.0.149"
 serde_yaml = { version = "0.9.34", optional = true }
 toml = { version = "1.0.6", optional = true }
 petgraph = { version = "0.8.3", optional = true }
+chrono = { version = "0.4.44", optional = true }
 anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
@@ -33,5 +34,5 @@ required-features = ["ssr"]
 
 [features]
 default = []
-ssr = ["leptos/ssr", "leptos_axum", "axum", "tokio", "tower-http", "serde_yaml", "toml", "petgraph", "tracing-subscriber"]
+ssr = ["leptos/ssr", "leptos_axum", "axum", "tokio", "tower-http", "serde_yaml", "toml", "petgraph", "tracing-subscriber", "chrono"]
 hydrate = ["leptos/hydrate"]

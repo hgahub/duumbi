@@ -650,7 +650,7 @@ pub fn op_type_name_str(op: &duumbi::types::Op) -> &'static str {
         Op::StringContains => "StringContains",
         Op::StringFind => "StringFind",
         Op::StringFromI64 => "StringFromI64",
-        Op::ArrayNew { .. } => "ArrayNew",
+        Op::ArrayNew => "ArrayNew",
         Op::ArrayPush => "ArrayPush",
         Op::ArrayGet => "ArrayGet",
         Op::ArraySet => "ArraySet",
@@ -669,7 +669,7 @@ pub fn op_type_name_str(op: &duumbi::types::Op) -> &'static str {
         Op::ResultUnwrap => "ResultUnwrap",
         Op::ResultUnwrapErr => "ResultUnwrapErr",
         Op::OptionSome => "OptionSome",
-        Op::OptionNone { .. } => "OptionNone",
+        Op::OptionNone => "OptionNone",
         Op::OptionIsSome => "OptionIsSome",
         Op::OptionUnwrap => "OptionUnwrap",
         Op::Match { .. } => "Match",
@@ -1030,4 +1030,121 @@ pub fn edge_label_pair(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'stat
         GraphEdge::BorrowsFrom => ("borrows", "BorrowsFrom"),
         GraphEdge::Drops => ("drops", "Drops"),
     }
+}
+
+// ── Phase 15 server functions ──────────────────────────────────────────────
+
+/// Provider info for the command palette provider list.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderInfo {
+    /// Provider kind (e.g., "Anthropic", "OpenAI").
+    pub kind: String,
+    /// Model name.
+    pub model: String,
+    /// Role: "Primary" or "Fallback".
+    pub role: String,
+}
+
+/// Returns configured LLM providers from config.toml.
+#[server]
+pub async fn get_provider_list() -> Result<Vec<ProviderInfo>, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
+
+    let providers = config.effective_providers();
+    Ok(providers
+        .iter()
+        .map(|p| ProviderInfo {
+            kind: format!("{:?}", p.provider),
+            model: p.model.clone(),
+            role: format!("{:?}", p.role),
+        })
+        .collect())
+}
+
+/// Runs the compiled binary and returns stdout/stderr.
+#[server]
+pub async fn trigger_run() -> Result<String, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let output_path = ws.root.join(".duumbi").join("build").join("output");
+    if !output_path.exists() {
+        return Err(ServerFnError::new(
+            "No binary found. Build first.".to_string(),
+        ));
+    }
+
+    let output = std::process::Command::new(&output_path)
+        .current_dir(&ws.root)
+        .output()
+        .map_err(|e| ServerFnError::new(format!("Run failed: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit = output.status.code().unwrap_or(-1);
+
+    Ok(format!(
+        "Exit code: {exit}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    ))
+}
+
+/// Executes an intent by slug (full pipeline: decompose → mutate → verify).
+#[server]
+pub async fn execute_intent(slug: String) -> Result<String, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
+
+    let providers = config.effective_providers();
+    let client = duumbi::agents::factory::create_provider_chain(&providers)
+        .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
+
+    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Execute: {e}")))?;
+
+    if success {
+        Ok(format!(
+            "Intent '{slug}' executed successfully — all tests passed."
+        ))
+    } else {
+        Ok(format!("Intent '{slug}' executed — some tests failed."))
+    }
+}
+
+/// Creates a new intent from a natural language description.
+///
+/// Uses the LLM to generate a structured YAML spec, then saves it.
+#[server]
+pub async fn create_intent(description: String) -> Result<IntentSummary, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
+
+    let providers = config.effective_providers();
+    let client = duumbi::agents::factory::create_provider_chain(&providers)
+        .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
+
+    // Studio always auto-confirms (no interactive prompt).
+    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
+
+    // Reload the saved intent to get its status
+    let spec = duumbi::intent::load_intent(&ws.root, &slug)
+        .map_err(|e| ServerFnError::new(format!("Load: {e}")))?;
+
+    Ok(IntentSummary {
+        slug,
+        description: spec.intent,
+        status: format!("{:?}", spec.status),
+    })
 }

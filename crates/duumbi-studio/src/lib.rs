@@ -10,6 +10,7 @@ pub mod layout;
 pub mod server_fns;
 pub mod state;
 pub mod theme;
+pub mod ws;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -54,7 +55,19 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
 
     // JSON API routes for interactive navigation
     let api_ws = workspace_ctx.clone();
+    let chat_ws = workspace_ctx.clone();
     let app = Router::new()
+        // WebSocket chat endpoint (streaming LLM responses)
+        .route(
+            "/ws/chat",
+            get({
+                let ws = chat_ws;
+                move |upgrade: axum::extract::ws::WebSocketUpgrade| {
+                    let ws = ws.clone();
+                    async move { upgrade.on_upgrade(move |socket| ws::handle_chat_ws(socket, ws)) }
+                }
+            }),
+        )
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))

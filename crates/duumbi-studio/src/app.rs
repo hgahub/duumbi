@@ -1,26 +1,25 @@
 //! Root application component.
 //!
-//! Sets up the layout shell with sidebar, graph canvas, inspector, and chat.
+//! Sets up the Phase 15 layout: icon rail + sidebar + 3-panel canvas + footer.
 //! Provides `StudioState` context to all child components.
 
 use leptos::prelude::*;
 use leptos_meta::*;
 
-use crate::components::breadcrumb::Breadcrumb;
-use crate::components::chat::ChatPanel;
-use crate::components::graph::GraphCanvas;
-use crate::components::inspector::Inspector;
-use crate::components::search_overlay::SearchOverlay;
-use crate::components::shortcuts::ShortcutsOverlay;
+use crate::components::command_palette::CommandPalette;
+use crate::components::footer::Footer;
+use crate::components::icon_rail::IconRail;
+use crate::components::panels::build_panel::BuildPanel;
+use crate::components::panels::graph_panel::GraphPanel;
+use crate::components::panels::intents_panel::IntentsPanel;
 use crate::components::sidebar::Sidebar;
 use crate::components::toast::ToastContainer;
-use crate::state::{InitialData, StudioState};
-use crate::theme::ThemeToggle;
+use crate::state::{ActivePanel, InitialData, StudioState};
 
 /// Root application component.
 ///
-/// Renders the full Studio layout: sidebar, main graph area with breadcrumb,
-/// inspector panel, and bottom chat panel.
+/// Renders the Studio with icon rail, sidebar, main canvas (3 panels),
+/// footer navigation, command palette, and toast notifications.
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
@@ -36,59 +35,59 @@ pub fn App() -> impl IntoView {
         <head>
             <Title text="DUUMBI Studio" />
             <Link rel="stylesheet" href="/studio.css" />
+            <Link
+                rel="stylesheet"
+                href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600&display=swap"
+            />
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
         </head>
         <body class=theme_class>
         <div class="studio-root">
             // Header bar
-            <header class="studio-header">
-                <div class="header-left">
-                    <span class="studio-logo">"DUUMBI Studio"</span>
-                    <span class="studio-version">"v0.7.0"</span>
-                    <span class="studio-workspace">{move || state.workspace_name.get()}</span>
+            <header>
+                <div class="workspace">
+                    <span class="workspace-name">{move || state.workspace_name.get()}</span>
+                    <svg class="workspace-chevron" viewBox="0 0 12 12" fill="none">
+                        <path d="M3 4.5L6 7.5L9 4.5" stroke="#e8e4d9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                 </div>
                 <div class="header-right">
-                    <ThemeToggle />
-                    <button class="header-btn search-btn" title="Search (Ctrl+K)"
-                        on:click=move |_| state.search_visible.update(|v| *v = !*v)>
-                        "Search"
-                    </button>
-                    <button class="header-btn shortcuts-btn" title="Keyboard shortcuts (?)"
-                        on:click=move |_| state.shortcuts_visible.update(|v| *v = !*v)>
-                        "?"
-                    </button>
+                    <div class="header-search"
+                        on:click=move |_| state.search_visible.set(true)
+                        title="Search">
+                        <svg viewBox="0 0 16 16">
+                            <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                            <line x1="10.2" y1="10.2" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                        <span class="search-hotkey">{"\u{2318}K"}</span>
+                    </div>
                 </div>
             </header>
 
-            // Main content area
-            <div class="studio-body">
-                // Left sidebar
-                <Sidebar />
+            // Left icon rail
+            <IconRail />
 
-                // Center: graph + breadcrumb
-                <main class="studio-main">
-                    <Breadcrumb />
-                    <GraphCanvas />
-                </main>
+            // Sidebar (intent tree + module tree)
+            <Sidebar />
 
-                // Right: inspector
-                <aside class="studio-inspector">
-                    <Inspector />
-                </aside>
+            // Main canvas — switches between 3 panels
+            <div class="canvas" id="canvas">
+                {move || match state.active_panel.get() {
+                    ActivePanel::Intents => view! { <IntentsPanel /> }.into_any(),
+                    ActivePanel::Graph => view! { <GraphPanel /> }.into_any(),
+                    ActivePanel::Build => view! { <BuildPanel /> }.into_any(),
+                }}
             </div>
 
-            // Bottom chat panel
-            <ChatPanel />
+            // Bottom footer with panel navigation
+            <Footer />
+
+            // Command palette (Cmd+K)
+            <CommandPalette />
 
             // Toast notifications
             <ToastContainer />
-
-            // Search overlay (Ctrl+K)
-            <SearchOverlay />
-
-            // Keyboard shortcuts overlay
-            <ShortcutsOverlay />
         </div>
         <script src="/studio.js"></script>
         </body>
