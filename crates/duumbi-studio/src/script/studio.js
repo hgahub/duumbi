@@ -1964,7 +1964,7 @@
     headerRight.insertBefore(togglesDiv, themeBtn2);
   }
 
-  addPanelToggles();
+  // addPanelToggles(); — disabled in Phase 15 (sidebar/chat/inspector toggles replaced by footer navigation)
 
   // ── Code view ─────────────────────────────────────────────────────────────────
 
