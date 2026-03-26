@@ -85,6 +85,24 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
 
     let mut session_history: Vec<PersistentTurn> = Vec::new();
 
+    // Cache config and provider chain per connection (not per message).
+    let workspace = ctx.read().await.root.clone();
+    let config = match load_config(&workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = send_error(&mut socket, &format!("Config error: {e}")).await;
+            return;
+        }
+    };
+    let providers = config.effective_providers();
+    let client: Arc<dyn duumbi::agents::LlmProvider> = match create_provider_chain(&providers) {
+        Ok(c) => Arc::from(c),
+        Err(e) => {
+            let _ = send_error(&mut socket, &format!("No LLM provider configured: {e}")).await;
+            return;
+        }
+    };
+
     while let Some(Ok(msg)) = socket.recv().await {
         let text = match msg {
             Message::Text(t) => t,
@@ -104,26 +122,7 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
             continue;
         }
 
-        let workspace = ctx.read().await.root.clone();
         let module = req.module.as_deref().unwrap_or("app/main");
-
-        // Load config and create provider chain.
-        let config = match load_config(&workspace) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = send_error(&mut socket, &format!("Config error: {e}")).await;
-                continue;
-            }
-        };
-
-        let providers = config.effective_providers();
-        let client = match create_provider_chain(&providers) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = send_error(&mut socket, &format!("No LLM provider configured: {e}")).await;
-                continue;
-            }
-        };
 
         // Enrich prompt with workspace context.
         let enriched_message =
@@ -154,20 +153,21 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
         let library_mode = module != "app/main";
 
         // Stream mutation with text callback.
-        // We use a channel to bridge the sync callback with async WS send.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Bounded channel with backpressure (256 chunks buffer).
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
 
         let source_clone = source_value.clone();
         let enriched = enriched_message.clone();
+        let client_clone = Arc::clone(&client);
         let mutation_handle = tokio::spawn(async move {
             orchestrator::mutate_streaming(
-                client.as_ref(),
+                client_clone.as_ref(),
                 &source_clone,
                 &enriched,
                 3,
                 library_mode,
                 move |chunk| {
-                    let _ = tx.send(chunk.to_string());
+                    let _ = tx.try_send(chunk.to_string());
                 },
             )
             .await
@@ -211,8 +211,17 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
         match outcome {
             MutationOutcome::Success(result) => {
                 // Write patched JSON-LD to disk.
-                let patched_json =
-                    serde_json::to_string_pretty(&result.patched).unwrap_or_default();
+                let patched_json = match serde_json::to_string_pretty(&result.patched) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        let _ = send_error(
+                            &mut socket,
+                            &format!("Failed to serialize patched module {module}: {e}"),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 if let Err(e) = std::fs::write(&module_path, &patched_json) {
                     let _ =
                         send_error(&mut socket, &format!("Failed to write {module}: {e}")).await;

@@ -268,8 +268,8 @@ y
 | Build fails with E006 | No main function | Ensure intent includes "modify main" |
 | Build fails with E010 | Cross-module import missing | Check `duumbi:imports` in main.jsonld |
 | Studio doesn't open | Port 8421 in use | `duumbi studio --port 8422` |
-| Chat returns mock responses | WebSocket not connected | Check browser console for WS errors |
-| Graph doesn't refresh | Live update not implemented | Refresh page manually (temporary) |
+| Chat returns mock responses | WebSocket not connected | Check browser console for WS errors; ensure `/ws/chat` route is reachable |
+| Graph doesn't refresh after chat | WS `result` frame not received | Check browser console for WS `result` frame with `refresh: true`; verify `studio.js` StudioWS.onResult handler |
 
 ---
 

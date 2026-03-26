@@ -11,6 +11,12 @@
 
 ---
 
+> **Note:** This document was drafted with planned issue numbers #501–#513.
+> The actual GitHub issue numbers are **#477–#489** (offset due to existing issues).
+> Mapping: #501→#477, #502→#478, ..., #513→#489 (subtract 24).
+
+---
+
 ## Track A: Studio Backend — Chat → LLM Integration
 
 ### Issue #501: WebSocket chat endpoint for Studio

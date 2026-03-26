@@ -88,7 +88,7 @@ pub fn ChatPanel() -> impl IntoView {
         // Model selector area
         <div class="chat-model-area">
             <div class="chat-model" id="modelSelector">
-                <span id="modelLabel">
+                <span id="chatModelLabel">
                     {move || {
                         let p = state.selected_provider.get();
                         if p.is_empty() { "claude-sonnet-4-6".to_string() } else { p }

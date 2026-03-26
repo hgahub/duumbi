@@ -35,10 +35,7 @@ pub fn App() -> impl IntoView {
         <head>
             <Title text="DUUMBI Studio" />
             <Link rel="stylesheet" href="/studio.css" />
-            <Link
-                rel="stylesheet"
-                href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600&display=swap"
-            />
+            // Fonts loaded via @import in studio.css — no duplicate <link> needed.
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
         </head>

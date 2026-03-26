@@ -1078,9 +1078,10 @@ pub async fn trigger_run() -> Result<String, ServerFnError> {
         ));
     }
 
-    let output = std::process::Command::new(&output_path)
+    let output = tokio::process::Command::new(&output_path)
         .current_dir(&ws.root)
         .output()
+        .await
         .map_err(|e| ServerFnError::new(format!("Run failed: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
