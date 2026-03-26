@@ -326,30 +326,55 @@
 
   // ── Intent tree ───────────────────────────────────────────────────────────────
 
-  function toggleIntent(name) {
-    var el = document.getElementById('intentCalculator');
-    var ch = document.getElementById('children-' + name);
+  function toggleIntent(slug) {
+    // Capitalize first letter for element ID: "calculator" → "intentCalculator"
+    var capSlug = slug.charAt(0).toUpperCase() + slug.slice(1);
+    var el = document.getElementById('intent' + capSlug);
+    var ch = document.getElementById('children-' + slug);
     if (!el || !ch) return;
     if (el.classList.contains('expanded')) {
       el.classList.remove('expanded', 'active');
       ch.classList.remove('open');
       closeWorkspaceView();
     } else {
+      // Collapse all other intents first
+      qsa('.tree-intent.expanded').forEach(function (ti) { ti.classList.remove('expanded', 'active'); });
+      qsa('.tree-children.open').forEach(function (tc) { tc.classList.remove('open'); });
       el.classList.add('expanded', 'active');
       ch.classList.add('open');
+      // Load intent content into md-panel
+      loadIntentContent(slug);
       openWorkspaceView();
     }
   }
 
-  function selectIntent(name) {
-    if (name === 'calculator') {
-      if (!activeFunction || activeFunction !== 'intents') toggleFunction('intents');
-      var el = document.getElementById('intentCalculator');
-      if (el) el.classList.add('expanded', 'active');
-      var ch = document.getElementById('children-calculator');
-      if (ch) ch.classList.add('open');
-      openWorkspaceView();
-    }
+  function selectIntent(slug) {
+    if (!activeFunction || activeFunction !== 'intents') toggleFunction('intents');
+    var capSlug = slug.charAt(0).toUpperCase() + slug.slice(1);
+    var el = document.getElementById('intent' + capSlug);
+    if (el) el.classList.add('expanded', 'active');
+    var ch = document.getElementById('children-' + slug);
+    if (ch) ch.classList.add('open');
+    loadIntentContent(slug);
+    openWorkspaceView();
+  }
+
+  function loadIntentContent(slug) {
+    var mdContent = document.getElementById('mdContent');
+    if (!mdContent) return;
+    mdContent.innerHTML = '<p style="color:#908c82">Loading intent...</p>';
+    fetch('/api/intent/' + encodeURIComponent(slug))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          mdContent.innerHTML = '<p style="color:#f09090">Error: ' + data.error + '</p>';
+        } else {
+          mdContent.innerHTML = data.html || '<h1>' + data.intent + '</h1><p>Status: ' + data.status + '</p>';
+        }
+      })
+      .catch(function (err) {
+        mdContent.innerHTML = '<p style="color:#f09090">Failed to load: ' + err.message + '</p>';
+      });
   }
 
   function selectC4() { openWorkspaceView(); }
@@ -372,16 +397,14 @@
 
   function openCreateIntent(e) {
     if (e) e.stopPropagation();
-    var bd      = document.getElementById('cipBackdrop');
-    var nameEl  = document.getElementById('cipName');
-    var descEl  = document.getElementById('cipDesc');
-    var createEl= document.getElementById('cipCreateBtn');
+    var bd       = document.getElementById('cipBackdrop');
+    var intentEl = document.getElementById('cipIntent');
+    var createEl = document.getElementById('cipCreateBtn');
     if (!bd) return;
     bd.classList.add('open');
-    if (nameEl)   nameEl.value   = '';
-    if (descEl)   descEl.value   = '';
-    if (createEl) createEl.disabled = true;
-    setTimeout(function () { if (nameEl) nameEl.focus(); }, 60);
+    if (intentEl) intentEl.value = '';
+    if (createEl) { createEl.disabled = true; createEl.textContent = 'Create'; }
+    setTimeout(function () { if (intentEl) intentEl.focus(); }, 60);
   }
 
   function closeCreateIntent() {
@@ -390,23 +413,51 @@
   }
 
   function validateCip() {
-    var nameEl   = document.getElementById('cipName');
+    var intentEl = document.getElementById('cipIntent');
     var createEl = document.getElementById('cipCreateBtn');
-    if (createEl) createEl.disabled = !(nameEl && nameEl.value.trim());
+    if (createEl) createEl.disabled = !(intentEl && intentEl.value.trim());
   }
 
   function createNewIntent() {
-    var nameEl = document.getElementById('cipName');
-    if (!nameEl) return;
-    var name = nameEl.value.trim();
-    if (!name) return;
+    var intentEl = document.getElementById('cipIntent');
+    if (!intentEl) return;
+    var desc = intentEl.value.trim();
+    if (!desc) return;
 
+    var btn = document.getElementById('cipCreateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Creating\u2026'; }
+
+    fetch('/api/intent/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: desc })
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) { throw new Error(data.error); }
+      closeCreateIntent();
+      addIntentToTree(data.slug);
+      selectIntent(data.slug);
+    })
+    .catch(function (err) {
+      if (btn) { btn.textContent = 'Create'; btn.disabled = false; }
+      alert('Intent creation failed: ' + err.message);
+    });
+  }
+
+  function addIntentToTree(slug) {
     var section = qs('#page-intents .sidebar-section');
     if (!section) return;
 
-    var d = document.createElement('div');
-    d.className = 'tree-intent';
-    d.innerHTML =
+    var capSlug = slug.charAt(0).toUpperCase() + slug.slice(1);
+    // Don't add if already exists
+    if (document.getElementById('intent' + capSlug)) return;
+
+    var intentEl = document.createElement('div');
+    intentEl.className = 'tree-intent';
+    intentEl.id = 'intent' + capSlug;
+    intentEl.setAttribute('onclick', "window.__studio.toggleIntent('" + slug + "')");
+    intentEl.innerHTML =
       '<svg class="intent-chevron" viewBox="0 0 10 10">' +
         '<path d="M3 2L7 5L3 8" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</svg>' +
@@ -414,9 +465,19 @@
         '<circle cx="6" cy="6" r="5" stroke="currentColor"/>' +
         '<circle cx="6" cy="6" r="2" stroke="currentColor"/>' +
       '</svg>' +
-      '<span>' + name + '</span>';
-    section.appendChild(d);
-    closeCreateIntent();
+      '<span>' + slug + '</span>';
+
+    var childrenEl = document.createElement('div');
+    childrenEl.className = 'tree-children';
+    childrenEl.id = 'children-' + slug;
+    childrenEl.innerHTML =
+      '<div class="tree-child" onclick="window.__studio.selectC4(\'context\')"><span class="child-dot" style="background:#6fd8b2"></span>Context<span class="tree-badge tb-fn" style="margin-left:auto">C4</span></div>' +
+      '<div class="tree-child" onclick="window.__studio.selectC4(\'container\')"><span class="child-dot" style="background:#9ac4ef"></span>Container<span class="tree-badge tb-mod" style="margin-left:auto">C4</span></div>' +
+      '<div class="tree-child" onclick="window.__studio.selectC4(\'component\')"><span class="child-dot" style="background:#e07830"></span>Component<span class="tree-badge" style="margin-left:auto;background:#352618;color:#e07830">C4</span></div>' +
+      '<div class="tree-child" onclick="window.__studio.selectC4(\'code\')"><span class="child-dot" style="background:#c25a1a"></span>Code<span class="tree-badge" style="margin-left:auto;background:#351a1a;color:#f09090">C4</span></div>';
+
+    section.appendChild(intentEl);
+    section.appendChild(childrenEl);
   }
 
   // ── Model selector ────────────────────────────────────────────────────────────

@@ -71,6 +71,27 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))
+        // Intent API: create + detail
+        .route(
+            "/api/intent/create",
+            axum::routing::post({
+                let ws = api_ws.clone();
+                move |body: axum::extract::Json<std::collections::HashMap<String, String>>| {
+                    let ws = ws.clone();
+                    async move { api_create_intent(ws, body.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/intent/{slug}",
+            get({
+                let ws = api_ws.clone();
+                move |path: axum::extract::Path<String>| {
+                    let ws = ws.clone();
+                    async move { api_get_intent(ws, path.0).await }
+                }
+            }),
+        )
         // JSON API for raw JSON-LD source (used by code view toggle)
         .route(
             "/api/source",
@@ -485,4 +506,162 @@ async fn serve_studio_js() -> axum::response::Response {
         STUDIO_JS,
     )
         .into_response()
+}
+
+/// Creates a new intent from a description via LLM.
+///
+/// `POST /api/intent/create` with `{"description": "Build a calculator..."}`
+/// Returns `{"slug": "calculator", "description": "...", "status": "Pending"}`
+#[cfg(feature = "ssr")]
+async fn api_create_intent(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    body: std::collections::HashMap<String, String>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let description = match body.get("description") {
+        Some(d) if !d.trim().is_empty() => d.clone(),
+        _ => {
+            return (
+                http::StatusCode::BAD_REQUEST,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"description is required"}"#.to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let ws = ws.read().await;
+    let config = match duumbi::config::load_config(&ws.root) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("Config: {e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let providers = config.effective_providers();
+    let client = match duumbi::agents::factory::create_provider_chain(&providers) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("Provider: {e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    match duumbi::intent::create::run_create(&*client, &ws.root, &description, true).await {
+        Ok(slug) => {
+            let spec_desc = duumbi::intent::load_intent(&ws.root, &slug)
+                .map(|s| s.intent)
+                .unwrap_or_else(|_| description.clone());
+            (
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "slug": slug,
+                    "description": spec_desc,
+                    "status": "Pending"
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Create failed: {e}")}).to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Returns intent details as markdown-formatted HTML.
+///
+/// `GET /api/intent/{slug}` → `{"slug": "...", "intent": "...", "status": "...",
+///   "acceptance_criteria": [...], "test_cases": [...], "html": "<h1>..."}`
+#[cfg(feature = "ssr")]
+async fn api_get_intent(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    slug: String,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    match duumbi::intent::load_intent(&ws.root, &slug) {
+        Ok(spec) => {
+            // Build simple markdown-ish HTML for the md-panel
+            let mut html = format!("<h1>{}</h1>\n", spec.intent);
+            html.push_str(&format!(
+                "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
+                spec.status
+            ));
+
+            if !spec.acceptance_criteria.is_empty() {
+                html.push_str("<h2>Acceptance Criteria</h2>\n<ul>\n");
+                for c in &spec.acceptance_criteria {
+                    html.push_str(&format!("<li>{c}</li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            if !spec.test_cases.is_empty() {
+                html.push_str("<h2>Test Cases</h2>\n<ul>\n");
+                for tc in &spec.test_cases {
+                    html.push_str(&format!(
+                        "<li><code>{}</code>({}) → expected: {}</li>\n",
+                        tc.function,
+                        tc.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        tc.expected_return
+                    ));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            if !spec.modules.create.is_empty() {
+                html.push_str("<h2>Modules to Create</h2>\n<ul>\n");
+                for m in &spec.modules.create {
+                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+            if !spec.modules.modify.is_empty() {
+                html.push_str("<h2>Modules to Modify</h2>\n<ul>\n");
+                for m in &spec.modules.modify {
+                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            (
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "slug": slug,
+                    "intent": spec.intent,
+                    "status": format!("{:?}", spec.status),
+                    "html": html
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            http::StatusCode::NOT_FOUND,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Intent not found: {e}")}).to_string(),
+        )
+            .into_response(),
+    }
 }

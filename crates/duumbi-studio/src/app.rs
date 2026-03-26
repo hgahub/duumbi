@@ -264,23 +264,20 @@ pub fn App() -> impl IntoView {
 
         // ── Create Intent Popup ──
         <div class="cip-backdrop" id="cipBackdrop" onclick="window.__studio.closeCreateIntent()">
-            <div class="cip-popup" onclick="event.stopPropagation()">
+            <div class="cip-popup" onclick="event.stopPropagation()" style="width:520px">
                 <div class="cip-header">
                     <span class="cip-title">"New Intent"</span>
                     <div class="cip-close" onclick="window.__studio.closeCreateIntent()">{"\u{2715}"}</div>
                 </div>
                 <div class="cip-body">
-                    <div class="cip-label">"Intent name"</div>
-                    <input class="cip-input" id="cipName" type="text" placeholder="e.g. Calculator, UserAuth..." autocomplete="off" oninput="window.__studio.validateCip()"/>
-                    <div class="cip-label" style="margin-top:14px">
-                        "Description "
-                        <span style="opacity:.5;text-transform:none;letter-spacing:0">"(optional)"</span>
-                    </div>
-                    <textarea class="cip-textarea" id="cipDesc" rows="3" placeholder="What does this intent do?"></textarea>
+                    <div class="cip-label">"Describe what you want to build"</div>
+                    <textarea class="cip-textarea" id="cipIntent" rows="5" style="min-height:120px"
+                        placeholder="Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers"
+                        oninput="window.__studio.validateCip()"></textarea>
                 </div>
                 <div class="cip-footer">
                     <button class="cip-btn cip-btn-cancel" onclick="window.__studio.closeCreateIntent()">"Cancel"</button>
-                    <button class="cip-btn cip-btn-create" id="cipCreateBtn" disabled onclick="window.__studio.createNewIntent()">"Create Intent"</button>
+                    <button class="cip-btn cip-btn-create" id="cipCreateBtn" disabled onclick="window.__studio.createNewIntent()">"Create"</button>
                 </div>
             </div>
         </div>
