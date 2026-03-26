@@ -480,6 +480,223 @@
     section.appendChild(childrenEl);
   }
 
+  // ── Settings popup ──────────────────────────────────────────────────────────
+
+  var PROVIDER_DEFAULTS = {
+    anthropic:  { model: 'claude-sonnet-4-6', env: 'ANTHROPIC_API_KEY',  hasSubscription: true  },
+    openai:     { model: 'gpt-4o',            env: 'OPENAI_API_KEY',     hasSubscription: false },
+    grok:       { model: 'grok-3',            env: 'XAI_API_KEY',        hasSubscription: false },
+    openrouter: { model: '',                   env: 'OPENROUTER_API_KEY', hasSubscription: false },
+    minimax:    { model: '',                   env: 'MINIMAX_API_KEY',    hasSubscription: false }
+  };
+  var PROVIDER_NAMES = ['anthropic', 'openai', 'grok', 'openrouter', 'minimax'];
+
+  function openSettings() {
+    var bd = document.getElementById('settingsBackdrop');
+    if (!bd) return;
+    bd.classList.add('open');
+    document.getElementById('settingsError').textContent = '';
+    fetch('/api/settings/providers')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (Array.isArray(data)) renderProviderCards(data);
+        else renderProviderCards([]);
+      })
+      .catch(function () { renderProviderCards([]); });
+  }
+
+  function closeSettings() {
+    var bd = document.getElementById('settingsBackdrop');
+    if (bd) bd.classList.remove('open');
+  }
+
+  function renderProviderCards(providers) {
+    var main = document.getElementById('settingsMain');
+    if (!main) return;
+    var html = '<div class="settings-section-title">LLM Providers</div>';
+    providers.forEach(function (p, i) { html += buildCardHtml(p, i); });
+    html += '<div class="provider-add" onclick="window.__studio.addProviderCard()">+ Add Provider</div>';
+    main.innerHTML = html;
+    // Check env vars for all cards
+    providers.forEach(function (p, i) {
+      checkEnvStatus(p.api_key_env, 'envStatus-' + i);
+    });
+  }
+
+  function buildCardHtml(p, idx) {
+    var kind = (p.provider || 'anthropic').toLowerCase();
+    var def = PROVIDER_DEFAULTS[kind] || PROVIDER_DEFAULTS.anthropic;
+    var isPrimary = (p.role || 'primary') === 'primary';
+    var authMode = p.auth_token_env ? 'subscription' : 'apikey';
+
+    var h = '<div class="provider-card' + (isPrimary ? ' primary' : '') + '" data-idx="' + idx + '">';
+    // Header row
+    h += '<div class="pc-header">';
+    h += '<select class="pc-select" onchange="window.__studio.onProviderChange(' + idx + ',this.value)">';
+    PROVIDER_NAMES.forEach(function (n) {
+      h += '<option value="' + n + '"' + (n === kind ? ' selected' : '') + '>' + n.charAt(0).toUpperCase() + n.slice(1) + '</option>';
+    });
+    h += '</select>';
+    h += '<span class="pc-role ' + (isPrimary ? 'pc-role-primary' : '') + '">' + (isPrimary ? 'PRIMARY' : 'FALLBACK') + '</span>';
+    h += '<span class="pc-remove" onclick="window.__studio.removeProviderCard(' + idx + ')" title="Remove">\u00d7</span>';
+    h += '</div>';
+
+    // Model
+    h += '<div class="pc-row"><span class="pc-label">Model</span>';
+    h += '<input class="pc-input" id="pcModel-' + idx + '" value="' + (p.model || def.model) + '" placeholder="model name"/></div>';
+
+    // Auth mode (subscription only for anthropic)
+    if (def.hasSubscription) {
+      h += '<div class="pc-row"><span class="pc-label">Auth</span>';
+      h += '<label class="pc-radio"><input type="radio" name="auth-' + idx + '" value="apikey"' + (authMode === 'apikey' ? ' checked' : '') + ' onchange="window.__studio.onAuthChange(' + idx + ',\'apikey\')"/> API Key</label>';
+      h += '<label class="pc-radio"><input type="radio" name="auth-' + idx + '" value="subscription"' + (authMode === 'subscription' ? ' checked' : '') + ' onchange="window.__studio.onAuthChange(' + idx + ',\'subscription\')"/> Subscription</label>';
+      h += '</div>';
+    }
+
+    // Env var
+    var envLabel = authMode === 'subscription' ? 'Token env' : 'API Key env';
+    var envVal = authMode === 'subscription' ? (p.auth_token_env || '') : (p.api_key_env || def.env);
+    h += '<div class="pc-row"><span class="pc-label">' + envLabel + '</span>';
+    h += '<input class="pc-input pc-env" id="pcEnv-' + idx + '" value="' + envVal + '" placeholder="ENV_VAR_NAME" onblur="window.__studio.checkEnvStatus(this.value,\'envStatus-' + idx + '\')"/>';
+    h += '<span class="env-status" id="envStatus-' + idx + '"></span></div>';
+
+    // Role toggle
+    h += '<div class="pc-row"><span class="pc-label">Role</span>';
+    h += '<button class="pc-role-btn' + (isPrimary ? ' active' : '') + '" onclick="window.__studio.onRoleChange(' + idx + ',\'primary\')">Primary</button>';
+    h += '<button class="pc-role-btn' + (!isPrimary ? ' active' : '') + '" onclick="window.__studio.onRoleChange(' + idx + ',\'fallback\')">Fallback</button>';
+    h += '</div>';
+
+    h += '</div>';
+    return h;
+  }
+
+  function addProviderCard() {
+    var main = document.getElementById('settingsMain');
+    if (!main) return;
+    var cards = main.querySelectorAll('.provider-card');
+    var idx = cards.length;
+    var addBtn = main.querySelector('.provider-add');
+    var newCard = document.createElement('div');
+    newCard.innerHTML = buildCardHtml({
+      provider: 'anthropic', role: 'fallback', model: 'claude-sonnet-4-6',
+      api_key_env: 'ANTHROPIC_API_KEY', auth_token_env: null
+    }, idx);
+    main.insertBefore(newCard.firstChild, addBtn);
+    checkEnvStatus('ANTHROPIC_API_KEY', 'envStatus-' + idx);
+  }
+
+  function removeProviderCard(idx) {
+    var card = qs('.provider-card[data-idx="' + idx + '"]');
+    if (card) card.remove();
+    // Re-index remaining cards
+    var cards = qsa('.provider-card');
+    cards.forEach(function (c, i) { c.dataset.idx = i; });
+  }
+
+  function onProviderChange(idx, kind) {
+    var def = PROVIDER_DEFAULTS[kind] || PROVIDER_DEFAULTS.anthropic;
+    var modelEl = document.getElementById('pcModel-' + idx);
+    var envEl = document.getElementById('pcEnv-' + idx);
+    if (modelEl) modelEl.value = def.model;
+    if (envEl) envEl.value = def.env;
+    // Re-render card to show/hide subscription option
+    var cards = collectProviders();
+    if (cards[idx]) {
+      cards[idx].provider = kind;
+      cards[idx].model = def.model;
+      cards[idx].api_key_env = def.env;
+      cards[idx].auth_token_env = null;
+    }
+    renderProviderCards(cards);
+  }
+
+  function onAuthChange(idx, mode) {
+    var def = PROVIDER_DEFAULTS.anthropic;
+    var envEl = document.getElementById('pcEnv-' + idx);
+    if (mode === 'subscription') {
+      if (envEl) envEl.value = 'ANTHROPIC_AUTH_TOKEN';
+    } else {
+      if (envEl) envEl.value = def.env;
+    }
+    checkEnvStatus(envEl ? envEl.value : '', 'envStatus-' + idx);
+  }
+
+  function onRoleChange(idx, role) {
+    // Collect, set this one, demote others if primary
+    var cards = collectProviders();
+    cards.forEach(function (c, i) {
+      if (role === 'primary') c.role = (i === idx) ? 'primary' : 'fallback';
+      else if (i === idx) c.role = 'fallback';
+    });
+    renderProviderCards(cards);
+  }
+
+  function collectProviders() {
+    var cards = qsa('.provider-card');
+    var result = [];
+    cards.forEach(function (card, i) {
+      var selectEl = card.querySelector('.pc-select');
+      var modelEl = document.getElementById('pcModel-' + i);
+      var envEl = document.getElementById('pcEnv-' + i);
+      var roleEl = card.querySelector('.pc-role');
+      var authRadio = card.querySelector('input[name="auth-' + i + '"]:checked');
+      var kind = selectEl ? selectEl.value : 'anthropic';
+      var authMode = authRadio ? authRadio.value : 'apikey';
+      result.push({
+        provider: kind,
+        role: roleEl && roleEl.textContent === 'PRIMARY' ? 'primary' : 'fallback',
+        model: modelEl ? modelEl.value : '',
+        api_key_env: authMode === 'apikey' ? (envEl ? envEl.value : '') : (PROVIDER_DEFAULTS[kind] || {}).env || '',
+        auth_token_env: authMode === 'subscription' ? (envEl ? envEl.value : '') : null,
+        base_url: null
+      });
+    });
+    return result;
+  }
+
+  function saveProviders() {
+    var providers = collectProviders();
+    var btn = document.getElementById('settingsSaveBtn');
+    var errEl = document.getElementById('settingsError');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving\u2026'; }
+    if (errEl) errEl.textContent = '';
+
+    fetch('/api/settings/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(providers)
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      if (data.error) {
+        if (errEl) { errEl.textContent = data.error; errEl.style.color = '#f09090'; }
+      } else {
+        if (errEl) { errEl.textContent = 'Saved \u2713'; errEl.style.color = '#6fd8b2'; }
+        setTimeout(function () { if (errEl) errEl.textContent = ''; }, 3000);
+      }
+    })
+    .catch(function (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      if (errEl) { errEl.textContent = err.message; errEl.style.color = '#f09090'; }
+    });
+  }
+
+  function checkEnvStatus(envVar, statusElId) {
+    var el = document.getElementById(statusElId);
+    if (!el || !envVar) { if (el) el.innerHTML = ''; return; }
+    fetch('/api/settings/check-env?var=' + encodeURIComponent(envVar))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.set) {
+          el.innerHTML = '<span style="color:#6fd8b2">\u2713 set</span>';
+        } else {
+          el.innerHTML = '<span style="color:#e07830">\u26A0 not set</span>';
+        }
+      })
+      .catch(function () { el.innerHTML = ''; });
+  }
+
   // ── Model selector ────────────────────────────────────────────────────────────
 
   function toggleModelDropdown(e) {
@@ -624,7 +841,10 @@
     }
 
     if (e.key === 'Escape') {
-      // Close create-intent popup first
+      // Close settings popup first
+      var stBd = document.getElementById('settingsBackdrop');
+      if (stBd && stBd.classList.contains('open')) { closeSettings(); return; }
+      // Close create-intent popup
       var cipBd = document.getElementById('cipBackdrop');
       if (cipBd && cipBd.classList.contains('open')) { closeCreateIntent(); return; }
       // Close command palette
@@ -2445,7 +2665,18 @@
     toggleModelDropdown: toggleModelDropdown,
     selectModel:         selectModel,
     sendChat:            sendChat,
-    handleChatKey:       handleChatKey
+    handleChatKey:       handleChatKey,
+
+    // Settings
+    openSettings:        openSettings,
+    closeSettings:       closeSettings,
+    saveProviders:       saveProviders,
+    addProviderCard:     addProviderCard,
+    removeProviderCard:  removeProviderCard,
+    onProviderChange:    onProviderChange,
+    onAuthChange:        onAuthChange,
+    onRoleChange:        onRoleChange,
+    checkEnvStatus:      checkEnvStatus
   };
 
   // ── Initial load ──────────────────────────────────────────────────────────────

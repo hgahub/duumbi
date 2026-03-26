@@ -251,7 +251,7 @@ pub fn App() -> impl IntoView {
                 <svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3" stroke="currentColor" fill="none" stroke-width="1.3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" fill="none" stroke-width="1.3"/></svg>
                 "Profile"
             </div>
-            <div class="um-item" onclick="window.__studio.closeUserMenu()">
+            <div class="um-item" onclick="window.__studio.closeUserMenu();window.__studio.openSettings()">
                 <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" stroke="currentColor" fill="none" stroke-width="1.3"/><path d="M8 5.5v5M5.5 8h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 "Settings"
             </div>
@@ -259,6 +259,29 @@ pub fn App() -> impl IntoView {
             <div class="um-item" onclick="window.__studio.closeUserMenu()">
                 <svg viewBox="0 0 16 16"><path d="M6 3h6a2 2 0 012 2v6a2 2 0 01-2 2H6" stroke="currentColor" fill="none" stroke-width="1.3" stroke-linecap="round"/><path d="M9 8H2m0 0l2.5-2.5M2 8l2.5 2.5" stroke="currentColor" fill="none" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 "Sign out"
+            </div>
+        </div>
+
+        // ── Settings Popup ──
+        <div class="settings-backdrop" id="settingsBackdrop" onclick="window.__studio.closeSettings()">
+            <div class="settings-popup" onclick="event.stopPropagation()">
+                <div class="settings-header">
+                    <span class="settings-title">"Settings"</span>
+                    <div class="settings-close" onclick="window.__studio.closeSettings()">{"\u{2715}"}</div>
+                </div>
+                <div class="settings-body">
+                    <div class="settings-sidebar">
+                        <div class="settings-nav-item active" data-section="models">"Models"</div>
+                    </div>
+                    <div class="settings-main" id="settingsMain">
+                        // Populated by JS openSettings()
+                        <div style="padding:20px;color:#5a5855;font-family:'JetBrains Mono',monospace;font-size:11px">"Loading providers..."</div>
+                    </div>
+                </div>
+                <div class="settings-footer">
+                    <span class="settings-error" id="settingsError"></span>
+                    <button class="cip-btn cip-btn-create" id="settingsSaveBtn" onclick="window.__studio.saveProviders()">"Save"</button>
+                </div>
             </div>
         </div>
 

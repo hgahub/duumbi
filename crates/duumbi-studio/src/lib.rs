@@ -71,6 +71,32 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))
+        // Settings API: providers + env check
+        .route(
+            "/api/settings/providers",
+            get({
+                let ws = api_ws.clone();
+                move || {
+                    let ws = ws.clone();
+                    async move { api_get_providers(ws).await }
+                }
+            })
+            .post({
+                let ws = api_ws.clone();
+                move |body: axum::extract::Json<Vec<serde_json::Value>>| {
+                    let ws = ws.clone();
+                    async move { api_save_providers(ws, body.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/settings/check-env",
+            get({
+                move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    async move { api_check_env(query.0) }
+                }
+            }),
+        )
         // Intent API: create + detail
         .route(
             "/api/intent/create",
@@ -664,4 +690,137 @@ async fn api_get_intent(
         )
             .into_response(),
     }
+}
+
+/// Returns configured providers as JSON.
+#[cfg(feature = "ssr")]
+async fn api_get_providers(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let config = match duumbi::config::load_config(&ws.root) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("{e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let providers: Vec<serde_json::Value> = config
+        .effective_providers()
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "provider": format!("{:?}", p.provider).to_lowercase(),
+                "role": format!("{:?}", p.role).to_lowercase(),
+                "model": p.model,
+                "api_key_env": p.api_key_env,
+                "auth_token_env": p.auth_token_env,
+                "base_url": p.base_url,
+            })
+        })
+        .collect();
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&providers).unwrap_or_else(|_| "[]".to_string()),
+    )
+        .into_response()
+}
+
+/// Saves providers to config.toml, preserving non-provider sections.
+#[cfg(feature = "ssr")]
+async fn api_save_providers(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    providers: Vec<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let config_path = ws.root.join(".duumbi").join("config.toml");
+
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc = existing
+        .parse::<toml::Table>()
+        .unwrap_or_else(|_| toml::Table::new());
+
+    // Remove old provider sections
+    doc.remove("providers");
+    doc.remove("llm");
+
+    // Build new [[providers]] array
+    let mut toml_providers = Vec::new();
+    for p in &providers {
+        let mut entry = toml::Table::new();
+        if let Some(s) = p.get("provider").and_then(|v| v.as_str()) {
+            entry.insert("provider".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("role").and_then(|v| v.as_str()) {
+            entry.insert("role".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("model").and_then(|v| v.as_str()) {
+            entry.insert("model".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("api_key_env").and_then(|v| v.as_str()) {
+            entry.insert("api_key_env".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p
+            .get("auth_token_env")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            entry.insert("auth_token_env".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            entry.insert("base_url".into(), toml::Value::String(s.to_string()));
+        }
+        toml_providers.push(toml::Value::Table(entry));
+    }
+
+    doc.insert("providers".into(), toml::Value::Array(toml_providers));
+
+    let toml_str = toml::to_string_pretty(&doc).unwrap_or_default();
+    if let Err(e) = std::fs::write(&config_path, &toml_str) {
+        return (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Write failed: {e}")}).to_string(),
+        )
+            .into_response();
+    }
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        r#"{"ok":true}"#.to_string(),
+    )
+        .into_response()
+}
+
+/// Checks if an environment variable is set (security-restricted to *_API_KEY / *_AUTH_TOKEN).
+#[cfg(feature = "ssr")]
+fn api_check_env(params: std::collections::HashMap<String, String>) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let var_name = params.get("var").cloned().unwrap_or_default();
+    let allowed = var_name.ends_with("_API_KEY") || var_name.ends_with("_AUTH_TOKEN");
+    let is_set = allowed && std::env::var(&var_name).is_ok();
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({"var": var_name, "set": is_set}).to_string(),
+    )
+        .into_response()
 }
