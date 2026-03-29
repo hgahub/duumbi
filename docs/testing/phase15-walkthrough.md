@@ -1,8 +1,9 @@
 # Phase 15: Studio Workflow — End-to-End Test Protocol
 
-**Version:** 1.0
-**Date:** 2026-03-26
+**Version:** 2.0
+**Date:** 2026-03-29
 **Milestone:** Phase 15 — Studio Workflow Redesign
+**Issues:** #478–#489 (12 issues)
 
 ---
 
@@ -33,7 +34,7 @@ export DUUMBI="$(pwd)/target/debug/duumbi"
 
 # 5. Run the test suite to confirm a clean baseline
 cargo test --all
-# Expected: 1747+ tests green, 0 failed
+# Expected: 1722+ tests green, 0 failed
 
 # 6. Clippy clean
 cargo clippy --all-targets -- -D warnings
@@ -258,6 +259,40 @@ y
 
 ---
 
+## Phase 15 Feature Verification
+
+Before running sample tasks, verify the new Phase 15 features work:
+
+### Context-Aware Chat (#478)
+1. Open Studio → Graph panel → navigate to Context level
+2. Send a chat message → observe the prompt is short (workspace overview only)
+3. Drill down to Code level → send another message → prompt includes full ops
+4. **Pass criteria:** Context-level chat uses less tokens than Code-level
+
+### Live Graph Refresh (#479)
+1. Open Studio → Graph panel at Component level
+2. Chat: "Add a helper function called greet that prints hello"
+3. After mutation succeeds, graph should reload automatically
+4. New node appears with a fade-in animation
+5. **Pass criteria:** No manual page refresh needed; new nodes animate in
+
+### Panel Wiring (#480–#483)
+1. **Footer:** Exactly 3 items — Intents, Graph, Build. No Plans/Agents/Registry
+2. **Intents panel:** Type a description → click "Create & Plan" → intent appears in left list
+3. **Intents panel:** Select intent → click "Execute" → status message updates
+4. **Graph panel:** Breadcrumb shows `workspace > module > function > block` trail
+5. **Build panel:** Click "Build" → output appears. Click "Run" → binary stdout shown
+6. **Pass criteria:** All 3 panels fully functional without JS console errors
+
+### Command Palette (#484–#485)
+1. Press `⌘K` → type "agent" → "Agent Templates" item appears
+2. Click → popup shows 5 seed templates (Planner, Coder, Reviewer, Tester, Repair)
+3. Each card: name, role badge, tool count, system prompt preview
+4. Press `⌘K` → type "provider" → "Configure Providers" opens settings popup
+5. **Pass criteria:** All items accessible via ⌘K
+
+---
+
 ## Troubleshooting
 
 | Problem | Likely Cause | Fix |
@@ -280,7 +315,7 @@ After all 3 samples pass, verify:
 ```bash
 # All existing tests still pass
 cargo test --all
-# Expected: 1747+ tests green
+# Expected: 1722+ tests green
 
 # Clippy clean
 cargo clippy --all-targets -- -D warnings
@@ -301,3 +336,8 @@ cargo fmt --check
 | 8 | Sample 3 Studio | Cross-module imports visible in graph |
 | 9 | Studio chat → LLM | Real streaming responses |
 | 10 | ⌘K settings | Provider config accessible |
+| 11 | ⌘K agent templates | 5 seed templates viewable |
+| 12 | Graph refresh | Nodes animate after chat mutation |
+| 13 | Breadcrumb | Shows drill-down path, clickable back-nav |
+| 14 | Build panel | Build + Run buttons produce output |
+| 15 | Intents panel | Create + Execute buttons wired |
