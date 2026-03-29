@@ -1149,3 +1149,81 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         status: format!("{:?}", spec.status),
     })
 }
+
+/// Info about an agent template for the Studio UI.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentTemplateInfo {
+    /// Template display name.
+    pub name: String,
+    /// Agent role (e.g., "Coder", "Planner").
+    pub role: String,
+    /// Number of tools available.
+    pub tools_count: usize,
+    /// Specialization tags.
+    pub specialization: Vec<String>,
+    /// System prompt preview (first 200 chars).
+    pub prompt_preview: String,
+}
+
+/// Returns the 5 seed agent templates for display in the Studio.
+#[server]
+pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnError> {
+    let templates = duumbi::agents::template::seed_templates();
+    Ok(templates
+        .into_iter()
+        .map(|t| AgentTemplateInfo {
+            name: t.name,
+            role: format!("{:?}", t.role),
+            tools_count: t.tools.len(),
+            specialization: t.specialization,
+            prompt_preview: t.system_prompt.chars().take(200).collect(),
+        })
+        .collect())
+}
+
+/// Tests an LLM provider connection by sending a minimal prompt.
+#[server]
+pub async fn test_provider_connection(
+    kind: String,
+    model: String,
+) -> Result<String, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
+
+    let providers = config.effective_providers();
+    let provider = providers
+        .iter()
+        .find(|p| format!("{:?}", p.provider) == kind && p.model == model)
+        .ok_or_else(|| ServerFnError::new(format!("Provider {kind}/{model} not found")))?;
+
+    let client = duumbi::agents::factory::create_provider(provider)
+        .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
+
+    // Send a minimal test prompt using the tools API with empty tool list.
+    // A successful call (even with parsing errors) proves connectivity.
+    let result = client
+        .call_with_tools("Respond with exactly: OK", "test", &[])
+        .await;
+
+    match result {
+        Ok(ops) => Ok(format!(
+            "Connected — provider responded ({} ops parsed).",
+            ops.len()
+        )),
+        Err(e) => {
+            let msg = format!("{e}");
+            // Parse errors mean the connection worked but response wasn't tool-use.
+            if msg.contains("parse") || msg.contains("tool") {
+                Ok(
+                    "Connected — provider responded (no tool-use, but connection verified)."
+                        .to_string(),
+                )
+            } else {
+                Err(ServerFnError::new(format!("Connection failed: {e}")))
+            }
+        }
+    }
+}

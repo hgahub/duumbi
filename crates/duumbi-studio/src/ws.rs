@@ -19,7 +19,6 @@ use crate::server_fns::WorkspaceContext;
 /// Incoming chat message from the client.
 #[cfg(feature = "ssr")]
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // c4_level will be used for context-aware prompts in #478
 struct ChatRequest {
     /// Message type (always "chat").
     #[serde(rename = "type")]
@@ -29,7 +28,7 @@ struct ChatRequest {
     /// Currently selected module (e.g., "app/main").
     #[serde(default)]
     module: Option<String>,
-    /// Current C4 drill-down level.
+    /// Current C4 drill-down level (context/container/component/code).
     #[serde(default)]
     c4_level: Option<String>,
 }
@@ -124,10 +123,12 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
 
         let module = req.module.as_deref().unwrap_or("app/main");
 
-        // Enrich prompt with workspace context.
+        // Enrich prompt with workspace context, filtered by C4 depth.
         let enriched_message =
             match context::assemble_context(&req.message, &workspace, &session_history) {
-                Ok(bundle) => bundle.enriched_message,
+                Ok(bundle) => {
+                    filter_context_by_c4_level(&bundle.enriched_message, req.c4_level.as_deref())
+                }
                 Err(_) => req.message.clone(),
             };
 
@@ -236,11 +237,20 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
                     task_type: "studio_chat".to_string(),
                 });
 
+                // Detect changed nodes by diffing @id sets.
+                let old_ids = collect_ids(&source_value);
+                let new_ids = collect_ids(&result.patched);
+                let changed_nodes: Vec<String> = new_ids
+                    .difference(&old_ids)
+                    .chain(old_ids.difference(&new_ids))
+                    .cloned()
+                    .collect();
+
                 // Send result frame.
                 let frame = ResultFrame {
                     msg_type: "result",
                     ops_count: result.ops_count,
-                    changed_nodes: Vec::new(),
+                    changed_nodes,
                     refresh: true,
                 };
                 if let Ok(json) = serde_json::to_string(&frame) {
@@ -271,6 +281,60 @@ async fn send_error(socket: &mut WebSocket, message: &str) -> Result<(), axum::E
         socket.send(Message::Text(json.into())).await
     } else {
         Ok(())
+    }
+}
+
+/// Filters the enriched context prompt based on the C4 drill-down level.
+///
+/// Higher levels (Context, Container) receive less context to keep prompts
+/// focused and token-efficient. Lower levels (Component, Code) include the
+/// full enriched message for precise mutations.
+#[cfg(feature = "ssr")]
+fn filter_context_by_c4_level(enriched: &str, c4_level: Option<&str>) -> String {
+    match c4_level {
+        Some("context") => {
+            // Context level: keep only the first paragraph (workspace overview).
+            enriched
+                .split("\n\n")
+                .next()
+                .unwrap_or(enriched)
+                .to_string()
+        }
+        Some("container") => {
+            // Container level: keep first 2 paragraphs (overview + module structure).
+            let paragraphs: Vec<&str> = enriched.split("\n\n").collect();
+            paragraphs[..paragraphs.len().min(2)].join("\n\n")
+        }
+        // Component and Code levels: full context for precise mutations.
+        _ => enriched.to_string(),
+    }
+}
+
+/// Collects all `@id` string values from a JSON-LD value tree.
+#[cfg(feature = "ssr")]
+fn collect_ids(value: &serde_json::Value) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    collect_ids_recursive(value, &mut ids);
+    ids
+}
+
+#[cfg(feature = "ssr")]
+fn collect_ids_recursive(value: &serde_json::Value, ids: &mut std::collections::HashSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(id)) = map.get("@id") {
+                ids.insert(id.clone());
+            }
+            for v in map.values() {
+                collect_ids_recursive(v, ids);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_ids_recursive(v, ids);
+            }
+        }
+        _ => {}
     }
 }
 

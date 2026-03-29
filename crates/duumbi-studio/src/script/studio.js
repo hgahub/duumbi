@@ -698,6 +698,36 @@
       .catch(function () { el.innerHTML = ''; });
   }
 
+  // ── Agent Templates popup ──────────────────────────────────────────────────────
+
+  function openAgentTemplates() {
+    closeAllPopups();
+    fetch('/api/agent_templates')
+      .then(function (r) { return r.json(); })
+      .then(function (templates) {
+        var bd = document.getElementById('settingsBackdrop');
+        var popup = document.getElementById('settingsPopup');
+        if (!bd || !popup) return;
+        var html = '<div class="sp-header"><h2>Agent Templates</h2>' +
+          '<button class="sp-close" onclick="window.__studio.closeSettings()">&times;</button></div>' +
+          '<div class="sp-body">';
+        templates.forEach(function (t) {
+          html += '<div style="background:#1a1d1f;border-radius:8px;padding:12px;margin-bottom:8px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center">' +
+            '<strong style="color:#e8e4d9">' + t.name + '</strong>' +
+            '<span class="tree-badge tb-mod">' + t.role + '</span></div>' +
+            '<div style="color:#908c82;font-size:12px;margin-top:4px">' + t.tools_count + ' tools · ' +
+            t.specialization.join(', ') + '</div>' +
+            '<pre style="color:#5a5855;font-size:11px;margin-top:6px;white-space:pre-wrap;max-height:80px;overflow:auto">' +
+            t.prompt_preview + '…</pre></div>';
+        });
+        html += '</div>';
+        popup.innerHTML = html;
+        bd.classList.add('open');
+      })
+      .catch(function (e) { console.error('Agent templates error:', e); });
+  }
+
   // ── Model selector ────────────────────────────────────────────────────────────
 
   function toggleModelDropdown(e) {
@@ -1503,6 +1533,46 @@
         updateEdges();
       })
       .catch(function (e) { console.error('Fetch error:', e); });
+  }
+
+  /** Reload the current graph view after a mutation (#479).
+   *  Optionally highlights changed node IDs with a glow animation. */
+  function reloadCurrentGraph(changedNodeIds) {
+    var url    = '/api/graph/' + currentLevel;
+    var params = [];
+    if (currentModule)   params.push('module='   + encodeURIComponent(currentModule));
+    if (currentFunction) params.push('function=' + encodeURIComponent(currentFunction));
+    if (currentBlock)    params.push('block='    + encodeURIComponent(currentBlock));
+    if (currentLayout && currentLayout !== 'hierarchical') {
+      params.push('layout=' + currentLayout);
+    }
+    if (params.length) url += '?' + params.join('&');
+
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { console.error('Graph refresh error:', data.error); return; }
+        renderGraph(data);
+        updateEdges();
+        // Highlight changed/new nodes with animation.
+        if (changedNodeIds && changedNodeIds.length) {
+          changedNodeIds.forEach(function (id) {
+            var el = document.querySelector('[data-node-id="' + id + '"]');
+            if (el) el.classList.add('node-changed');
+          });
+          setTimeout(function () {
+            qsa('.node-changed').forEach(function (el) { el.classList.remove('node-changed'); });
+          }, 2000);
+        }
+        // Mark all new nodes with appear animation.
+        qsa('.graph-node').forEach(function (el) {
+          if (!el.dataset.rendered) {
+            el.classList.add('node-added');
+            el.dataset.rendered = '1';
+          }
+        });
+      })
+      .catch(function (e) { console.error('Graph refresh fetch error:', e); });
   }
 
   function updateBreadcrumb() {
@@ -2599,6 +2669,10 @@
         _streamingDiv.appendChild(meta);
         _streamingDiv = null;
       }
+      // Live graph refresh after successful mutation (#479).
+      if (data.refresh) {
+        reloadCurrentGraph(data.changed_nodes || []);
+      }
     }
 
     function _appendChatError(message) {
@@ -2672,6 +2746,7 @@
     openSettings:        openSettings,
     closeSettings:       closeSettings,
     saveProviders:       saveProviders,
+    openAgentTemplates:  openAgentTemplates,
     addProviderCard:     addProviderCard,
     removeProviderCard:  removeProviderCard,
     onProviderChange:    onProviderChange,

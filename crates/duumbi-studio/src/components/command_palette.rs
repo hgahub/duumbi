@@ -79,6 +79,13 @@ pub fn CommandPalette() -> impl IntoView {
                             </svg>
                             <span>"Registry Search"</span>
                         </div>
+                        <div class="cmd-item" data-filter="agent template templates">
+                            <svg viewBox="0 0 14 14">
+                                <circle cx="5" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                                <circle cx="9" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                            </svg>
+                            <span>"Agent Templates"</span>
+                        </div>
                     </div>
                 </div>
                 <div class="cmd-footer">
