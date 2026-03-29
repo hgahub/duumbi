@@ -147,7 +147,13 @@ impl RegistryClient {
         // Compute integrity hash of the downloaded archive
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        let integrity = format!("sha256:{:x}", hasher.finalize());
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for b in digest.as_slice() {
+            std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"))
+                .expect("invariant: writing to String never fails");
+        }
+        let integrity = format!("sha256:{hex}");
 
         // Determine cache target directory
         let target_dir = module_cache_dir(cache_dir, module, version);
