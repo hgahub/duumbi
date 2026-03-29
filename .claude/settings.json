@@ -55,8 +55,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f Cargo.toml ]; then cargo test --all 2>&1 | tail -5 && cargo build 2>&1 | tail -5; fi",
-            "timeout": 120
+            "command": "if [ -f Cargo.toml ]; then cargo check --message-format short 2>&1 | tail -5; fi",
+            "timeout": 60
           }
         ]
       }

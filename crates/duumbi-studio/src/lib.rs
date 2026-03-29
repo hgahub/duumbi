@@ -10,6 +10,7 @@ pub mod layout;
 pub mod server_fns;
 pub mod state;
 pub mod theme;
+pub mod ws;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -54,10 +55,69 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
 
     // JSON API routes for interactive navigation
     let api_ws = workspace_ctx.clone();
+    let chat_ws = workspace_ctx.clone();
     let app = Router::new()
+        // WebSocket chat endpoint (streaming LLM responses)
+        .route(
+            "/ws/chat",
+            get({
+                let ws = chat_ws;
+                move |upgrade: axum::extract::ws::WebSocketUpgrade| {
+                    let ws = ws.clone();
+                    async move { upgrade.on_upgrade(move |socket| ws::handle_chat_ws(socket, ws)) }
+                }
+            }),
+        )
         // Serve the Studio CSS inline (embedded)
         .route("/studio.css", get(serve_studio_css))
         .route("/studio.js", get(serve_studio_js))
+        // Settings API: providers + env check
+        .route(
+            "/api/settings/providers",
+            get({
+                let ws = api_ws.clone();
+                move || {
+                    let ws = ws.clone();
+                    async move { api_get_providers(ws).await }
+                }
+            })
+            .post({
+                let ws = api_ws.clone();
+                move |body: axum::extract::Json<Vec<serde_json::Value>>| {
+                    let ws = ws.clone();
+                    async move { api_save_providers(ws, body.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/settings/check-env",
+            get({
+                move |query: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                    async move { api_check_env(query.0) }
+                }
+            }),
+        )
+        // Intent API: create + detail
+        .route(
+            "/api/intent/create",
+            axum::routing::post({
+                let ws = api_ws.clone();
+                move |body: axum::extract::Json<std::collections::HashMap<String, String>>| {
+                    let ws = ws.clone();
+                    async move { api_create_intent(ws, body.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/intent/{slug}",
+            get({
+                let ws = api_ws.clone();
+                move |path: axum::extract::Path<String>| {
+                    let ws = ws.clone();
+                    async move { api_get_intent(ws, path.0).await }
+                }
+            }),
+        )
         // JSON API for raw JSON-LD source (used by code view toggle)
         .route(
             "/api/source",
@@ -470,6 +530,297 @@ async fn serve_studio_js() -> axum::response::Response {
             http::HeaderValue::from_static("application/javascript"),
         )],
         STUDIO_JS,
+    )
+        .into_response()
+}
+
+/// Creates a new intent from a description via LLM.
+///
+/// `POST /api/intent/create` with `{"description": "Build a calculator..."}`
+/// Returns `{"slug": "calculator", "description": "...", "status": "Pending"}`
+#[cfg(feature = "ssr")]
+async fn api_create_intent(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    body: std::collections::HashMap<String, String>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let description = match body.get("description") {
+        Some(d) if !d.trim().is_empty() => d.clone(),
+        _ => {
+            return (
+                http::StatusCode::BAD_REQUEST,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                r#"{"error":"description is required"}"#.to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let ws = ws.read().await;
+    let config = match duumbi::config::load_config(&ws.root) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("Config: {e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let providers = config.effective_providers();
+    let client = match duumbi::agents::factory::create_provider_chain(&providers) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("Provider: {e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    match duumbi::intent::create::run_create(&*client, &ws.root, &description, true).await {
+        Ok(slug) => {
+            let spec_desc = duumbi::intent::load_intent(&ws.root, &slug)
+                .map(|s| s.intent)
+                .unwrap_or_else(|_| description.clone());
+            (
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "slug": slug,
+                    "description": spec_desc,
+                    "status": "Pending"
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Create failed: {e}")}).to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Returns intent details as markdown-formatted HTML.
+///
+/// `GET /api/intent/{slug}` → `{"slug": "...", "intent": "...", "status": "...",
+///   "acceptance_criteria": [...], "test_cases": [...], "html": "<h1>..."}`
+#[cfg(feature = "ssr")]
+async fn api_get_intent(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    slug: String,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    match duumbi::intent::load_intent(&ws.root, &slug) {
+        Ok(spec) => {
+            // Build simple markdown-ish HTML for the md-panel
+            let mut html = format!("<h1>{}</h1>\n", spec.intent);
+            html.push_str(&format!(
+                "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
+                spec.status
+            ));
+
+            if !spec.acceptance_criteria.is_empty() {
+                html.push_str("<h2>Acceptance Criteria</h2>\n<ul>\n");
+                for c in &spec.acceptance_criteria {
+                    html.push_str(&format!("<li>{c}</li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            if !spec.test_cases.is_empty() {
+                html.push_str("<h2>Test Cases</h2>\n<ul>\n");
+                for tc in &spec.test_cases {
+                    html.push_str(&format!(
+                        "<li><code>{}</code>({}) → expected: {}</li>\n",
+                        tc.function,
+                        tc.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        tc.expected_return
+                    ));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            if !spec.modules.create.is_empty() {
+                html.push_str("<h2>Modules to Create</h2>\n<ul>\n");
+                for m in &spec.modules.create {
+                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+            if !spec.modules.modify.is_empty() {
+                html.push_str("<h2>Modules to Modify</h2>\n<ul>\n");
+                for m in &spec.modules.modify {
+                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
+                }
+                html.push_str("</ul>\n");
+            }
+
+            (
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "slug": slug,
+                    "intent": spec.intent,
+                    "status": format!("{:?}", spec.status),
+                    "html": html
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            http::StatusCode::NOT_FOUND,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Intent not found: {e}")}).to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Returns configured providers as JSON.
+#[cfg(feature = "ssr")]
+async fn api_get_providers(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let config = match duumbi::config::load_config(&ws.root) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                [(http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": format!("{e}")}).to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let providers: Vec<serde_json::Value> = config
+        .effective_providers()
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "provider": format!("{:?}", p.provider).to_lowercase(),
+                "role": format!("{:?}", p.role).to_lowercase(),
+                "model": p.model,
+                "api_key_env": p.api_key_env,
+                "auth_token_env": p.auth_token_env,
+                "base_url": p.base_url,
+            })
+        })
+        .collect();
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&providers).unwrap_or_else(|_| "[]".to_string()),
+    )
+        .into_response()
+}
+
+/// Saves providers to config.toml, preserving non-provider sections.
+#[cfg(feature = "ssr")]
+async fn api_save_providers(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    providers: Vec<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let config_path = ws.root.join(".duumbi").join("config.toml");
+
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc = existing
+        .parse::<toml::Table>()
+        .unwrap_or_else(|_| toml::Table::new());
+
+    // Remove old provider sections
+    doc.remove("providers");
+    doc.remove("llm");
+
+    // Build new [[providers]] array
+    let mut toml_providers = Vec::new();
+    for p in &providers {
+        let mut entry = toml::Table::new();
+        if let Some(s) = p.get("provider").and_then(|v| v.as_str()) {
+            entry.insert("provider".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("role").and_then(|v| v.as_str()) {
+            entry.insert("role".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("model").and_then(|v| v.as_str()) {
+            entry.insert("model".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p.get("api_key_env").and_then(|v| v.as_str()) {
+            entry.insert("api_key_env".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p
+            .get("auth_token_env")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            entry.insert("auth_token_env".into(), toml::Value::String(s.to_string()));
+        }
+        if let Some(s) = p
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            entry.insert("base_url".into(), toml::Value::String(s.to_string()));
+        }
+        toml_providers.push(toml::Value::Table(entry));
+    }
+
+    doc.insert("providers".into(), toml::Value::Array(toml_providers));
+
+    let toml_str = toml::to_string_pretty(&doc).unwrap_or_default();
+    if let Err(e) = std::fs::write(&config_path, &toml_str) {
+        return (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": format!("Write failed: {e}")}).to_string(),
+        )
+            .into_response();
+    }
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        r#"{"ok":true}"#.to_string(),
+    )
+        .into_response()
+}
+
+/// Checks if an environment variable is set (security-restricted to *_API_KEY / *_AUTH_TOKEN).
+#[cfg(feature = "ssr")]
+fn api_check_env(params: std::collections::HashMap<String, String>) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let var_name = params.get("var").cloned().unwrap_or_default();
+    let allowed = var_name.ends_with("_API_KEY") || var_name.ends_with("_AUTH_TOKEN");
+    let is_set = allowed && std::env::var(&var_name).is_ok();
+
+    (
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::json!({"var": var_name, "set": is_set}).to_string(),
     )
         .into_response()
 }

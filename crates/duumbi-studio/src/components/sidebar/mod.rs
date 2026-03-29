@@ -1,282 +1,169 @@
-//! Sidebar components.
+//! Sidebar components — Phase 15 redesign.
 //!
-//! Contains the file explorer, intent panel, and registry search panel.
+//! Single tree view (no tabs) with intent tree and module tree.
+//! Intents expand to show C4 children. Modules expand to functions.
+//! The sidebar push-navigates the canvas and is resizable via JS.
 
 use leptos::prelude::*;
 
-use crate::state::{SidebarTab, StudioState, ToastKind};
+use crate::state::{ActivePanel, StudioState};
 
-/// Left sidebar component.
+/// Left sidebar with intent tree and module explorer.
 ///
-/// Shows tabbed navigation: Explorer, Intents, Registry.
+/// Rendered inside the Phase 15 layout shell. Visibility is controlled
+/// by `sidebar_collapsed` state. Resizable via JS drag handle.
 #[component]
 pub fn Sidebar() -> impl IntoView {
     let state = expect_context::<StudioState>();
 
+    let sidebar_class = move || {
+        if state.sidebar_collapsed.get() {
+            "sidebar"
+        } else {
+            "sidebar open"
+        }
+    };
+
     view! {
-        <aside class="studio-sidebar">
-            <div class="sidebar-tabs">
-                <button
-                    class=move || if state.sidebar_tab.get() == SidebarTab::Explorer { "sidebar-tab active" } else { "sidebar-tab" }
-                    on:click=move |_| state.sidebar_tab.set(SidebarTab::Explorer)
-                >
-                    "Explorer"
-                </button>
-                <button
-                    class=move || if state.sidebar_tab.get() == SidebarTab::Intents { "sidebar-tab active" } else { "sidebar-tab" }
-                    on:click=move |_| state.sidebar_tab.set(SidebarTab::Intents)
-                >
-                    "Intents"
-                </button>
-                <button
-                    class=move || if state.sidebar_tab.get() == SidebarTab::Registry { "sidebar-tab active" } else { "sidebar-tab" }
-                    on:click=move |_| state.sidebar_tab.set(SidebarTab::Registry)
-                >
-                    "Registry"
-                </button>
-            </div>
-            <div class="sidebar-content">
-                {move || match state.sidebar_tab.get() {
-                    SidebarTab::Explorer => view! {
+        <div class=sidebar_class id="sidebar">
+            <div class="sidebar-inner" id="sidebarInner">
+                <div class="sidebar-resize" id="sidebarResize"></div>
+
+                // Header with title and pin/close
+                <div class="sidebar-header">
+                    <span class="sidebar-title">"Explorer"</span>
+                    <div class="sidebar-actions">
+                        <div class="sidebar-pin" id="pinBtn" title="Pin sidebar">
+                            <svg viewBox="0 0 14 14">
+                                <path d="M5 1.5l4 2.5v3l1.5 1.5v1.5h-3.5V13l-1 1-1-1V10H1.5V8.5L3 7V4z"
+                                    fill="none" stroke="currentColor" stroke-width="1.5"/>
+                            </svg>
+                        </div>
+                        <div class="sidebar-close"
+                            on:click=move |_| state.sidebar_collapsed.set(true)>
+                            {"\u{2715}"}
+                        </div>
+                    </div>
+                </div>
+
+                // Scrollable content
+                <div class="sidebar-scroll">
+                    // Intents page (controlled by JS page switching)
+                    <div class="sb-page active" id="page-intents">
+                        // Workspace intents section
                         <div class="sidebar-section">
-                            <h3 class="section-title">"Explorer"</h3>
+                            <div class="section-header">
+                                <div class="section-label">"Workspace"</div>
+                                <div class="section-create" title="Create intent" id="sidebarCreateBtn">
+                                    <svg viewBox="0 0 12 12">
+                                        <line x1="6" y1="2" x2="6" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                                        <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                                    </svg>
+                                </div>
+                            </div>
+
+                            // Intent tree — rendered from state, JS handles expand/collapse
+                            {move || {
+                                let intents = state.intents.get();
+                                if intents.is_empty() {
+                                    view! {
+                                        <div class="tree-item" style="color:#5a5855">
+                                            "No intents yet"
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div>
+                                            {intents.into_iter().map(|intent| {
+                                                let slug = intent.slug.clone();
+                                                let slug_id = format!("intent-{}", slug.replace(' ', "-"));
+                                                let children_id = format!("children-{}", slug.replace(' ', "-"));
+                                                view! {
+                                                    <div class="tree-intent" id=slug_id.clone()>
+                                                        <svg class="intent-chevron" viewBox="0 0 10 10">
+                                                            <path d="M3 2L7 5L3 8" stroke="currentColor" stroke-width="1.3"
+                                                                fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                                                        </svg>
+                                                        <svg class="tree-icon" viewBox="0 0 12 12" style="opacity:.8">
+                                                            <circle cx="6" cy="6" r="5" stroke="currentColor" fill="none"/>
+                                                            <circle cx="6" cy="6" r="2" stroke="currentColor" fill="none"/>
+                                                        </svg>
+                                                        <span>{slug}</span>
+                                                    </div>
+                                                    <div class="tree-children" id=children_id>
+                                                        <div class="tree-child">
+                                                            <span class="child-dot" style="background:#6fd8b2"></span>
+                                                            "Context"
+                                                            <span class="tree-badge tb-fn" style="margin-left:auto">"C4"</span>
+                                                        </div>
+                                                        <div class="tree-child">
+                                                            <span class="child-dot" style="background:#9ac4ef"></span>
+                                                            "Container"
+                                                            <span class="tree-badge tb-mod" style="margin-left:auto">"C4"</span>
+                                                        </div>
+                                                        <div class="tree-child">
+                                                            <span class="child-dot" style="background:#e07830"></span>
+                                                            "Component"
+                                                            <span class="tree-badge" style="margin-left:auto;background:#352618;color:#e07830">"C4"</span>
+                                                        </div>
+                                                        <div class="tree-child">
+                                                            <span class="child-dot" style="background:#c25a1a"></span>
+                                                            "Code"
+                                                            <span class="tree-badge" style="margin-left:auto;background:#351a1a;color:#f09090">"C4"</span>
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
+                        </div>
+
+                        // Modules section
+                        <div class="sidebar-section">
+                            <div class="section-label">"Modules"</div>
                             <ModuleTree />
                         </div>
-                    }.into_any(),
-                    SidebarTab::Intents => view! {
-                        <div class="sidebar-section">
-                            <h3 class="section-title">"Intents"</h3>
-                            <IntentList />
-                        </div>
-                    }.into_any(),
-                    SidebarTab::Registry => view! {
-                        <div class="sidebar-section">
-                            <RegistryPanel />
-                        </div>
-                    }.into_any(),
-                }}
+                    </div>
+                </div>
             </div>
-        </aside>
+        </div>
     }
 }
 
-/// Module tree showing workspace structure.
+/// Module tree showing workspace module structure.
 ///
-/// SSR renders the initial module list from `InitialData`. The JS
-/// `updateSidebarTree()` rebuilds this on every C4 navigation.
+/// SSR renders the initial module list from `InitialData`.
+/// Click navigates to Graph panel at that module.
 #[component]
 fn ModuleTree() -> impl IntoView {
+    let state = expect_context::<StudioState>();
     let modules = use_context::<crate::state::InitialData>()
         .map(|d| d.modules.clone())
         .unwrap_or_default();
 
     view! {
-        <ul class="module-tree">
+        <div>
             {modules.into_iter().map(|module_id| {
                 let mid = module_id.clone();
+                let mid_click = module_id.clone();
                 view! {
-                    <li class="module-item">
-                        <span class="tree-arrow" inner_html="<svg viewBox='0 0 16 16'><polyline points='6 4 10 8 6 12'/></svg>"></span>
-                        <span class="tree-icon" style="color:#5b9bd5">"\u{2B22}"</span>
-                        <span class="module-name">{mid}</span>
-                    </li>
+                    <div class="tree-item"
+                        on:click=move |_| {
+                            state.selected_module.set(Some(mid_click.clone()));
+                            state.active_panel.set(ActivePanel::Graph);
+                        }>
+                        <svg class="tree-icon" viewBox="0 0 13 13">
+                            <rect x="1" y="3" width="11" height="8" rx="1.5"
+                                fill="none" stroke="currentColor" stroke-width="1.3"/>
+                            <path d="M1 5h11" stroke="currentColor" stroke-width="1.3"/>
+                        </svg>
+                        <span>{mid}</span>
+                        <span class="tree-badge tb-mod">"mod"</span>
+                    </div>
                 }
-            }).collect::<Vec<_>>()}
-        </ul>
-    }
-}
-
-/// Intent list showing active and archived intents.
-#[component]
-fn IntentList() -> impl IntoView {
-    let state = expect_context::<StudioState>();
-
-    view! {
-        <ul class="intent-list">
-            {move || state.intents.get().into_iter().map(|intent| {
-                let status_class = match intent.status.as_str() {
-                    "Done" | "Completed" => "status-done",
-                    "Running" | "InProgress" => "status-running",
-                    "Failed" => "status-failed",
-                    _ => "status-pending",
-                };
-                view! {
-                    <li class="intent-item">
-                        <span class=format!("intent-status {status_class}")>
-                            {match intent.status.as_str() {
-                                "Done" | "Completed" => "\u{2713}",
-                                "Running" | "InProgress" => "\u{23F3}",
-                                "Failed" => "\u{2717}",
-                                _ => "\u{25CB}",
-                            }}
-                        </span>
-                        <span class="intent-name">{intent.slug}</span>
-                    </li>
-                }
-            }).collect::<Vec<_>>()}
-        </ul>
-    }
-}
-
-/// Registry search and installed dependencies panel.
-#[component]
-fn RegistryPanel() -> impl IntoView {
-    let state = expect_context::<StudioState>();
-    let search_input = NodeRef::<leptos::html::Input>::new();
-
-    // Load installed deps on mount
-    let deps_resource = Resource::new(
-        || (),
-        |_| async {
-            crate::server_fns::get_installed_deps()
-                .await
-                .unwrap_or_default()
-        },
-    );
-
-    // Update state when deps load
-    Effect::new(move || {
-        if let Some(deps) = deps_resource.get() {
-            state.installed_deps.set(deps);
-        }
-    });
-
-    let do_search = move || {
-        let input = search_input.get().expect("invariant: search input mounted");
-        let query = input.value();
-        if query.trim().is_empty() {
-            state.registry_results.set(Vec::new());
-            return;
-        }
-
-        state.registry_loading.set(true);
-        let state_clone = state;
-        leptos::task::spawn_local(async move {
-            match crate::server_fns::search_registry(query).await {
-                Ok(results) => {
-                    state_clone.registry_results.set(results);
-                }
-                Err(e) => {
-                    super::toast::push_toast(
-                        &state_clone,
-                        ToastKind::Error,
-                        format!("Search failed: {e}"),
-                    );
-                }
-            }
-            state_clone.registry_loading.set(false);
-        });
-    };
-
-    let on_keydown = move |ev: web_sys::KeyboardEvent| {
-        if ev.key() == "Enter" {
-            do_search();
-        }
-    };
-
-    let on_click_search = move |_: web_sys::MouseEvent| {
-        do_search();
-    };
-
-    view! {
-        <div class="registry-panel">
-            // Search section
-            <h3 class="section-title">"Search Registry"</h3>
-            <div class="registry-search">
-                <input
-                    type="text"
-                    class="registry-search-input"
-                    placeholder="Search modules..."
-                    node_ref=search_input
-                    on:keydown=on_keydown
-                />
-                <button
-                    class="registry-search-btn"
-                    on:click=on_click_search
-                    disabled=move || state.registry_loading.get()
-                >
-                    {move || if state.registry_loading.get() { "..." } else { "\u{1F50D}" }}
-                </button>
-            </div>
-
-            // Search results
-            {move || {
-                let results = state.registry_results.get();
-                if results.is_empty() {
-                    view! { <div></div> }.into_any()
-                } else {
-                    view! {
-                        <ul class="registry-results">
-                            {results.into_iter().map(|hit| {
-                                let name = hit.name.clone();
-                                let install_name = hit.name.clone();
-                                let state_for_install = state;
-                                view! {
-                                    <li class="registry-result-item">
-                                        <div class="registry-result-info">
-                                            <span class="registry-result-name">{name}</span>
-                                            <span class="registry-result-version">{hit.latest_version}</span>
-                                        </div>
-                                        {hit.description.map(|desc| view! {
-                                            <div class="registry-result-desc">{desc}</div>
-                                        })}
-                                        <button
-                                            class="registry-install-btn"
-                                            on:click=move |_| {
-                                                let module = install_name.clone();
-                                                let st = state_for_install;
-                                                leptos::task::spawn_local(async move {
-                                                    match crate::server_fns::install_module(module.clone()).await {
-                                                        Ok(msg) => {
-                                                            super::toast::push_toast(&st, ToastKind::Success, msg);
-                                                            // Refresh installed deps
-                                                            if let Ok(deps) = crate::server_fns::get_installed_deps().await {
-                                                                st.installed_deps.set(deps);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            super::toast::push_toast(
-                                                                &st,
-                                                                ToastKind::Error,
-                                                                format!("Install failed: {e}"),
-                                                            );
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                        >
-                                            "Install"
-                                        </button>
-                                    </li>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </ul>
-                    }.into_any()
-                }
-            }}
-
-            // Installed dependencies
-            <h3 class="section-title" style="margin-top: 16px">"Installed"</h3>
-            {move || {
-                let deps = state.installed_deps.get();
-                if deps.is_empty() {
-                    view! { <p class="registry-empty">"No dependencies"</p> }.into_any()
-                } else {
-                    view! {
-                        <ul class="registry-deps-list">
-                            {deps.into_iter().map(|dep| {
-                                view! {
-                                    <li class="registry-dep-item">
-                                        <span class="registry-dep-name">{dep.name}</span>
-                                        <span class="registry-dep-version">{dep.version}</span>
-                                        <span class="registry-dep-source">{dep.source}</span>
-                                    </li>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </ul>
-                    }.into_any()
-                }
-            }}
+            }).collect_view()}
         </div>
     }
 }

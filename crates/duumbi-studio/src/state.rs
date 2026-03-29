@@ -195,7 +195,7 @@ pub struct ToastMessage {
     pub text: String,
 }
 
-/// Which sidebar tab is active.
+/// Which sidebar tab is active (legacy, kept for backward compat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SidebarTab {
     /// Module explorer.
@@ -205,6 +205,18 @@ pub enum SidebarTab {
     Intents,
     /// Registry search and installed deps.
     Registry,
+}
+
+/// Which main panel is active in the 3-panel layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ActivePanel {
+    /// Intent lifecycle: create, review, execute.
+    #[default]
+    Intents,
+    /// C4 graph visualization + context-aware chat.
+    Graph,
+    /// Compile and run.
+    Build,
 }
 
 /// Response from the chat server function.
@@ -276,8 +288,17 @@ pub struct StudioState {
     /// Whether the Ctrl+K search overlay is visible.
     pub search_visible: RwSignal<bool>,
 
-    /// Active sidebar tab.
+    /// Active sidebar tab (legacy).
     pub sidebar_tab: RwSignal<SidebarTab>,
+
+    /// Active main panel (Phase 15: 3-panel layout).
+    pub active_panel: RwSignal<ActivePanel>,
+
+    /// Selected LLM provider/model name for chat.
+    pub selected_provider: RwSignal<String>,
+
+    /// Whether WebSocket chat is connected.
+    pub ws_connected: RwSignal<bool>,
 
     /// Registry search results.
     pub registry_results: RwSignal<Vec<RegistrySearchHit>>,
@@ -320,6 +341,9 @@ impl StudioState {
             shortcuts_visible: RwSignal::new(false),
             search_visible: RwSignal::new(false),
             sidebar_tab: RwSignal::new(SidebarTab::Explorer),
+            active_panel: RwSignal::new(ActivePanel::Intents),
+            selected_provider: RwSignal::new(String::new()),
+            ws_connected: RwSignal::new(false),
             registry_results: RwSignal::new(Vec::new()),
             registry_loading: RwSignal::new(false),
             installed_deps: RwSignal::new(Vec::new()),
@@ -349,6 +373,9 @@ impl StudioState {
             shortcuts_visible: RwSignal::new(false),
             search_visible: RwSignal::new(false),
             sidebar_tab: RwSignal::new(SidebarTab::Explorer),
+            active_panel: RwSignal::new(ActivePanel::Intents),
+            selected_provider: RwSignal::new(String::new()),
+            ws_connected: RwSignal::new(false),
             registry_results: RwSignal::new(Vec::new()),
             registry_loading: RwSignal::new(false),
             installed_deps: RwSignal::new(Vec::new()),
