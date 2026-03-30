@@ -1106,7 +1106,8 @@ pub async fn execute_intent(slug: String) -> Result<String, ServerFnError> {
     let client = duumbi::agents::factory::create_provider_chain(&providers)
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
-    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug)
+    let mut log = Vec::new();
+    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug, &mut log)
         .await
         .map_err(|e| ServerFnError::new(format!("Execute: {e}")))?;
 
@@ -1135,7 +1136,8 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
     // Studio always auto-confirms (no interactive prompt).
-    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true)
+    let mut log = Vec::new();
+    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true, &mut log)
         .await
         .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
 

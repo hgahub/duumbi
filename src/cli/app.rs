@@ -323,6 +323,10 @@ impl ReplApp {
     }
 
     /// Handles mouse events (scroll wheel for output buffer scrolling).
+    ///
+    /// Currently unused — mouse capture is disabled to allow native text
+    /// selection. Scroll is available via keyboard (PageUp/PageDown).
+    #[allow(dead_code)]
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
         match mouse.kind {

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
 use tui_textarea::TextArea;
 
@@ -76,7 +76,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
 
     // Initialise ratatui (enters alternate screen, enables raw mode).
     let mut terminal = ratatui::init();
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    execute!(std::io::stdout(), EnableBracketedPaste)?;
 
     // Single-line textarea — we intercept Enter ourselves.
     let mut textarea = TextArea::default();
@@ -85,7 +85,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &mut textarea).await;
 
     // Always restore the terminal, even on error.
-    execute!(std::io::stdout(), DisableMouseCapture).ok();
+    execute!(std::io::stdout(), DisableBracketedPaste).ok();
     ratatui::restore();
 
     result
@@ -126,8 +126,8 @@ async fn event_loop(
                         }
                     }
                 },
-                Event::Mouse(mouse) => {
-                    app.handle_mouse(mouse);
+                Event::Paste(text) => {
+                    textarea.insert_str(&text);
                 }
                 _ => {}
             }
@@ -683,14 +683,20 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
             return;
         }
         let workspace = app.workspace_root.clone();
-        let result = {
+        let (result, log) = {
             let client_ref: &dyn crate::agents::LlmProvider = app
                 .client
                 .as_ref()
                 .map(|c| c.as_ref())
                 .expect("invariant: checked above");
-            intent::create::run_create(client_ref, &workspace, trimmed, false).await
+            let mut log = Vec::new();
+            let r =
+                intent::create::run_create(client_ref, &workspace, trimmed, false, &mut log).await;
+            (r, log)
         };
+        for line in &log {
+            app.push_output(line, OutputStyle::Dim);
+        }
         match result {
             Ok(slug) => {
                 app.focused_intent = Some(slug.clone());
@@ -816,14 +822,20 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
                 return;
             }
             let workspace = app.workspace_root.clone();
-            let result = {
+            let (result, log) = {
                 let client_ref: &dyn crate::agents::LlmProvider = app
                     .client
                     .as_ref()
                     .map(|c| c.as_ref())
                     .expect("invariant: checked above");
-                intent::create::run_create(client_ref, &workspace, rest, false).await
+                let mut log = Vec::new();
+                let r =
+                    intent::create::run_create(client_ref, &workspace, rest, false, &mut log).await;
+                (r, log)
             };
+            for line in &log {
+                app.push_output(line, OutputStyle::Dim);
+            }
             match result {
                 Ok(slug) => {
                     app.push_output(format!("Intent '{slug}' saved."), OutputStyle::Success);
@@ -936,14 +948,19 @@ async fn handle_intent_execute(app: &mut ReplApp, slug: &str) {
     app.push_output(format!("Executing intent '{slug}'…"), OutputStyle::Dim);
 
     let workspace = app.workspace_root.clone();
-    let result = {
+    let (result, log) = {
         let client_ref: &dyn crate::agents::LlmProvider = app
             .client
             .as_ref()
             .map(|c| c.as_ref())
             .expect("invariant: checked above");
-        intent::execute::run_execute(client_ref, &workspace, slug).await
+        let mut log = Vec::new();
+        let r = intent::execute::run_execute(client_ref, &workspace, slug, &mut log).await;
+        (r, log)
     };
+    for line in &log {
+        app.push_output(line, OutputStyle::Dim);
+    }
 
     match result {
         Ok(true) => {

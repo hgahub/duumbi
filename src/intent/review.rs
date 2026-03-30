@@ -106,6 +106,58 @@ pub fn print_spec_detail(slug: &str, spec: &IntentSpec) {
     eprintln!();
 }
 
+/// Formats a detailed intent spec into a log buffer (REPL-safe).
+///
+/// Same content as [`print_spec_detail`] but appends to `log` instead of
+/// writing to stderr.
+pub fn format_spec_detail(slug: &str, spec: &IntentSpec, log: &mut Vec<String>) {
+    let status_icon = match spec.status {
+        IntentStatus::Pending => "○",
+        IntentStatus::InProgress => "◉",
+        IntentStatus::Completed => "✓",
+        IntentStatus::Failed => "✗",
+    };
+
+    log.push(format!("Intent: {} ({})", slug, spec.intent));
+    log.push(format!("Status: {status_icon} {}", spec.status));
+    if let Some(ref created) = spec.created_at {
+        log.push(format!("Created: {created}"));
+    }
+
+    if !spec.acceptance_criteria.is_empty() {
+        log.push("Acceptance Criteria:".to_string());
+        for (i, criterion) in spec.acceptance_criteria.iter().enumerate() {
+            log.push(format!("  {}. {criterion}", i + 1));
+        }
+    }
+
+    if !spec.modules.create.is_empty() || !spec.modules.modify.is_empty() {
+        log.push("Modules:".to_string());
+        for m in &spec.modules.create {
+            log.push(format!("  + {m} (create)"));
+        }
+        for m in &spec.modules.modify {
+            log.push(format!("  ~ {m} (modify)"));
+        }
+    }
+
+    if !spec.test_cases.is_empty() {
+        log.push("Test Cases:".to_string());
+        for tc in &spec.test_cases {
+            let args_str = tc
+                .args
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            log.push(format!(
+                "  {} — {}({}) → {}",
+                tc.name, tc.function, args_str, tc.expected_return
+            ));
+        }
+    }
+}
+
 /// Opens the intent YAML in `$EDITOR` (falls back to `vi`) and re-validates.
 ///
 /// Returns `Ok(())` if the file was saved with valid YAML, or an error if

@@ -241,7 +241,8 @@ where
         .map_err(|e| format!("failed to save intent: {e}"))?;
 
     // Execute intent
-    let ok = intent::execute::run_execute(provider, workspace, slug)
+    let mut log = Vec::new();
+    let ok = intent::execute::run_execute(provider, workspace, slug, &mut log)
         .await
         .map_err(|e| format!("{e}"))?;
 
