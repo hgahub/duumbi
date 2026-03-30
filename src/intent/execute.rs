@@ -137,10 +137,10 @@ pub async fn run_execute(
         .await;
 
         // Drain streamed chunks into log.
-        if let Ok(chunks) = log_clone.lock() {
-            if !chunks.is_empty() {
-                log.push(chunks.concat());
-            }
+        if let Ok(chunks) = log_clone.lock()
+            && !chunks.is_empty()
+        {
+            log.push(chunks.concat());
         }
 
         match result {
@@ -195,10 +195,10 @@ pub async fn run_execute(
                         )
                         .await;
 
-                        if let Ok(chunks) = retry_log.lock() {
-                            if !chunks.is_empty() {
-                                log.push(chunks.concat());
-                            }
+                        if let Ok(chunks) = retry_log.lock()
+                            && !chunks.is_empty()
+                        {
+                            log.push(chunks.concat());
                         }
 
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =

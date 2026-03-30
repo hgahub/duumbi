@@ -118,12 +118,17 @@ async fn event_loop(
                         break;
                     }
                     super::mode::Action::Submit(input) => {
+                        // Show "working" indicator while async operation runs.
+                        app.working = true;
+                        terminal.draw(|frame| app.render(frame, textarea))?;
+
                         if process_input(terminal, app, textarea, &input).await {
                             if let Some(ref mut mgr) = app.session_mgr {
                                 mgr.archive().ok();
                             }
                             break;
                         }
+                        app.working = false;
                     }
                 },
                 Event::Paste(text) => {
@@ -691,7 +696,9 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
                 .expect("invariant: checked above");
             let mut log = Vec::new();
             let r =
-                intent::create::run_create(client_ref, &workspace, trimmed, false, &mut log).await;
+                // REPL always auto-confirms — interactive stdin is not available
+                // in ratatui raw mode.
+                intent::create::run_create(client_ref, &workspace, trimmed, true, &mut log).await;
             (r, log)
         };
         for line in &log {
@@ -830,7 +837,8 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
                     .expect("invariant: checked above");
                 let mut log = Vec::new();
                 let r =
-                    intent::create::run_create(client_ref, &workspace, rest, false, &mut log).await;
+                    // REPL always auto-confirms (no interactive stdin in ratatui).
+                    intent::create::run_create(client_ref, &workspace, rest, true, &mut log).await;
                 (r, log)
             };
             for line in &log {

@@ -147,6 +147,9 @@ pub struct ReplApp {
     /// Cached set of env var names that have a key stored in `~/.duumbi/credentials.toml`.
     /// Populated once at startup and refreshed after provider mutations.
     keychain_cache: std::collections::HashSet<String>,
+    /// True while an async operation (LLM call, build, etc.) is in progress.
+    /// Displayed as a spinner/indicator in the output area.
+    pub working: bool,
 }
 
 impl ReplApp {
@@ -184,6 +187,7 @@ impl ReplApp {
             show_tip,
             panel: PanelState::default(),
             keychain_cache,
+            working: false,
         }
     }
 
@@ -1033,6 +1037,19 @@ impl ReplApp {
         }
 
         frame.render_widget(Paragraph::new(lines), area);
+
+        // Working indicator when an async operation is in progress.
+        if self.working {
+            let spinner = "⟳ Working…";
+            let style = Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            let y = area.bottom().saturating_sub(1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(spinner, style)),
+                Rect::new(area.x, y, spinner.len() as u16, 1),
+            );
+        }
 
         // Scroll indicator overlay when scrolled up.
         if self.output_scroll_offset > 0 {
