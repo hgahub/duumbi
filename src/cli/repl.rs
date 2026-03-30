@@ -707,10 +707,6 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
         match result {
             Ok(slug) => {
                 app.focused_intent = Some(slug.clone());
-                app.push_output(
-                    format!("Intent '{slug}' created and focused."),
-                    OutputStyle::Success,
-                );
             }
             Err(e) => {
                 app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
@@ -844,13 +840,8 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
             for line in &log {
                 app.push_output(line, OutputStyle::Dim);
             }
-            match result {
-                Ok(slug) => {
-                    app.push_output(format!("Intent '{slug}' saved."), OutputStyle::Success);
-                }
-                Err(e) => {
-                    app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
-                }
+            if let Err(e) = result {
+                app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
             }
         }
 
