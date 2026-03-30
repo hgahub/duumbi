@@ -66,7 +66,8 @@ pub fn IntentsPanel() -> impl IntoView {
     });
 
     let on_create = move |_| {
-        // Read the textarea value from the DOM.
+        // Read the textarea value from the DOM (browser-only).
+        #[cfg(feature = "hydrate")]
         let desc = web_sys::window()
             .and_then(|w| w.document())
             .and_then(|d| d.get_element_by_id("intentDescription"))
@@ -76,6 +77,9 @@ pub fn IntentsPanel() -> impl IntoView {
             })
             .map(|ta| ta.value())
             .unwrap_or_default();
+
+        #[cfg(not(feature = "hydrate"))]
+        let desc = String::new();
 
         if !desc.trim().is_empty() {
             status_message.set("Creating intent...".to_string());

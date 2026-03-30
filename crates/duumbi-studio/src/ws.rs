@@ -237,14 +237,31 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
                     task_type: "studio_chat".to_string(),
                 });
 
-                // Detect changed nodes by diffing @id sets.
+                // Detect changed nodes: added, removed, and modified in-place.
                 let old_ids = collect_ids(&source_value);
                 let new_ids = collect_ids(&result.patched);
-                let changed_nodes: Vec<String> = new_ids
+
+                // Added + removed IDs (symmetric difference).
+                let mut changed_set: std::collections::HashSet<String> = new_ids
                     .difference(&old_ids)
                     .chain(old_ids.difference(&new_ids))
                     .cloned()
                     .collect();
+
+                // In-place modifications: same @id but different content.
+                let old_nodes = collect_nodes_by_id(&source_value);
+                let new_nodes = collect_nodes_by_id(&result.patched);
+                for id in old_ids.intersection(&new_ids) {
+                    if let (Some(old_node), Some(new_node)) =
+                        (old_nodes.get(id.as_str()), new_nodes.get(id.as_str()))
+                    {
+                        if old_node != new_node {
+                            changed_set.insert(id.clone());
+                        }
+                    }
+                }
+
+                let changed_nodes: Vec<String> = changed_set.into_iter().collect();
 
                 // Send result frame.
                 let frame = ResultFrame {
@@ -286,26 +303,41 @@ async fn send_error(socket: &mut WebSocket, message: &str) -> Result<(), axum::E
 
 /// Filters the enriched context prompt based on the C4 drill-down level.
 ///
-/// Higher levels (Context, Container) receive less context to keep prompts
-/// focused and token-efficient. Lower levels (Component, Code) include the
-/// full enriched message for precise mutations.
+/// Uses known section headers from `assemble_context()` to extract the right
+/// sections. Falls back to paragraph-based splitting if no headers are found.
+///
+/// - `context` → "Available modules" section only (minimal prompt)
+/// - `container`/`component` → "Available modules" + "Relevant graph context"
+/// - `code` / `None` → full enriched message
 #[cfg(feature = "ssr")]
 fn filter_context_by_c4_level(enriched: &str, c4_level: Option<&str>) -> String {
+    const MODULES_HDR: &str = "Available modules";
+    const GRAPH_HDR: &str = "Relevant graph context";
+
     match c4_level {
         Some("context") => {
-            // Context level: keep only the first paragraph (workspace overview).
-            enriched
-                .split("\n\n")
-                .next()
-                .unwrap_or(enriched)
-                .to_string()
+            // Context level: keep only the modules section.
+            if let Some(start) = enriched.find(MODULES_HDR) {
+                let end = enriched[start..]
+                    .find(GRAPH_HDR)
+                    .map(|i| start + i)
+                    .unwrap_or(enriched.len());
+                enriched[start..end].trim().to_string()
+            } else {
+                // Fallback: first paragraph if no known headers.
+                enriched
+                    .split("\n\n")
+                    .next()
+                    .unwrap_or(enriched)
+                    .to_string()
+            }
         }
-        Some("container") => {
-            // Container level: keep first 2 paragraphs (overview + module structure).
-            let paragraphs: Vec<&str> = enriched.split("\n\n").collect();
-            paragraphs[..paragraphs.len().min(2)].join("\n\n")
+        Some("container") | Some("component") => {
+            // Container/Component: modules + graph context, skip session history.
+            let modules_start = enriched.find(MODULES_HDR).unwrap_or(0);
+            enriched[modules_start..].trim().to_string()
         }
-        // Component and Code levels: full context for precise mutations.
+        // Code and any other levels: full context for precise mutations.
         _ => enriched.to_string(),
     }
 }
@@ -332,6 +364,39 @@ fn collect_ids_recursive(value: &serde_json::Value, ids: &mut std::collections::
         serde_json::Value::Array(arr) => {
             for v in arr {
                 collect_ids_recursive(v, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Builds a map from `@id` to the full JSON node for in-place diff detection.
+#[cfg(feature = "ssr")]
+fn collect_nodes_by_id(
+    value: &serde_json::Value,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let mut map = std::collections::HashMap::new();
+    collect_nodes_recursive(value, &mut map);
+    map
+}
+
+#[cfg(feature = "ssr")]
+fn collect_nodes_recursive(
+    value: &serde_json::Value,
+    map: &mut std::collections::HashMap<String, serde_json::Value>,
+) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            if let Some(serde_json::Value::String(id)) = obj.get("@id") {
+                map.insert(id.clone(), value.clone());
+            }
+            for v in obj.values() {
+                collect_nodes_recursive(v, map);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_nodes_recursive(v, map);
             }
         }
         _ => {}

@@ -97,24 +97,12 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
                 }
             }),
         )
-        // Agent templates API
+        // Agent templates API (delegates to shared helper in server_fns).
         .route(
             "/api/agent_templates",
             get(|| async {
-                let templates = duumbi::agents::template::seed_templates();
-                let infos: Vec<serde_json::Value> = templates
-                    .into_iter()
-                    .map(|t| {
-                        serde_json::json!({
-                            "name": t.name,
-                            "role": format!("{:?}", t.role),
-                            "tools_count": t.tools.len(),
-                            "specialization": t.specialization,
-                            "prompt_preview": t.system_prompt.chars().take(200).collect::<String>(),
-                        })
-                    })
-                    .collect();
-                axum::Json(serde_json::Value::Array(infos))
+                let infos = crate::server_fns::build_agent_template_infos();
+                axum::Json(infos)
             }),
         )
         // Intent API: create + detail

@@ -1165,11 +1165,10 @@ pub struct AgentTemplateInfo {
     pub prompt_preview: String,
 }
 
-/// Returns the 5 seed agent templates for display in the Studio.
-#[server]
-pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnError> {
-    let templates = duumbi::agents::template::seed_templates();
-    Ok(templates
+/// Builds the agent template info list (shared by server fn and JSON API route).
+#[cfg(feature = "ssr")]
+pub fn build_agent_template_infos() -> Vec<AgentTemplateInfo> {
+    duumbi::agents::template::seed_templates()
         .into_iter()
         .map(|t| AgentTemplateInfo {
             name: t.name,
@@ -1178,7 +1177,13 @@ pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnErr
             specialization: t.specialization,
             prompt_preview: t.system_prompt.chars().take(200).collect(),
         })
-        .collect())
+        .collect()
+}
+
+/// Returns the 5 seed agent templates for display in the Studio.
+#[server]
+pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnError> {
+    Ok(build_agent_template_infos())
 }
 
 /// Tests an LLM provider connection by sending a minimal prompt.
@@ -1196,7 +1201,7 @@ pub async fn test_provider_connection(
     let providers = config.effective_providers();
     let provider = providers
         .iter()
-        .find(|p| format!("{:?}", p.provider) == kind && p.model == model)
+        .find(|p| p.provider.to_string() == kind && p.model == model)
         .ok_or_else(|| ServerFnError::new(format!("Provider {kind}/{model} not found")))?;
 
     let client = duumbi::agents::factory::create_provider(provider)
