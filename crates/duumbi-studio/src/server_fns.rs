@@ -1205,7 +1205,7 @@ pub async fn test_provider_connection(
     // Send a minimal test prompt using the tools API with empty tool list.
     // A successful call (even with parsing errors) proves connectivity.
     let result = client
-        .call_with_tools("Respond with exactly: OK", "test", &[])
+        .call_with_tools("Respond with exactly: OK", "test")
         .await;
 
     match result {
