@@ -118,7 +118,6 @@ async fn event_loop(
                         break;
                     }
                     super::mode::Action::Submit(input) => {
-                        // Show "working" indicator while async operation runs.
                         app.working = true;
                         terminal.draw(|frame| app.render(frame, textarea))?;
 

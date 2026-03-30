@@ -148,7 +148,7 @@ pub struct ReplApp {
     /// Populated once at startup and refreshed after provider mutations.
     keychain_cache: std::collections::HashSet<String>,
     /// True while an async operation (LLM call, build, etc.) is in progress.
-    /// Displayed as a spinner/indicator in the output area.
+    /// Displayed as an animated spinner in the output area.
     pub working: bool,
 }
 
@@ -190,6 +190,9 @@ impl ReplApp {
             working: false,
         }
     }
+
+    /// Braille spinner frames for the working indicator.
+    const SPINNER: &'static [char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
     // -----------------------------------------------------------------------
     // Key handling
@@ -1038,16 +1041,22 @@ impl ReplApp {
 
         frame.render_widget(Paragraph::new(lines), area);
 
-        // Working indicator when an async operation is in progress.
+        // Animated spinner when an async operation is in progress.
         if self.working {
-            let spinner = "⟳ Working…";
+            let frame_idx = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                / 120) as usize;
+            let ch = Self::SPINNER[frame_idx % Self::SPINNER.len()];
+            let spinner = format!("{ch} Working…");
             let style = Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD);
             let y = area.bottom().saturating_sub(1);
             frame.render_widget(
                 Paragraph::new(Span::styled(spinner, style)),
-                Rect::new(area.x, y, spinner.len() as u16, 1),
+                Rect::new(area.x, y, 12, 1),
             );
         }
 
