@@ -239,9 +239,9 @@ impl ReplApp {
                     return Action::Continue;
                 }
 
-                // Clear the textarea
-                textarea.move_cursor(CursorMove::Head);
-                textarea.delete_line_by_end();
+                // Clear the textarea fully (select all + delete).
+                textarea.select_all();
+                textarea.cut();
 
                 Action::Submit(trimmed)
             }

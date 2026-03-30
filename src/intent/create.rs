@@ -268,7 +268,11 @@ pub(crate) async fn call_plain_completion(
         .into_inner()
         .expect("invariant: mutex not poisoned");
     if text.is_empty() {
-        anyhow::bail!("LLM returned empty response for intent spec generation");
+        anyhow::bail!(
+            "The model did not generate an intent spec.\n\
+             This usually means the model is too small or does not support structured output.\n\
+             Try a more capable model (e.g. claude-sonnet-4-6, gpt-4o) in .duumbi/config.toml."
+        );
     }
     Ok(text)
 }
