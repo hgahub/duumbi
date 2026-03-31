@@ -1,0 +1,35 @@
+intent: "Which of two numbers is bigger?"
+version: 1
+status: pending
+acceptance_criteria:
+  - "max_of_two(a, b) returns a when a > b"
+  - "max_of_two(a, b) returns b when b > a"
+  - "max_of_two(a, b) returns a (or b) when a == b"
+  - "max_of_two handles negative numbers correctly"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "max_first_bigger"
+    function: "max_of_two"
+    args: [9, 3]
+    expected_return: 9
+  - name: "max_second_bigger"
+    function: "max_of_two"
+    args: [2, 8]
+    expected_return: 8
+  - name: "max_equal"
+    function: "max_of_two"
+    args: [5, 5]
+    expected_return: 5
+  - name: "max_negative"
+    function: "max_of_two"
+    args: [-1, -7]
+    expected_return: -1
+  - name: "max_mixed_sign"
+    function: "max_of_two"
+    args: [-4, 2]
+    expected_return: 2
+dependencies: []

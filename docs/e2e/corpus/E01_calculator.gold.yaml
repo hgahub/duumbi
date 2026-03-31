@@ -1,0 +1,65 @@
+intent: "Build a calculator with add, subtract, multiply, divide"
+version: 1
+status: pending
+acceptance_criteria:
+  - "add(a, b) returns a+b for i64 inputs"
+  - "subtract(a, b) returns a-b for i64 inputs"
+  - "multiply(a, b) returns a*b for i64 inputs"
+  - "divide(a, b) returns a/b (integer division) for i64 inputs"
+  - "all operations handle negative numbers correctly"
+  - "all operations handle zero operands correctly"
+modules:
+  create:
+    - "calculator/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "add_positive"
+    function: "add"
+    args: [3, 5]
+    expected_return: 8
+  - name: "add_negative"
+    function: "add"
+    args: [-4, -6]
+    expected_return: -10
+  - name: "add_zero"
+    function: "add"
+    args: [0, 7]
+    expected_return: 7
+  - name: "subtract_positive"
+    function: "subtract"
+    args: [10, 3]
+    expected_return: 7
+  - name: "subtract_negative"
+    function: "subtract"
+    args: [-2, -5]
+    expected_return: 3
+  - name: "subtract_zero"
+    function: "subtract"
+    args: [0, 0]
+    expected_return: 0
+  - name: "multiply_positive"
+    function: "multiply"
+    args: [4, 6]
+    expected_return: 24
+  - name: "multiply_negative"
+    function: "multiply"
+    args: [-3, 7]
+    expected_return: -21
+  - name: "multiply_zero"
+    function: "multiply"
+    args: [0, 99]
+    expected_return: 0
+  - name: "divide_positive"
+    function: "divide"
+    args: [20, 4]
+    expected_return: 5
+  - name: "divide_negative"
+    function: "divide"
+    args: [-15, 3]
+    expected_return: -5
+  - name: "divide_truncates"
+    function: "divide"
+    args: [7, 2]
+    expected_return: 3
+dependencies: []

@@ -1,0 +1,110 @@
+{
+  "provider": "minimax",
+  "timestamp": "20260331_230950",
+  "total": 10,
+  "passed": 10,
+  "failed": 0,
+  "errors": 0,
+  "results": [
+    {
+      "task": "H01_math_library",
+      "status": "pass",
+      "score": 90,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 10
+    },
+    {
+      "task": "H02_min_max_avg",
+      "status": "pass",
+      "score": 87,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 12
+    },
+    {
+      "task": "H03_isqrt",
+      "status": "pass",
+      "score": 92,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 17
+    },
+    {
+      "task": "H04_digital_root",
+      "status": "pass",
+      "score": 95,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "H05_tribonacci",
+      "status": "pass",
+      "score": 91,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 16
+    },
+    {
+      "task": "H06_sum_range",
+      "status": "pass",
+      "score": 91,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 16
+    },
+    {
+      "task": "H07_binary_to_decimal",
+      "status": "pass",
+      "score": 93,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 13
+    },
+    {
+      "task": "H08_armstrong",
+      "status": "pass",
+      "score": 95,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 15
+    },
+    {
+      "task": "H09_lcm",
+      "status": "pass",
+      "score": 93,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 13
+    },
+    {
+      "task": "H10_modular_arithmetic",
+      "status": "pass",
+      "score": 100,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    }
+  ]
+}

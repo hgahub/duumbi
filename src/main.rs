@@ -479,6 +479,7 @@ fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result
             api_key_env,
             role,
             base_url,
+            auth_token_env,
         } => {
             let mut args = format!("{provider_type} {model} {api_key_env}");
             if role != "primary" {
@@ -486,6 +487,9 @@ fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result
             }
             if let Some(ref url) = base_url {
                 args.push_str(&format!(" --base-url {url}"));
+            }
+            if let Some(ref token_env) = auth_token_env {
+                args.push_str(&format!(" --auth-token-env {token_env}"));
             }
             cli::provider::add_provider(&mut cfg, &args)
         }

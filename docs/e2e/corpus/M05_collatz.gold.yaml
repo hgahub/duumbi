@@ -1,0 +1,31 @@
+intent: "How many steps does the Collatz sequence take to reach 1?"
+version: 1
+status: pending
+acceptance_criteria:
+  - "collatz_steps(1) returns 0 (already at 1, no steps needed)"
+  - "collatz_steps(2) returns 1 (2 -> 1)"
+  - "collatz_steps(6) returns 8 (6->3->10->5->16->8->4->2->1)"
+  - "collatz_steps(27) returns 111 (known long sequence)"
+modules:
+  create:
+    - "math/collatz"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "collatz_one"
+    function: "collatz_steps"
+    args: [1]
+    expected_return: 0
+  - name: "collatz_two"
+    function: "collatz_steps"
+    args: [2]
+    expected_return: 1
+  - name: "collatz_six"
+    function: "collatz_steps"
+    args: [6]
+    expected_return: 8
+  - name: "collatz_twentyseven"
+    function: "collatz_steps"
+    args: [27]
+    expected_return: 111
+dependencies: []

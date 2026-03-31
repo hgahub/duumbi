@@ -1,0 +1,35 @@
+intent: "Calculate 2 to the power of n"
+version: 1
+status: pending
+acceptance_criteria:
+  - "power_of_two(n) returns 2^n for non-negative i64 n"
+  - "power_of_two(0) returns 1 (2^0 = 1)"
+  - "power_of_two(1) returns 2"
+  - "power_of_two(10) returns 1024"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "power_of_two_zero"
+    function: "power_of_two"
+    args: [0]
+    expected_return: 1
+  - name: "power_of_two_one"
+    function: "power_of_two"
+    args: [1]
+    expected_return: 2
+  - name: "power_of_two_two"
+    function: "power_of_two"
+    args: [2]
+    expected_return: 4
+  - name: "power_of_two_ten"
+    function: "power_of_two"
+    args: [10]
+    expected_return: 1024
+  - name: "power_of_two_small"
+    function: "power_of_two"
+    args: [3]
+    expected_return: 8
+dependencies: []

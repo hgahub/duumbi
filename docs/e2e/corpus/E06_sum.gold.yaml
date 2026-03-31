@@ -1,0 +1,30 @@
+intent: "Add two numbers together"
+version: 1
+status: pending
+acceptance_criteria:
+  - "sum(a, b) returns a+b for i64 inputs"
+  - "sum handles negative numbers correctly"
+  - "sum(0, 0) returns 0"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "sum_positive"
+    function: "sum"
+    args: [3, 4]
+    expected_return: 7
+  - name: "sum_negative"
+    function: "sum"
+    args: [-5, -3]
+    expected_return: -8
+  - name: "sum_zeros"
+    function: "sum"
+    args: [0, 0]
+    expected_return: 0
+  - name: "sum_mixed_sign"
+    function: "sum"
+    args: [10, -4]
+    expected_return: 6
+dependencies: []

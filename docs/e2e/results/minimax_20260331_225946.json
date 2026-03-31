@@ -1,0 +1,60 @@
+{
+  "provider": "minimax",
+  "timestamp": "20260331_225946",
+  "total": 10,
+  "passed": 0,
+  "failed": 0,
+  "errors": 10,
+  "results": [
+    {
+      "task": "E01_calculator",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E02_absolute_value",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E03_double",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E04_is_even",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E05_negate",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E06_sum",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E07_power_of_two",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E08_factorial",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E09_max_of_two",
+      "status": "error",
+      "score": 0
+    },
+    {
+      "task": "E10_signum",
+      "status": "error",
+      "score": 0
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+intent: "Convert a binary number (as integer like 1010) to decimal"
+version: 1
+status: pending
+acceptance_criteria:
+  - "binary_to_decimal(0) returns 0 (zero edge case)"
+  - "binary_to_decimal(1) returns 1 (single bit)"
+  - "binary_to_decimal(10) returns 2 (binary 10 = decimal 2)"
+  - "binary_to_decimal(101) returns 5 (binary 101 = decimal 5)"
+  - "binary_to_decimal(1010) returns 10 (binary 1010 = decimal 10)"
+  - "binary_to_decimal(11111) returns 31 (five ones)"
+modules:
+  create:
+    - "convert/binary"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "binary_zero"
+    function: "binary_to_decimal"
+    args: [0]
+    expected_return: 0
+  - name: "binary_one"
+    function: "binary_to_decimal"
+    args: [1]
+    expected_return: 1
+  - name: "binary_two"
+    function: "binary_to_decimal"
+    args: [10]
+    expected_return: 2
+  - name: "binary_five"
+    function: "binary_to_decimal"
+    args: [101]
+    expected_return: 5
+  - name: "binary_ten"
+    function: "binary_to_decimal"
+    args: [1010]
+    expected_return: 10
+  - name: "binary_thirty_one"
+    function: "binary_to_decimal"
+    args: [11111]
+    expected_return: 31
+dependencies: []

@@ -74,6 +74,80 @@ impl OpenAiClient {
         self
     }
 
+    /// Plain-text completion without tools, then falls back to tool-based if
+    /// the model returns tool calls. Used by `call_with_tools_streaming` so
+    /// that `intent create` (which needs plain text) works on OpenAI-compatible
+    /// providers.
+    async fn do_call_streaming_or_tools(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        on_text: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<Vec<PatchOp>, AgentError> {
+        // First try: plain text completion (no tools). This is what intent create needs.
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_message }
+            ]
+        });
+
+        let mut req = self
+            .http
+            .post(&self.base_url)
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json");
+
+        for (key, value) in &self.extra_headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        let resp = req.json(&body).send().await?;
+
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+
+        // Check if the response has non-empty text content.
+        if let Some(content) = response
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            on_text(content);
+            // Return NoToolCalls — the caller (call_plain_completion) expects
+            // this as the success path for text responses.
+            return Err(AgentError::NoToolCalls);
+        }
+
+        // If no text content, check for tool calls in the response.
+        if let Some(calls) = response
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+        {
+            let mut ops = Vec::new();
+            for item in calls {
+                let call: OpenAiToolCall = serde_json::from_value(item.clone())
+                    .map_err(|e| AgentError::Parse(format!("Failed to parse tool call: {e}")))?;
+                let op = patch_op_from_openai(&call).map_err(AgentError::Parse)?;
+                ops.push(op);
+            }
+            return Ok(ops);
+        }
+
+        // Neither text nor tool calls.
+        Err(AgentError::NoToolCalls)
+    }
+
     /// Sends a message to the OpenAI-compatible API (internal).
     async fn do_call_with_tools(
         &self,
@@ -136,11 +210,12 @@ impl LlmProvider for OpenAiClient {
         &'a self,
         system_prompt: &'a str,
         user_message: &'a str,
-        _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
-        // OpenAI streaming for tool calls requires complex delta reconstruction;
-        // fall back to non-streaming.
-        Box::pin(self.do_call_with_tools(system_prompt, user_message))
+        // For plain-text completion (e.g. intent create), we need to call without
+        // tools and stream the text content via on_text. For tool-based mutations,
+        // we fall back to non-streaming with tools.
+        Box::pin(self.do_call_streaming_or_tools(system_prompt, user_message, on_text))
     }
 }
 

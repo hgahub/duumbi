@@ -1,0 +1,110 @@
+{
+  "provider": "minimax",
+  "timestamp": "20260331_230059",
+  "total": 10,
+  "passed": 8,
+  "failed": 2,
+  "errors": 0,
+  "results": [
+    {
+      "task": "E01_calculator",
+      "status": "pass",
+      "score": 100,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E02_absolute_value",
+      "status": "pass",
+      "score": 95,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E03_double",
+      "status": "pass",
+      "score": 100,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E04_is_even",
+      "status": "pass",
+      "score": 95,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E05_negate",
+      "status": "pass",
+      "score": 100,
+      "json": 10,
+      "modules": 15,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E06_sum",
+      "status": "pass",
+      "score": 70,
+      "json": 10,
+      "modules": 15,
+      "tests": 0,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E07_power_of_two",
+      "status": "pass",
+      "score": 70,
+      "json": 10,
+      "modules": 15,
+      "tests": 0,
+      "edge_cases": 25,
+      "criteria": 20
+    },
+    {
+      "task": "E08_factorial",
+      "status": "pass",
+      "score": 91,
+      "json": 10,
+      "modules": 10,
+      "tests": 30,
+      "edge_cases": 25,
+      "criteria": 16
+    },
+    {
+      "task": "E09_max_of_two",
+      "status": "fail",
+      "score": 60,
+      "json": 10,
+      "modules": 10,
+      "tests": 0,
+      "edge_cases": 25,
+      "criteria": 15
+    },
+    {
+      "task": "E10_signum",
+      "status": "fail",
+      "score": 65,
+      "json": 10,
+      "modules": 10,
+      "tests": 0,
+      "edge_cases": 25,
+      "criteria": 20
+    }
+  ]
+}

@@ -363,8 +363,9 @@ pub enum ProviderSubcommand {
     /// Add a new LLM provider.
     ///
     /// Example: `duumbi provider add anthropic claude-sonnet-4-6 ANTHROPIC_API_KEY`
+    /// Subscription: `duumbi provider add anthropic claude-sonnet-4-6 ANTHROPIC_API_KEY --auth-token-env ANTHROPIC_AUTH_TOKEN`
     Add {
-        /// Provider type: anthropic, openai, grok, openrouter.
+        /// Provider type: anthropic, openai, grok, openrouter, minimax.
         #[arg(value_name = "TYPE")]
         provider_type: String,
         /// Model identifier (e.g. claude-sonnet-4-6).
@@ -377,6 +378,13 @@ pub enum ProviderSubcommand {
         /// Custom base URL for the API endpoint.
         #[arg(long)]
         base_url: Option<String>,
+        /// Environment variable name for a subscription/OAuth Bearer token.
+        ///
+        /// When set, the token is preferred over the API key and sent as
+        /// `Authorization: Bearer`. Use with Claude Pro/Max subscriptions
+        /// (generate a token via `claude setup-token`).
+        #[arg(long)]
+        auth_token_env: Option<String>,
     },
 
     /// Remove a provider by 1-based index or model name.

@@ -1,0 +1,79 @@
+intent: '"Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers"'
+version: 1
+status: pending
+acceptance_criteria:
+- add(a, b) returns the sum of two i64 numbers
+- subtract(a, b) returns the difference of two i64 numbers (a - b)
+- multiply(a, b) returns the product of two i64 numbers
+- divide(a, b) returns the integer quotient of two i64 numbers (a / b)
+- All functions accept exactly two i64 parameters and return an i64
+- All functions are defined in a dedicated calculator/ops module
+- The app/main module is updated to import and call each calculator function
+modules:
+  create:
+  - calculator/ops
+  modify:
+  - app/main
+test_cases:
+- name: add_positive_numbers
+  function: add
+  args:
+  - 3
+  - 5
+  expected_return: 8
+- name: add_with_negative
+  function: add
+  args:
+  - -4
+  - 10
+  expected_return: 6
+- name: subtract_positive_numbers
+  function: subtract
+  args:
+  - 10
+  - 4
+  expected_return: 6
+- name: subtract_resulting_negative
+  function: subtract
+  args:
+  - 3
+  - 9
+  expected_return: -6
+- name: multiply_positive_numbers
+  function: multiply
+  args:
+  - 6
+  - 7
+  expected_return: 42
+- name: multiply_by_zero
+  function: multiply
+  args:
+  - 99
+  - 0
+  expected_return: 0
+- name: multiply_negative
+  function: multiply
+  args:
+  - -3
+  - 4
+  expected_return: -12
+- name: divide_exact
+  function: divide
+  args:
+  - 20
+  - 4
+  expected_return: 5
+- name: divide_truncates
+  function: divide
+  args:
+  - 7
+  - 2
+  expected_return: 3
+- name: divide_negative
+  function: divide
+  args:
+  - -12
+  - 3
+  expected_return: -4
+dependencies: []
+created_at: 2026-01-01T22:30:28Z

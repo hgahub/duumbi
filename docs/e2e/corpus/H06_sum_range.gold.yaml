@@ -1,0 +1,36 @@
+intent: "Sum all integers in a range from a to b"
+version: 1
+status: pending
+acceptance_criteria:
+  - "sum_range(1, 5) returns 15 (1+2+3+4+5)"
+  - "sum_range(3, 3) returns 3 (single element range)"
+  - "sum_range(0, 0) returns 0 (zero range)"
+  - "sum_range(-3, 3) returns 0 (symmetric range around zero)"
+  - "sum_range(5, 1) returns 15 (reversed range handled like forward)"
+modules:
+  create:
+    - "math/range"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "sum_range_basic"
+    function: "sum_range"
+    args: [1, 5]
+    expected_return: 15
+  - name: "sum_range_single"
+    function: "sum_range"
+    args: [3, 3]
+    expected_return: 3
+  - name: "sum_range_zero"
+    function: "sum_range"
+    args: [0, 0]
+    expected_return: 0
+  - name: "sum_range_symmetric"
+    function: "sum_range"
+    args: [-3, 3]
+    expected_return: 0
+  - name: "sum_range_reversed"
+    function: "sum_range"
+    args: [5, 1]
+    expected_return: 15
+dependencies: []
