@@ -698,6 +698,62 @@
       .catch(function () { el.innerHTML = ''; });
   }
 
+  // ── Agent Templates popup ──────────────────────────────────────────────────────
+
+  function openAgentTemplates() {
+    closeAllPopups();
+    fetch('/api/agent_templates')
+      .then(function (r) { return r.json(); })
+      .then(function (templates) {
+        var bd = document.getElementById('settingsBackdrop');
+        var popup = document.getElementById('settingsPopup');
+        if (!bd || !popup) return;
+        popup.innerHTML = '';
+
+        var header = document.createElement('div');
+        header.className = 'sp-header';
+        var title = document.createElement('h2');
+        title.textContent = 'Agent Templates';
+        header.appendChild(title);
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'sp-close';
+        closeBtn.textContent = '\u00d7';
+        closeBtn.onclick = function () { window.__studio.closeSettings(); };
+        header.appendChild(closeBtn);
+        popup.appendChild(header);
+
+        var body = document.createElement('div');
+        body.className = 'sp-body';
+        templates.forEach(function (t) {
+          var card = document.createElement('div');
+          card.style.cssText = 'background:#1a1d1f;border-radius:8px;padding:12px;margin-bottom:8px';
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+          var nameEl = document.createElement('strong');
+          nameEl.style.color = '#e8e4d9';
+          nameEl.textContent = t.name || '';
+          var roleEl = document.createElement('span');
+          roleEl.className = 'tree-badge tb-mod';
+          roleEl.textContent = t.role || '';
+          row.appendChild(nameEl);
+          row.appendChild(roleEl);
+          card.appendChild(row);
+          var details = document.createElement('div');
+          details.style.cssText = 'color:#908c82;font-size:12px;margin-top:4px';
+          details.textContent = (t.tools_count || 0) + ' tools \u00b7 ' + (Array.isArray(t.specialization) ? t.specialization.join(', ') : '');
+          card.appendChild(details);
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'color:#5a5855;font-size:11px;margin-top:6px;white-space:pre-wrap;max-height:80px;overflow:auto';
+          pre.textContent = (t.prompt_preview || '') + '\u2026';
+          card.appendChild(pre);
+          body.appendChild(card);
+        });
+        popup.appendChild(body);
+        bd.classList.add('open');
+      })
+      .catch(function (e) { console.error('Agent templates error:', e); });
+  }
+
   // ── Model selector ────────────────────────────────────────────────────────────
 
   function toggleModelDropdown(e) {
@@ -758,6 +814,20 @@
       lbl.style.display = anyShown ? '' : 'none';
     });
   }
+
+  // Command palette item click dispatch.
+  document.addEventListener('click', function (e) {
+    var item = e.target.closest('.cmd-item');
+    if (!item) return;
+    var filter = item.dataset.filter || '';
+    closeSearch();
+    if (filter.indexOf('new intent') !== -1) { openCreateIntent(); }
+    else if (filter.indexOf('build') !== -1) { toggleFunction('Build'); }
+    else if (filter.indexOf('theme') !== -1 && window.__studio) { /* theme toggle handled elsewhere */ }
+    else if (filter.indexOf('provider') !== -1) { openSettings(); }
+    else if (filter.indexOf('registry') !== -1) { toggleFunction('Intents'); }
+    else if (filter.indexOf('agent template') !== -1) { openAgentTemplates(); }
+  });
 
   // ── Popups ────────────────────────────────────────────────────────────────────
 
@@ -1503,6 +1573,61 @@
         updateEdges();
       })
       .catch(function (e) { console.error('Fetch error:', e); });
+  }
+
+  // Track previously rendered node IDs to detect truly new nodes (#479).
+  var _previousNodeIds = new Set();
+
+  /** Reload the current graph view after a mutation (#479).
+   *  Highlights changed node IDs with a glow animation and new nodes with fade-in. */
+  function reloadCurrentGraph(changedNodeIds) {
+    // Snapshot current node IDs before re-render.
+    var prevIds = new Set(_previousNodeIds);
+
+    var url    = '/api/graph/' + currentLevel;
+    var params = [];
+    if (currentModule)   params.push('module='   + encodeURIComponent(currentModule));
+    if (currentFunction) params.push('function=' + encodeURIComponent(currentFunction));
+    if (currentBlock)    params.push('block='    + encodeURIComponent(currentBlock));
+    if (currentLayout && currentLayout !== 'hierarchical') {
+      params.push('layout=' + currentLayout);
+    }
+    if (params.length) url += '?' + params.join('&');
+
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { console.error('Graph refresh error:', data.error); return; }
+        renderGraph(data);
+        updateEdges();
+
+        // Update tracked node IDs.
+        _previousNodeIds = new Set();
+        qsa('.graph-node').forEach(function (el) {
+          var id = el.getAttribute('data-node-id');
+          if (id) _previousNodeIds.add(id);
+        });
+
+        // Highlight changed nodes (modified in-place) with glow animation.
+        if (changedNodeIds && changedNodeIds.length) {
+          changedNodeIds.forEach(function (id) {
+            var el = document.querySelector('[data-node-id="' + id + '"]');
+            if (el) el.classList.add('node-changed');
+          });
+          setTimeout(function () {
+            qsa('.node-changed').forEach(function (el) { el.classList.remove('node-changed'); });
+          }, 2000);
+        }
+
+        // Mark truly new nodes (not in previous snapshot) with appear animation.
+        qsa('.graph-node').forEach(function (el) {
+          var id = el.getAttribute('data-node-id');
+          if (id && !prevIds.has(id)) {
+            el.classList.add('node-added');
+          }
+        });
+      })
+      .catch(function (e) { console.error('Graph refresh fetch error:', e); });
   }
 
   function updateBreadcrumb() {
@@ -2599,6 +2724,10 @@
         _streamingDiv.appendChild(meta);
         _streamingDiv = null;
       }
+      // Live graph refresh after successful mutation (#479).
+      if (data.refresh) {
+        reloadCurrentGraph(data.changed_nodes || []);
+      }
     }
 
     function _appendChatError(message) {
@@ -2672,6 +2801,7 @@
     openSettings:        openSettings,
     closeSettings:       closeSettings,
     saveProviders:       saveProviders,
+    openAgentTemplates:  openAgentTemplates,
     addProviderCard:     addProviderCard,
     removeProviderCard:  removeProviderCard,
     onProviderChange:    onProviderChange,

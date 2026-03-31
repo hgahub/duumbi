@@ -97,6 +97,14 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
                 }
             }),
         )
+        // Agent templates API (delegates to shared helper in server_fns).
+        .route(
+            "/api/agent_templates",
+            get(|| async {
+                let infos = crate::server_fns::build_agent_template_infos();
+                axum::Json(infos)
+            }),
+        )
         // Intent API: create + detail
         .route(
             "/api/intent/create",

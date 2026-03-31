@@ -1,11 +1,12 @@
 //! Intents panel — unified create, review, and execute.
 //!
 //! Left side: intent list with status indicators.
-//! Right side: selected intent detail (description, acceptance criteria,
-//! task plan with progress, test cases, action buttons).
+//! Right side: selected intent detail or create form.
+//! Buttons wired to `create_intent()` and `execute_intent()` server fns.
 
 use leptos::prelude::*;
 
+use crate::server_fns::{create_intent, execute_intent, get_intents};
 use crate::state::StudioState;
 
 /// Intents panel: the first stop in the development cycle.
@@ -15,6 +16,83 @@ use crate::state::StudioState;
 #[component]
 pub fn IntentsPanel() -> impl IntoView {
     let state = expect_context::<StudioState>();
+    let selected_intent = RwSignal::new(Option::<String>::None);
+    let status_message = RwSignal::new(String::new());
+
+    let create_action = Action::new(move |desc: &String| {
+        let desc = desc.clone();
+        async move { create_intent(desc).await }
+    });
+
+    let execute_action = Action::new(move |slug: &String| {
+        let slug = slug.clone();
+        async move { execute_intent(slug).await }
+    });
+
+    let refresh_intents = Action::new(move |_: &()| async move { get_intents().await });
+
+    // React to create completion.
+    Effect::new(move || {
+        if let Some(result) = create_action.value().get() {
+            match result {
+                Ok(intent) => {
+                    status_message.set(format!("Intent '{}' created.", intent.slug));
+                    selected_intent.set(Some(intent.slug.clone()));
+                    refresh_intents.dispatch(());
+                }
+                Err(e) => status_message.set(format!("Create failed: {e}")),
+            }
+        }
+    });
+
+    // React to execute completion.
+    Effect::new(move || {
+        if let Some(result) = execute_action.value().get() {
+            match result {
+                Ok(msg) => {
+                    status_message.set(msg);
+                    refresh_intents.dispatch(());
+                }
+                Err(e) => status_message.set(format!("Execute failed: {e}")),
+            }
+        }
+    });
+
+    // Update state intents when refresh completes.
+    Effect::new(move || {
+        if let Some(Ok(intents)) = refresh_intents.value().get() {
+            state.intents.set(intents);
+        }
+    });
+
+    let on_create = move |_| {
+        // Read the textarea value from the DOM (browser-only).
+        #[cfg(feature = "hydrate")]
+        let desc = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("intentDescription"))
+            .and_then(|el| {
+                use wasm_bindgen::JsCast;
+                el.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+            })
+            .map(|ta| ta.value())
+            .unwrap_or_default();
+
+        #[cfg(not(feature = "hydrate"))]
+        let desc = String::new();
+
+        if !desc.trim().is_empty() {
+            status_message.set("Creating intent...".to_string());
+            create_action.dispatch(desc);
+        }
+    };
+
+    let on_execute = move |_| {
+        if let Some(slug) = selected_intent.get() {
+            status_message.set(format!("Executing '{slug}'..."));
+            execute_action.dispatch(slug);
+        }
+    };
 
     view! {
         <div class="workspace-view active" style="display:flex">
@@ -36,13 +114,20 @@ pub fn IntentsPanel() -> impl IntoView {
                             view! {
                                 <div class="intent-list">
                                     {intents.into_iter().map(|intent| {
+                                        let slug = intent.slug.clone();
+                                        let slug_click = slug.clone();
+                                        let is_selected = move || selected_intent.get().as_deref() == Some(&slug);
                                         let status_class = match intent.status.as_str() {
                                             "Completed" => "tb-fn",
                                             "Failed" => "tb-err",
+                                            "InProgress" => "tb-mod",
                                             _ => "tb-mod",
                                         };
                                         view! {
-                                            <div class="tree-intent">
+                                            <div class="tree-intent"
+                                                class:selected=is_selected
+                                                on:click=move |_| selected_intent.set(Some(slug_click.clone()))
+                                                style="cursor:pointer">
                                                 <span>{intent.slug.clone()}</span>
                                                 <span class=format!("tree-badge {status_class}")>
                                                     {intent.status}
@@ -73,13 +158,24 @@ pub fn IntentsPanel() -> impl IntoView {
                             rows="4"
                         ></textarea>
                         <div style="margin-top:12px;display:flex;gap:8px">
-                            <button class="cip-btn cip-btn-create" id="createIntentBtn">
+                            <button class="cip-btn cip-btn-create" on:click=on_create>
                                 "Create & Plan"
                             </button>
-                            <button class="cip-btn cip-btn-cancel" id="executeIntentBtn">
+                            <button class="cip-btn cip-btn-cancel" on:click=on_execute>
                                 "Execute"
                             </button>
                         </div>
+                        // Status message
+                        {move || {
+                            let msg = status_message.get();
+                            if msg.is_empty() {
+                                view! { <span></span> }.into_any()
+                            } else {
+                                view! {
+                                    <p style="margin-top:12px;color:#908c82;font-size:13px">{msg}</p>
+                                }.into_any()
+                            }
+                        }}
                     </div>
                 </div>
             </div>

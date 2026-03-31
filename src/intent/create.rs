@@ -268,7 +268,11 @@ pub(crate) async fn call_plain_completion(
         .into_inner()
         .expect("invariant: mutex not poisoned");
     if text.is_empty() {
-        anyhow::bail!("LLM returned empty response for intent spec generation");
+        anyhow::bail!(
+            "The model did not generate an intent spec.\n\
+             This usually means the model is too small or does not support structured output.\n\
+             Try a more capable model (e.g. claude-sonnet-4-6, gpt-4o) in .duumbi/config.toml."
+        );
     }
     Ok(text)
 }
@@ -283,21 +287,24 @@ pub(crate) async fn call_plain_completion(
 /// 3. Ask for confirmation
 /// 4. Save to `.duumbi/intents/<slug>.yaml`
 ///
-/// Returns the slug of the saved intent.
+/// Returns the slug of the saved intent and a log of status messages.
+/// The caller decides where to display the log (stderr for CLI, output
+/// buffer for the ratatui REPL).
 pub async fn run_create(
     client: &dyn LlmProvider,
     workspace: &Path,
     description: &str,
     yes: bool,
+    log: &mut Vec<String>,
 ) -> Result<String> {
-    eprintln!("Generating intent spec for: \"{description}\"…");
+    log.push(format!("Generating intent spec for: \"{description}\"…"));
 
     let spec = generate_spec_with_llm(client, description)
         .await
         .context("Failed to generate intent spec")?;
 
     // Show preview
-    crate::intent::review::print_spec_detail("(preview)", &spec);
+    crate::intent::review::format_spec_detail("(preview)", &spec, log);
 
     if !yes {
         eprint!("Save this intent? [Y/n] ");
@@ -308,7 +315,7 @@ pub async fn run_create(
             .read_line(&mut input)
             .context("Failed to read confirmation")?;
         if input.trim().to_lowercase() == "n" {
-            eprintln!("Aborted.");
+            log.push("Aborted.".to_string());
             anyhow::bail!("User aborted intent creation");
         }
     }
@@ -318,7 +325,7 @@ pub async fn run_create(
 
     save_intent(workspace, &slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    eprintln!("Intent saved as '.duumbi/intents/{slug}.yaml'");
+    log.push(format!("Intent saved as '.duumbi/intents/{slug}.yaml'"));
     Ok(slug)
 }
 

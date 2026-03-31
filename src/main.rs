@@ -343,7 +343,11 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
     match subcommand {
         cli::IntentSubcommand::Create { description, yes } => {
             let client = require_llm_client(&workspace)?;
-            intent::create::run_create(&client, &workspace, &description, yes).await?;
+            let mut log = Vec::new();
+            intent::create::run_create(&client, &workspace, &description, yes, &mut log).await?;
+            for line in &log {
+                eprintln!("{line}");
+            }
             Ok(())
         }
         cli::IntentSubcommand::Review { name, edit } => {
@@ -358,7 +362,11 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
         }
         cli::IntentSubcommand::Execute { name } => {
             let client = require_llm_client(&workspace)?;
-            let ok = intent::execute::run_execute(&client, &workspace, &name).await?;
+            let mut log = Vec::new();
+            let ok = intent::execute::run_execute(&client, &workspace, &name, &mut log).await?;
+            for line in &log {
+                eprintln!("{line}");
+            }
             if !ok {
                 process::exit(1);
             }

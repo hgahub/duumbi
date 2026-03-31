@@ -147,6 +147,9 @@ pub struct ReplApp {
     /// Cached set of env var names that have a key stored in `~/.duumbi/credentials.toml`.
     /// Populated once at startup and refreshed after provider mutations.
     keychain_cache: std::collections::HashSet<String>,
+    /// True while an async operation (LLM call, build, etc.) is in progress.
+    /// Displayed as an animated spinner in the output area.
+    pub working: bool,
 }
 
 impl ReplApp {
@@ -184,8 +187,12 @@ impl ReplApp {
             show_tip,
             panel: PanelState::default(),
             keychain_cache,
+            working: false,
         }
     }
+
+    /// Braille spinner frames for the working indicator.
+    const SPINNER: &'static [char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
     // -----------------------------------------------------------------------
     // Key handling
@@ -239,9 +246,9 @@ impl ReplApp {
                     return Action::Continue;
                 }
 
-                // Clear the textarea
-                textarea.move_cursor(CursorMove::Head);
-                textarea.delete_line_by_end();
+                // Clear the textarea fully (select all + delete).
+                textarea.select_all();
+                textarea.cut();
 
                 Action::Submit(trimmed)
             }
@@ -323,6 +330,10 @@ impl ReplApp {
     }
 
     /// Handles mouse events (scroll wheel for output buffer scrolling).
+    ///
+    /// Currently unused — mouse capture is disabled to allow native text
+    /// selection. Scroll is available via keyboard (PageUp/PageDown).
+    #[allow(dead_code)]
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
         match mouse.kind {
@@ -1029,6 +1040,25 @@ impl ReplApp {
         }
 
         frame.render_widget(Paragraph::new(lines), area);
+
+        // Animated spinner when an async operation is in progress.
+        if self.working {
+            let frame_idx = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                / 120) as usize;
+            let ch = Self::SPINNER[frame_idx % Self::SPINNER.len()];
+            let spinner = format!("{ch} Working…");
+            let style = Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            let y = area.bottom().saturating_sub(1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(spinner, style)),
+                Rect::new(area.x, y, 12, 1),
+            );
+        }
 
         // Scroll indicator overlay when scrolled up.
         if self.output_scroll_offset > 0 {

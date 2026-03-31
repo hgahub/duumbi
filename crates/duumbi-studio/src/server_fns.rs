@@ -1106,7 +1106,8 @@ pub async fn execute_intent(slug: String) -> Result<String, ServerFnError> {
     let client = duumbi::agents::factory::create_provider_chain(&providers)
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
-    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug)
+    let mut log = Vec::new();
+    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug, &mut log)
         .await
         .map_err(|e| ServerFnError::new(format!("Execute: {e}")))?;
 
@@ -1135,7 +1136,8 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
     // Studio always auto-confirms (no interactive prompt).
-    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true)
+    let mut log = Vec::new();
+    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true, &mut log)
         .await
         .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
 
@@ -1148,4 +1150,87 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         description: spec.intent,
         status: format!("{:?}", spec.status),
     })
+}
+
+/// Info about an agent template for the Studio UI.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentTemplateInfo {
+    /// Template display name.
+    pub name: String,
+    /// Agent role (e.g., "Coder", "Planner").
+    pub role: String,
+    /// Number of tools available.
+    pub tools_count: usize,
+    /// Specialization tags.
+    pub specialization: Vec<String>,
+    /// System prompt preview (first 200 chars).
+    pub prompt_preview: String,
+}
+
+/// Builds the agent template info list (shared by server fn and JSON API route).
+#[cfg(feature = "ssr")]
+pub fn build_agent_template_infos() -> Vec<AgentTemplateInfo> {
+    duumbi::agents::template::seed_templates()
+        .into_iter()
+        .map(|t| AgentTemplateInfo {
+            name: t.name,
+            role: format!("{:?}", t.role),
+            tools_count: t.tools.len(),
+            specialization: t.specialization,
+            prompt_preview: t.system_prompt.chars().take(200).collect(),
+        })
+        .collect()
+}
+
+/// Returns the 5 seed agent templates for display in the Studio.
+#[server]
+pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnError> {
+    Ok(build_agent_template_infos())
+}
+
+/// Tests an LLM provider connection by sending a minimal prompt.
+#[server]
+pub async fn test_provider_connection(
+    kind: String,
+    model: String,
+) -> Result<String, ServerFnError> {
+    let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
+    let ws = ctx.read().await;
+
+    let config = duumbi::config::load_config(&ws.root)
+        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
+
+    let providers = config.effective_providers();
+    let provider = providers
+        .iter()
+        .find(|p| p.provider.to_string() == kind && p.model == model)
+        .ok_or_else(|| ServerFnError::new(format!("Provider {kind}/{model} not found")))?;
+
+    let client = duumbi::agents::factory::create_provider(provider)
+        .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
+
+    // Send a minimal test prompt using the tools API with empty tool list.
+    // A successful call (even with parsing errors) proves connectivity.
+    let result = client
+        .call_with_tools("Respond with exactly: OK", "test")
+        .await;
+
+    match result {
+        Ok(ops) => Ok(format!(
+            "Connected — provider responded ({} ops parsed).",
+            ops.len()
+        )),
+        Err(e) => {
+            let msg = format!("{e}");
+            // Parse errors mean the connection worked but response wasn't tool-use.
+            if msg.contains("parse") || msg.contains("tool") {
+                Ok(
+                    "Connected — provider responded (no tool-use, but connection verified)."
+                        .to_string(),
+                )
+            } else {
+                Err(ServerFnError::new(format!("Connection failed: {e}")))
+            }
+        }
+    }
 }

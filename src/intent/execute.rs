@@ -36,15 +36,20 @@ use crate::snapshot;
 /// 6. If all pass → archive as `Completed`; otherwise mark `Failed`
 ///
 /// Returns `Ok(true)` if all tasks and tests passed, `Ok(false)` if failed.
-pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str) -> Result<bool> {
+/// Status messages are appended to `log` instead of written to stderr, so
+/// the caller can decide where to display them (REPL buffer or stderr).
+pub async fn run_execute(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+) -> Result<bool> {
     let graph_path = workspace.join(".duumbi/graph/main.jsonld");
 
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    eprintln!();
-    eprintln!("Executing intent: \"{}\"", spec.intent);
-    eprintln!();
+    log.push(format!("Executing intent: \"{}\"", spec.intent));
 
     // 2. Mark in progress + save snapshot
     spec.status = IntentStatus::InProgress;
@@ -57,17 +62,20 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
     // 3. Decompose into tasks
     let mut tasks = coordinator::decompose(&spec);
     let total = tasks.len();
-    eprintln!("Plan ({total} task{}):", if total == 1 { "" } else { "s" });
+    log.push(format!(
+        "Plan ({total} task{}):",
+        if total == 1 { "" } else { "s" }
+    ));
     for t in &tasks {
-        eprintln!("  [{}/{}] {}", t.id, total, t.description);
+        log.push(format!("  [{}/{}] {}", t.id, total, t.description));
     }
-    eprintln!();
+    log.push(String::new());
 
     // 4. Execute each task
     let graph_dir = workspace.join(".duumbi/graph");
     let mut tasks_completed = 0;
     for task in &mut tasks {
-        eprintln!("[{}/{}] {}…", task.id, total, task.description);
+        log.push(format!("[{}/{}] {}…", task.id, total, task.description));
         task.status = TaskStatus::InProgress;
 
         // For CreateModule tasks, use an empty module template as source and
@@ -110,48 +118,58 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
             }
         }
 
+        // Streaming callback collects LLM text chunks into the log buffer.
+        let log_clone = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log_tx = log_clone.clone();
         let result = orchestrator::mutate_streaming(
             client,
             &source,
             &prompt,
             3,
             skip_call_validation,
-            |text| {
-                eprint!("{text}");
+            move |text| {
+                log_tx
+                    .lock()
+                    .expect("invariant: mutex not poisoned")
+                    .push(text.to_string());
             },
         )
         .await;
 
-        eprintln!(); // newline after streamed output
+        // Drain streamed chunks into log.
+        if let Ok(chunks) = log_clone.lock()
+            && !chunks.is_empty()
+        {
+            log.push(chunks.concat());
+        }
 
         match result {
             Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
-                eprintln!("  ⚠ Clarification needed: {question}");
-                eprintln!("    Intent execution does not support interactive clarification.");
+                log.push(format!("  ⚠ Clarification needed: {question}"));
+                log.push(
+                    "    Intent execution does not support interactive clarification.".to_string(),
+                );
                 task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
 
-                // Halt intent — can't proceed without user input
                 spec.status = IntentStatus::Failed;
                 save_intent(workspace, slug, &spec)
                     .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
 
-                eprintln!();
-                eprintln!("Intent failed at task {}/{}.", task.id, total);
+                log.push(format!("Intent failed at task {}/{}.", task.id, total));
                 return Ok(false);
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
-                // For library modules, ensure all functions are exported
                 if is_create_module {
                     ensure_exports(&mut mutation_result.patched);
 
-                    // Post-mutation validation: check all expected functions are present.
-                    // If the LLM only created some of the required functions, retry with
-                    // specific feedback about which ones are missing.
                     let expected_fns = expected_exports_for_module(&spec, &task.kind);
                     let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
 
                     if !missing.is_empty() {
-                        eprintln!("  ⚠ Missing functions: [{}]. Retrying…", missing.join(", "));
+                        log.push(format!(
+                            "  ⚠ Missing functions: [{}]. Retrying…",
+                            missing.join(", ")
+                        ));
                         let retry_prompt = format!(
                             "{}\n\nCRITICAL: The previous attempt only created some functions. \
                              The following functions are STILL MISSING and MUST be added: [{}]. \
@@ -159,19 +177,29 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                             prompt,
                             missing.join(", ")
                         );
-                        // Use the partially-created module as source for the retry
+                        let retry_log =
+                            std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                        let retry_tx = retry_log.clone();
                         let retry_result = orchestrator::mutate_streaming(
                             client,
                             &mutation_result.patched,
                             &retry_prompt,
                             1,
                             skip_call_validation,
-                            |text| {
-                                eprint!("{text}");
+                            move |text| {
+                                retry_tx
+                                    .lock()
+                                    .expect("invariant: mutex not poisoned")
+                                    .push(text.to_string());
                             },
                         )
                         .await;
-                        eprintln!();
+
+                        if let Ok(chunks) = retry_log.lock()
+                            && !chunks.is_empty()
+                        {
+                            log.push(chunks.concat());
+                        }
 
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
                             retry_result
@@ -179,18 +207,16 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                             ensure_exports(&mut retry_mr.patched);
                             mutation_result = retry_mr;
                         }
-                        // If retry fails, proceed with what we have — the verifier will catch it
                     }
                 }
 
-                // Write patched graph to the appropriate file
                 let patched_str = serde_json::to_string_pretty(&mutation_result.patched)
                     .context("Serialize patched graph")?;
                 std::fs::write(&target_path, &patched_str)
                     .with_context(|| format!("Write '{}'", target_path.display()))?;
 
                 let diff = orchestrator::describe_changes(&source, &mutation_result.patched);
-                eprintln!(
+                log.push(format!(
                     "  {} Done ({} op{}). {}",
                     "\u{2713}".green().bold(),
                     mutation_result.ops_count,
@@ -200,11 +226,10 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                         "s"
                     },
                     diff.lines().next().unwrap_or("")
-                );
+                ));
                 task.status = TaskStatus::Completed;
                 tasks_completed += 1;
 
-                // Log success for few-shot learning (#363)
                 let task_type_str = match &task.kind {
                     TaskKind::CreateModule { .. } => "CreateModule",
                     TaskKind::AddFunction { .. } => "AddFunction",
@@ -217,48 +242,44 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
                     TaskKind::CreateModule { module_name } => module_name.clone(),
                     _ => "main".to_string(),
                 };
-                // Best-effort: don't fail the intent if logging fails
                 let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
-                eprintln!("  {} Task failed: {e:#}", "\u{2717}".red().bold());
+                log.push(format!("  {} Task failed: {e:#}", "\u{2717}".red().bold()));
                 task.status = TaskStatus::Failed(e.to_string());
 
-                // Mark intent failed and exit
                 spec.status = IntentStatus::Failed;
                 save_intent(workspace, slug, &spec)
                     .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
 
-                eprintln!();
-                eprintln!("Intent failed at task {}/{}.", task.id, total);
-                eprintln!("(Use `duumbi undo` to revert the graph to before this intent.)");
+                log.push(format!("Intent failed at task {}/{}.", task.id, total));
+                log.push(
+                    "(Use `duumbi undo` to revert the graph to before this intent.)".to_string(),
+                );
                 return Ok(false);
             }
         }
     }
 
-    eprintln!();
-    eprintln!(
+    log.push(format!(
         "All {tasks_completed} task{} completed.",
         if tasks_completed == 1 { "" } else { "s" }
-    );
+    ));
 
     // 5. Run verifier
     if spec.test_cases.is_empty() {
-        eprintln!("No test cases defined — skipping verification.");
-
+        log.push("No test cases defined — skipping verification.".to_string());
         archive_success(workspace, slug, tasks_completed, 0, 0)?;
         return Ok(true);
     }
 
-    eprintln!();
-    eprintln!(
+    log.push(format!(
         "Running {} test{}…",
         spec.test_cases.len(),
         if spec.test_cases.len() == 1 { "" } else { "s" }
-    );
+    ));
     let report = verifier::run_tests(&spec, workspace);
-    eprintln!("{}", report.display());
+    log.push(report.display());
 
     let all_passed = report.all_passed();
     archive_success(
@@ -270,11 +291,14 @@ pub async fn run_execute(client: &dyn LlmProvider, workspace: &Path, slug: &str)
     )?;
 
     if all_passed {
-        eprintln!("Intent completed successfully.");
+        log.push("Intent completed successfully.".to_string());
     } else {
         spec.status = IntentStatus::Failed;
         save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
-        eprintln!("Intent failed: {} test(s) did not pass.", report.failed);
+        log.push(format!(
+            "Intent failed: {} test(s) did not pass.",
+            report.failed
+        ));
     }
 
     Ok(all_passed)

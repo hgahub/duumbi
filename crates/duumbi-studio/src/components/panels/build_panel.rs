@@ -5,13 +5,13 @@
 
 use leptos::prelude::*;
 
+use crate::server_fns::{trigger_build, trigger_run};
 use crate::state::{BuildStatus, StudioState};
 
 /// Build panel: compile and run the workspace.
 ///
 /// "Build" triggers `trigger_build()` server function.
 /// "Run" executes the compiled binary and captures output.
-/// Error node IDs are displayed (future: clickable to navigate to Graph).
 #[component]
 pub fn BuildPanel() -> impl IntoView {
     let state = expect_context::<StudioState>();
@@ -19,9 +19,48 @@ pub fn BuildPanel() -> impl IntoView {
     let build_output = RwSignal::new(String::new());
     let run_output = RwSignal::new(String::new());
 
+    let build_action = Action::new(move |_: &()| async move {
+        let result = trigger_build().await;
+        result
+    });
+
+    let run_action = Action::new(move |_: &()| async move { trigger_run().await });
+
+    // React to build action completion.
+    Effect::new(move || {
+        if let Some(result) = build_action.value().get() {
+            match result {
+                Ok(msg) => {
+                    build_output.set(msg);
+                    state.build_status.set(BuildStatus::Success);
+                }
+                Err(e) => {
+                    build_output.set(e.to_string());
+                    state.build_status.set(BuildStatus::Failed(e.to_string()));
+                }
+            }
+        }
+    });
+
+    // React to run action completion.
+    Effect::new(move || {
+        if let Some(result) = run_action.value().get() {
+            match result {
+                Ok(output) => run_output.set(output),
+                Err(e) => run_output.set(format!("Run error: {e}")),
+            }
+        }
+    });
+
     let on_build = move |_| {
         state.build_status.set(BuildStatus::Building);
-        // JS calls /api/build and updates the output
+        build_output.set(String::new());
+        build_action.dispatch(());
+    };
+
+    let on_run = move |_| {
+        run_output.set("Running...".to_string());
+        run_action.dispatch(());
     };
 
     let status_text = move || {
@@ -48,7 +87,7 @@ pub fn BuildPanel() -> impl IntoView {
                 <button class="cip-btn cip-btn-create" on:click=on_build>
                     "Build"
                 </button>
-                <button class="cip-btn cip-btn-cancel" id="runBtn">
+                <button class="cip-btn cip-btn-cancel" on:click=on_run>
                     "Run"
                 </button>
                 <span class=move || format!("tree-badge {}", status_class())

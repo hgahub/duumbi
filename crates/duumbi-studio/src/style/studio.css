@@ -3099,3 +3099,24 @@ body.resizing * {
   color: #e8e4d9;
   border-color: #c25a1a;
 }
+
+/* ── Node mutation animations (#479) ──────────────────────────────── */
+
+@keyframes nodeAppear {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes nodeGlow {
+  0%   { filter: drop-shadow(0 0 0 transparent); }
+  30%  { filter: drop-shadow(0 0 8px var(--ds-accent)); }
+  100% { filter: drop-shadow(0 0 0 transparent); }
+}
+
+.node-added {
+  animation: nodeAppear 0.4s ease-out;
+}
+
+.node-changed {
+  animation: nodeGlow 1.5s ease-out;
+}
