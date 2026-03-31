@@ -1,5 +1,5 @@
 {
-    "name": "DUUMBI Dev Environment",
+    "name": "Duumbi Dev",
     "image": "mcr.microsoft.com/devcontainers/rust:1",
     "remoteUser": "vscode",
     "features": {
