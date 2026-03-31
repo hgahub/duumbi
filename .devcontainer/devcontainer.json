@@ -1,17 +1,18 @@
 {
-    "name": "Rust Remote Environment",
+    "name": "DUUMBI Dev Environment",
     "image": "mcr.microsoft.com/devcontainers/rust:1",
+    "remoteUser": "vscode",
     "features": {
         "ghcr.io/devcontainers/features/github-cli:1": {},
         "ghcr.io/devcontainers/features/copilot-cli:1": {},
         "ghcr.io/devcontainers/features/node:1": {
-            "version": "lts"
+            "version": "22"
         },
         "ghcr.io/devcontainers-extra/features/claude-code:1": {},
         "ghcr.io/stu-bell/devcontainer-features/open-code:0": {},
         "ghcr.io/gvatsal60/dev-container-features/pre-commit:1": {},
         "ghcr.io/devcontainers/features/python:1": {
-            "version": "3.14.3"
+            "version": "3.13"
         }
     },
     "containerEnv": {
@@ -31,7 +32,7 @@
             "label": "DUUMBI Studio"
         }
     },
-    "postCreateCommand": "bash -lc 'rustup component add rustfmt clippy && command -v pre-commit >/dev/null 2>&1 && pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg || true && command -v mdbook >/dev/null 2>&1 || cargo install mdbook --version 0.4.37'",
+    "postCreateCommand": "bash -l .devcontainer/post-create.sh",
     "customizations": {
         "vscode": {
             "settings": {
@@ -42,7 +43,11 @@
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml",
                 "ms-python.python",
-                "vadimcn.vscode-lldb"
+                "vadimcn.vscode-lldb",
+                "GitHub.copilot",
+                "GitHub.copilot-chat",
+                "serayuzgur.crates",
+                "GitHub.vscode-github-actions"
             ]
         }
     }
