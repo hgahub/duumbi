@@ -8,6 +8,7 @@
             "version": "lts"
         },
         "ghcr.io/devcontainers-extra/features/claude-code:1": {},
+        "ghcr.io/stu-bell/devcontainer-features/open-code:0": {},
         "ghcr.io/gvatsal60/dev-container-features/pre-commit:1": {},
         "ghcr.io/devcontainers/features/python:1": {
             "version": "3.14.3"
@@ -23,13 +24,9 @@
         "source=duumbi-target,target=${containerWorkspaceFolder}/target,type=volume"
     ],
     "forwardPorts": [
-        8420,
         8421
     ],
     "portsAttributes": {
-        "8420": {
-            "label": "DUUMBI Visualizer"
-        },
         "8421": {
             "label": "DUUMBI Studio"
         }
