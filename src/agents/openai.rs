@@ -74,19 +74,26 @@ impl OpenAiClient {
         self
     }
 
-    /// Plain-text completion without tools, then falls back to tool-based if
-    /// the model returns tool calls. Used by `call_with_tools_streaming` so
-    /// that `intent create` (which needs plain text) works on OpenAI-compatible
-    /// providers.
+    /// Sends a request WITH tools, but also captures text content via `on_text`.
+    ///
+    /// This handles both use cases:
+    /// - **Graph mutations** (`intent execute`, `duumbi add`): model returns tool
+    ///   calls → parsed as `PatchOp` values.
+    /// - **Plain text** (`intent create`): model returns JSON text instead of tool
+    ///   calls → text is passed through `on_text`, returns `NoToolCalls`.
     async fn do_call_streaming_or_tools(
         &self,
         system_prompt: &str,
         user_message: &str,
         on_text: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<Vec<PatchOp>, AgentError> {
-        // First try: plain text completion (no tools). This is what intent create needs.
+        let tools = openai_tools();
+        let tools_json = serde_json::to_value(&tools)
+            .map_err(|e| AgentError::Parse(format!("Failed to serialize tools: {e}")))?;
+
         let body = json!({
             "model": self.model,
+            "tools": tools_json,
             "messages": [
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_message }
@@ -116,19 +123,7 @@ impl OpenAiClient {
 
         let response: serde_json::Value = resp.json().await?;
 
-        // Check if the response has non-empty text content.
-        if let Some(content) = response
-            .pointer("/choices/0/message/content")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
-            on_text(content);
-            // Return NoToolCalls — the caller (call_plain_completion) expects
-            // this as the success path for text responses.
-            return Err(AgentError::NoToolCalls);
-        }
-
-        // If no text content, check for tool calls in the response.
+        // Priority 1: tool calls (graph mutations).
         if let Some(calls) = response
             .pointer("/choices/0/message/tool_calls")
             .and_then(|v| v.as_array())
@@ -144,7 +139,17 @@ impl OpenAiClient {
             return Ok(ops);
         }
 
-        // Neither text nor tool calls.
+        // Priority 2: text content (plain completion for intent create).
+        if let Some(content) = response
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            on_text(content);
+            return Err(AgentError::NoToolCalls);
+        }
+
+        // Neither tool calls nor text.
         Err(AgentError::NoToolCalls)
     }
 
