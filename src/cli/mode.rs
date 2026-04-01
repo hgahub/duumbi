@@ -126,7 +126,16 @@ pub enum PanelInputMode {
         /// When `Some`, the user is typing a manual model name.
         manual_input: Option<String>,
     },
-    /// Step 3: Entering the API key (characters are masked).
+    /// Step 2.5: Choose authentication type (API Key vs Subscription Token).
+    AddStepAuthType {
+        /// The provider kind chosen in step 1.
+        provider: crate::config::ProviderKind,
+        /// The model chosen in step 2.
+        model: String,
+        /// 0 = API Key, 1 = Subscription Token (Bearer).
+        selected: usize,
+    },
+    /// Step 3: Entering the API key or subscription token (characters are masked).
     AddStep3Key {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,
@@ -134,6 +143,8 @@ pub enum PanelInputMode {
         model: String,
         /// Raw key text (shown masked in UI).
         key_buf: String,
+        /// If true, the key is a subscription/Bearer token.
+        is_subscription: bool,
     },
     /// Step 3 confirmation: choose keychain vs session-only storage.
     AddStep3Confirm {
@@ -141,8 +152,10 @@ pub enum PanelInputMode {
         provider: crate::config::ProviderKind,
         /// The model chosen in step 2.
         model: String,
-        /// The API key entered in step 3.
+        /// The API key or token entered in step 3.
         key: String,
+        /// If true, the key is a subscription/Bearer token.
+        is_subscription: bool,
     },
     /// Waiting for y/N confirmation to delete the selected provider.
     ConfirmDelete,

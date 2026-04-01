@@ -1,0 +1,31 @@
+intent: "Count the divisors of a number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "count_divisors(1) returns 1 (only divisor is 1 itself)"
+  - "count_divisors(6) returns 4 (divisors: 1, 2, 3, 6)"
+  - "count_divisors(12) returns 6 (divisors: 1, 2, 3, 4, 6, 12)"
+  - "count_divisors(7) returns 2 (prime: only 1 and 7)"
+modules:
+  create:
+    - "math/divisors"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "count_divisors_one"
+    function: "count_divisors"
+    args: [1]
+    expected_return: 1
+  - name: "count_divisors_six"
+    function: "count_divisors"
+    args: [6]
+    expected_return: 4
+  - name: "count_divisors_twelve"
+    function: "count_divisors"
+    args: [12]
+    expected_return: 6
+  - name: "count_divisors_prime"
+    function: "count_divisors"
+    args: [7]
+    expected_return: 2
+dependencies: []

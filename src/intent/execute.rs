@@ -12,7 +12,12 @@ use serde_json::json;
 
 use owo_colors::OwoColorize;
 
+use crate::agents::agent_knowledge::{AgentKnowledgeStore, FailurePattern};
+use crate::agents::analyzer as agent_analyzer;
+use crate::agents::assembler;
+use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
+use crate::context;
 use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
@@ -36,20 +41,44 @@ use crate::snapshot;
 /// 6. If all pass → archive as `Completed`; otherwise mark `Failed`
 ///
 /// Returns `Ok(true)` if all tasks and tests passed, `Ok(false)` if failed.
-/// Status messages are appended to `log` instead of written to stderr, so
-/// the caller can decide where to display them (REPL buffer or stderr).
+/// Status messages are appended to `log` and also sent to `on_progress`
+/// (if provided) for real-time display. The CLI uses `eprintln!` for
+/// immediate output; the REPL collects them in its output buffer.
 pub async fn run_execute(
     client: &dyn LlmProvider,
     workspace: &Path,
     slug: &str,
     log: &mut Vec<String>,
 ) -> Result<bool> {
+    run_execute_with_progress(client, workspace, slug, log, &|_| {}).await
+}
+
+/// Like [`run_execute`] but with a real-time progress callback.
+///
+/// Each status line is passed to `on_progress` immediately when generated,
+/// in addition to being collected in `log`.
+pub async fn run_execute_with_progress(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+    on_progress: &(dyn Fn(&str) + Send + Sync),
+) -> Result<bool> {
+    // Helper: push to log AND emit via callback for real-time display.
+    macro_rules! emit {
+        ($msg:expr) => {{
+            let s: String = $msg;
+            on_progress(&s);
+            log.push(s);
+        }};
+    }
+
     let graph_path = workspace.join(".duumbi/graph/main.jsonld");
 
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    log.push(format!("Executing intent: \"{}\"", spec.intent));
+    emit!(format!("Executing intent: \"{}\"", spec.intent));
 
     // 2. Mark in progress + save snapshot
     spec.status = IntentStatus::InProgress;
@@ -59,23 +88,36 @@ pub async fn run_execute(
         .with_context(|| format!("Cannot read '{}'", graph_path.display()))?;
     snapshot::save_snapshot(workspace, &source_str).context("Failed to save snapshot")?;
 
-    // 3. Decompose into tasks
+    // 3. Analyze task profile and decompose into tasks
+    let profile = agent_analyzer::analyze(&spec);
+    let template_store = TemplateStore::load(workspace);
+    let team = assembler::assemble(&profile, &template_store);
+    emit!(format!(
+        "Task profile: {:?} | {:?} | {:?} | {:?}",
+        profile.complexity, profile.task_type, profile.scope, profile.risk
+    ));
+    emit!(format!(
+        "Agent team: {:?} ({:?})",
+        team.agents, team.strategy
+    ));
+
     let mut tasks = coordinator::decompose(&spec);
     let total = tasks.len();
-    log.push(format!(
+    emit!(format!(
         "Plan ({total} task{}):",
         if total == 1 { "" } else { "s" }
     ));
     for t in &tasks {
-        log.push(format!("  [{}/{}] {}", t.id, total, t.description));
+        emit!(format!("  [{}/{}] {}", t.id, total, t.description));
     }
-    log.push(String::new());
+    emit!(String::new());
 
     // 4. Execute each task
     let graph_dir = workspace.join(".duumbi/graph");
     let mut tasks_completed = 0;
     for task in &mut tasks {
-        log.push(format!("[{}/{}] {}…", task.id, total, task.description));
+        emit!(format!("[{}/{}] {}…", task.id, total, task.description));
+        emit!(format!("  Calling LLM (provider: {})…", client.name()));
         task.status = TaskStatus::InProgress;
 
         // For CreateModule tasks, use an empty module template as source and
@@ -118,6 +160,27 @@ pub async fn run_execute(
             }
         }
 
+        // Context enrichment: add module signatures, few-shot examples from
+        // past successes, and relevant graph fragments via the Phase 10 pipeline.
+        match context::assemble_context(&prompt, workspace, &[]) {
+            Ok(bundle) => {
+                emit!(format!(
+                    "  Context: ~{} tokens, {} module(s), {} few-shot example(s)",
+                    bundle.token_estimate,
+                    bundle.modules_referenced.len(),
+                    bundle
+                        .enriched_message
+                        .matches("Similar successful mutations")
+                        .count()
+                ));
+                prompt = bundle.enriched_message;
+            }
+            Err(e) => {
+                // Non-fatal: fall back to the base prompt if context assembly fails.
+                emit!(format!("  Context assembly skipped: {e}"));
+            }
+        }
+
         // Streaming callback collects LLM text chunks into the log buffer.
         let log_clone = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log_tx = log_clone.clone();
@@ -140,14 +203,14 @@ pub async fn run_execute(
         if let Ok(chunks) = log_clone.lock()
             && !chunks.is_empty()
         {
-            log.push(chunks.concat());
+            emit!(chunks.concat());
         }
 
         match result {
             Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
-                log.push(format!("  ⚠ Clarification needed: {question}"));
-                log.push(
-                    "    Intent execution does not support interactive clarification.".to_string(),
+                emit!(format!("  ⚠ Clarification needed: {question}"));
+                emit!(
+                    "    Intent execution does not support interactive clarification.".to_string()
                 );
                 task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
 
@@ -155,7 +218,7 @@ pub async fn run_execute(
                 save_intent(workspace, slug, &spec)
                     .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
 
-                log.push(format!("Intent failed at task {}/{}.", task.id, total));
+                emit!(format!("Intent failed at task {}/{}.", task.id, total));
                 return Ok(false);
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
@@ -166,7 +229,7 @@ pub async fn run_execute(
                     let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
 
                     if !missing.is_empty() {
-                        log.push(format!(
+                        emit!(format!(
                             "  ⚠ Missing functions: [{}]. Retrying…",
                             missing.join(", ")
                         ));
@@ -198,7 +261,7 @@ pub async fn run_execute(
                         if let Ok(chunks) = retry_log.lock()
                             && !chunks.is_empty()
                         {
-                            log.push(chunks.concat());
+                            emit!(chunks.concat());
                         }
 
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
@@ -216,7 +279,7 @@ pub async fn run_execute(
                     .with_context(|| format!("Write '{}'", target_path.display()))?;
 
                 let diff = orchestrator::describe_changes(&source, &mutation_result.patched);
-                log.push(format!(
+                emit!(format!(
                     "  {} Done ({} op{}). {}",
                     "\u{2713}".green().bold(),
                     mutation_result.ops_count,
@@ -242,44 +305,169 @@ pub async fn run_execute(
                     TaskKind::CreateModule { module_name } => module_name.clone(),
                     _ => "main".to_string(),
                 };
+                // Enrich record with function names from intent test cases.
+                record.functions = spec
+                    .test_cases
+                    .iter()
+                    .map(|tc| tc.function.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                record.retry_count = mutation_result.retry_count;
+                record.error_codes = mutation_result.error_codes_encountered.clone();
                 let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
-                log.push(format!("  {} Task failed: {e:#}", "\u{2717}".red().bold()));
+                emit!(format!("  {} Task failed: {e:#}", "\u{2717}".red().bold()));
                 task.status = TaskStatus::Failed(e.to_string());
 
                 spec.status = IntentStatus::Failed;
                 save_intent(workspace, slug, &spec)
                     .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
 
-                log.push(format!("Intent failed at task {}/{}.", task.id, total));
-                log.push(
-                    "(Use `duumbi undo` to revert the graph to before this intent.)".to_string(),
-                );
+                emit!(format!("Intent failed at task {}/{}.", task.id, total));
+                emit!("(Use `duumbi undo` to revert the graph to before this intent.)".to_string());
                 return Ok(false);
             }
         }
     }
 
-    log.push(format!(
+    emit!(format!(
         "All {tasks_completed} task{} completed.",
         if tasks_completed == 1 { "" } else { "s" }
     ));
 
     // 5. Run verifier
     if spec.test_cases.is_empty() {
-        log.push("No test cases defined — skipping verification.".to_string());
+        emit!("No test cases defined — skipping verification.".to_string());
         archive_success(workspace, slug, tasks_completed, 0, 0)?;
         return Ok(true);
     }
 
-    log.push(format!(
+    emit!(format!(
         "Running {} test{}…",
         spec.test_cases.len(),
         if spec.test_cases.len() == 1 { "" } else { "s" }
     ));
-    let report = verifier::run_tests(&spec, workspace);
-    log.push(report.display());
+    let mut report = verifier::run_tests(&spec, workspace);
+    emit!(report.display());
+
+    // --- Repair cycle: if some tests failed, attempt one LLM repair ---
+    if !report.all_passed() && report.failed > 0 {
+        let failed_details: Vec<String> = report
+            .results
+            .iter()
+            .filter(|r| !r.passed)
+            .map(|r| {
+                if let Some(ref err) = r.error {
+                    format!(
+                        "- {}({}): error — {}",
+                        r.function,
+                        r.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        err
+                    )
+                } else {
+                    format!(
+                        "- {}({}) = {} (expected {})",
+                        r.function,
+                        r.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        r.actual.map_or("?".to_string(), |v| v.to_string()),
+                        r.expected
+                    )
+                }
+            })
+            .collect();
+
+        emit!(format!(
+            "[Repair] Attempting repair for {} failed test(s)…",
+            report.failed
+        ));
+        emit!(format!("  Calling LLM (provider: {})…", client.name()));
+
+        let repair_prompt = format!(
+            "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
+             type errors, missing return ops, orphan references, unexported functions, \
+             and structural issues. Then apply the minimal fix.\n\n\
+             The following test cases FAILED after intent execution. \
+             Fix the graph so ALL tests pass.\n\n\
+             Failed tests:\n{}\n\n\
+             Common fixes:\n\
+             - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
+             - Wrong return value: check the algorithm logic in the function's blocks\n\
+             - Compile error: check SSA ordering (ops must reference lower-index ops only)\n\n\
+             Do NOT recreate functions that already work — only fix the broken behavior. \
+             Use replace_block to rewrite blocks that produce wrong results.",
+            failed_details.join("\n")
+        );
+
+        // Attempt repair on all module files (bug may be in library or main)
+        let mut repaired = false;
+        for entry in std::fs::read_dir(&graph_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
+                continue;
+            }
+
+            let module_source: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path)?)
+                    .context("Failed to parse module for repair")?;
+
+            let repair_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let repair_tx = repair_log.clone();
+            let repair_result = orchestrator::mutate_streaming(
+                client,
+                &module_source,
+                &repair_prompt,
+                1,
+                true, // skip call validation
+                move |text| {
+                    repair_tx
+                        .lock()
+                        .expect("invariant: mutex not poisoned")
+                        .push(text.to_string());
+                },
+            )
+            .await;
+
+            if let Ok(chunks) = repair_log.lock()
+                && !chunks.is_empty()
+            {
+                emit!(chunks.concat());
+            }
+
+            if let Ok(orchestrator::MutationOutcome::Success(mr)) = repair_result {
+                let patched_str = serde_json::to_string_pretty(&mr.patched)
+                    .context("Serialize repaired graph")?;
+                std::fs::write(&path, &patched_str)
+                    .with_context(|| format!("Write repaired '{}'", path.display()))?;
+                repaired = true;
+                emit!(format!(
+                    "  {} Repair applied to {} ({} op{}).",
+                    "\u{2713}".green().bold(),
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                    mr.ops_count,
+                    if mr.ops_count == 1 { "" } else { "s" }
+                ));
+            }
+        }
+
+        if repaired {
+            emit!("[Repair] Re-running tests…".to_string());
+            report = verifier::run_tests(&spec, workspace);
+            emit!(report.display());
+        } else {
+            emit!("  No repair patches applied.".to_string());
+        }
+    }
 
     let all_passed = report.all_passed();
     archive_success(
@@ -291,11 +479,52 @@ pub async fn run_execute(
     )?;
 
     if all_passed {
-        log.push("Intent completed successfully.".to_string());
+        emit!("Intent completed successfully.".to_string());
     } else {
+        // Record failure patterns for future learning.
+        let error_codes: Vec<String> = report
+            .results
+            .iter()
+            .filter(|r| !r.passed)
+            .filter_map(|r| {
+                r.error.as_ref().and_then(|e| {
+                    // Extract error code like E010, E009 from error message
+                    e.split_whitespace()
+                        .find(|w| w.starts_with("[E") && w.ends_with(']'))
+                        .map(|c| c.trim_matches(|ch| ch == '[' || ch == ']').to_string())
+                })
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if !error_codes.is_empty() {
+            let pattern_desc = format!(
+                "Intent '{}' failed with {} test(s): {}",
+                spec.intent,
+                report.failed,
+                error_codes.join(", ")
+            );
+            let mitigation = report
+                .results
+                .iter()
+                .filter(|r| !r.passed)
+                .filter_map(|r| r.error.clone())
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            let pattern = FailurePattern::new(
+                "duumbi:template/coder",
+                &pattern_desc,
+                error_codes,
+                &mitigation,
+            );
+            let _ = AgentKnowledgeStore::save_failure_pattern(workspace, &pattern);
+        }
+
         spec.status = IntentStatus::Failed;
         save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
-        log.push(format!(
+        emit!(format!(
             "Intent failed: {} test(s) did not pass.",
             report.failed
         ));

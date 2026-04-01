@@ -1,0 +1,34 @@
+intent: "Determine the sign of a number (positive, negative, zero)"
+version: 1
+status: pending
+acceptance_criteria:
+  - "signum(n) returns 1 when n is positive"
+  - "signum(n) returns -1 when n is negative"
+  - "signum(0) returns 0"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "signum_positive"
+    function: "signum"
+    args: [42]
+    expected_return: 1
+  - name: "signum_negative"
+    function: "signum"
+    args: [-17]
+    expected_return: -1
+  - name: "signum_zero"
+    function: "signum"
+    args: [0]
+    expected_return: 0
+  - name: "signum_one"
+    function: "signum"
+    args: [1]
+    expected_return: 1
+  - name: "signum_negative_one"
+    function: "signum"
+    args: [-1]
+    expected_return: -1
+dependencies: []

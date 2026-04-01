@@ -1,0 +1,1 @@
+Negate a given number

@@ -1,0 +1,36 @@
+intent: "Check if a number is prime"
+version: 1
+status: pending
+acceptance_criteria:
+  - "is_prime(2) returns 1 (smallest prime)"
+  - "is_prime(7) returns 1 (odd prime)"
+  - "is_prime(4) returns 0 (composite)"
+  - "is_prime(1) returns 0 (1 is not prime by definition)"
+  - "is_prime(0) returns 0 (0 is not prime)"
+modules:
+  create:
+    - "math/prime"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "is_prime_two"
+    function: "is_prime"
+    args: [2]
+    expected_return: 1
+  - name: "is_prime_seven"
+    function: "is_prime"
+    args: [7]
+    expected_return: 1
+  - name: "is_prime_four"
+    function: "is_prime"
+    args: [4]
+    expected_return: 0
+  - name: "is_prime_one"
+    function: "is_prime"
+    args: [1]
+    expected_return: 0
+  - name: "is_prime_zero"
+    function: "is_prime"
+    args: [0]
+    expected_return: 0
+dependencies: []

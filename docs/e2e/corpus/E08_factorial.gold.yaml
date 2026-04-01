@@ -1,0 +1,36 @@
+intent: "Write a factorial function"
+version: 1
+status: pending
+acceptance_criteria:
+  - "factorial(n) returns n! for non-negative i64 n"
+  - "factorial(0) returns 1 (0! = 1 by convention)"
+  - "factorial(1) returns 1"
+  - "factorial(5) returns 120"
+  - "factorial(10) returns 3628800"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "factorial_zero"
+    function: "factorial"
+    args: [0]
+    expected_return: 1
+  - name: "factorial_one"
+    function: "factorial"
+    args: [1]
+    expected_return: 1
+  - name: "factorial_five"
+    function: "factorial"
+    args: [5]
+    expected_return: 120
+  - name: "factorial_ten"
+    function: "factorial"
+    args: [10]
+    expected_return: 3628800
+  - name: "factorial_two"
+    function: "factorial"
+    args: [2]
+    expected_return: 2
+dependencies: []

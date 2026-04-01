@@ -10,7 +10,7 @@ use petgraph::visit::EdgeRef;
 
 use crate::errors::Diagnostic;
 use crate::errors::codes;
-use crate::types::{DuumbiType, Op};
+use crate::types::{DuumbiType, NodeId, Op};
 
 use super::{GraphEdge, SemanticGraph};
 
@@ -31,6 +31,8 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     check_types(graph, &mut diagnostics);
     check_return_types(graph, &mut diagnostics);
     check_branch_conditions(graph, &mut diagnostics);
+    check_ssa_dominance(graph, &mut diagnostics);
+    check_branch_targets(graph, &mut diagnostics);
 
     // Ownership checks — only run if the graph contains ownership ops
     if super::ownership::has_ownership_ops(graph) {
@@ -263,6 +265,150 @@ fn check_branch_conditions(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnost
                         .with_node(&node.id)
                         .with_details(details),
                 );
+            }
+        }
+    }
+}
+
+/// Rule A2: SSA Dominance Check.
+///
+/// Within a block, an op at index N may only reference ops at index 0..N-1 in
+/// the same block. A forward reference (referencing a higher index in the same
+/// block) is a schema violation: operands must be defined before use.
+///
+/// Incoming edges checked: `Left`, `Right`, `Operand`, `Condition`, `Arg(_)`.
+fn check_ssa_dominance(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for func_info in &graph.functions {
+        for block_info in &func_info.blocks {
+            // Build a map from NodeId → position in this block for O(1) lookup.
+            let position_in_block: HashMap<&NodeId, usize> = block_info
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(pos, &idx)| (&graph.graph[idx].id, pos))
+                .collect();
+
+            // Derive the block @id prefix: everything in the block shares an @id
+            // of the form `duumbi:module/func/block/index`.  The prefix is the
+            // common `duumbi:module/func/block/` portion, which we obtain by
+            // stripping the last path segment from the first op's @id.
+            let block_prefix: Option<String> = block_info.nodes.first().map(|&idx| {
+                let id_str = &graph.graph[idx].id.0;
+                // Find the last '/' and keep everything up to and including it.
+                if let Some(slash_pos) = id_str.rfind('/') {
+                    id_str[..=slash_pos].to_string()
+                } else {
+                    // No slash — id is not in the expected format; use the full
+                    // id as the prefix so cross-block references are never
+                    // mis-identified as same-block.
+                    id_str.clone()
+                }
+            });
+
+            let Some(prefix) = block_prefix else {
+                continue; // Empty block; already reported by check_function_structure.
+            };
+
+            for (pos, &node_idx) in block_info.nodes.iter().enumerate() {
+                let node = &graph.graph[node_idx];
+
+                for edge_ref in graph
+                    .graph
+                    .edges_directed(node_idx, petgraph::Direction::Incoming)
+                {
+                    // Only data-flow operand edges carry SSA dependencies.
+                    let is_operand_edge = matches!(
+                        edge_ref.weight(),
+                        GraphEdge::Left
+                            | GraphEdge::Right
+                            | GraphEdge::Operand
+                            | GraphEdge::Condition
+                            | GraphEdge::Arg(_)
+                    );
+                    if !is_operand_edge {
+                        continue;
+                    }
+
+                    let src_node = &graph.graph[edge_ref.source()];
+                    let src_id = &src_node.id;
+
+                    // Only flag references within the same block (same prefix).
+                    if !src_id.0.starts_with(&prefix) {
+                        continue;
+                    }
+
+                    // The referenced node is in this block — check its position.
+                    if let Some(&src_pos) = position_in_block.get(src_id)
+                        && src_pos > pos
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                codes::E009_SCHEMA_INVALID,
+                                format!(
+                                    "SSA forward reference: op '{}' at index {} references op '{}' at index {} \
+                                     — operands must be defined before use (lower index)",
+                                    node.id, pos, src_id, src_pos
+                                ),
+                            )
+                            .with_node(&node.id),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Rule A3: Branch Target Validation.
+///
+/// For every `Branch` op, checks that both `duumbi:trueBlock` and
+/// `duumbi:falseBlock` labels resolve to an existing block label inside the
+/// same function. The target labels are stored in `graph.branch_targets`.
+fn check_branch_targets(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for func_info in &graph.functions {
+        // Collect all block labels defined in this function.
+        let block_labels: std::collections::HashSet<&str> = func_info
+            .blocks
+            .iter()
+            .map(|b| b.label.0.as_str())
+            .collect();
+
+        for block_info in &func_info.blocks {
+            for &node_idx in &block_info.nodes {
+                let node = &graph.graph[node_idx];
+                if !matches!(&node.op, Op::Branch) {
+                    continue;
+                }
+
+                let Some((true_label, false_label)) = graph.branch_targets.get(&node.id) else {
+                    // Missing branch_targets entry — covered by check_terminator_position
+                    // or the parser; no double-reporting here.
+                    continue;
+                };
+
+                for label in [true_label.as_str(), false_label.as_str()] {
+                    if !block_labels.contains(label) {
+                        let available: Vec<&str> = {
+                            let mut v: Vec<&str> = block_labels.iter().copied().collect();
+                            v.sort_unstable();
+                            v
+                        };
+                        diagnostics.push(
+                            Diagnostic::error(
+                                codes::E009_SCHEMA_INVALID,
+                                format!(
+                                    "Branch target '{}' in op '{}' does not match any block label \
+                                     in function '{}'. Available labels: [{}]",
+                                    label,
+                                    node.id,
+                                    func_info.name,
+                                    available.join(", ")
+                                ),
+                            )
+                            .with_node(&node.id),
+                        );
+                    }
+                }
             }
         }
     }
@@ -774,6 +920,352 @@ mod tests {
         assert!(
             diags.is_empty(),
             "Plain add(3,5) should produce zero diagnostics, got: {diags:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Rule A2: SSA Dominance Check
+    // -------------------------------------------------------------------------
+
+    /// Helper: build a minimal SemanticGraph with two nodes in the same block
+    /// where `user` (index 1) has an incoming edge from `src` (index 0).
+    /// Returns `(graph, src_idx, user_idx)`.
+    fn make_two_node_graph(
+        src_id: &str,
+        src_op: Op,
+        user_id: &str,
+        user_op: Op,
+        edge: GraphEdge,
+        nodes_order: &[usize], // 0 = src first, 1 = src second
+    ) -> SemanticGraph {
+        let mut graph = StableGraph::new();
+        let src = graph.add_node(GraphNode {
+            id: NodeId(src_id.to_string()),
+            op: src_op,
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        let user = graph.add_node(GraphNode {
+            id: NodeId(user_id.to_string()),
+            op: user_op,
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        graph.add_edge(src, user, edge);
+
+        // nodes_order[0]=0 means src comes first in the block list
+        let ordered: Vec<petgraph::stable_graph::NodeIndex> = nodes_order
+            .iter()
+            .map(|&i| if i == 0 { src } else { user })
+            .collect();
+
+        SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: ordered,
+                }],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
+        }
+    }
+
+    #[test]
+    fn ssa_forward_reference_produces_e009() {
+        // Block order: user (index 0) → src (index 1)
+        // user has a Left edge from src — src is defined AFTER user: forward reference.
+        let sg = make_two_node_graph(
+            "duumbi:m/main/entry/1", // src at position 1
+            Op::Const(5),
+            "duumbi:m/main/entry/0", // user at position 0
+            Op::Add,
+            GraphEdge::Left,
+            &[1, 0], // user first (index 0 in block), src second (index 1)
+        );
+
+        let diags = validate(&sg);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("SSA forward reference")),
+            "Expected E009 SSA forward reference, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ssa_backward_reference_is_valid() {
+        // Block order: src (index 0), user (index 1) — src defined before user.
+        let sg = make_two_node_graph(
+            "duumbi:m/main/entry/0", // src at position 0
+            Op::Const(5),
+            "duumbi:m/main/entry/1", // user at position 1
+            Op::Add,
+            GraphEdge::Left,
+            &[0, 1], // src first, user second
+        );
+
+        let diags = validate(&sg);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("SSA forward reference")),
+            "Expected no SSA forward reference error for valid graph, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ssa_cross_block_reference_is_not_flagged() {
+        // A node in block "then" referencing a node in block "entry" is fine —
+        // the block prefix differs so the SSA check should not flag it.
+        let mut graph = StableGraph::new();
+        let src = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/0".to_string()),
+            op: Op::Const(1),
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        let user = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/then/0".to_string()),
+            op: Op::Add,
+            result_type: Some(DuumbiType::I64),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("then".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        graph.add_edge(src, user, GraphEdge::Left);
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![
+                    BlockInfo {
+                        label: BlockLabel("entry".to_string()),
+                        nodes: vec![src],
+                    },
+                    BlockInfo {
+                        label: BlockLabel("then".to_string()),
+                        nodes: vec![user],
+                    },
+                ],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("SSA forward reference")),
+            "Cross-block reference should not produce SSA error, got: {diags:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Rule A3: Branch Target Validation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn branch_target_valid_labels_no_error() {
+        let mut graph = StableGraph::new();
+        let cond = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/0".to_string()),
+            op: Op::ConstBool(true),
+            result_type: Some(DuumbiType::Bool),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        let branch = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/1".to_string()),
+            op: Op::Branch,
+            result_type: None,
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        graph.add_edge(cond, branch, GraphEdge::Condition);
+
+        let mut branch_targets = std::collections::HashMap::new();
+        branch_targets.insert(
+            NodeId("duumbi:m/main/entry/1".to_string()),
+            ("then".to_string(), "else_".to_string()),
+        );
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![
+                    BlockInfo {
+                        label: BlockLabel("entry".to_string()),
+                        nodes: vec![cond, branch],
+                    },
+                    BlockInfo {
+                        label: BlockLabel("then".to_string()),
+                        nodes: vec![],
+                    },
+                    BlockInfo {
+                        label: BlockLabel("else_".to_string()),
+                        nodes: vec![],
+                    },
+                ],
+            }],
+            branch_targets,
+            module_name: ModuleName("test".to_string()),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("Branch target")),
+            "Expected no branch target error for valid labels, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_target_unknown_true_label_produces_e009() {
+        let mut graph = StableGraph::new();
+        let cond = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/0".to_string()),
+            op: Op::ConstBool(true),
+            result_type: Some(DuumbiType::Bool),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        let branch = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/1".to_string()),
+            op: Op::Branch,
+            result_type: None,
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        graph.add_edge(cond, branch, GraphEdge::Condition);
+
+        let mut branch_targets = std::collections::HashMap::new();
+        branch_targets.insert(
+            NodeId("duumbi:m/main/entry/1".to_string()),
+            ("nonexistent_block".to_string(), "entry".to_string()),
+        );
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: vec![cond, branch],
+                }],
+            }],
+            branch_targets,
+            module_name: ModuleName("test".to_string()),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("Branch target")
+                && d.message.contains("nonexistent_block")),
+            "Expected E009 for unknown branch target 'nonexistent_block', got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_target_unknown_false_label_produces_e009() {
+        let mut graph = StableGraph::new();
+        let cond = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/0".to_string()),
+            op: Op::ConstBool(false),
+            result_type: Some(DuumbiType::Bool),
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        let branch = graph.add_node(GraphNode {
+            id: NodeId("duumbi:m/main/entry/1".to_string()),
+            op: Op::Branch,
+            result_type: None,
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        });
+        graph.add_edge(cond, branch, GraphEdge::Condition);
+
+        let mut branch_targets = std::collections::HashMap::new();
+        branch_targets.insert(
+            NodeId("duumbi:m/main/entry/1".to_string()),
+            ("entry".to_string(), "missing_else".to_string()),
+        );
+
+        let sg = SemanticGraph {
+            graph,
+            node_map: std::collections::HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: vec![cond, branch],
+                }],
+            }],
+            branch_targets,
+            module_name: ModuleName("test".to_string()),
+        };
+
+        let diags = validate(&sg);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("Branch target")
+                && d.message.contains("missing_else")),
+            "Expected E009 for unknown false branch target 'missing_else', got: {diags:?}"
         );
     }
 

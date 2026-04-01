@@ -1,0 +1,36 @@
+intent: "Digital root: keep summing digits until single digit"
+version: 1
+status: pending
+acceptance_criteria:
+  - "digital_root(0) returns 0 (zero is its own digital root)"
+  - "digital_root(5) returns 5 (single digit is already the root)"
+  - "digital_root(38) returns 2 (3+8=11, 1+1=2)"
+  - "digital_root(493) returns 7 (4+9+3=16, 1+6=7)"
+  - "digital_root(999) returns 9 (9+9+9=27, 2+7=9)"
+modules:
+  create:
+    - "math/digits"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "digital_root_zero"
+    function: "digital_root"
+    args: [0]
+    expected_return: 0
+  - name: "digital_root_single"
+    function: "digital_root"
+    args: [5]
+    expected_return: 5
+  - name: "digital_root_two_digit"
+    function: "digital_root"
+    args: [38]
+    expected_return: 2
+  - name: "digital_root_three_digit"
+    function: "digital_root"
+    args: [493]
+    expected_return: 7
+  - name: "digital_root_nines"
+    function: "digital_root"
+    args: [999]
+    expected_return: 9
+dependencies: []

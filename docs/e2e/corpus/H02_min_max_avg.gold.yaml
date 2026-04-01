@@ -1,0 +1,52 @@
+intent: "Find the minimum, maximum, and average of three numbers"
+version: 1
+status: pending
+acceptance_criteria:
+  - "min_of_three(a, b, c) returns the smallest of the three values"
+  - "max_of_three(a, b, c) returns the largest of the three values"
+  - "avg_of_three(a, b, c) returns (a+b+c)/3 using integer division"
+  - "all functions handle equal inputs (returns that value)"
+  - "all functions handle negative inputs"
+modules:
+  create:
+    - "stats/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "min_basic"
+    function: "min_of_three"
+    args: [3, 7, 5]
+    expected_return: 3
+  - name: "min_equal"
+    function: "min_of_three"
+    args: [1, 1, 1]
+    expected_return: 1
+  - name: "min_negative"
+    function: "min_of_three"
+    args: [-5, 3, -1]
+    expected_return: -5
+  - name: "max_basic"
+    function: "max_of_three"
+    args: [3, 7, 5]
+    expected_return: 7
+  - name: "max_equal"
+    function: "max_of_three"
+    args: [1, 1, 1]
+    expected_return: 1
+  - name: "max_negative"
+    function: "max_of_three"
+    args: [-5, 3, -1]
+    expected_return: 3
+  - name: "avg_basic"
+    function: "avg_of_three"
+    args: [3, 7, 5]
+    expected_return: 5
+  - name: "avg_equal"
+    function: "avg_of_three"
+    args: [1, 1, 1]
+    expected_return: 1
+  - name: "avg_negative"
+    function: "avg_of_three"
+    args: [-3, 0, 3]
+    expected_return: 0
+dependencies: []

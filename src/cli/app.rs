@@ -72,6 +72,21 @@ fn default_api_key_env(kind: &crate::config::ProviderKind) -> &'static str {
     }
 }
 
+/// Returns the conventional environment variable name for subscription/Bearer tokens.
+///
+/// Used when the user selects subscription-based authentication instead of
+/// a traditional API key. The token is sent as `Authorization: Bearer`.
+fn default_auth_token_env(kind: &crate::config::ProviderKind) -> &'static str {
+    use crate::config::ProviderKind;
+    match kind {
+        ProviderKind::Anthropic => "ANTHROPIC_AUTH_TOKEN",
+        ProviderKind::OpenAI => "OPENAI_AUTH_TOKEN",
+        ProviderKind::Grok => "XAI_AUTH_TOKEN",
+        ProviderKind::OpenRouter => "OPENROUTER_AUTH_TOKEN",
+        ProviderKind::MiniMax => "MINIMAX_AUTH_TOKEN",
+    }
+}
+
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
     use crate::config::ProviderKind;
@@ -454,10 +469,10 @@ impl ReplApp {
                             }
                             KeyCode::Enter if !manual.is_empty() => {
                                 let model = manual.clone();
-                                input_mode = Some(PanelInputMode::AddStep3Key {
+                                input_mode = Some(PanelInputMode::AddStepAuthType {
                                     provider: provider.clone(),
                                     model,
-                                    key_buf: String::new(),
+                                    selected: 0,
                                 });
                             }
                             _ => {}
@@ -484,10 +499,10 @@ impl ReplApp {
                             }
                             KeyCode::Enter => {
                                 if let Some((model_name, _)) = models.get(*model_sel) {
-                                    input_mode = Some(PanelInputMode::AddStep3Key {
+                                    input_mode = Some(PanelInputMode::AddStepAuthType {
                                         provider: provider.clone(),
                                         model: (*model_name).to_string(),
-                                        key_buf: String::new(),
+                                        selected: 0,
                                     });
                                 }
                             }
@@ -495,16 +510,43 @@ impl ReplApp {
                         }
                     }
                 }
-                PanelInputMode::AddStep3Key {
+                PanelInputMode::AddStepAuthType {
                     provider,
                     model,
-                    key_buf,
+                    selected: auth_sel,
                 } => match key_event.code {
                     KeyCode::Esc => {
                         input_mode = Some(PanelInputMode::AddStep2Model {
                             provider: provider.clone(),
                             selected: 0,
                             manual_input: None,
+                        });
+                    }
+                    KeyCode::Up | KeyCode::Down => {
+                        *auth_sel = 1 - *auth_sel;
+                    }
+                    KeyCode::Enter => {
+                        let is_subscription = *auth_sel == 1;
+                        input_mode = Some(PanelInputMode::AddStep3Key {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            key_buf: String::new(),
+                            is_subscription,
+                        });
+                    }
+                    _ => {}
+                },
+                PanelInputMode::AddStep3Key {
+                    provider,
+                    model,
+                    key_buf,
+                    is_subscription,
+                } => match key_event.code {
+                    KeyCode::Esc => {
+                        input_mode = Some(PanelInputMode::AddStepAuthType {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            selected: if *is_subscription { 1 } else { 0 },
                         });
                     }
                     KeyCode::Backspace => {
@@ -516,6 +558,7 @@ impl ReplApp {
                             provider: provider.clone(),
                             model: model.clone(),
                             key: key_buf.clone(),
+                            is_subscription: *is_subscription,
                         });
                     }
                     KeyCode::Char(c) => {
@@ -527,17 +570,24 @@ impl ReplApp {
                     provider,
                     model,
                     key: api_key_value,
+                    is_subscription,
                 } => match key_event.code {
                     KeyCode::Char('k') | KeyCode::Char('K') => {
                         let api_key_env = default_api_key_env(provider).to_string();
+                        let token_env = if *is_subscription {
+                            Some(default_auth_token_env(provider).to_string())
+                        } else {
+                            None
+                        };
+                        let store_env = token_env.as_deref().unwrap_or(&api_key_env);
                         let prov_clone = provider.clone();
                         let model_clone = model.clone();
                         let key_clone = api_key_value.clone();
-                        match super::keystore::store_api_key(&api_key_env, &key_clone) {
+                        match super::keystore::store_api_key(store_env, &key_clone) {
                             Ok(()) => {
                                 // SAFETY: single-threaded CLI — no concurrent env access.
                                 unsafe {
-                                    std::env::set_var(&api_key_env, &key_clone);
+                                    std::env::set_var(store_env, &key_clone);
                                 }
                                 self.config.providers.push(crate::config::ProviderConfig {
                                     provider: prov_clone,
@@ -551,21 +601,22 @@ impl ReplApp {
                                     base_url: None,
                                     timeout_secs: None,
                                     key_storage: Some(crate::config::KeyStorage::File),
-                                    auth_token_env: None,
+                                    auth_token_env: token_env,
                                 });
                                 self.save_config_and_rebuild_client();
                                 selected = self.config.providers.len() - 1;
-                                new_status_msg = Some((
+                                let auth_msg = if *is_subscription {
+                                    "Provider added (subscription/Bearer). Token saved to ~/.duumbi/credentials.toml."
+                                } else {
                                     "Provider added. Key saved to ~/.duumbi/credentials.toml."
-                                        .to_string(),
-                                    OutputStyle::Success,
-                                ));
+                                };
+                                new_status_msg = Some((auth_msg.to_string(), OutputStyle::Success));
                             }
                             Err(e) => {
                                 // File storage failed — fall back to session-only.
                                 // SAFETY: single-threaded CLI — no concurrent env access.
                                 unsafe {
-                                    std::env::set_var(&api_key_env, &key_clone);
+                                    std::env::set_var(store_env, &key_clone);
                                 }
                                 self.config.providers.push(crate::config::ProviderConfig {
                                     provider: prov_clone,
@@ -579,12 +630,12 @@ impl ReplApp {
                                     base_url: None,
                                     timeout_secs: None,
                                     key_storage: None,
-                                    auth_token_env: None,
+                                    auth_token_env: token_env,
                                 });
                                 self.save_config_and_rebuild_client();
                                 selected = self.config.providers.len() - 1;
                                 new_status_msg = Some((
-                                    format!("File storage error: {e}. Key set for session only."),
+                                    format!("File storage error: {e}. Token set for session only."),
                                     OutputStyle::Error,
                                 ));
                             }
@@ -593,12 +644,19 @@ impl ReplApp {
                     }
                     KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
                         let api_key_env = default_api_key_env(provider).to_string();
+                        let token_env = if *is_subscription {
+                            Some(default_auth_token_env(provider).to_string())
+                        } else {
+                            None
+                        };
+                        let store_env_name =
+                            token_env.as_deref().unwrap_or(&api_key_env).to_string();
                         let prov_clone = provider.clone();
                         let model_clone = model.clone();
                         let key_clone = api_key_value.clone();
                         // SAFETY: single-threaded CLI — no concurrent env access.
                         unsafe {
-                            std::env::set_var(&api_key_env, &key_clone);
+                            std::env::set_var(&store_env_name, &key_clone);
                         }
                         self.config.providers.push(crate::config::ProviderConfig {
                             provider: prov_clone,
@@ -612,14 +670,18 @@ impl ReplApp {
                             base_url: None,
                             timeout_secs: None,
                             key_storage: None,
-                            auth_token_env: None,
+                            auth_token_env: token_env,
                         });
                         self.save_config_and_rebuild_client();
                         selected = self.config.providers.len() - 1;
-                        new_status_msg = Some((
-                            format!("Provider added ({api_key_env}, session only)."),
-                            OutputStyle::Success,
-                        ));
+                        let auth_msg = if *is_subscription {
+                            format!(
+                                "Provider added (subscription/Bearer, {store_env_name}, session only)."
+                            )
+                        } else {
+                            format!("Provider added ({api_key_env}, session only).")
+                        };
+                        new_status_msg = Some((auth_msg, OutputStyle::Success));
                         input_mode = None; // back to list view
                     }
                     KeyCode::Esc => {
@@ -628,6 +690,7 @@ impl ReplApp {
                             provider: provider.clone(),
                             model: model.clone(),
                             key_buf: api_key_value.clone(),
+                            is_subscription: *is_subscription,
                         });
                     }
                     _ => {}
@@ -852,6 +915,10 @@ impl ReplApp {
                         // header + empty + N items + empty + [M] hint
                         (models.len() as u16) + 4
                     }
+                }
+                Some(PanelInputMode::AddStepAuthType { .. }) => {
+                    // header + empty + 2 options + empty + hint
+                    6
                 }
                 Some(PanelInputMode::AddStep3Key { .. }) => {
                     // header + empty + model + env + empty + input + empty + hint
@@ -1413,17 +1480,70 @@ impl ReplApp {
                     )));
                 }
             }
+            Some(PanelInputMode::AddStepAuthType {
+                provider,
+                model,
+                selected: auth_sel,
+            }) => {
+                lines.clear();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  Authentication for {provider} ({model})"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" ".repeat(area.width.saturating_sub(60) as usize)),
+                    Span::styled(
+                        "(Esc to go back)",
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+                let options = [
+                    ("API Key", "Traditional API key (X-Api-Key header)"),
+                    (
+                        "Subscription Token",
+                        "Claude Pro/Max or OAuth token (Bearer header, via `claude setup-token`)",
+                    ),
+                ];
+                for (i, (label, hint)) in options.iter().enumerate() {
+                    let marker = if i == *auth_sel { "> " } else { "  " };
+                    let style = if i == *auth_sel {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().add_modifier(Modifier::DIM)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {marker}{label}"), style),
+                        Span::styled(
+                            format!("  \u{2014} {hint}"),
+                            Style::default().add_modifier(Modifier::DIM),
+                        ),
+                    ]));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  [\u{2191}/\u{2193}] Select  [Enter] Continue  [Esc] Back",
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
+            }
             Some(PanelInputMode::AddStep3Key {
                 provider,
                 model,
                 key_buf,
+                is_subscription,
             }) => {
-                let env_name = default_api_key_env(provider);
+                let (env_name, label) = if *is_subscription {
+                    (default_auth_token_env(provider), "Subscription token")
+                } else {
+                    (default_api_key_env(provider), "API key")
+                };
                 let key_set = std::env::var(env_name).is_ok();
                 lines.clear();
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  API Key for {provider}"),
+                        format!("  {label} for {provider}"),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" ".repeat(area.width.saturating_sub(50) as usize)),
@@ -1437,21 +1557,34 @@ impl ReplApp {
                     format!("  Model: {model}"),
                     Style::default().add_modifier(Modifier::DIM),
                 )));
+                let hint = if *is_subscription {
+                    "  Tip: generate a token with `claude setup-token`"
+                } else {
+                    ""
+                };
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "  API key env: {env_name}  ({})",
+                        "  {label} env: {env_name}  ({})",
                         if key_set {
                             "\u{2713} already set \u{2014} will reuse"
                         } else {
-                            "\u{2717} not set \u{2014} enter key below"
+                            "\u{2717} not set \u{2014} enter below"
                         }
                     ),
                     Style::default().add_modifier(Modifier::DIM),
                 )));
+                if !hint.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        hint,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::DIM),
+                    )));
+                }
                 lines.push(Line::from(""));
                 let masked = "\u{25cf}".repeat(key_buf.len());
                 lines.push(Line::from(vec![
-                    Span::styled("  API key: ", Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("  {label}: "), Style::default().fg(Color::Cyan)),
                     Span::styled(
                         format!("{masked}\u{2588}"),
                         Style::default().add_modifier(Modifier::BOLD),
@@ -1464,11 +1597,19 @@ impl ReplApp {
                 )));
             }
             Some(PanelInputMode::AddStep3Confirm {
-                provider, model, ..
+                provider,
+                model,
+                is_subscription,
+                ..
             }) => {
+                let label = if *is_subscription {
+                    "subscription token"
+                } else {
+                    "API key"
+                };
                 lines.clear();
                 lines.push(Line::from(Span::styled(
-                    format!("  Store API key for {provider} ({model})?"),
+                    format!("  Store {label} for {provider} ({model})?"),
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
                 lines.push(Line::from(""));

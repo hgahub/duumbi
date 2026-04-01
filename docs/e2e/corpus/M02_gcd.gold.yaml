@@ -1,0 +1,36 @@
+intent: "Find the greatest common divisor of two numbers"
+version: 1
+status: pending
+acceptance_criteria:
+  - "gcd(12, 8) returns 4 (basic case)"
+  - "gcd(17, 5) returns 1 (coprime numbers)"
+  - "gcd(7, 7) returns 7 (equal inputs)"
+  - "gcd(15, 0) returns 15 (zero edge case)"
+  - "gcd(-12, 8) returns 4 (negative input)"
+modules:
+  create:
+    - "math/gcd"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "gcd_basic"
+    function: "gcd"
+    args: [12, 8]
+    expected_return: 4
+  - name: "gcd_coprime"
+    function: "gcd"
+    args: [17, 5]
+    expected_return: 1
+  - name: "gcd_equal"
+    function: "gcd"
+    args: [7, 7]
+    expected_return: 7
+  - name: "gcd_zero"
+    function: "gcd"
+    args: [15, 0]
+    expected_return: 15
+  - name: "gcd_negative"
+    function: "gcd"
+    args: [-12, 8]
+    expected_return: 4
+dependencies: []

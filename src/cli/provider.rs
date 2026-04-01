@@ -29,28 +29,30 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
     let mut table = comfy_table::Table::new();
     table
         .set_header(vec![
-            "#",
-            "Provider",
-            "Model",
-            "Role",
-            "API Key Env",
-            "Key Set?",
+            "#", "Provider", "Model", "Role", "Auth", "Key Env", "Ready?",
         ])
         .load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
 
     for (i, p) in providers.iter().enumerate() {
-        let key_set = if std::env::var(&p.api_key_env).is_ok() {
-            "yes"
+        let (auth_type, ready) = if let Some(ref token_env) = p.auth_token_env {
+            let token_ok = std::env::var(token_env).is_ok();
+            let key_ok = std::env::var(&p.api_key_env).is_ok();
+            ("bearer", if token_ok || key_ok { "yes" } else { "no" })
         } else {
-            "no"
+            let key_ok = std::env::var(&p.api_key_env).is_ok();
+            ("api-key", if key_ok { "yes" } else { "no" })
         };
         table.add_row(vec![
             (i + 1).to_string(),
             p.provider.to_string(),
             p.model.clone(),
             format!("{:?}", p.role).to_lowercase(),
-            p.api_key_env.clone(),
-            key_set.to_string(),
+            auth_type.to_string(),
+            p.auth_token_env
+                .as_deref()
+                .unwrap_or(&p.api_key_env)
+                .to_string(),
+            ready.to_string(),
         ]);
     }
 
@@ -67,15 +69,15 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
 
 /// Parses `args` and appends a new provider to `config.providers`.
 ///
-/// Expected syntax: `<type> <model> <api_key_env> [--role fallback] [--base-url URL]`
+/// Expected syntax: `<type> <model> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]`
 ///
-/// `<type>` must be one of: `anthropic`, `openai`, `grok`, `openrouter`.
+/// `<type>` must be one of: `anthropic`, `openai`, `grok`, `openrouter`, `minimax`.
 #[must_use]
 pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     let tokens: Vec<&str> = args.split_whitespace().collect();
     if tokens.len() < 3 {
         return vec![OutputLine::new(
-            "Usage: /provider add <type> <model> <api_key_env> [--role fallback] [--base-url URL]",
+            "Usage: /provider add <type> <model> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]",
             OutputStyle::Dim,
         )];
     }
@@ -91,6 +93,7 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     // Parse optional flags from the remaining tokens.
     let mut role = ProviderRole::Primary;
     let mut base_url: Option<String> = None;
+    let mut auth_token_env: Option<String> = None;
     let mut i = 3usize;
     while i < tokens.len() {
         match tokens[i] {
@@ -123,6 +126,16 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
                 }
                 base_url = Some(tokens[i].to_string());
             }
+            "--auth-token-env" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return vec![OutputLine::new(
+                        "--auth-token-env requires a value (env var name for Bearer token)",
+                        OutputStyle::Error,
+                    )];
+                }
+                auth_token_env = Some(tokens[i].to_string());
+            }
             other => {
                 return vec![OutputLine::new(
                     format!("Unknown flag '{other}'"),
@@ -133,6 +146,12 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
         i += 1;
     }
 
+    let auth_info = if auth_token_env.is_some() {
+        " (subscription/Bearer)"
+    } else {
+        ""
+    };
+
     config.providers.push(ProviderConfig {
         provider: kind,
         role,
@@ -141,12 +160,12 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
         base_url,
         timeout_secs: None,
         key_storage: None,
-        auth_token_env: None,
+        auth_token_env,
     });
 
     vec![OutputLine::new(
         format!(
-            "Provider added: {} {} (api_key_env: {api_key_env})",
+            "Provider added: {} {}{auth_info} (api_key_env: {api_key_env})",
             tokens[0], model
         ),
         OutputStyle::Success,
@@ -284,8 +303,27 @@ pub fn set_provider_field(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLi
                 OutputStyle::Success,
             )]
         }
+        "auth_token_env" => {
+            if value == "none" || value == "null" || value.is_empty() {
+                provider.auth_token_env = None;
+                vec![OutputLine::new(
+                    format!("Provider #{idx}: auth_token_env cleared (using API key)"),
+                    OutputStyle::Success,
+                )]
+            } else {
+                provider.auth_token_env = Some(value.to_string());
+                vec![OutputLine::new(
+                    format!(
+                        "Provider #{idx}: auth_token_env set to '{value}' (subscription/Bearer)"
+                    ),
+                    OutputStyle::Success,
+                )]
+            }
+        }
         other => vec![OutputLine::new(
-            format!("Unknown field '{other}'. Valid fields: model, api_key_env, role, base_url"),
+            format!(
+                "Unknown field '{other}'. Valid fields: model, api_key_env, role, base_url, auth_token_env"
+            ),
             OutputStyle::Error,
         )],
     }

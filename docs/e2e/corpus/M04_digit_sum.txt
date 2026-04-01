@@ -1,0 +1,1 @@
+Sum the digits of a three-digit number

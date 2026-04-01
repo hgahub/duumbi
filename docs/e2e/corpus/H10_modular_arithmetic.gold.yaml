@@ -1,0 +1,53 @@
+intent: "Build a modular arithmetic toolkit: add, multiply, power (mod m)"
+version: 1
+status: pending
+acceptance_criteria:
+  - "mod_add(a, b, m) returns (a+b) % m"
+  - "mod_mul(a, b, m) returns (a*b) % m"
+  - "mod_pow(base, exp, m) returns base^exp % m"
+  - "all functions return 0 when the result is divisible by m"
+  - "mod_pow handles exp=0 (any base^0 = 1, mod m)"
+  - "mod_pow handles base=0 (0^exp = 0 for exp > 0)"
+modules:
+  create:
+    - "math/modular"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "mod_add_basic"
+    function: "mod_add"
+    args: [7, 5, 10]
+    expected_return: 2
+  - name: "mod_add_zero_result"
+    function: "mod_add"
+    args: [6, 4, 10]
+    expected_return: 0
+  - name: "mod_add_small_modulus"
+    function: "mod_add"
+    args: [3, 4, 5]
+    expected_return: 2
+  - name: "mod_mul_basic"
+    function: "mod_mul"
+    args: [3, 4, 5]
+    expected_return: 2
+  - name: "mod_mul_zero_result"
+    function: "mod_mul"
+    args: [5, 4, 10]
+    expected_return: 0
+  - name: "mod_mul_large"
+    function: "mod_mul"
+    args: [7, 8, 13]
+    expected_return: 4
+  - name: "mod_pow_basic"
+    function: "mod_pow"
+    args: [2, 10, 1000]
+    expected_return: 24
+  - name: "mod_pow_exp_zero"
+    function: "mod_pow"
+    args: [7, 0, 13]
+    expected_return: 1
+  - name: "mod_pow_base_zero"
+    function: "mod_pow"
+    args: [0, 5, 7]
+    expected_return: 0
+dependencies: []

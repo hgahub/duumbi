@@ -1,0 +1,30 @@
+intent: "Create a function that doubles a number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "double(n) returns 2*n for any i64 input"
+  - "double(0) returns 0"
+  - "double handles negative numbers correctly"
+modules:
+  create:
+    - "math/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "double_positive"
+    function: "double"
+    args: [5]
+    expected_return: 10
+  - name: "double_negative"
+    function: "double"
+    args: [-3]
+    expected_return: -6
+  - name: "double_zero"
+    function: "double"
+    args: [0]
+    expected_return: 0
+  - name: "double_large"
+    function: "double"
+    args: [100]
+    expected_return: 200
+dependencies: []

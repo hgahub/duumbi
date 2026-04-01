@@ -1,0 +1,30 @@
+intent: "Find the absolute value of a number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "abs(n) returns n when n is positive"
+  - "abs(n) returns -n when n is negative"
+  - "abs(0) returns 0"
+modules:
+  create:
+    - "math/abs"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "abs_positive"
+    function: "abs"
+    args: [7]
+    expected_return: 7
+  - name: "abs_negative"
+    function: "abs"
+    args: [-7]
+    expected_return: 7
+  - name: "abs_zero"
+    function: "abs"
+    args: [0]
+    expected_return: 0
+  - name: "abs_large_negative"
+    function: "abs"
+    args: [-1000]
+    expected_return: 1000
+dependencies: []

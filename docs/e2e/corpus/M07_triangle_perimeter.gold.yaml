@@ -1,0 +1,26 @@
+intent: "Calculate the perimeter of a triangle given three sides"
+version: 1
+status: pending
+acceptance_criteria:
+  - "perimeter(3, 4, 5) returns 12 (right triangle)"
+  - "perimeter(1, 1, 1) returns 3 (equilateral)"
+  - "perimeter(10, 20, 25) returns 55 (scalene)"
+modules:
+  create:
+    - "geometry/triangle"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "perimeter_right_triangle"
+    function: "perimeter"
+    args: [3, 4, 5]
+    expected_return: 12
+  - name: "perimeter_equilateral"
+    function: "perimeter"
+    args: [1, 1, 1]
+    expected_return: 3
+  - name: "perimeter_scalene"
+    function: "perimeter"
+    args: [10, 20, 25]
+    expected_return: 55
+dependencies: []

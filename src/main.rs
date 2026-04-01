@@ -11,6 +11,8 @@ mod bench;
 mod cli;
 mod compiler;
 mod config;
+#[allow(dead_code)] // Used indirectly via intent::execute context enrichment
+mod context;
 mod deps;
 mod errors;
 mod examples;
@@ -363,10 +365,16 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
         cli::IntentSubcommand::Execute { name } => {
             let client = require_llm_client(&workspace)?;
             let mut log = Vec::new();
-            let ok = intent::execute::run_execute(&client, &workspace, &name, &mut log).await?;
-            for line in &log {
-                eprintln!("{line}");
-            }
+            let ok = intent::execute::run_execute_with_progress(
+                &client,
+                &workspace,
+                &name,
+                &mut log,
+                &|line| {
+                    eprintln!("{line}");
+                },
+            )
+            .await?;
             if !ok {
                 process::exit(1);
             }
@@ -479,6 +487,7 @@ fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result
             api_key_env,
             role,
             base_url,
+            auth_token_env,
         } => {
             let mut args = format!("{provider_type} {model} {api_key_env}");
             if role != "primary" {
@@ -486,6 +495,9 @@ fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result
             }
             if let Some(ref url) = base_url {
                 args.push_str(&format!(" --base-url {url}"));
+            }
+            if let Some(ref token_env) = auth_token_env {
+                args.push_str(&format!(" --auth-token-env {token_env}"));
             }
             cli::provider::add_provider(&mut cfg, &args)
         }

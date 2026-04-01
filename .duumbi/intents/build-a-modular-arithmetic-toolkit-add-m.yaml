@@ -1,0 +1,110 @@
+intent: 'Build a modular arithmetic toolkit: add, multiply, power (mod m)'
+version: 1
+status: pending
+acceptance_criteria:
+- add_mod(a, b, m) returns (a + b) mod m
+- add_mod handles negative inputs correctly
+- multiply_mod(a, b, m) returns (a * b) mod m
+- multiply_mod handles negative inputs correctly
+- power_mod(base, exp, m) returns base^exp mod m using efficient modular exponentiation
+- power_mod(exp=0) returns 1 mod m
+- All functions handle m=1 correctly (result always 0)
+modules:
+  create:
+  - math/modular
+  modify:
+  - app/main
+test_cases:
+- name: add_mod_basic
+  function: add_mod
+  args:
+  - 7
+  - 3
+  - 5
+  expected_return: 0
+- name: add_mod_positive_wrap
+  function: add_mod
+  args:
+  - 10
+  - 5
+  - 7
+  expected_return: 1
+- name: add_mod_negative
+  function: add_mod
+  args:
+  - -3
+  - 5
+  - 4
+  expected_return: 2
+- name: add_mod_both_negative
+  function: add_mod
+  args:
+  - -4
+  - -3
+  - 5
+  expected_return: 3
+- name: multiply_mod_basic
+  function: multiply_mod
+  args:
+  - 3
+  - 4
+  - 5
+  expected_return: 2
+- name: multiply_mod_zero
+  function: multiply_mod
+  args:
+  - 7
+  - 0
+  - 11
+  expected_return: 0
+- name: multiply_mod_negative
+  function: multiply_mod
+  args:
+  - -2
+  - 3
+  - 5
+  expected_return: 1
+- name: multiply_mod_large
+  function: multiply_mod
+  args:
+  - 100
+  - 100
+  - 13
+  expected_return: 9
+- name: power_mod_basic
+  function: power_mod
+  args:
+  - 2
+  - 3
+  - 5
+  expected_return: 3
+- name: power_mod_zero_exp
+  function: power_mod
+  args:
+  - 5
+  - 0
+  - 7
+  expected_return: 1
+- name: power_mod_exp_one
+  function: power_mod
+  args:
+  - 9
+  - 1
+  - 4
+  expected_return: 1
+- name: power_mod_large_exp
+  function: power_mod
+  args:
+  - 2
+  - 10
+  - 1000
+  expected_return: 24
+- name: power_mod_negative_base
+  function: power_mod
+  args:
+  - -2
+  - 3
+  - 5
+  expected_return: 2
+dependencies: []
+created_at: 2026-01-01T21:12:15Z

@@ -1,0 +1,35 @@
+intent: "Clamp a number between a minimum and maximum"
+version: 1
+status: pending
+acceptance_criteria:
+  - "clamp(v, lo, hi) returns lo when v < lo"
+  - "clamp(v, lo, hi) returns v when lo <= v <= hi"
+  - "clamp(v, lo, hi) returns hi when v > hi"
+  - "clamp(v, lo, hi) returns lo (or hi) when v equals a boundary"
+modules:
+  create:
+    - "math/clamp"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "clamp_below_lo"
+    function: "clamp"
+    args: [-5, 0, 10]
+    expected_return: 0
+  - name: "clamp_in_range"
+    function: "clamp"
+    args: [5, 0, 10]
+    expected_return: 5
+  - name: "clamp_above_hi"
+    function: "clamp"
+    args: [15, 0, 10]
+    expected_return: 10
+  - name: "clamp_at_lo_boundary"
+    function: "clamp"
+    args: [0, 0, 10]
+    expected_return: 0
+  - name: "clamp_at_hi_boundary"
+    function: "clamp"
+    args: [10, 0, 10]
+    expected_return: 10
+dependencies: []

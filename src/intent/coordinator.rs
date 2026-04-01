@@ -53,10 +53,16 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
             .collect::<Vec<_>>()
             .join("; ");
 
+        let algo_hint = algorithmic_hint(&spec.intent, &spec.acceptance_criteria);
+
         let description = if criteria_summary.is_empty() {
-            format!("Create module '{module_name}' as described in the intent.{exports_hint}")
+            format!(
+                "Create module '{module_name}' as described in the intent.{exports_hint}{algo_hint}"
+            )
         } else {
-            format!("Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}")
+            format!(
+                "Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}{algo_hint}"
+            )
         };
 
         tasks.push(Task {
@@ -144,6 +150,131 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
     });
 
     tasks
+}
+
+// ---------------------------------------------------------------------------
+// Algorithmic hints
+// ---------------------------------------------------------------------------
+
+/// Generates implementation hints based on the intent description and criteria.
+///
+/// Analyses keywords to suggest appropriate patterns (recursion, branching,
+/// Euclidean algorithm, etc.) so the LLM knows HOW to implement, not just WHAT.
+fn algorithmic_hint(intent: &str, criteria: &[String]) -> String {
+    let combined = format!(
+        "{} {}",
+        intent.to_lowercase(),
+        criteria.join(" ").to_lowercase()
+    );
+
+    let mut hints = Vec::new();
+
+    // Recursive patterns
+    if combined.contains("fibonacci") || combined.contains("fib(") {
+        hints.push(
+            "ALGORITHM: Use recursion. Base cases: fib(0)=0, fib(1)=1. \
+             Recursive case: fib(n)=fib(n-1)+fib(n-2). \
+             Implementation: entry block loads n, compares with 0 (Branch to base_zero), \
+             then compares with 1 (Branch to base_one), else falls through to recurse block. \
+             Each base block returns a Const. Recurse block: Sub(n,1)→Call fib, Sub(n,2)→Call fib, Add results→Return.",
+        );
+    } else if combined.contains("tribonacci") {
+        hints.push(
+            "ALGORITHM: Use recursion. Base cases: t(0)=0, t(1)=0, t(2)=1. \
+             Recursive: t(n)=t(n-1)+t(n-2)+t(n-3). Use Compare+Branch for base cases.",
+        );
+    } else if combined.contains("factorial") {
+        hints.push(
+            "ALGORITHM: Use recursion. Base case: n<=1 returns 1. \
+             Recursive: n * factorial(n-1). Entry block: Load n, Const 1, Compare le, \
+             Branch to base/recurse. Base block: Const 1, Return. \
+             Recurse block: Sub(n,1)→Call factorial→Mul(n, result)→Return.",
+        );
+    }
+
+    // GCD / Euclidean
+    if combined.contains("gcd") || combined.contains("greatest common divisor") {
+        hints.push(
+            "ALGORITHM: Euclidean algorithm via recursion. gcd(a,b): if b==0 return a, \
+             else return gcd(b, a%b). Use Modulo op for a%b. \
+             Entry block: Load a, Load b, Const 0, Compare(b, 0, eq), Branch to base/recurse. \
+             Base block: Load a, Return. Recurse block: Load a, Load b, Modulo(a,b), \
+             Load b→Call gcd(b, a%b)→Return.",
+        );
+    }
+
+    // LCM
+    if combined.contains("lcm") || combined.contains("least common multiple") {
+        hints.push("ALGORITHM: lcm(a,b) = |a*b| / gcd(a,b). Implement gcd first, then use it.");
+    }
+
+    // Prime check
+    if combined.contains("prime") || combined.contains("is_prime") {
+        hints.push(
+            "ALGORITHM: Trial division. Check if n<=1 (return 0). Check if n<=3 (return 1). \
+             Check n%2==0 (return 0). Use recursive helper: try_divide(n, d) where d starts at 3. \
+             If d*d > n return 1. If n%d==0 return 0. Else try_divide(n, d+2).",
+        );
+    }
+
+    // Collatz
+    if combined.contains("collatz") {
+        hints.push(
+            "ALGORITHM: Recursive step counter. collatz(n): if n==1 return 0. \
+             If n%2==0, return 1 + collatz(n/2). Else return 1 + collatz(3*n+1). \
+             Use Modulo(n,2) for even check, Branch for each case.",
+        );
+    }
+
+    // Digital root
+    if combined.contains("digital root") || combined.contains("digit sum") {
+        hints.push(
+            "ALGORITHM: For digit sum: use Modulo(n,10) to get last digit, Div(n,10) to remove it. \
+             Recurse until n==0. For digital root: recurse digit_sum until result < 10.",
+        );
+    }
+
+    // Absolute value
+    if combined.contains("absolute") || combined.contains("abs(") {
+        hints.push("ALGORITHM: Compare n >= 0. If true, return n. If false, return Sub(0, n).");
+    }
+
+    // Clamp
+    if combined.contains("clamp") {
+        hints.push(
+            "ALGORITHM: clamp(x, lo, hi): Compare(x, lo, lt)→return lo. \
+             Compare(x, hi, gt)→return hi. Else return x. Use 3 blocks with Branch.",
+        );
+    }
+
+    // Power of 2
+    if combined.contains("power of 2")
+        || combined.contains("2^")
+        || combined.contains("2 to the power")
+    {
+        hints.push(
+            "ALGORITHM: Recursive. pow2(0)=1. pow2(n)=2*pow2(n-1). \
+             Or use Mul(2, Call pow2(n-1)).",
+        );
+    }
+
+    // General branching hint if no specific algorithm matched but criteria suggest conditions
+    if hints.is_empty()
+        && (combined.contains("if ")
+            || combined.contains("when ")
+            || combined.contains("returns 1") && combined.contains("returns 0"))
+    {
+        hints.push(
+            "PATTERN: Use Compare+Branch for conditional logic. Entry block evaluates the condition, \
+             branches to separate blocks for true/false outcomes. Each outcome block ends with Return.",
+        );
+    }
+
+    if hints.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", hints.join(" "))
+    }
 }
 
 // ---------------------------------------------------------------------------

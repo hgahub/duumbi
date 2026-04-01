@@ -40,9 +40,17 @@ Important rules:\n\
 - Use the duumbi: prefix for all field names (duumbi:value, duumbi:left, etc.)\n\
 - resultType must be one of: i64, f64, bool, void, string, array<T>, struct<Name>, result<T,E>, option<T>\n\
 - operand references use the form {\"@id\": \"<target_id>\"}\n\
-- Operations within a block must form a valid data-flow DAG\n\
+- SSA DOMINANCE: within a block, an op can ONLY reference ops with a LOWER index.\n\
+  op/2 may reference op/0 or op/1, but NEVER op/3 or higher. Violating this causes a compile error.\n\
+  Always define Const/Load BEFORE the ops that use them.\n\
 - The last op in each block must be Return or Branch — NO ops may follow a terminator\n\
 - Every function must have at least one block; every block must have at least one op\n\
+- BRANCH TARGETS: duumbi:trueBlock and duumbi:falseBlock must be plain block labels\n\
+  (e.g. \"zero\", \"recurse\"), NOT full paths (NOT \"math/gcd/fib/zero\").\n\
+  Each label must match exactly one block's duumbi:label in the same function.\n\
+- FUNCTION CALLS: duumbi:function must be the plain function name (e.g. \"gcd\", \"fib\"),\n\
+  NOT a full module path (NOT \"math/gcd/gcd\"). The module system resolves function names\n\
+  automatically — for both cross-module and recursive calls, use the simple name.\n\
 - add_op APPENDS to the end of a block.\n\
 - To REWRITE a block body (change Add to Call, insert ops before Return, etc.):\n\
   Use replace_block — provide the block_id and the COMPLETE new ops array ending with Return/Branch.\n\
@@ -118,7 +126,7 @@ Function parameters:\n\
 - To READ a parameter inside the function body use duumbi:Load with \"duumbi:variable\":\"x\"\n\
 - There is NO duumbi:LoadParam op — always use duumbi:Load to access parameters\n\
 \n\
-Example — adding a function multiply(a, b) → a*b via one add_function call:\n\
+Example 1 — simple function multiply(a, b) → a*b (single block):\n\
 {\"function\":{\"@type\":\"duumbi:Function\",\"@id\":\"duumbi:main/multiply\",\n\
 \"duumbi:name\":\"multiply\",\"duumbi:returnType\":\"i64\",\n\
 \"duumbi:params\":[{\"duumbi:name\":\"a\",\"duumbi:paramType\":\"i64\"},{\"duumbi:name\":\"b\",\"duumbi:paramType\":\"i64\"}],\n\
@@ -129,6 +137,30 @@ Example — adding a function multiply(a, b) → a*b via one add_function call:\
 {\"@type\":\"duumbi:Mul\",\"@id\":\"duumbi:main/multiply/entry/2\",\"duumbi:left\":{\"@id\":\"duumbi:main/multiply/entry/0\"},\n\
 \"duumbi:right\":{\"@id\":\"duumbi:main/multiply/entry/1\"},\"duumbi:resultType\":\"i64\"},\n\
 {\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:main/multiply/entry/3\",\"duumbi:operand\":{\"@id\":\"duumbi:main/multiply/entry/2\"}}]}]}}\n\
+\n\
+Example 2 — multi-block function abs(n) with Branch (returns n if n>=0, else -n):\n\
+Note: Branch targets are plain labels (\"positive\", \"negative\"), NOT full @id paths.\n\
+Note: In entry block, Const/0 is defined BEFORE Compare/1 which references it (SSA order).\n\
+{\"function\":{\"@type\":\"duumbi:Function\",\"@id\":\"duumbi:math/ops/abs\",\n\
+\"duumbi:name\":\"abs\",\"duumbi:returnType\":\"i64\",\n\
+\"duumbi:params\":[{\"duumbi:name\":\"n\",\"duumbi:paramType\":\"i64\"}],\n\
+\"duumbi:blocks\":[\n\
+{\"@type\":\"duumbi:Block\",\"@id\":\"duumbi:math/ops/abs/entry\",\"duumbi:label\":\"entry\",\"duumbi:ops\":[\n\
+{\"@type\":\"duumbi:Load\",\"@id\":\"duumbi:math/ops/abs/entry/0\",\"duumbi:variable\":\"n\",\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Const\",\"@id\":\"duumbi:math/ops/abs/entry/1\",\"duumbi:value\":0,\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Compare\",\"@id\":\"duumbi:math/ops/abs/entry/2\",\"duumbi:operator\":\"ge\",\n\
+\"duumbi:left\":{\"@id\":\"duumbi:math/ops/abs/entry/0\"},\"duumbi:right\":{\"@id\":\"duumbi:math/ops/abs/entry/1\"},\"duumbi:resultType\":\"bool\"},\n\
+{\"@type\":\"duumbi:Branch\",\"@id\":\"duumbi:math/ops/abs/entry/3\",\"duumbi:condition\":{\"@id\":\"duumbi:math/ops/abs/entry/2\"},\n\
+\"duumbi:trueBlock\":\"positive\",\"duumbi:falseBlock\":\"negative\"}]},\n\
+{\"@type\":\"duumbi:Block\",\"@id\":\"duumbi:math/ops/abs/positive\",\"duumbi:label\":\"positive\",\"duumbi:ops\":[\n\
+{\"@type\":\"duumbi:Load\",\"@id\":\"duumbi:math/ops/abs/positive/0\",\"duumbi:variable\":\"n\",\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:math/ops/abs/positive/1\",\"duumbi:operand\":{\"@id\":\"duumbi:math/ops/abs/positive/0\"}}]},\n\
+{\"@type\":\"duumbi:Block\",\"@id\":\"duumbi:math/ops/abs/negative\",\"duumbi:label\":\"negative\",\"duumbi:ops\":[\n\
+{\"@type\":\"duumbi:Const\",\"@id\":\"duumbi:math/ops/abs/negative/0\",\"duumbi:value\":0,\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Load\",\"@id\":\"duumbi:math/ops/abs/negative/1\",\"duumbi:variable\":\"n\",\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Sub\",\"@id\":\"duumbi:math/ops/abs/negative/2\",\"duumbi:left\":{\"@id\":\"duumbi:math/ops/abs/negative/0\"},\n\
+\"duumbi:right\":{\"@id\":\"duumbi:math/ops/abs/negative/1\"},\"duumbi:resultType\":\"i64\"},\n\
+{\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:math/ops/abs/negative/3\",\"duumbi:operand\":{\"@id\":\"duumbi:math/ops/abs/negative/2\"}}]}]}}\n\
 ";
 
 /// Builds the effective system prompt by appending a provider-specific suffix.
@@ -147,6 +179,10 @@ pub struct MutationResult {
     pub patched: serde_json::Value,
     /// Number of patch operations applied.
     pub ops_count: usize,
+    /// Number of retries before success (0 = first attempt worked).
+    pub retry_count: u32,
+    /// Error codes encountered during retries (empty if first attempt succeeded).
+    pub error_codes_encountered: Vec<String>,
 }
 
 /// Outcome of a mutation attempt.
@@ -209,11 +245,19 @@ pub async fn mutate(
     let patch = GraphPatch { ops };
 
     match try_apply_collecting_diagnostics(source, &patch, false) {
-        Ok(patched) => Ok(MutationResult { patched, ops_count }),
+        Ok(patched) => Ok(MutationResult {
+            patched,
+            ops_count,
+            retry_count: 0,
+            error_codes_encountered: vec![],
+        }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
         Err((mut last_error_msg, mut last_diagnostics)) => {
+            let mut all_error_codes: Vec<String> =
+                last_diagnostics.iter().map(|d| d.code.clone()).collect();
+
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
@@ -240,12 +284,19 @@ pub async fn mutate(
 
                 match try_apply_collecting_diagnostics(source, &retry_patch, false) {
                     Ok(patched) => {
+                        all_error_codes.sort();
+                        all_error_codes.dedup();
                         return Ok(MutationResult {
                             patched,
                             ops_count: retry_count,
+                            retry_count: attempt_num,
+                            error_codes_encountered: all_error_codes,
                         });
                     }
                     Err((new_msg, new_diags)) => {
+                        for d in &new_diags {
+                            all_error_codes.push(d.code.clone());
+                        }
                         last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {
@@ -316,11 +367,16 @@ pub async fn mutate_streaming(
         Ok(patched) => Ok(MutationOutcome::Success(MutationResult {
             patched,
             ops_count,
+            retry_count: 0,
+            error_codes_encountered: vec![],
         })),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
         Err((mut last_error_msg, mut last_diagnostics)) => {
+            let mut all_error_codes: Vec<String> =
+                last_diagnostics.iter().map(|d| d.code.clone()).collect();
+
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
@@ -347,12 +403,19 @@ pub async fn mutate_streaming(
 
                 match try_apply_collecting_diagnostics(source, &retry_patch, library_mode) {
                     Ok(patched) => {
+                        all_error_codes.sort();
+                        all_error_codes.dedup();
                         return Ok(MutationOutcome::Success(MutationResult {
                             patched,
                             ops_count: retry_count,
+                            retry_count: attempt_num,
+                            error_codes_encountered: all_error_codes,
                         }));
                     }
                     Err((new_msg, new_diags)) => {
+                        for d in &new_diags {
+                            all_error_codes.push(d.code.clone());
+                        }
                         last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {

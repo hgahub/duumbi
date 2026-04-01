@@ -1,0 +1,51 @@
+intent: How many steps does the Collatz sequence take to reach 1?
+version: 1
+status: pending
+acceptance_criteria:
+- collatz_steps(n) returns the number of steps to reach 1 from n
+- collatz_steps(1) returns 0 (already at 1)
+- collatz_steps applies n/2 for even n and 3n+1 for odd n
+- collatz_steps handles positive integers
+modules:
+  create:
+  - math/collatz
+  modify:
+  - app/main
+test_cases:
+- name: step_one
+  function: collatz_steps
+  args:
+  - 1
+  expected_return: 0
+- name: step_two
+  function: collatz_steps
+  args:
+  - 2
+  expected_return: 1
+- name: step_three
+  function: collatz_steps
+  args:
+  - 3
+  expected_return: 7
+- name: step_four
+  function: collatz_steps
+  args:
+  - 4
+  expected_return: 2
+- name: step_five
+  function: collatz_steps
+  args:
+  - 5
+  expected_return: 5
+- name: step_sixteen
+  function: collatz_steps
+  args:
+  - 16
+  expected_return: 4
+- name: step_seven
+  function: collatz_steps
+  args:
+  - 7
+  expected_return: 16
+dependencies: []
+created_at: 2026-01-01T21:17:44Z
