@@ -76,6 +76,7 @@ pub async fn run_execute(
     let mut tasks_completed = 0;
     for task in &mut tasks {
         log.push(format!("[{}/{}] {}…", task.id, total, task.description));
+        log.push(format!("  Calling LLM (provider: {})…", client.name()));
         task.status = TaskStatus::InProgress;
 
         // For CreateModule tasks, use an empty module template as source and
@@ -278,8 +279,118 @@ pub async fn run_execute(
         spec.test_cases.len(),
         if spec.test_cases.len() == 1 { "" } else { "s" }
     ));
-    let report = verifier::run_tests(&spec, workspace);
+    let mut report = verifier::run_tests(&spec, workspace);
     log.push(report.display());
+
+    // --- Repair cycle: if some tests failed, attempt one LLM repair ---
+    if !report.all_passed() && report.failed > 0 {
+        let failed_details: Vec<String> = report
+            .results
+            .iter()
+            .filter(|r| !r.passed)
+            .map(|r| {
+                if let Some(ref err) = r.error {
+                    format!(
+                        "- {}({}): error — {}",
+                        r.function,
+                        r.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        err
+                    )
+                } else {
+                    format!(
+                        "- {}({}) = {} (expected {})",
+                        r.function,
+                        r.args
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        r.actual.map_or("?".to_string(), |v| v.to_string()),
+                        r.expected
+                    )
+                }
+            })
+            .collect();
+
+        log.push(format!(
+            "[Repair] Attempting repair for {} failed test(s)…",
+            report.failed
+        ));
+        log.push(format!("  Calling LLM (provider: {})…", client.name()));
+
+        let repair_prompt = format!(
+            "The following test cases FAILED after intent execution. \
+             Fix the graph so ALL tests pass.\n\n\
+             Failed tests:\n{}\n\n\
+             Do NOT recreate functions that already work — only fix the broken behavior. \
+             Use replace_block to rewrite blocks that produce wrong results.",
+            failed_details.join("\n")
+        );
+
+        // Attempt repair on all module files (bug may be in library or main)
+        let mut repaired = false;
+        for entry in std::fs::read_dir(&graph_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
+                continue;
+            }
+
+            let module_source: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path)?)
+                    .context("Failed to parse module for repair")?;
+
+            let repair_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let repair_tx = repair_log.clone();
+            let repair_result = orchestrator::mutate_streaming(
+                client,
+                &module_source,
+                &repair_prompt,
+                1,
+                true, // skip call validation
+                move |text| {
+                    repair_tx
+                        .lock()
+                        .expect("invariant: mutex not poisoned")
+                        .push(text.to_string());
+                },
+            )
+            .await;
+
+            if let Ok(chunks) = repair_log.lock()
+                && !chunks.is_empty()
+            {
+                log.push(chunks.concat());
+            }
+
+            if let Ok(orchestrator::MutationOutcome::Success(mr)) = repair_result {
+                let patched_str = serde_json::to_string_pretty(&mr.patched)
+                    .context("Serialize repaired graph")?;
+                std::fs::write(&path, &patched_str)
+                    .with_context(|| format!("Write repaired '{}'", path.display()))?;
+                repaired = true;
+                log.push(format!(
+                    "  {} Repair applied to {} ({} op{}).",
+                    "\u{2713}".green().bold(),
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                    mr.ops_count,
+                    if mr.ops_count == 1 { "" } else { "s" }
+                ));
+            }
+        }
+
+        if repaired {
+            log.push("[Repair] Re-running tests…".to_string());
+            report = verifier::run_tests(&spec, workspace);
+            log.push(report.display());
+        } else {
+            log.push("  No repair patches applied.".to_string());
+        }
+    }
 
     let all_passed = report.all_passed();
     archive_success(
