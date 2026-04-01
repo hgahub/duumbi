@@ -1,0 +1,106 @@
+intent: Find the minimum, maximum, and average of three numbers
+version: 1
+status: pending
+acceptance_criteria:
+- min_of_three(a, b, c) returns the smallest of three integers
+- max_of_three(a, b, c) returns the largest of three integers
+- average_of_three(a, b, c) returns the integer average (truncated toward zero) of three integers
+modules:
+  create:
+  - statistics/ops
+  modify:
+  - app/main
+test_cases:
+- name: min_basic
+  function: min_of_three
+  args:
+  - 5
+  - 3
+  - 7
+  expected_return: 3
+- name: min_all_equal
+  function: min_of_three
+  args:
+  - 4
+  - 4
+  - 4
+  expected_return: 4
+- name: min_with_negatives
+  function: min_of_three
+  args:
+  - -1
+  - -5
+  - -3
+  expected_return: -5
+- name: min_zero_involved
+  function: min_of_three
+  args:
+  - 0
+  - 5
+  - -2
+  expected_return: -2
+- name: max_basic
+  function: max_of_three
+  args:
+  - 5
+  - 3
+  - 7
+  expected_return: 7
+- name: max_all_equal
+  function: max_of_three
+  args:
+  - 4
+  - 4
+  - 4
+  expected_return: 4
+- name: max_with_negatives
+  function: max_of_three
+  args:
+  - -1
+  - -5
+  - -3
+  expected_return: -1
+- name: max_zero_involved
+  function: max_of_three
+  args:
+  - 0
+  - 5
+  - -2
+  expected_return: 5
+- name: average_basic
+  function: average_of_three
+  args:
+  - 10
+  - 5
+  - 5
+  expected_return: 6
+- name: average_all_equal
+  function: average_of_three
+  args:
+  - 7
+  - 7
+  - 7
+  expected_return: 7
+- name: average_with_negatives
+  function: average_of_three
+  args:
+  - -5
+  - -3
+  - -1
+  expected_return: -3
+- name: average_zero_involved
+  function: average_of_three
+  args:
+  - 0
+  - 5
+  - 1
+  expected_return: 2
+- name: average_truncation
+  function: average_of_three
+  args:
+  - 10
+  - -5
+  - 3
+  expected_return: 2
+dependencies: []
+created_at: 2026-01-01T21:10:19Z

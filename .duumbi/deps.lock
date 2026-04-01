@@ -1,0 +1,33 @@
+version = 1
+
+[[dependencies]]
+name = "@duumbi/stdlib-io"
+version = "1.0.0"
+source = "cache"
+semantic_hash = "5ebb8421ed3eac380ba103c49dc51677847bb02346fd0be3ee3e78831bde5fdd"
+integrity = "sha256-58696adc59ef5637ea655197881a93360166e2b722f66c53e8e87da28d73fc28"
+resolved_path = ".duumbi/cache/@duumbi/stdlib-io@1.0.0/graph"
+
+[[dependencies]]
+name = "@duumbi/stdlib-lang"
+version = "1.0.0"
+source = "cache"
+semantic_hash = "031d4d5ef643b423aadea3df144b273b2d6878b8da21ee56d3c0845508ebbe63"
+integrity = "sha256-ee71965634372fdbd19f0a024e1f98392989a545462e0b57f860346321ec5155"
+resolved_path = ".duumbi/cache/@duumbi/stdlib-lang@1.0.0/graph"
+
+[[dependencies]]
+name = "@duumbi/stdlib-math"
+version = "1.0.0"
+source = "cache"
+semantic_hash = "b78ea16ba76a5258cda80a316180f280d4376d5b8a1744114644a5cfe1803997"
+integrity = "sha256-2436da808fd9c7d466b289416a5cb9ebf33a01a79f49fb66ff264687eb19ac35"
+resolved_path = ".duumbi/cache/@duumbi/stdlib-math@1.0.0/graph"
+
+[[dependencies]]
+name = "@duumbi/stdlib-string"
+version = "1.0.0"
+source = "cache"
+semantic_hash = "fdbdce0800a5a4ab0c512b4e2586edfc827a7e3972e451a4dc40d38c3facaae1"
+integrity = "sha256-271a6af24cc9c139e2079a2e63862df6d91d01e09141f9b949fd0150c5e7352f"
+resolved_path = ".duumbi/cache/@duumbi/stdlib-string@1.0.0/graph"

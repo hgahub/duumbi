@@ -3,7 +3,8 @@ version: 1
 status: completed
 acceptance_criteria:
 - add(a, b) returns the sum of two integers
-- add handles zero correctly
+- add(a, 0) returns a
+- add(0, b) returns b
 - add handles negative numbers correctly
 modules:
   create:
@@ -17,34 +18,46 @@ test_cases:
   - 3
   - 5
   expected_return: 8
-- name: add_with_zero
+- name: add_zero_first
   function: add
   args:
-  - 10
   - 0
-  expected_return: 10
-- name: add_zeros
+  - 7
+  expected_return: 7
+- name: add_zero_second
+  function: add
+  args:
+  - 7
+  - 0
+  expected_return: 7
+- name: add_both_zero
   function: add
   args:
   - 0
   - 0
   expected_return: 0
-- name: add_negative
+- name: add_negative_first
   function: add
   args:
   - -4
   - 6
   expected_return: 2
+- name: add_negative_second
+  function: add
+  args:
+  - 4
+  - -6
+  expected_return: -2
 - name: add_both_negative
   function: add
   args:
   - -3
-  - -7
-  expected_return: -10
+  - -5
+  expected_return: -8
 dependencies: []
-created_at: 2026-01-01T20:58:23Z
+created_at: 2026-01-01T12:00:45Z
 execution:
-  completed_at: 2026-01-01T21:51:44Z
+  completed_at: 2026-01-01T12:03:47Z
   tasks_completed: 2
-  tests_passed: 5
-  tests_total: 5
+  tests_passed: 7
+  tests_total: 7

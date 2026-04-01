@@ -1,0 +1,68 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/ns/core#"
+  },
+  "@id": "duumbi:ops",
+  "@type": "duumbi:Module",
+  "duumbi:exports": [
+    "add"
+  ],
+  "duumbi:functions": [
+    {
+      "@id": "duumbi:math/ops/add",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:math/ops/add/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/ops/add/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:math/ops/add/entry/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:math/ops/add/entry/2",
+              "@type": "duumbi:Add",
+              "duumbi:left": {
+                "@id": "duumbi:math/ops/add/entry/0"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:math/ops/add/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:math/ops/add/entry/3",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:math/ops/add/entry/2"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "add",
+      "duumbi:params": [
+        {
+          "duumbi:name": "a",
+          "duumbi:paramType": "i64"
+        },
+        {
+          "duumbi:name": "b",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:returnType": "i64"
+    }
+  ],
+  "duumbi:name": "ops"
+}

@@ -1,0 +1,52 @@
+intent: Sum all integers in a range from a to b
+version: 1
+status: pending
+acceptance_criteria:
+- sum_range(a, b) returns the sum of all integers from a to b inclusive
+- sum_range handles the case when a > b by treating it as sum from b to a
+- sum_range(a, a) returns a
+- sum_range handles negative numbers correctly
+modules:
+  create:
+  - math/sum
+  modify:
+  - app/main
+test_cases:
+- name: sum_positive_range
+  function: sum_range
+  args:
+  - 1
+  - 5
+  expected_return: 15
+- name: sum_reversed_range
+  function: sum_range
+  args:
+  - 5
+  - 1
+  expected_return: 15
+- name: sum_single_element
+  function: sum_range
+  args:
+  - 7
+  - 7
+  expected_return: 7
+- name: sum_includes_zero
+  function: sum_range
+  args:
+  - -2
+  - 2
+  expected_return: 0
+- name: sum_negative_range
+  function: sum_range
+  args:
+  - -5
+  - -1
+  expected_return: -15
+- name: sum_large_range
+  function: sum_range
+  args:
+  - 0
+  - 100
+  expected_return: 5050
+dependencies: []
+created_at: 2026-01-01T21:11:10Z

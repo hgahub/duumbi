@@ -1,0 +1,52 @@
+intent: Count the divisors of a number
+version: 1
+status: pending
+acceptance_criteria:
+- count_divisors(n) returns the number of positive divisors of n
+- count_divisors(0) returns 0 (zero has no finite divisor count)
+- count_divisors handles negative inputs by using absolute value
+- count_divisors(1) returns 1
+- count_divisors of a prime number returns 2
+modules:
+  create:
+  - math/divisors
+  modify:
+  - app/main
+test_cases:
+- name: divisors_basic
+  function: count_divisors
+  args:
+  - 12
+  expected_return: 6
+- name: divisors_prime
+  function: count_divisors
+  args:
+  - 7
+  expected_return: 2
+- name: divisors_one
+  function: count_divisors
+  args:
+  - 1
+  expected_return: 1
+- name: divisors_zero
+  function: count_divisors
+  args:
+  - 0
+  expected_return: 0
+- name: divisors_perfect_square
+  function: count_divisors
+  args:
+  - 16
+  expected_return: 5
+- name: divisors_negative
+  function: count_divisors
+  args:
+  - -10
+  expected_return: 4
+- name: divisors_small_composite
+  function: count_divisors
+  args:
+  - 6
+  expected_return: 4
+dependencies: []
+created_at: 2026-01-01T21:18:44Z

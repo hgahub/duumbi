@@ -4,6 +4,7 @@
   },
   "@id": "duumbi:main",
   "@type": "duumbi:Module",
+  "duumbi:exports": "[\"gcd\", \"lcm\"]",
   "duumbi:functions": [
     {
       "@id": "duumbi:main/main",
@@ -17,79 +18,78 @@
             {
               "@id": "duumbi:main/main/entry/0",
               "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 2
+              "duumbi:resultType": "string",
+              "duumbi:value": "=== Create a new applicatin which finds the least comm ==="
             },
             {
               "@id": "duumbi:main/main/entry/1",
-              "@type": "duumbi:Call",
-              "duumbi:args": [
-                {
-                  "@id": "duumbi:main/main/entry/0"
-                }
-              ],
-              "duumbi:function": "is_prime",
-              "duumbi:resultType": "i64"
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/0"
+              }
             },
             {
               "@id": "duumbi:main/main/entry/2",
-              "@type": "duumbi:Store",
-              "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/1"
-              },
-              "duumbi:variable": "first_result"
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(4, 6) = "
             },
             {
               "@id": "duumbi:main/main/entry/3",
-              "@type": "duumbi:Print",
-              "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/1"
-              }
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 4
             },
             {
               "@id": "duumbi:main/main/entry/4",
               "@type": "duumbi:Const",
               "duumbi:resultType": "i64",
-              "duumbi:value": 17
+              "duumbi:value": 6
             },
             {
               "@id": "duumbi:main/main/entry/5",
               "@type": "duumbi:Call",
               "duumbi:args": [
                 {
+                  "@id": "duumbi:main/main/entry/3"
+                },
+                {
                   "@id": "duumbi:main/main/entry/4"
                 }
               ],
-              "duumbi:function": "is_prime",
+              "duumbi:function": "lcm",
               "duumbi:resultType": "i64"
             },
             {
               "@id": "duumbi:main/main/entry/6",
-              "@type": "duumbi:Print",
+              "@type": "duumbi:Store",
               "duumbi:operand": {
                 "@id": "duumbi:main/main/entry/5"
-              }
+              },
+              "duumbi:variable": "first_result"
             },
             {
               "@id": "duumbi:main/main/entry/7",
-              "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 11
+              "@type": "duumbi:StringFromI64",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/5"
+              },
+              "duumbi:resultType": "string"
             },
             {
               "@id": "duumbi:main/main/entry/8",
-              "@type": "duumbi:Call",
-              "duumbi:args": [
-                {
-                  "@id": "duumbi:main/main/entry/7"
-                }
-              ],
-              "duumbi:function": "is_prime",
-              "duumbi:resultType": "i64"
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/2"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/7"
+              }
             },
             {
               "@id": "duumbi:main/main/entry/9",
-              "@type": "duumbi:Print",
+              "@type": "duumbi:PrintString",
               "duumbi:operand": {
                 "@id": "duumbi:main/main/entry/8"
               }
@@ -97,164 +97,819 @@
             {
               "@id": "duumbi:main/main/entry/10",
               "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 4
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(7, 5) = "
             },
             {
               "@id": "duumbi:main/main/entry/11",
-              "@type": "duumbi:Call",
-              "duumbi:args": [
-                {
-                  "@id": "duumbi:main/main/entry/10"
-                }
-              ],
-              "duumbi:function": "is_prime",
-              "duumbi:resultType": "i64"
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 7
             },
             {
               "@id": "duumbi:main/main/entry/12",
-              "@type": "duumbi:Print",
-              "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/11"
-              }
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 5
             },
             {
               "@id": "duumbi:main/main/entry/13",
-              "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 9
-            },
-            {
-              "@id": "duumbi:main/main/entry/14",
               "@type": "duumbi:Call",
               "duumbi:args": [
                 {
-                  "@id": "duumbi:main/main/entry/13"
+                  "@id": "duumbi:main/main/entry/11"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/12"
                 }
               ],
-              "duumbi:function": "is_prime",
+              "duumbi:function": "lcm",
               "duumbi:resultType": "i64"
             },
             {
-              "@id": "duumbi:main/main/entry/15",
-              "@type": "duumbi:Print",
+              "@id": "duumbi:main/main/entry/14",
+              "@type": "duumbi:StringFromI64",
               "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/13"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@id": "duumbi:main/main/entry/15",
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/10"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
                 "@id": "duumbi:main/main/entry/14"
               }
             },
             {
               "@id": "duumbi:main/main/entry/16",
-              "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 25
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/15"
+              }
             },
             {
               "@id": "duumbi:main/main/entry/17",
-              "@type": "duumbi:Call",
-              "duumbi:args": [
-                {
-                  "@id": "duumbi:main/main/entry/16"
-                }
-              ],
-              "duumbi:function": "is_prime",
-              "duumbi:resultType": "i64"
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(5, 5) = "
             },
             {
               "@id": "duumbi:main/main/entry/18",
-              "@type": "duumbi:Print",
-              "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/17"
-              }
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 5
             },
             {
               "@id": "duumbi:main/main/entry/19",
               "@type": "duumbi:Const",
               "duumbi:resultType": "i64",
-              "duumbi:value": 0
+              "duumbi:value": 5
             },
             {
               "@id": "duumbi:main/main/entry/20",
               "@type": "duumbi:Call",
               "duumbi:args": [
                 {
+                  "@id": "duumbi:main/main/entry/18"
+                },
+                {
                   "@id": "duumbi:main/main/entry/19"
                 }
               ],
-              "duumbi:function": "is_prime",
+              "duumbi:function": "lcm",
               "duumbi:resultType": "i64"
             },
             {
               "@id": "duumbi:main/main/entry/21",
-              "@type": "duumbi:Print",
+              "@type": "duumbi:StringFromI64",
               "duumbi:operand": {
                 "@id": "duumbi:main/main/entry/20"
-              }
+              },
+              "duumbi:resultType": "string"
             },
             {
               "@id": "duumbi:main/main/entry/22",
-              "@type": "duumbi:Const",
-              "duumbi:resultType": "i64",
-              "duumbi:value": 1
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/17"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/21"
+              }
             },
             {
               "@id": "duumbi:main/main/entry/23",
-              "@type": "duumbi:Call",
-              "duumbi:args": [
-                {
-                  "@id": "duumbi:main/main/entry/22"
-                }
-              ],
-              "duumbi:function": "is_prime",
-              "duumbi:resultType": "i64"
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/22"
+              }
             },
             {
               "@id": "duumbi:main/main/entry/24",
-              "@type": "duumbi:Print",
-              "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/23"
-              }
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(0, 7) = "
             },
             {
               "@id": "duumbi:main/main/entry/25",
               "@type": "duumbi:Const",
               "duumbi:resultType": "i64",
-              "duumbi:value": -7
+              "duumbi:value": 0
             },
             {
               "@id": "duumbi:main/main/entry/26",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 7
+            },
+            {
+              "@id": "duumbi:main/main/entry/27",
               "@type": "duumbi:Call",
               "duumbi:args": [
                 {
                   "@id": "duumbi:main/main/entry/25"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/26"
                 }
               ],
-              "duumbi:function": "is_prime",
+              "duumbi:function": "lcm",
               "duumbi:resultType": "i64"
             },
             {
-              "@id": "duumbi:main/main/entry/27",
-              "@type": "duumbi:Print",
+              "@id": "duumbi:main/main/entry/28",
+              "@type": "duumbi:StringFromI64",
               "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/26"
+                "@id": "duumbi:main/main/entry/27"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@id": "duumbi:main/main/entry/29",
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/24"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/28"
               }
             },
             {
-              "@id": "duumbi:main/main/entry/28",
+              "@id": "duumbi:main/main/entry/30",
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/29"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/31",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(3, 0) = "
+            },
+            {
+              "@id": "duumbi:main/main/entry/32",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 3
+            },
+            {
+              "@id": "duumbi:main/main/entry/33",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:main/main/entry/34",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/32"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/33"
+                }
+              ],
+              "duumbi:function": "lcm",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/35",
+              "@type": "duumbi:StringFromI64",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/34"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@id": "duumbi:main/main/entry/36",
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/31"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/35"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/37",
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/36"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/38",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(-4, 6) = "
+            },
+            {
+              "@id": "duumbi:main/main/entry/39",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": -4
+            },
+            {
+              "@id": "duumbi:main/main/entry/40",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 6
+            },
+            {
+              "@id": "duumbi:main/main/entry/41",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/39"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/40"
+                }
+              ],
+              "duumbi:function": "lcm",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/42",
+              "@type": "duumbi:StringFromI64",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/41"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@id": "duumbi:main/main/entry/43",
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/38"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/42"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/44",
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/43"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/45",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "string",
+              "duumbi:value": "lcm(-3, -5) = "
+            },
+            {
+              "@id": "duumbi:main/main/entry/46",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": -3
+            },
+            {
+              "@id": "duumbi:main/main/entry/47",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": -5
+            },
+            {
+              "@id": "duumbi:main/main/entry/48",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/46"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/47"
+                }
+              ],
+              "duumbi:function": "lcm",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/49",
+              "@type": "duumbi:StringFromI64",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/48"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@id": "duumbi:main/main/entry/50",
+              "@type": "duumbi:StringConcat",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/45"
+              },
+              "duumbi:resultType": "string",
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/49"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/51",
+              "@type": "duumbi:PrintString",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/50"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/52",
               "@type": "duumbi:Load",
               "duumbi:resultType": "i64",
               "duumbi:variable": "first_result"
             },
             {
-              "@id": "duumbi:main/main/entry/29",
+              "@id": "duumbi:main/main/entry/53",
               "@type": "duumbi:Return",
               "duumbi:operand": {
-                "@id": "duumbi:main/main/entry/28"
+                "@id": "duumbi:main/main/entry/52"
               }
             }
           ]
         }
       ],
       "duumbi:name": "main",
+      "duumbi:returnType": "i64"
+    },
+    {
+      "@id": "duumbi:main/gcd",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:main/gcd/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/gcd/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/gcd/entry/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/gcd/entry/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:main/gcd/entry/1"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:main/gcd/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:main/gcd/entry/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:main/gcd/entry/2"
+              },
+              "duumbi:falseBlock": "recurse",
+              "duumbi:trueBlock": "return_a"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/gcd/return_a",
+          "@type": "duumbi:Block",
+          "duumbi:label": "return_a",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/gcd/return_a/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/gcd/return_a/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/gcd/return_a/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/gcd/recurse",
+          "@type": "duumbi:Block",
+          "duumbi:label": "recurse",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/gcd/recurse/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/gcd/recurse/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/gcd/recurse/2",
+              "@type": "duumbi:Modulo",
+              "duumbi:left": {
+                "@id": "duumbi:main/gcd/recurse/0"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/gcd/recurse/1"
+              }
+            },
+            {
+              "@id": "duumbi:main/gcd/recurse/3",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/gcd/recurse/1"
+                },
+                {
+                  "@id": "duumbi:main/gcd/recurse/2"
+                }
+              ],
+              "duumbi:function": "gcd",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/gcd/recurse/4",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/gcd/recurse/3"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "gcd",
+      "duumbi:params": [
+        {
+          "duumbi:name": "a",
+          "duumbi:paramType": "i64"
+        },
+        {
+          "duumbi:name": "b",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:returnType": "i64"
+    },
+    {
+      "@id": "duumbi:main/lcm",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:main/lcm/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/lcm/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/entry/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/entry/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/entry/0"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/entry/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:main/lcm/entry/2"
+              },
+              "duumbi:falseBlock": "nonzero",
+              "duumbi:trueBlock": "zero"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/lcm/zero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "zero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/lcm/zero/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:main/lcm/zero/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/lcm/zero/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/lcm/nonzero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "nonzero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/lcm/nonzero/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/2",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/lcm/nonzero/0"
+                },
+                {
+                  "@id": "duumbi:main/lcm/nonzero/1"
+                }
+              ],
+              "duumbi:function": "gcd",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/3",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/4",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/5",
+              "@type": "duumbi:Mul",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/nonzero/3"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/nonzero/4"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/6",
+              "@type": "duumbi:Div",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/nonzero/5"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/nonzero/2"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/7",
+              "@type": "duumbi:Negate",
+              "duumbi:operand": {
+                "@id": "duumbi:main/lcm/nonzero/6"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/8",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/nonzero/6"
+              },
+              "duumbi:operator": "lt",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/nonzero/6"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/nonzero/9",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:main/lcm/nonzero/8"
+              },
+              "duumbi:falseBlock": "done",
+              "duumbi:trueBlock": "negate"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/lcm/negate",
+          "@type": "duumbi:Block",
+          "duumbi:label": "negate",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/lcm/negate/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/2",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/lcm/negate/0"
+                },
+                {
+                  "@id": "duumbi:main/lcm/negate/1"
+                }
+              ],
+              "duumbi:function": "gcd",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/3",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/4",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/5",
+              "@type": "duumbi:Mul",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/negate/3"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/negate/4"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/6",
+              "@type": "duumbi:Div",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/negate/5"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/negate/2"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/negate/7",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/lcm/negate/6"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:main/lcm/done",
+          "@type": "duumbi:Block",
+          "duumbi:label": "done",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/lcm/done/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/done/1",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/done/2",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/lcm/done/0"
+                },
+                {
+                  "@id": "duumbi:main/lcm/done/1"
+                }
+              ],
+              "duumbi:function": "gcd",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/lcm/done/3",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "a"
+            },
+            {
+              "@id": "duumbi:main/lcm/done/4",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "b"
+            },
+            {
+              "@id": "duumbi:main/lcm/done/5",
+              "@type": "duumbi:Mul",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/done/3"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/done/4"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/done/6",
+              "@type": "duumbi:Div",
+              "duumbi:left": {
+                "@id": "duumbi:main/lcm/done/5"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:main/lcm/done/2"
+              }
+            },
+            {
+              "@id": "duumbi:main/lcm/done/7",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/lcm/done/6"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "lcm",
+      "duumbi:params": [
+        {
+          "duumbi:name": "a",
+          "duumbi:paramType": "i64"
+        },
+        {
+          "duumbi:name": "b",
+          "duumbi:paramType": "i64"
+        }
+      ],
       "duumbi:returnType": "i64"
     }
   ],
