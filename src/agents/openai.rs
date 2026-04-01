@@ -74,14 +74,14 @@ impl OpenAiClient {
         self
     }
 
-    /// Sends a request WITH tools, but also captures text content via `on_text`.
+    /// Sends a request WITH tools, capturing text content via `on_text` as fallback.
     ///
-    /// This handles both use cases:
+    /// This handles both use cases in a single non-streaming request:
     /// - **Graph mutations** (`intent execute`, `duumbi add`): model returns tool
     ///   calls → parsed as `PatchOp` values.
-    /// - **Plain text** (`intent create`): model returns JSON text instead of tool
+    /// - **Plain text** (`intent create`): model returns text instead of tool
     ///   calls → text is passed through `on_text`, returns `NoToolCalls`.
-    async fn do_call_streaming_or_tools(
+    async fn do_call_with_text_fallback(
         &self,
         system_prompt: &str,
         user_message: &str,
@@ -217,10 +217,9 @@ impl LlmProvider for OpenAiClient {
         user_message: &'a str,
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
-        // For plain-text completion (e.g. intent create), we need to call without
-        // tools and stream the text content via on_text. For tool-based mutations,
-        // we fall back to non-streaming with tools.
-        Box::pin(self.do_call_streaming_or_tools(system_prompt, user_message, on_text))
+        // Dual-path: if the model returns tool calls, parse them as PatchOps.
+        // If it returns plain text (e.g. intent create), pass it through on_text.
+        Box::pin(self.do_call_with_text_fallback(system_prompt, user_message, on_text))
     }
 }
 

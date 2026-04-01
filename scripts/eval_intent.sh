@@ -11,6 +11,7 @@
 #   - `duumbi` binary in PATH (or cargo build first)
 #   - A configured LLM provider in .duumbi/config.toml
 #   - yq (YAML processor) installed: brew install yq
+#   - jq (JSON processor) installed: brew install jq
 
 set -euo pipefail
 

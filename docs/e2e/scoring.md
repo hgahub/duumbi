@@ -24,13 +24,18 @@ Each generated intent is scored 0–100 against its gold standard across 5 dimen
 
 ## Test case matching rules
 
-A generated test case **matches** a gold test case when:
-1. `function` name is identical (case-sensitive)
-2. `args` array has the same length
-3. `expected_return` equals the gold value
+Matching uses **fuzzy function matching** to handle LLM naming variations
+(e.g., "sum" vs "add", "max_of_two" vs "max"). A generated function is
+matched to a gold function by comparing test signatures (`args` length +
+`expected_return`), not by function name.
 
-Function name aliases are NOT accepted (e.g., "sub" != "subtract").
-The generated intent should derive appropriate function names from the natural language description.
+A generated test case **matches** a gold test case when:
+1. `args` array has the same length
+2. `expected_return` equals the gold value
+
+For each gold function, the harness finds the generated function with the
+highest signature overlap. A match is accepted if at least one test signature
+overlaps.
 
 ## Edge case classification
 
