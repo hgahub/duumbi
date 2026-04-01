@@ -12,7 +12,11 @@ use serde_json::json;
 
 use owo_colors::OwoColorize;
 
+use crate::agents::analyzer as agent_analyzer;
+use crate::agents::assembler;
+use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
+use crate::context;
 use crate::intent::coordinator;
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
@@ -83,7 +87,19 @@ pub async fn run_execute_with_progress(
         .with_context(|| format!("Cannot read '{}'", graph_path.display()))?;
     snapshot::save_snapshot(workspace, &source_str).context("Failed to save snapshot")?;
 
-    // 3. Decompose into tasks
+    // 3. Analyze task profile and decompose into tasks
+    let profile = agent_analyzer::analyze(&spec);
+    let template_store = TemplateStore::load(workspace);
+    let team = assembler::assemble(&profile, &template_store);
+    emit!(format!(
+        "Task profile: {:?} | {:?} | {:?} | {:?}",
+        profile.complexity, profile.task_type, profile.scope, profile.risk
+    ));
+    emit!(format!(
+        "Agent team: {:?} ({:?})",
+        team.agents, team.strategy
+    ));
+
     let mut tasks = coordinator::decompose(&spec);
     let total = tasks.len();
     emit!(format!(
@@ -140,6 +156,27 @@ pub async fn run_execute_with_progress(
                      function name in \"duumbi:function\" (e.g., \"add\", NOT \"ops:add\" or \
                      \"module:add\"). The module resolution is automatic."
                 ));
+            }
+        }
+
+        // Context enrichment: add module signatures, few-shot examples from
+        // past successes, and relevant graph fragments via the Phase 10 pipeline.
+        match context::assemble_context(&prompt, workspace, &[]) {
+            Ok(bundle) => {
+                emit!(format!(
+                    "  Context: ~{} tokens, {} module(s), {} few-shot example(s)",
+                    bundle.token_estimate,
+                    bundle.modules_referenced.len(),
+                    bundle
+                        .enriched_message
+                        .matches("Similar successful mutations")
+                        .count()
+                ));
+                prompt = bundle.enriched_message;
+            }
+            Err(e) => {
+                // Non-fatal: fall back to the base prompt if context assembly fails.
+                emit!(format!("  Context assembly skipped: {e}"));
             }
         }
 

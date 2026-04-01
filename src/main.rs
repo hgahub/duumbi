@@ -11,6 +11,8 @@ mod bench;
 mod cli;
 mod compiler;
 mod config;
+#[allow(dead_code)] // Used indirectly via intent::execute context enrichment
+mod context;
 mod deps;
 mod errors;
 mod examples;
