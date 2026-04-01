@@ -179,6 +179,10 @@ pub struct MutationResult {
     pub patched: serde_json::Value,
     /// Number of patch operations applied.
     pub ops_count: usize,
+    /// Number of retries before success (0 = first attempt worked).
+    pub retry_count: u32,
+    /// Error codes encountered during retries (empty if first attempt succeeded).
+    pub error_codes_encountered: Vec<String>,
 }
 
 /// Outcome of a mutation attempt.
@@ -241,11 +245,19 @@ pub async fn mutate(
     let patch = GraphPatch { ops };
 
     match try_apply_collecting_diagnostics(source, &patch, false) {
-        Ok(patched) => Ok(MutationResult { patched, ops_count }),
+        Ok(patched) => Ok(MutationResult {
+            patched,
+            ops_count,
+            retry_count: 0,
+            error_codes_encountered: vec![],
+        }),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
         Err((mut last_error_msg, mut last_diagnostics)) => {
+            let mut all_error_codes: Vec<String> =
+                last_diagnostics.iter().map(|d| d.code.clone()).collect();
+
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
@@ -272,12 +284,19 @@ pub async fn mutate(
 
                 match try_apply_collecting_diagnostics(source, &retry_patch, false) {
                     Ok(patched) => {
+                        all_error_codes.sort();
+                        all_error_codes.dedup();
                         return Ok(MutationResult {
                             patched,
                             ops_count: retry_count,
+                            retry_count: attempt_num,
+                            error_codes_encountered: all_error_codes,
                         });
                     }
                     Err((new_msg, new_diags)) => {
+                        for d in &new_diags {
+                            all_error_codes.push(d.code.clone());
+                        }
                         last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {
@@ -348,11 +367,16 @@ pub async fn mutate_streaming(
         Ok(patched) => Ok(MutationOutcome::Success(MutationResult {
             patched,
             ops_count,
+            retry_count: 0,
+            error_codes_encountered: vec![],
         })),
         Err(_) if max_retries == 0 => {
             anyhow::bail!("Patch validation failed. Run `duumbi check` for details.");
         }
         Err((mut last_error_msg, mut last_diagnostics)) => {
+            let mut all_error_codes: Vec<String> =
+                last_diagnostics.iter().map(|d| d.code.clone()).collect();
+
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
@@ -379,12 +403,19 @@ pub async fn mutate_streaming(
 
                 match try_apply_collecting_diagnostics(source, &retry_patch, library_mode) {
                     Ok(patched) => {
+                        all_error_codes.sort();
+                        all_error_codes.dedup();
                         return Ok(MutationOutcome::Success(MutationResult {
                             patched,
                             ops_count: retry_count,
+                            retry_count: attempt_num,
+                            error_codes_encountered: all_error_codes,
                         }));
                     }
                     Err((new_msg, new_diags)) => {
+                        for d in &new_diags {
+                            all_error_codes.push(d.code.clone());
+                        }
                         last_error_msg = new_msg;
                         last_diagnostics = new_diags;
                         if attempt + 1 >= max_retries {

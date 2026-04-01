@@ -12,6 +12,7 @@ use serde_json::json;
 
 use owo_colors::OwoColorize;
 
+use crate::agents::agent_knowledge::{AgentKnowledgeStore, FailurePattern};
 use crate::agents::analyzer as agent_analyzer;
 use crate::agents::assembler;
 use crate::agents::template::TemplateStore;
@@ -304,6 +305,16 @@ pub async fn run_execute_with_progress(
                     TaskKind::CreateModule { module_name } => module_name.clone(),
                     _ => "main".to_string(),
                 };
+                // Enrich record with function names from intent test cases.
+                record.functions = spec
+                    .test_cases
+                    .iter()
+                    .map(|tc| tc.function.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                record.retry_count = mutation_result.retry_count;
+                record.error_codes = mutation_result.error_codes_encountered.clone();
                 let _ = learning::append_success(workspace, &record);
             }
             Err(e) => {
@@ -470,6 +481,47 @@ pub async fn run_execute_with_progress(
     if all_passed {
         emit!("Intent completed successfully.".to_string());
     } else {
+        // Record failure patterns for future learning.
+        let error_codes: Vec<String> = report
+            .results
+            .iter()
+            .filter(|r| !r.passed)
+            .filter_map(|r| {
+                r.error.as_ref().and_then(|e| {
+                    // Extract error code like E010, E009 from error message
+                    e.split_whitespace()
+                        .find(|w| w.starts_with("[E") && w.ends_with(']'))
+                        .map(|c| c.trim_matches(|ch| ch == '[' || ch == ']').to_string())
+                })
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if !error_codes.is_empty() {
+            let pattern_desc = format!(
+                "Intent '{}' failed with {} test(s): {}",
+                spec.intent,
+                report.failed,
+                error_codes.join(", ")
+            );
+            let mitigation = report
+                .results
+                .iter()
+                .filter(|r| !r.passed)
+                .filter_map(|r| r.error.clone())
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            let pattern = FailurePattern::new(
+                "duumbi:template/coder",
+                &pattern_desc,
+                error_codes,
+                &mitigation,
+            );
+            let _ = AgentKnowledgeStore::save_failure_pattern(workspace, &pattern);
+        }
+
         spec.status = IntentStatus::Failed;
         save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
         emit!(format!(
