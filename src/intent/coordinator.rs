@@ -128,6 +128,8 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
         .collect::<Vec<_>>()
         .join(", ");
 
+    let intent_title = spec.intent.chars().take(50).collect::<String>();
+
     let main_desc = if test_summary.is_empty() {
         format!(
             "Update the main function to demonstrate the implementation. Modules: {}",
@@ -135,8 +137,19 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
         )
     } else {
         format!(
-            "Update the main function to call and demonstrate: {}. The binary must exit with the result of the first call.",
-            test_summary
+            "Update the main function to call and demonstrate: {test_summary}. \
+             The binary must exit with the result of the first call.\n\n\
+             OUTPUT FORMAT: The program MUST produce human-readable formatted output.\n\
+             1. Print a header: ConstString(\"=== {intent_title} ===\") → PrintString\n\
+             2. For EACH test case, print a labeled result line:\n\
+                ConstString(\"func(a, b) = \") → StringFromI64(call_result) → StringConcat → PrintString\n\
+             Use this exact pattern for each line:\n\
+               op/0: ConstString(\"func(args) = \")\n\
+               op/1: [Call the function → get i64 result]\n\
+               op/2: StringFromI64(op/1)\n\
+               op/3: StringConcat(op/0, op/2)\n\
+               op/4: PrintString(op/3)\n\
+             This makes the output readable like: \"gcd(48, 18) = 6\"",
         )
     };
 
