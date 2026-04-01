@@ -1,0 +1,124 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/ns/core#"
+  },
+  "@id": "duumbi:ops",
+  "@type": "duumbi:Module",
+  "duumbi:exports": [
+    "is_even"
+  ],
+  "duumbi:functions": [
+    {
+      "@id": "duumbi:number/ops/is_even",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:number/ops/is_even/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:number/ops/is_even/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/entry/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 2
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/entry/2",
+              "@type": "duumbi:Modulo",
+              "duumbi:left": {
+                "@id": "duumbi:number/ops/is_even/entry/0"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:number/ops/is_even/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/entry/3",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/entry/4",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:number/ops/is_even/entry/2"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:number/ops/is_even/entry/3"
+              }
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/entry/5",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:number/ops/is_even/entry/4"
+              },
+              "duumbi:falseBlock": "is_odd",
+              "duumbi:trueBlock": "is_even"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:number/ops/is_even/is_even",
+          "@type": "duumbi:Block",
+          "duumbi:label": "is_even",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:number/ops/is_even/is_even/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/is_even/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:number/ops/is_even/is_even/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:number/ops/is_even/is_odd",
+          "@type": "duumbi:Block",
+          "duumbi:label": "is_odd",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:number/ops/is_even/is_odd/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:number/ops/is_even/is_odd/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:number/ops/is_even/is_odd/0"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "is_even",
+      "duumbi:params": [
+        {
+          "duumbi:name": "n",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:returnType": "i64"
+    }
+  ],
+  "duumbi:name": "ops"
+}

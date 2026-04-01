@@ -3,27 +3,17 @@ name = "myapp"
 namespace = "myapp"
 default-registry = "duumbi"
 
-[registries]
-duumbi = "https://registry.duumbi.dev"
-
-# Standard library modules (created in .duumbi/cache/@duumbi/ by duumbi init).
-# The cache directory is excluded from version control (.gitignore).
-[dependencies]
-"@duumbi/stdlib-math" = "1.0.0"
-"@duumbi/stdlib-io" = "1.0.0"
-"@duumbi/stdlib-lang" = "1.0.0"
-"@duumbi/stdlib-string" = "1.0.0"
-
 [[providers]]
 provider = "minimax"
 role = "primary"
 model = "MiniMax-M2.7"
 api_key_env = "MINIMAX_API_KEY"
 
-[[providers]]
-provider = "anthropic"
-role = "fallback"
-model = "claude-sonnet-4-6"
-api_key_env = "ANTHROPIC_API_KEY"
-auth_token_env = "ANTHROPIC_AUTH_TOKEN"
+[registries]
+duumbi = "https://registry.duumbi.dev"
 
+[dependencies]
+"@duumbi/stdlib-io" = "1.0.0"
+"@duumbi/stdlib-math" = "1.0.0"
+"@duumbi/stdlib-lang" = "1.0.0"
+"@duumbi/stdlib-string" = "1.0.0"

@@ -1,6 +1,6 @@
 intent: Find the greatest common divisor of two numbers
 version: 1
-status: pending
+status: failed
 acceptance_criteria:
 - gcd(a, b) returns the greatest common divisor of two integers
 - gcd(a, 0) returns the absolute value of a
