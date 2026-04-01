@@ -1,0 +1,243 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/ns/core#"
+  },
+  "@id": "duumbi:fibonacci",
+  "@type": "duumbi:Module",
+  "duumbi:exports": [
+    "fib"
+  ],
+  "duumbi:functions": [
+    {
+      "@id": "duumbi:math/fibonacci/fib",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:math/fibonacci/fib/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/fibonacci/fib/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/entry/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/entry/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:math/fibonacci/fib/entry/0"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:math/fibonacci/fib/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/entry/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:math/fibonacci/fib/entry/2"
+              },
+              "duumbi:falseBlock": "check_one",
+              "duumbi:trueBlock": "base_zero"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:math/fibonacci/fib/check_one",
+          "@type": "duumbi:Block",
+          "duumbi:label": "check_one",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/fibonacci/fib/check_one/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/check_one/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/check_one/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:math/fibonacci/fib/check_one/0"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:math/fibonacci/fib/check_one/1"
+              }
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/check_one/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:math/fibonacci/fib/check_one/2"
+              },
+              "duumbi:falseBlock": "recurse",
+              "duumbi:trueBlock": "base_one"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:math/fibonacci/fib/base_zero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "base_zero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/fibonacci/fib/base_zero/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/base_zero/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:math/fibonacci/fib/base_zero/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:math/fibonacci/fib/base_one",
+          "@type": "duumbi:Block",
+          "duumbi:label": "base_one",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/fibonacci/fib/base_one/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/base_one/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:math/fibonacci/fib/base_one/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:math/fibonacci/fib/recurse",
+          "@type": "duumbi:Block",
+          "duumbi:label": "recurse",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/2",
+              "@type": "duumbi:Sub",
+              "duumbi:left": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/0"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/1"
+              }
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/3",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:math/fibonacci/fib/recurse/2"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/4",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/5",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 2
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/6",
+              "@type": "duumbi:Sub",
+              "duumbi:left": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/4"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/5"
+              }
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/7",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:math/fibonacci/fib/recurse/6"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/8",
+              "@type": "duumbi:Add",
+              "duumbi:left": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/3"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/7"
+              }
+            },
+            {
+              "@id": "duumbi:math/fibonacci/fib/recurse/9",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:math/fibonacci/fib/recurse/8"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:exports": [
+        "fib"
+      ],
+      "duumbi:name": "fib",
+      "duumbi:params": [
+        {
+          "duumbi:name": "n",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:returnType": "i64"
+    }
+  ],
+  "duumbi:name": "fibonacci"
+}

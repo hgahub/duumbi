@@ -1,0 +1,46 @@
+intent: Write a fibonacci function
+version: 1
+status: pending
+acceptance_criteria:
+- fib(n) returns the nth Fibonacci number in the sequence
+- fib(0) returns 0 (base case)
+- fib(1) returns 1 (base case)
+- fib(n) follows the recurrence fib(n) = fib(n-1) + fib(n-2) for n > 1
+modules:
+  create:
+  - math/fibonacci
+  modify:
+  - app/main
+test_cases:
+- name: fib_zero
+  function: fib
+  args:
+  - 0
+  expected_return: 0
+- name: fib_one
+  function: fib
+  args:
+  - 1
+  expected_return: 1
+- name: fib_two
+  function: fib
+  args:
+  - 2
+  expected_return: 1
+- name: fib_five
+  function: fib
+  args:
+  - 5
+  expected_return: 5
+- name: fib_ten
+  function: fib
+  args:
+  - 10
+  expected_return: 55
+- name: fib_negative
+  function: fib
+  args:
+  - -1
+  expected_return: 0
+dependencies: []
+created_at: 2026-01-01T21:16:53Z

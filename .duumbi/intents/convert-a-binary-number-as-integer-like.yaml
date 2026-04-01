@@ -1,0 +1,46 @@
+intent: Convert a binary number (as integer like 1010) to decimal
+version: 1
+status: pending
+acceptance_criteria:
+- binary_to_decimal(n) converts a binary number (encoded as integer digits) to its decimal equivalent
+- binary_to_decimal(1010) returns 10
+- binary_to_decimal(0) returns 0
+- binary_to_decimal handles negative inputs by using absolute value
+modules:
+  create:
+  - convert/binary
+  modify:
+  - app/main
+test_cases:
+- name: binary_1010
+  function: binary_to_decimal
+  args:
+  - 1010
+  expected_return: 10
+- name: binary_1111
+  function: binary_to_decimal
+  args:
+  - 1111
+  expected_return: 15
+- name: binary_0
+  function: binary_to_decimal
+  args:
+  - 0
+  expected_return: 0
+- name: binary_1
+  function: binary_to_decimal
+  args:
+  - 1
+  expected_return: 1
+- name: binary_10000
+  function: binary_to_decimal
+  args:
+  - 10000
+  expected_return: 16
+- name: binary_negative
+  function: binary_to_decimal
+  args:
+  - -1010
+  expected_return: 10
+dependencies: []
+created_at: 2026-01-01T21:11:25Z

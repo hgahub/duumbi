@@ -1,0 +1,41 @@
+intent: Check if a number is even
+version: 1
+status: pending
+acceptance_criteria:
+- is_even(n) returns 1 when n is even
+- is_even(n) returns 0 when n is odd
+- is_even(0) returns 1 (zero is even)
+- is_even handles negative numbers correctly
+modules:
+  create:
+  - number/ops
+  modify:
+  - app/main
+test_cases:
+- name: even_positive
+  function: is_even
+  args:
+  - 4
+  expected_return: 1
+- name: odd_positive
+  function: is_even
+  args:
+  - 7
+  expected_return: 0
+- name: zero
+  function: is_even
+  args:
+  - 0
+  expected_return: 1
+- name: negative_even
+  function: is_even
+  args:
+  - -6
+  expected_return: 1
+- name: negative_odd
+  function: is_even
+  args:
+  - -3
+  expected_return: 0
+dependencies: []
+created_at: 2026-01-01T21:01:42Z

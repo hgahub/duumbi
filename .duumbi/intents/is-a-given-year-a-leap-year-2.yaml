@@ -1,0 +1,56 @@
+intent: Is a given year a leap year?
+version: 1
+status: pending
+acceptance_criteria:
+- is_leap_year(year) returns 1 if the year is a leap year, 0 otherwise
+- A year divisible by 4 is a leap year
+- A year divisible by 100 is NOT a leap year (unless also divisible by 400)
+- Years divisible by 400 are leap years (overrides the century rule)
+modules:
+  create:
+  - time/date
+  modify:
+  - app/main
+test_cases:
+- name: leap_year_basic
+  function: is_leap_year
+  args:
+  - 2024
+  expected_return: 1
+- name: non_leap_year_basic
+  function: is_leap_year
+  args:
+  - 2023
+  expected_return: 0
+- name: century_divisible_by_400
+  function: is_leap_year
+  args:
+  - 2000
+  expected_return: 1
+- name: century_not_divisible_by_400
+  function: is_leap_year
+  args:
+  - 1900
+  expected_return: 0
+- name: leap_year_boundary
+  function: is_leap_year
+  args:
+  - 4
+  expected_return: 1
+- name: non_leap_year_100
+  function: is_leap_year
+  args:
+  - 100
+  expected_return: 0
+- name: negative_leap_year
+  function: is_leap_year
+  args:
+  - -4
+  expected_return: 1
+- name: zero_year
+  function: is_leap_year
+  args:
+  - 0
+  expected_return: 1
+dependencies: []
+created_at: 2026-01-01T21:18:20Z

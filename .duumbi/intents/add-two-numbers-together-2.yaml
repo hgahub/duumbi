@@ -1,0 +1,40 @@
+intent: Add two numbers together
+version: 1
+status: pending
+acceptance_criteria:
+- add(a, b) returns the sum of two integers
+- add handles positive numbers correctly
+- add handles zero correctly
+- add handles negative numbers correctly
+modules:
+  create:
+  - math/ops
+  modify:
+  - app/main
+test_cases:
+- name: add_positive
+  function: add
+  args:
+  - 3
+  - 5
+  expected_return: 8
+- name: add_zero
+  function: add
+  args:
+  - 10
+  - 0
+  expected_return: 10
+- name: add_negative
+  function: add
+  args:
+  - -4
+  - 7
+  expected_return: 3
+- name: add_two_negatives
+  function: add
+  args:
+  - -3
+  - -5
+  expected_return: -8
+dependencies: []
+created_at: 2026-01-01T21:01:57Z

@@ -1,0 +1,463 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/ns/core#"
+  },
+  "@id": "duumbi:main",
+  "@type": "duumbi:Module",
+  "duumbi:functions": [
+    {
+      "@id": "duumbi:main/main",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:main/main/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:main/main/entry/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:main/main/entry/1",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/0"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/2",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/3",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:main/main/entry/4",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/3"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/5",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/4"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/6",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 2
+            },
+            {
+              "@id": "duumbi:main/main/entry/7",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/6"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/8",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/7"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/9",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 6
+            },
+            {
+              "@id": "duumbi:main/main/entry/10",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/9"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/11",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/10"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/12",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 10
+            },
+            {
+              "@id": "duumbi:main/main/entry/13",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/12"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/14",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/13"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/15",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": -5
+            },
+            {
+              "@id": "duumbi:main/main/entry/16",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/15"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:main/main/entry/17",
+              "@type": "duumbi:Print",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/16"
+              }
+            },
+            {
+              "@id": "duumbi:main/main/entry/18",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/1"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64"
+    },
+    {
+      "@id": "duumbi:fibonacci/fib",
+      "@type": "duumbi:Function",
+      "duumbi:blocks": [
+        {
+          "@id": "duumbi:fibonacci/fib/entry",
+          "@type": "duumbi:Block",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/entry/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/entry/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/entry/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/entry/0"
+              },
+              "duumbi:operator": "le",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/entry/1"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/entry/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:fibonacci/fib/entry/2"
+              },
+              "duumbi:falseBlock": "gt_zero",
+              "duumbi:trueBlock": "leq_zero"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/leq_zero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "leq_zero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/leq_zero/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/leq_zero/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/leq_zero/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/leq_zero/0"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/leq_zero/1"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/leq_zero/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:fibonacci/fib/leq_zero/2"
+              },
+              "duumbi:falseBlock": "return_zero_neg",
+              "duumbi:trueBlock": "return_zero"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/return_zero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "return_zero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/return_zero/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/return_zero/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:fibonacci/fib/return_zero/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/return_zero_neg",
+          "@type": "duumbi:Block",
+          "duumbi:label": "return_zero_neg",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/return_zero_neg/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 0
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/return_zero_neg/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:fibonacci/fib/return_zero_neg/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/gt_zero",
+          "@type": "duumbi:Block",
+          "duumbi:label": "gt_zero",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/gt_zero/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/gt_zero/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/gt_zero/2",
+              "@type": "duumbi:Compare",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/gt_zero/0"
+              },
+              "duumbi:operator": "eq",
+              "duumbi:resultType": "bool",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/gt_zero/1"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/gt_zero/3",
+              "@type": "duumbi:Branch",
+              "duumbi:condition": {
+                "@id": "duumbi:fibonacci/fib/gt_zero/2"
+              },
+              "duumbi:falseBlock": "recurse",
+              "duumbi:trueBlock": "return_one"
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/return_one",
+          "@type": "duumbi:Block",
+          "duumbi:label": "return_one",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/return_one/0",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/return_one/1",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:fibonacci/fib/return_one/0"
+              }
+            }
+          ]
+        },
+        {
+          "@id": "duumbi:fibonacci/fib/recurse",
+          "@type": "duumbi:Block",
+          "duumbi:label": "recurse",
+          "duumbi:ops": [
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/0",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/1",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 1
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/2",
+              "@type": "duumbi:Sub",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/recurse/0"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/recurse/1"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/3",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:fibonacci/fib/recurse/2"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/4",
+              "@type": "duumbi:Load",
+              "duumbi:resultType": "i64",
+              "duumbi:variable": "n"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/5",
+              "@type": "duumbi:Const",
+              "duumbi:resultType": "i64",
+              "duumbi:value": 2
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/6",
+              "@type": "duumbi:Sub",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/recurse/4"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/recurse/5"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/7",
+              "@type": "duumbi:Call",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:fibonacci/fib/recurse/6"
+                }
+              ],
+              "duumbi:function": "fib",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/8",
+              "@type": "duumbi:Add",
+              "duumbi:left": {
+                "@id": "duumbi:fibonacci/fib/recurse/3"
+              },
+              "duumbi:resultType": "i64",
+              "duumbi:right": {
+                "@id": "duumbi:fibonacci/fib/recurse/7"
+              }
+            },
+            {
+              "@id": "duumbi:fibonacci/fib/recurse/9",
+              "@type": "duumbi:Return",
+              "duumbi:operand": {
+                "@id": "duumbi:fibonacci/fib/recurse/8"
+              }
+            }
+          ]
+        }
+      ],
+      "duumbi:name": "fib",
+      "duumbi:params": [
+        {
+          "duumbi:name": "n",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:returnType": "i64"
+    }
+  ],
+  "duumbi:name": "main"
+}

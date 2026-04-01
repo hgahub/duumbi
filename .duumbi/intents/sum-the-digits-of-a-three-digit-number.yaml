@@ -1,0 +1,47 @@
+intent: Sum the digits of a three-digit number
+version: 1
+status: pending
+acceptance_criteria:
+- sum_digits(n) returns the sum of the three digits of n
+- sum_digits handles positive three-digit numbers correctly
+- sum_digits handles negative three-digit numbers by using the absolute value
+- sum_digits(100) returns 1 (1+0+0)
+- sum_digits(999) returns 27 (9+9+9)
+modules:
+  create:
+  - digits/ops
+  modify:
+  - app/main
+test_cases:
+- name: sum_123
+  function: sum_digits
+  args:
+  - 123
+  expected_return: 6
+- name: sum_456
+  function: sum_digits
+  args:
+  - 456
+  expected_return: 15
+- name: sum_999
+  function: sum_digits
+  args:
+  - 999
+  expected_return: 27
+- name: sum_100
+  function: sum_digits
+  args:
+  - 100
+  expected_return: 1
+- name: sum_negative
+  function: sum_digits
+  args:
+  - -321
+  expected_return: 6
+- name: sum_equal_digits
+  function: sum_digits
+  args:
+  - 555
+  expected_return: 15
+dependencies: []
+created_at: 2026-01-01T21:07:59Z
