@@ -382,9 +382,16 @@ pub async fn run_execute_with_progress(
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
         let repair_prompt = format!(
-            "The following test cases FAILED after intent execution. \
+            "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
+             type errors, missing return ops, orphan references, unexported functions, \
+             and structural issues. Then apply the minimal fix.\n\n\
+             The following test cases FAILED after intent execution. \
              Fix the graph so ALL tests pass.\n\n\
              Failed tests:\n{}\n\n\
+             Common fixes:\n\
+             - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
+             - Wrong return value: check the algorithm logic in the function's blocks\n\
+             - Compile error: check SSA ordering (ops must reference lower-index ops only)\n\n\
              Do NOT recreate functions that already work — only fix the broken behavior. \
              Use replace_block to rewrite blocks that produce wrong results.",
             failed_details.join("\n")
