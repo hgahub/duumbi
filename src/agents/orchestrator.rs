@@ -161,6 +161,16 @@ Note: In entry block, Const/0 is defined BEFORE Compare/1 which references it (S
 {\"@type\":\"duumbi:Sub\",\"@id\":\"duumbi:math/ops/abs/negative/2\",\"duumbi:left\":{\"@id\":\"duumbi:math/ops/abs/negative/0\"},\n\
 \"duumbi:right\":{\"@id\":\"duumbi:math/ops/abs/negative/1\"},\"duumbi:resultType\":\"i64\"},\n\
 {\"@type\":\"duumbi:Return\",\"@id\":\"duumbi:math/ops/abs/negative/3\",\"duumbi:operand\":{\"@id\":\"duumbi:math/ops/abs/negative/2\"}}]}]}}\n\
+\n\
+Example 3 — formatted output with ConstString + StringFromI64 + StringConcat + PrintString:\n\
+To print \"Result: 42\" (label + computed value), use this op sequence in a block:\n\
+  op/0: {\"@type\":\"duumbi:Const\", \"@id\":\"duumbi:main/main/entry/0\", \"duumbi:value\":42, \"duumbi:resultType\":\"i64\"}\n\
+  op/1: {\"@type\":\"duumbi:Const\", \"@id\":\"duumbi:main/main/entry/1\", \"duumbi:value\":\"Result: \", \"duumbi:resultType\":\"string\"}\n\
+  op/2: {\"@type\":\"duumbi:StringFromI64\", \"@id\":\"duumbi:main/main/entry/2\", \"duumbi:operand\":{\"@id\":\"duumbi:main/main/entry/0\"}, \"duumbi:resultType\":\"string\"}\n\
+  op/3: {\"@type\":\"duumbi:StringConcat\", \"@id\":\"duumbi:main/main/entry/3\", \"duumbi:left\":{\"@id\":\"duumbi:main/main/entry/1\"}, \"duumbi:right\":{\"@id\":\"duumbi:main/main/entry/2\"}, \"duumbi:resultType\":\"string\"}\n\
+  op/4: {\"@type\":\"duumbi:PrintString\", \"@id\":\"duumbi:main/main/entry/4\", \"duumbi:operand\":{\"@id\":\"duumbi:main/main/entry/3\"}}\n\
+For a Call result: replace op/0 with the Call op, then StringFromI64(call_result).\n\
+Use this pattern to produce human-readable output in main functions.\n\
 ";
 
 /// Builds the effective system prompt by appending a provider-specific suffix.
