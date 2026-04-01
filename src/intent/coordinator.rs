@@ -128,7 +128,15 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    let intent_title = spec.intent.chars().take(50).collect::<String>();
+    // Sanitize intent title for safe interpolation into prompt strings.
+    // Remove control chars, escape quotes/backslashes to prevent prompt corruption.
+    let intent_title: String = spec
+        .intent
+        .chars()
+        .take(50)
+        .filter(|c| !c.is_control())
+        .map(|c| if c == '"' || c == '\\' { ' ' } else { c })
+        .collect();
 
     let main_desc = if test_summary.is_empty() {
         format!(

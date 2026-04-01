@@ -164,11 +164,11 @@ Note: In entry block, Const/0 is defined BEFORE Compare/1 which references it (S
 \n\
 Example 3 — formatted output with ConstString + StringFromI64 + StringConcat + PrintString:\n\
 To print \"Result: 42\" (label + computed value), use this op sequence in a block:\n\
-  op/0: {\"@type\":\"duumbi:Const\", \"duumbi:value\":42, \"duumbi:resultType\":\"i64\"}\n\
-  op/1: {\"@type\":\"duumbi:Const\", \"duumbi:value\":\"Result: \", \"duumbi:resultType\":\"string\"}\n\
-  op/2: {\"@type\":\"duumbi:StringFromI64\", \"duumbi:operand\":{\"@id\":\"…/0\"}, \"duumbi:resultType\":\"string\"}\n\
-  op/3: {\"@type\":\"duumbi:StringConcat\", \"duumbi:left\":{\"@id\":\"…/1\"}, \"duumbi:right\":{\"@id\":\"…/2\"}, \"duumbi:resultType\":\"string\"}\n\
-  op/4: {\"@type\":\"duumbi:PrintString\", \"duumbi:operand\":{\"@id\":\"…/3\"}}\n\
+  op/0: {\"@type\":\"duumbi:Const\", \"@id\":\"duumbi:main/main/entry/0\", \"duumbi:value\":42, \"duumbi:resultType\":\"i64\"}\n\
+  op/1: {\"@type\":\"duumbi:Const\", \"@id\":\"duumbi:main/main/entry/1\", \"duumbi:value\":\"Result: \", \"duumbi:resultType\":\"string\"}\n\
+  op/2: {\"@type\":\"duumbi:StringFromI64\", \"@id\":\"duumbi:main/main/entry/2\", \"duumbi:operand\":{\"@id\":\"duumbi:main/main/entry/0\"}, \"duumbi:resultType\":\"string\"}\n\
+  op/3: {\"@type\":\"duumbi:StringConcat\", \"@id\":\"duumbi:main/main/entry/3\", \"duumbi:left\":{\"@id\":\"duumbi:main/main/entry/1\"}, \"duumbi:right\":{\"@id\":\"duumbi:main/main/entry/2\"}, \"duumbi:resultType\":\"string\"}\n\
+  op/4: {\"@type\":\"duumbi:PrintString\", \"@id\":\"duumbi:main/main/entry/4\", \"duumbi:operand\":{\"@id\":\"duumbi:main/main/entry/3\"}}\n\
 For a Call result: replace op/0 with the Call op, then StringFromI64(call_result).\n\
 Use this pattern to produce human-readable output in main functions.\n\
 ";
