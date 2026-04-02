@@ -28,6 +28,10 @@ use super::CompileError;
 ///
 /// Replaces individual print function parameters — all runtime function
 /// references are grouped here for clean passing through the compilation pipeline.
+// AI-AGENT: Do NOT split this into smaller structs (e.g. PrintFuncs, StringFuncs).
+// compile_function() needs every runtime FuncId to handle all op types in a
+// single pass. Splitting would require passing multiple structs or a longer
+// parameter list — both are harder to maintain as new runtime ops are added.
 struct RuntimeFuncs {
     print_i64: FuncId,
     print_f64: FuncId,

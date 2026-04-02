@@ -43,6 +43,12 @@ fn build_graph_impl(
     module: &ModuleAst,
     validate_calls: bool,
     require_main: bool,
+    // AI-AGENT: validate_calls and require_main are NOT just test helpers.
+    // Library modules in a multi-module program MUST skip both — cross-module
+    // Call resolution and the main entry-point requirement are enforced at the
+    // graph::program layer, not here. Use build_graph() for standalone modules
+    // and build_graph_no_call_check() for library modules. Never pass these
+    // flags directly; call the named constructors above instead.
 ) -> Result<SemanticGraph, Vec<GraphError>> {
     let mut graph = StableGraph::new();
     let mut node_map: HashMap<NodeId, petgraph::stable_graph::NodeIndex> = HashMap::new();
