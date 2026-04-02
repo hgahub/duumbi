@@ -2,341 +2,98 @@
 
 [![Coverage](https://codecov.io/gh/hgahub/duumbi/branch/main/graph/badge.svg)](https://codecov.io/gh/hgahub/duumbi)
 
-> AI-first semantic graph compiler. Programs are stored as JSON-LD graphs — not text files. The toolchain validates, compiles, and links them to native binaries via Cranelift.
+> AI-first semantic graph compiler. Programs are stored as JSON-LD graphs — not text files. Describe a change in plain language; the toolchain validates, compiles, and links it to a native binary via Cranelift.
 
-**Status:** Phase 2 — AI mutation via `duumbi add` / `duumbi undo` (Anthropic + OpenAI).
+**[Website](https://www.duumbi.dev/) · [Docs](https://docs.duumbi.dev/) · [Registry](https://registry.duumbi.dev/)**
 
 ---
 
-## What is DUUMBI?
+## How it works
 
-Traditional compilers transform text → AST → machine code. DUUMBI skips the text entirely. Program logic lives as a typed semantic graph in JSON-LD format. An AI agent generates and mutates the graph; the toolchain validates every mutation before compilation. Syntax errors are structurally impossible.
-
-The core invariant is the **Semantic Fixed Point**: a graph is compilable only when it passes schema validation, type checking, and all tests pass.
+Traditional compilers transform text → AST → machine code. DUUMBI skips the text entirely. Program logic lives as a typed semantic graph in JSON-LD format. An AI agent generates and mutates the graph; every mutation is validated before compilation. Syntax errors are structurally impossible.
 
 ```
-.jsonld files  →  Parser  →  Semantic Graph  →  Schema Validator  →  Cranelift  →  .o  →  cc  →  binary
+.jsonld  →  Parser  →  Semantic Graph  →  Validator  →  Cranelift  →  binary
 ```
 
 ---
 
-## Prerequisites
+## Install
 
-- Rust stable (`rustup update stable`)
-- A C compiler on PATH — `cc` or `$CC` env var (Xcode CLT on macOS, `gcc`/`clang` on Linux)
-- Windows is not supported in MVP
-
-Verify:
-```bash
-rustc --version   # 1.80+
-cc --version
-```
-
----
-
-## Quickstart (5 minutes)
+**Requirements:** Rust stable (1.80+), a C compiler on `$PATH` (`cc` / Xcode CLT / `gcc`).
 
 ```bash
-# Install
 git clone git@github.com:hgahub/duumbi.git
 cd duumbi
 cargo install --path .
+```
 
-# Create a workspace
+---
+
+## Quickstart
+
+```bash
 duumbi init myproject
 cd myproject
 
-# Build and run the skeleton program (prints 8)
-duumbi build
-duumbi run
-
-# Validate without compiling
-duumbi check
-
-# See human-readable pseudo-code
-duumbi describe
+duumbi build      # compile
+duumbi run        # run the binary
+duumbi check      # validate without compiling
+duumbi describe   # human-readable pseudo-code
 ```
 
-If you don't want to register/install the CLI globally (`cargo install --path .`),
-you can run the same commands through Cargo:
+---
 
-```bash
-# Equivalent to: duumbi init myproject
-cargo run -- init myproject
+## AI Mutation
 
-# Equivalent to: duumbi build
-cargo run -- build
-
-# Equivalent to: duumbi run
-cargo run -- run
-
-# Equivalent to: duumbi check
-cargo run -- check
-
-# Equivalent to: duumbi describe
-cargo run -- describe
-```
-
-## AI Mutation (Phase 2)
-
-`duumbi add` calls an LLM to mutate the graph. Configure your provider in `.duumbi/config.toml`:
+Configure your LLM provider in `.duumbi/config.toml`:
 
 ```toml
-[compiler]
-version = "0.1"
-
-[build]
-output_dir = "build"
-
 [llm]
-provider = "anthropic"          # or "openai"
-model = "claude-sonnet-4-6"     # or "gpt-4o"
-api_key_env = "ANTHROPIC_API_KEY"  # name of the env var holding your key
+provider = "anthropic"           # or "openai"
+model = "claude-sonnet-4-6"      # or "gpt-4o"
+api_key_env = "ANTHROPIC_API_KEY"
 ```
 
-Then export your API key and use `duumbi add`:
+Then describe changes in plain language:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# Describe a change in plain language
 duumbi add "change the constant 3 to 7"
-
-# Apply without confirmation prompt
 duumbi add --yes "multiply instead of add"
-
-# Undo the last AI mutation
-duumbi undo
+duumbi undo   # restore the previous graph
 ```
 
-The command runs a prompt → LLM → patch → validate → (retry once on failure) loop.
-Changes are shown as a diff summary before writing. The original graph is saved to
-`.duumbi/history/` before every mutation so `duumbi undo` can restore it.
+Supported providers: **Anthropic** (`claude-sonnet-4-6`, `claude-opus-4-6`) and **OpenAI** (`gpt-4o`, `gpt-4o-mini`).
 
-**Providers:**
+Full reference → [docs.duumbi.dev](https://docs.duumbi.dev/)
 
-| Provider | `provider` value | Models |
-|----------|-----------------|--------|
-| Anthropic Claude | `anthropic` | `claude-sonnet-4-6`, `claude-opus-4-6` |
-| OpenAI | `openai` | `gpt-4o`, `gpt-4o-mini` |
+---
 
-## Build from source
+## Build & test
 
 ```bash
-git clone git@github.com:hgahub/duumbi.git
-cd duumbi
 cargo build
 cargo test --all
-```
-
-
-## Project Structure
-
-```
-duumbi/
-├── src/
-│   ├── main.rs          # CLI entry point (clap, async tokio)
-│   ├── lib.rs           # Library crate root (for integration tests)
-│   ├── parser/          # JSON-LD → serde_json → typed structs
-│   ├── graph/           # petgraph semantic graph IR
-│   ├── compiler/        # Graph → Cranelift IR → .o
-│   ├── cli/             # Command implementations
-│   ├── agents/          # AI agent module (Anthropic + OpenAI)
-│   ├── config.rs        # Workspace config loader (.duumbi/config.toml)
-│   ├── patch.rs         # GraphPatch: atomic JSON-LD mutations
-│   ├── snapshot.rs      # Undo history (.duumbi/history/)
-│   ├── tools.rs         # LLM tool schema definitions
-│   └── web/             # WASM visualizer + axum server (Phase 3)
-├── tests/               # Integration tests with .jsonld fixtures
-├── examples/
-│   ├── add.jsonld        # add(3, 5) → prints 8  [Phase 0 kill criterion]
-│   ├── fibonacci.jsonld  # Recursive Fibonacci    [Phase 1]
-│   └── hello.jsonld      # Multiple prints        [Phase 1]
-├── docs/
-│   ├── architecture.md   # Component map, data formats, Cranelift lowering
-│   └── coding-conventions.md  # Error handling, newtypes, graph/Cranelift rules
-├── Cargo.toml
-└── duumbi_runtime.c      # C shim: duumbi_print_i64, duumbi_print_f64, etc.
-```
-
-A user's DUUMBI workspace (created by `duumbi init`) lives separately:
-```
-my-project/
-└── .duumbi/
-    ├── config.toml       # LLM provider, model, api_key_env
-    ├── schema/
-    │   └── core.schema.json
-    ├── graph/
-    │   └── main.jsonld
-    ├── build/
-    │   └── output        # compiled binary
-    └── telemetry/
-        └── traces.jsonl
-```
-
----
-
-## JSON-LD Graph Format
-
-Programs are stored as typed graphs. Every node has a unique `@id` in the format `duumbi:<module>/<function>/<block>/<index>`.
-
-Namespace: `https://duumbi.dev/ns/core#` (prefix: `duumbi:`)
-
-Minimal working program — `add(3, 5)`:
-
-```json
-{
-  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
-  "@type": "duumbi:Module",
-  "@id": "duumbi:main",
-  "duumbi:name": "main",
-  "duumbi:functions": [
-    {
-      "@type": "duumbi:Function",
-      "@id": "duumbi:main/main",
-      "duumbi:name": "main",
-      "duumbi:params": [],
-      "duumbi:returnType": "i64",
-      "duumbi:blocks": [
-        {
-          "@type": "duumbi:Block",
-          "@id": "duumbi:main/main/entry",
-          "duumbi:label": "entry",
-          "duumbi:ops": [
-            { "@type": "duumbi:Const",  "@id": "duumbi:main/main/entry/0", "duumbi:value": 3, "duumbi:resultType": "i64" },
-            { "@type": "duumbi:Const",  "@id": "duumbi:main/main/entry/1", "duumbi:value": 5, "duumbi:resultType": "i64" },
-            { "@type": "duumbi:Add",    "@id": "duumbi:main/main/entry/2",
-              "duumbi:left": {"@id": "duumbi:main/main/entry/0"},
-              "duumbi:right": {"@id": "duumbi:main/main/entry/1"},
-              "duumbi:resultType": "i64" },
-            { "@type": "duumbi:Print",  "@id": "duumbi:main/main/entry/3", "duumbi:operand": {"@id": "duumbi:main/main/entry/2"} },
-            { "@type": "duumbi:Return", "@id": "duumbi:main/main/entry/4", "duumbi:operand": {"@id": "duumbi:main/main/entry/2"} }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-Expected output: prints `8`, exits with code 8.
-
-
----
-
-## Op Set
-
-| Op | Cranelift | Description | Phase |
-|----|-----------|-------------|-------|
-| `duumbi:Const` | `iconst.i64` | Constant integer value | 0 |
-| `duumbi:Add` | `iadd` / `fadd` | Addition (i64 or f64) | 0 |
-| `duumbi:Sub` | `isub` / `fsub` | Subtraction | 0 |
-| `duumbi:Mul` | `imul` / `fmul` | Multiplication | 0 |
-| `duumbi:Div` | `sdiv` / `fdiv` | Division | 0 |
-| `duumbi:Print` | `call duumbi_print_*` | Print value to stdout | 0 |
-| `duumbi:Return` | `return` | Return from function | 0 |
-| `duumbi:ConstF64` | `f64const` | Constant float value | 1 |
-| `duumbi:ConstBool` | `iconst.i8` | Constant boolean | 1 |
-| `duumbi:Compare` | `icmp` / `fcmp` | Comparison (eq, ne, lt, le, gt, ge) | 1 |
-| `duumbi:Branch` | `brif` | Conditional branch | 1 |
-| `duumbi:Call` | `call` | Function call | 1 |
-| `duumbi:Load` | `use_var` | Load named variable | 1 |
-| `duumbi:Store` | `def_var` | Store to named variable | 1 |
-
-**Types:** `i64`, `f64`, `bool`, `void`
-
-Phase 3 adds: WASM web visualizer (`duumbi viz`).
-
----
-
-## Error Format
-
-All validation and compile errors go to **stdout as JSONL** (one error per line). Human-readable summary goes to **stderr**. Never mix the two.
-
-```json
-{"level":"error","code":"E001","message":"Type mismatch: Add expects matching operand types","nodeId":"duumbi:main/main/entry/2","file":"graph/main.jsonld","details":{"expected":"i64","found":"f64"}}
-```
-
-| Code | Condition |
-|------|-----------|
-| E001 | Type mismatch |
-| E002 | Unknown Op type |
-| E003 | Missing required field |
-| E004 | Orphan `@id` reference |
-| E005 | Duplicate `@id` |
-| E006 | No `main` function |
-| E007 | Cycle in data flow |
-| E008 | Linker failure |
-| E009 | Schema validation failed |
-
----
-
-## Code Standards
-
-Read `docs/coding-conventions.md` before writing any code. Key rules:
-
-**Error handling:** `thiserror` in library code (`src/parser/`, `src/graph/`, `src/compiler/`), `anyhow` only at CLI boundary (`src/cli/`, `main.rs`). `.unwrap()` is forbidden — CI clippy rejects it.
-
-**Type safety:** Newtypes are mandatory for all graph identifiers. Never pass raw strings or integers where a `NodeId`, `FunctionName`, `BlockLabel`, or `ModuleName` is expected.
-
-**Graph:** Use `StableGraph<N, E>` when node indices must survive removals. Use `petgraph::visit::Topo` for traversal order. Run `petgraph::algo::is_cyclic_directed` before compilation.
-
-**Cranelift:** Always use `FunctionBuilder` via `FunctionBuilderContext`. Call `builder.seal_block()` before `builder.finalize()`. Call `builder.finalize()` before `module.define_function()`.
-
-**Output:** Structured JSONL → stdout. Human text → stderr. `println!` for debug output is forbidden — use `tracing::debug!`.
-
----
-
-## Development Workflow
-
-```bash
-# Check compilation
-cargo check
-
-# Run tests
-cargo test --all
-
-# Lint (zero warnings enforced)
 cargo clippy --all-targets -- -D warnings
-
-# Format
 cargo fmt
-
-# Run a specific integration test
-cargo test --test <name>
 ```
 
-The `pre-commit` hooks run `rustfmt` and `clippy` automatically on every commit.
-
 ---
 
-## Community
-
-- Review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating in
-  issues, discussions, or pull requests.
-- Use GitHub issue and pull request templates so reports and changes include the
-  context maintainers need to review them quickly.
-
----
-
-## Supported Platforms
+## Supported platforms
 
 | Platform | Architecture | Status |
 |----------|-------------|--------|
 | macOS | aarch64 (Apple Silicon) | Primary |
 | macOS | x86_64 | CI-tested |
 | Linux | x86_64 | CI-tested |
-| Windows | — | Not planned for MVP |
+| Windows | — | Not supported |
 
 ---
 
-## MVP Phases and Kill Criteria
+## Community
 
-| Phase | Goal | Kill Criterion | Timeline |
-|-------|------|----------------|----------|
-| 0 | Proof of concept | `add(3, 5)` compiles and prints `8` | Week 1-2 |
-| 1 | Usable CLI | External dev installs + runs in < 10 min | Week 3-6 |
-| 2 | AI mutation | > 70% correct on 20-command benchmark | Week 7-10 |
-| 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD | Week 11-13 |
-
-Each phase ends with a Gate Review — Go/No-Go decision before proceeding.
+- Read the [Code of Conduct](CODE_OF_CONDUCT.md) before opening issues or pull requests.
+- Use the provided issue and PR templates.
