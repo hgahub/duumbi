@@ -35,6 +35,10 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     check_branch_targets(graph, &mut diagnostics);
 
     // Ownership checks — only run if the graph contains ownership ops
+    // INVARIANT: This gate preserves backward compatibility with Phase 0–8 graphs.
+    // Phase 9a-2 graphs carry Alloc/Move/Borrow/Drop ops; older graphs do not.
+    // AI-AGENT: Do NOT remove this guard — it would break all pre-ownership-phase
+    // graphs with spurious E020–E029 errors.
     if super::ownership::has_ownership_ops(graph) {
         for func_info in &graph.functions {
             // Analyze once per function, pass result to all checks
@@ -49,6 +53,7 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     }
 
     // Result/Option safety checks (E030–E035) — only run if graph contains such ops
+    // AI-AGENT: Same backward-compat gate as above. Do NOT remove.
     if super::result_safety::has_result_option_ops(graph) {
         super::result_safety::check_result_option_safety(graph, &mut diagnostics);
     }

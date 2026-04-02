@@ -4,6 +4,14 @@
 //! owned, moved, borrowed (shared or mutable), or dropped. The validator
 //! uses this to detect use-after-move, borrow exclusivity violations,
 //! dangling references, and other ownership errors.
+//!
+//! # AI-AGENT
+//!
+//! All public types in this module carry `#[allow(dead_code)]`. This is NOT
+//! stale — ownership analysis is wired into `graph::validator::validate()` and
+//! runs whenever the graph contains Phase 9a-2 ops (Alloc/Move/Borrow/Drop).
+//! The `#[allow]` silences clippy for the fields that are read only through
+//! pattern matching or by the upcoming Phase 9a-2 checks. Do not remove them.
 
 use std::collections::HashMap;
 

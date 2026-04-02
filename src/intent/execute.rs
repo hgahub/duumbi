@@ -182,6 +182,11 @@ pub async fn run_execute_with_progress(
         }
 
         // Streaming callback collects LLM text chunks into the log buffer.
+        // AI-AGENT: Arc<Mutex<>> is intentional here — the closure passed to
+        // mutate_streaming() must be 'static + Send + Sync, so we cannot borrow
+        // `log` directly. The Mutex guards the chunk buffer; it is drained once
+        // after the await returns. Do NOT replace with a channel: we need the
+        // chunks collected in order AND accessible after the future completes.
         let log_clone = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log_tx = log_clone.clone();
         let result = orchestrator::mutate_streaming(
@@ -421,6 +426,7 @@ pub async fn run_execute_with_progress(
                 serde_json::from_str(&std::fs::read_to_string(&path)?)
                     .context("Failed to parse module for repair")?;
 
+            // AI-AGENT: Same Arc<Mutex> pattern as the main streaming callback above.
             let repair_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let repair_tx = repair_log.clone();
             let repair_result = orchestrator::mutate_streaming(

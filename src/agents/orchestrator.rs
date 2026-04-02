@@ -225,6 +225,10 @@ pub enum MutationOutcome {
 ///
 /// Returns an error if the LLM call fails, the patch cannot be applied, or
 /// validation still fails after all retries.
+// AI-AGENT: Prefer mutate_streaming() for all new callers — it surfaces
+// LLM reasoning in real time and is the path used by the CLI and intent engine.
+// mutate() is kept as a non-streaming fallback for tests and contexts where
+// a streaming callback cannot be provided.
 #[allow(dead_code)] // Public API — callers may use non-streaming variant
 pub async fn mutate(
     client: &dyn LlmProvider,
@@ -268,6 +272,10 @@ pub async fn mutate(
             let mut all_error_codes: Vec<String> =
                 last_diagnostics.iter().map(|d| d.code.clone()).collect();
 
+            // AI-AGENT: Every retry patch is applied to the ORIGINAL `source` graph,
+            // not to the previously-failed result. A failed patch can leave the graph
+            // in an inconsistent state, so we always give the LLM a clean baseline
+            // plus structured error feedback. Do NOT change `source` to `patched`.
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
@@ -387,6 +395,7 @@ pub async fn mutate_streaming(
             let mut all_error_codes: Vec<String> =
                 last_diagnostics.iter().map(|d| d.code.clone()).collect();
 
+            // AI-AGENT: Same as mutate() — retries always use the ORIGINAL `source`.
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
                 eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
