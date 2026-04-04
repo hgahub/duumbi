@@ -6,7 +6,7 @@
         "ghcr.io/devcontainers/features/github-cli:1": {},
         "ghcr.io/devcontainers/features/copilot-cli:1": {},
         "ghcr.io/devcontainers/features/node:1": {
-            "version": "22.22.2"
+            "version": "24.14.1"
         },
         "ghcr.io/devcontainers-extra/features/claude-code:1": {},
         "ghcr.io/stu-bell/devcontainer-features/open-code:0": {},
