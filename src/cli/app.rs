@@ -10,7 +10,7 @@ use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
-use tui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
 use crate::config::DuumbiConfig;
