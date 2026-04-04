@@ -12,7 +12,7 @@ use std::process;
 use anyhow::{Context, Result};
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::DuumbiConfig;
@@ -283,7 +283,7 @@ async fn handle_slash(
                 input_mode: None,
                 status_msg: None,
             };
-            textarea.move_cursor(tui_textarea::CursorMove::Head);
+            textarea.move_cursor(ratatui_textarea::CursorMove::Head);
             textarea.delete_line_by_end();
         }
 
