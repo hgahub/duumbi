@@ -429,15 +429,11 @@ impl ReplApp {
                     KeyCode::Esc => {
                         input_mode = None;
                     }
-                    KeyCode::Up => {
-                        if *step_sel > 0 {
-                            *step_sel -= 1;
-                        }
+                    KeyCode::Up if *step_sel > 0 => {
+                        *step_sel -= 1;
                     }
-                    KeyCode::Down => {
-                        if *step_sel < PROVIDER_KINDS.len() - 1 {
-                            *step_sel += 1;
-                        }
+                    KeyCode::Down if *step_sel < PROVIDER_KINDS.len() - 1 => {
+                        *step_sel += 1;
                     }
                     KeyCode::Enter => {
                         if let Some(kind) = parse_provider_kind_by_index(*step_sel) {
@@ -484,15 +480,11 @@ impl ReplApp {
                             KeyCode::Esc => {
                                 input_mode = Some(PanelInputMode::AddStep1Provider { selected: 0 });
                             }
-                            KeyCode::Up => {
-                                if *model_sel > 0 {
-                                    *model_sel -= 1;
-                                }
+                            KeyCode::Up if *model_sel > 0 => {
+                                *model_sel -= 1;
                             }
-                            KeyCode::Down => {
-                                if *model_sel < models.len().saturating_sub(1) {
-                                    *model_sel += 1;
-                                }
+                            KeyCode::Down if *model_sel < models.len().saturating_sub(1) => {
+                                *model_sel += 1;
                             }
                             KeyCode::Char('m') | KeyCode::Char('M') => {
                                 *manual_input = Some(String::new());
