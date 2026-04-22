@@ -1,0 +1,50 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-6",
+  "autoupdate": true,
+
+  "instructions": [
+    "CLAUDE.md",
+    "docs/architecture.md",
+    "docs/coding-conventions.md"
+  ],
+
+  "watcher": {
+    "ignore": [
+      "target/**",
+      "vendor/**",
+      "**/.git/**",
+      "cache/**",
+      "logs/**"
+    ]
+  },
+
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "skill": "allow",
+    "mcp__rust-tools__cargo-publish": "deny",
+    "mcp__rust-tools__cargo-remove": "deny",
+    "mcp__rust-tools__cargo-add": "ask"
+  },
+
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 10000
+  },
+
+  "mcp": {
+    "rust-tools": {
+      "type": "local",
+      "command": ["rust-mcp-server", "--workspace", "."]
+    },
+    "cratedocs": {
+      "type": "local",
+      "command": ["/Users/heizergabor/space/hgahub/rust-cargo-docs-rag-mcp/target/release/cratedocs", "stdio"]
+    }
+  }
+}

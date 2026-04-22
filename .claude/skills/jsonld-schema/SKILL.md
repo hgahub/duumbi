@@ -1,3 +1,9 @@
+---
+name: jsonld-schema
+description: Validate and edit DUUMBI JSON-LD files and core schema safely.
+compatibility: opencode
+---
+
 # DUUMBI JSON-LD Schema Skill
 
 ALWAYS use this skill when writing, editing, or validating `.jsonld` files
