@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
@@ -927,58 +927,113 @@ impl ReplApp {
 
     /// Renders the full terminal UI into `frame`.
     ///
-    /// Layout (top to bottom):
-    /// 1. Header bar (1 line)
-    /// 2. Output area (fills remaining space)
-    /// 3. Mode line (1 line)
-    /// 4. Top separator (1 line)
-    /// 5. Input line (1 line)
-    /// 6. Bottom separator (1 line)
-    /// 7. Status bar (1 line)
-    /// 8. Slash menu or interactive panel (0–N lines)
+    /// The screen uses an inset page layout: content fills the upper portion,
+    /// while a stable footer stack keeps mode, prompt, and status information
+    /// anchored near the bottom. Transient menus render as overlays so the
+    /// footer does not jump when assistance panels open.
     pub fn render(&self, frame: &mut Frame, textarea: &TextArea<'_>) {
-        let bottom_height = match &self.panel {
-            PanelState::None => {
-                let total = self.slash_matches.len();
-                let visible = total.min(Self::SLASH_MENU_VISIBLE) as u16;
-                // Extra line for the "N/M" indicator when there are more matches
-                if total > Self::SLASH_MENU_VISIBLE {
-                    visible + 1
-                } else {
-                    visible
+        let has_output = !self.output_lines.is_empty();
+        let show_card = self.show_tip && !has_output;
+        let outer = frame.area();
+        let page = Self::page_area(outer);
+        let card_height = if show_card {
+            if page.width >= 90 { 7u16 } else { 8u16 }
+        } else {
+            0
+        };
+        let input_height = if page.width >= 60 { 3u16 } else { 1u16 };
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1),            // header
+            Constraint::Length(1),            // spacer
+            Constraint::Length(card_height),  // empty-state
+            Constraint::Min(0),               // conversation
+            Constraint::Length(1),            // spacer before controls
+            Constraint::Length(1),            // mode row
+            Constraint::Length(1),            // separator
+            Constraint::Length(input_height), // prompt
+            Constraint::Length(1),            // separator
+            Constraint::Length(1),            // status row
+        ])
+        .split(page);
+
+        self.render_brand_header(frame, chunks[0]);
+        if card_height > 0 {
+            self.render_empty_state_card(frame, chunks[2]);
+        }
+        self.render_conversation_pane(frame, chunks[3]);
+        self.render_mode_strip(frame, chunks[5]);
+        self.render_hairline_with_dots(frame, chunks[6]);
+        self.render_prompt_well(frame, chunks[7], textarea);
+        self.render_hairline_with_dots(frame, chunks[8]);
+        self.render_status_dock(frame, chunks[9]);
+
+        if let Some(overlay_height) = self.overlay_height() {
+            let overlay_width = match &self.panel {
+                PanelState::None => page.width.saturating_sub(6).clamp(40, 96),
+                PanelState::ModelSelector { .. } => page.width.saturating_sub(4).clamp(52, 110),
+            };
+            let overlay_area = Self::overlay_rect(page, chunks[7], overlay_width, overlay_height);
+            match &self.panel {
+                PanelState::None => self.render_slash_menu(frame, overlay_area),
+                PanelState::ModelSelector {
+                    selected,
+                    input_mode,
+                    status_msg,
+                } => {
+                    self.render_model_panel(frame, overlay_area, *selected, input_mode, status_msg)
                 }
             }
-            PanelState::ModelSelector { input_mode, .. } => match input_mode {
-                Some(PanelInputMode::AddStep1Provider { .. }) => {
-                    // header + empty + N items
-                    (PROVIDER_KINDS.len() as u16) + 2
+        }
+    }
+
+    /// Returns the inset content page used for the main layout.
+    fn page_area(area: Rect) -> Rect {
+        let horizontal = match area.width {
+            0..=79 => 1,
+            80..=139 => 2,
+            _ => 3,
+        };
+        let vertical = if area.height >= 26 { 1 } else { 0 };
+        area.inner(Margin {
+            vertical,
+            horizontal,
+        })
+    }
+
+    /// Computes the height of the currently open overlay panel, if any.
+    fn overlay_height(&self) -> Option<u16> {
+        match &self.panel {
+            PanelState::None => {
+                let total = self.slash_matches.len();
+                if total == 0 {
+                    None
+                } else {
+                    let visible = total.min(Self::SLASH_MENU_VISIBLE) as u16;
+                    Some(if total > Self::SLASH_MENU_VISIBLE {
+                        visible + 3
+                    } else {
+                        visible + 2
+                    })
                 }
+            }
+            PanelState::ModelSelector { input_mode, .. } => Some(match input_mode {
+                Some(PanelInputMode::AddStep1Provider { .. }) => (PROVIDER_KINDS.len() as u16) + 4,
                 Some(PanelInputMode::AddStep2Model {
                     provider,
                     manual_input,
                     ..
                 }) => {
                     if manual_input.is_some() {
-                        // header + empty + input line
-                        3
+                        5
                     } else {
                         let models = recommended_models(provider);
-                        // header + empty + N items + empty + [M] hint
-                        (models.len() as u16) + 4
+                        (models.len() as u16) + 6
                     }
                 }
-                Some(PanelInputMode::AddStepAuthType { .. }) => {
-                    // header + empty + 2 options + empty + hint
-                    6
-                }
-                Some(PanelInputMode::AddStep3Key { .. }) => {
-                    // header + empty + model + env + empty + input + empty + hint
-                    8
-                }
-                Some(PanelInputMode::AddStep3Confirm { .. }) => {
-                    // title + empty + options
-                    3
-                }
+                Some(PanelInputMode::AddStepAuthType { .. }) => 8,
+                Some(PanelInputMode::AddStep3Key { .. }) => 10,
+                Some(PanelInputMode::AddStep3Confirm { .. }) => 5,
                 _ => {
                     let provider_count = self.config.effective_providers().len().max(1);
                     let input_line = if input_mode.is_some() { 1 } else { 0 };
@@ -992,55 +1047,21 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    // header + empty + providers + empty + status? + footer
-                    (provider_count as u16) + 4 + input_line + status_line
+                    (provider_count as u16) + 6 + input_line + status_line
                 }
-            },
-        };
-        let has_output = !self.output_lines.is_empty();
-        let show_card = self.show_tip && !has_output;
-        let card_height = if show_card { 5u16 } else { 0 };
-        let area_width = frame.area().width;
-        // Focus ring needs 3 rows (top + content + bottom border); narrow
-        // terminals collapse to a single-row prompt without a border.
-        let input_height = if area_width >= 60 { 3u16 } else { 1u16 };
-
-        // REPL-01..REPL-10 region order, top to bottom.
-        let chunks = Layout::vertical([
-            Constraint::Length(1),             // 0 REPL-01 brand header (always visible)
-            Constraint::Length(card_height),   // 1 REPL-02 empty-state card
-            Constraint::Min(0),                // 2 REPL-03 conversation pane (expanding)
-            Constraint::Length(1),             // 3 REPL-06 mode strip
-            Constraint::Length(1),             // 4 REPL-07 top hairline separator
-            Constraint::Length(input_height),  // 5 REPL-08 prompt well (with focus ring)
-            Constraint::Length(1),             // 6 REPL-09 bottom hairline separator
-            Constraint::Length(2),             // 7 REPL-10 status dock (label row + value row)
-            Constraint::Length(bottom_height), // 8 slash menu / model panel
-        ])
-        .split(frame.area());
-
-        self.render_brand_header(frame, chunks[0]);
-        if card_height > 0 {
-            self.render_empty_state_card(frame, chunks[1]);
+            }),
         }
-        self.render_conversation_pane(frame, chunks[2]);
-        self.render_mode_strip(frame, chunks[3]);
-        self.render_hairline_with_dots(frame, chunks[4]);
-        self.render_prompt_well(frame, chunks[5], textarea);
-        self.render_hairline_with_dots(frame, chunks[6]);
-        self.render_status_dock(frame, chunks[7]);
-        if bottom_height > 0 {
-            match &self.panel {
-                PanelState::None => self.render_slash_menu(frame, chunks[8]),
-                PanelState::ModelSelector {
-                    selected,
-                    input_mode,
-                    status_msg,
-                } => {
-                    self.render_model_panel(frame, chunks[8], *selected, input_mode, status_msg);
-                }
-            }
-        }
+    }
+
+    /// Returns an overlay rectangle anchored above the prompt well.
+    fn overlay_rect(page: Rect, anchor: Rect, width: u16, height: u16) -> Rect {
+        let width = width.min(page.width).max(1);
+        let height = height.min(page.height).max(1);
+        let x = page.x + page.width.saturating_sub(width) / 2;
+        let min_y = page.y.saturating_add(1);
+        let preferred_y = anchor.y.saturating_sub(height.saturating_add(1));
+        let y = preferred_y.max(min_y);
+        Rect::new(x, y, width, height)
     }
 
     // -----------------------------------------------------------------------
@@ -1056,70 +1077,131 @@ impl ReplApp {
             Span::raw(" "),
             Span::styled(format!("v{version}"), theme::version_badge()),
             Span::styled("  ·  ", theme::hairline()),
-            Span::styled("type /help", theme::helper()),
+            Span::styled("Type a request or ", theme::dock_value()),
+            Span::styled("/help", theme::helper()),
+            Span::styled(" for commands. ", theme::dock_value()),
             Span::raw("   "),
-            Span::styled(" Ctrl+D ", theme::keycap()),
+            Span::styled(" Ctrl ", theme::keycap()),
+            Span::styled(" + ", theme::hairline()),
+            Span::styled(" D ", theme::keycap()),
+            Span::styled(" to exit.", theme::dock_value()),
         ]);
 
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// REPL-02 — empty-state card with a rust ▌ left pillar.
-    ///
-    /// The card spans 5 rows: padding, badge, primary tip, secondary tip,
-    /// padding. The leftmost cell of every row is painted rust as a
-    /// vertical pillar; the rest of the row carries the content.
+    /// REPL-02 — inset empty-state card with examples and stronger onboarding.
     fn render_empty_state_card(&self, frame: &mut Frame, area: Rect) {
-        // Pillar | content split.
-        let cols = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
-        let pillar = cols[0];
-        let content = cols[1];
+        use ratatui::widgets::{Block, Borders, Padding};
 
-        // Paint a `▌` pillar in every row of the card.
-        for row in 0..pillar.height {
-            let cell = Rect::new(pillar.x, pillar.y + row, pillar.width, 1);
+        if area.width < 12 || area.height < 5 {
+            return;
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(2, 2, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        for row in area.y..area.bottom() {
             frame.render_widget(
-                Paragraph::new(Span::styled("\u{258C}", theme::chevron())),
-                cell,
+                Paragraph::new(Span::styled("│", theme::panel_accent())),
+                Rect::new(area.x, row, 1, 1),
             );
         }
 
-        // Card body — 5 lines mapping to rows 0..4 of `content`.
-        let (badge_text, primary, secondary) = if !self.has_workspace {
+        let (badge_text, heading, left_lines, right_lines) = if !self.has_workspace {
             (
-                " NO WORKSPACE ",
-                Line::from(vec![
-                    Span::styled("\u{203A} ", theme::chevron()),
-                    Span::styled("/init", theme::brand_word()),
-                    Span::styled("  initialise a new workspace here", theme::out_dim()),
-                ]),
-                Line::from(Span::styled(
-                    "  or run `duumbi --help` to see all commands",
+                " no workspace ",
+                "INITIALISE A WORKSPACE",
+                vec![
+                    Line::from(vec![
+                        Span::styled("/init", theme::brand_word()),
+                        Span::styled("  create a new DUUMBI workspace here", theme::dock_value()),
+                    ]),
+                    Line::from(vec![Span::styled(
+                        "or just run `duumbi init` in this folder",
+                        theme::out_dim(),
+                    )]),
+                ],
+                vec![Line::from(vec![Span::styled(
+                    "Once initialised, natural language requests work directly in the prompt.",
                     theme::out_dim(),
-                )),
+                )])],
             )
         } else {
             (
-                " EMPTY WORKSPACE ",
-                Line::from(vec![
-                    Span::styled("\u{203A} ", theme::chevron()),
-                    Span::styled("/intent create \"build a calculator\"", theme::brand_word()),
-                ]),
-                Line::from(Span::styled(
-                    "  or just describe what you want and press Enter",
+                " empty workspace ",
+                "TRY ONE OF THESE",
+                vec![
+                    Line::from(vec![
+                        Span::styled("/intent create", theme::brand_word()),
+                        Span::raw("  "),
+                        Span::styled(
+                            "\"Build a calculator with add and multiply\"",
+                            theme::dock_value(),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("or just type", theme::out_dim()),
+                        Span::raw("  "),
+                        Span::styled(
+                            "\"Add a function that adds two numbers\"",
+                            theme::dock_value(),
+                        ),
+                        Span::styled("  natural language works too", theme::out_dim()),
+                    ]),
+                ],
+                vec![Line::from(vec![Span::styled(
+                    "Use the prompt below for direct requests, or switch to intent mode when you want focused planning.",
                     theme::out_dim(),
-                )),
+                )])],
             )
         };
 
-        let body = vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(badge_text, theme::pill_rust())]),
-            Line::from(""),
-            primary,
-            secondary,
-        ];
-        frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), content);
+        if inner.width >= 70 {
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+            let header = Line::from(vec![
+                Span::styled(badge_text, theme::pill_outline()),
+                Span::raw("  "),
+                Span::styled(heading, theme::label_caps()),
+            ]);
+            frame.render_widget(Paragraph::new(header), rows[0]);
+
+            let cols = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
+                .split(rows[2]);
+            frame.render_widget(
+                Paragraph::new(left_lines).wrap(Wrap { trim: false }),
+                cols[0],
+            );
+            frame.render_widget(
+                Paragraph::new(right_lines).wrap(Wrap { trim: false }),
+                cols[1],
+            );
+        } else {
+            let body = vec![
+                Line::from(vec![
+                    Span::styled(badge_text, theme::pill_outline()),
+                    Span::raw("  "),
+                    Span::styled(heading, theme::label_caps()),
+                ]),
+                Line::from(""),
+                left_lines[0].clone(),
+                left_lines.get(1).cloned().unwrap_or_else(|| Line::from("")),
+                Line::from(""),
+                right_lines[0].clone(),
+            ];
+            frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
+        }
     }
 
     /// REPL-03 — scrollable conversation pane, bottom-aligned.
@@ -1186,7 +1268,7 @@ impl ReplApp {
         }
     }
 
-    /// REPL-06 — mode strip with pulsing dot, active mode label, intent slug.
+    /// REPL-06 — mode strip with shortcut hint, active mode pill, and intent label.
     fn render_mode_strip(&self, frame: &mut Frame, area: Rect) {
         let dot_glyph = Self::mode_dot_glyph();
         let mode_label = self.mode.label();
@@ -1199,29 +1281,27 @@ impl ReplApp {
             .map(|s| format!("[{s}]"))
             .unwrap_or_else(|| "—".to_string());
 
-        let hint_text = "Shift+Tab swap";
-        // Layout (left → right):
-        //   ● mode_label   intent <value>                       hint
-        //   ^^ ^^^^^^^^^   ^^^^^^^^^^^^^^^                      ^^^^
-        //   2  N           7+m                                  N
-        let left_len = 2 + mode_label.len() + 3 + intent_label.len() + intent_value.chars().count();
-        let right_len = hint_text.len();
+        let hint_prefix = 14usize;
+        let mode_len = 4 + mode_label.len();
+        let right_len = intent_label.len() + intent_value.chars().count();
+        let left_len = hint_prefix + mode_len;
         let padding = (area.width as usize).saturating_sub(left_len + right_len);
 
         let mut spans = vec![
-            Span::styled(dot_glyph, theme::mode_dot()),
+            Span::styled(" Shift ", theme::keycap()),
             Span::raw(" "),
-            Span::styled(mode_label, theme::mode_label()),
-            Span::raw("   "),
-            Span::styled(intent_label, theme::label_caps()),
+            Span::styled(" Tab ", theme::keycap()),
+            Span::styled(" switch mode  ", theme::mode_hint()),
+            Span::styled(format!(" {dot_glyph} {mode_label} "), theme::mode_pill()),
+            Span::raw("  "),
         ];
+        spans.push(Span::raw(" ".repeat(padding)));
+        spans.push(Span::styled(intent_label, theme::label_caps_inline()));
         if self.focused_intent.is_some() {
             spans.push(Span::styled(intent_value, theme::intent_slug()));
         } else {
             spans.push(Span::styled(intent_value, theme::out_dim()));
         }
-        spans.push(Span::raw(" ".repeat(padding)));
-        spans.push(Span::styled(hint_text, theme::mode_hint()));
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
@@ -1249,19 +1329,25 @@ impl ReplApp {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// REPL-08 — prompt input well with rust focus ring around the textarea.
+    /// REPL-08 — prompt input well with rust focus ring and placeholder.
     ///
     /// On terminals < 60 cols, the focus border is dropped and the prompt
     /// renders as a single line with a `› ` prefix.
     fn render_prompt_well(&self, frame: &mut Frame, area: Rect, textarea: &TextArea<'_>) {
         use ratatui::widgets::{Block, BorderType, Borders};
 
+        let is_empty = textarea.lines().iter().all(|line| line.is_empty());
+        let placeholder = match self.mode {
+            ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
+            ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
+        };
+
         if area.height >= 3 {
-            // Boxed input with rust focus ring (REPL-08 default).
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
-                .border_style(theme::focus_border());
+                .border_style(theme::focus_border())
+                .style(theme::panel_surface());
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
@@ -1272,8 +1358,13 @@ impl ReplApp {
                 chunks[0],
             );
             frame.render_widget(textarea, chunks[1]);
+            if is_empty {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(placeholder, theme::placeholder())),
+                    chunks[1],
+                );
+            }
         } else {
-            // Compact single-row fallback for narrow terminals.
             let chunks =
                 Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
             frame.render_widget(
@@ -1281,48 +1372,21 @@ impl ReplApp {
                 chunks[0],
             );
             frame.render_widget(textarea, chunks[1]);
+            if is_empty {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(placeholder, theme::placeholder())),
+                    chunks[1],
+                );
+            }
         }
     }
 
-    /// REPL-10 — two-row status dock (uppercase labels above values).
-    ///
-    /// Slots: TIME · WORKSPACE · CWD · ACTIVITY. The ACTIVITY slot is
-    /// blank when idle and shows the activity button when `working` is true
-    /// (rendered by [`Self::render_activity_button`]).
+    /// REPL-10 — compact single-row status dock.
     fn render_status_dock(&self, frame: &mut Frame, area: Rect) {
-        // Narrow-terminal fallback: single-row compact dock.
-        if area.height < 2 || area.width < 40 {
+        if area.width < 40 {
             self.render_compact_status(frame, area);
             return;
         }
-
-        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
-
-        // Four equal slots — labels and values share the same horizontal split.
-        let cols = Layout::horizontal([
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-        ])
-        .split(rows[0]);
-        let value_cols = Layout::horizontal([
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-        ])
-        .split(rows[1]);
-
-        // Label row.
-        for (i, label) in ["TIME", "WORKSPACE", "CWD", "ACTIVITY"].iter().enumerate() {
-            frame.render_widget(
-                Paragraph::new(Span::styled(*label, theme::label_caps())),
-                cols[i],
-            );
-        }
-
-        // Value row.
         let time_str = Local::now().format("%H:%M").to_string();
         let workspace_name = self
             .config
@@ -1336,27 +1400,33 @@ impl ReplApp {
             .unwrap_or_else(|_| self.workspace_root.clone())
             .display()
             .to_string();
-        let cwd_truncated = truncate_path(&cwd, value_cols[2].width.saturating_sub(1) as usize);
+        let prefix_len = 5 + time_str.len() + 3 + 10 + workspace_name.len() + 3 + 4;
+        let activity_len = if self.working { 13 } else { 0 };
+        let cwd_budget = area
+            .width
+            .saturating_sub((prefix_len + activity_len) as u16)
+            .max(12) as usize;
+        let cwd_truncated = truncate_path(&cwd, cwd_budget);
 
-        frame.render_widget(
-            Paragraph::new(Span::styled(time_str, theme::dock_value())),
-            value_cols[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                workspace_name.to_string(),
-                theme::workspace_value(),
-            )),
-            value_cols[1],
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(cwd_truncated, theme::dock_value())),
-            value_cols[2],
-        );
-
+        let mut spans = vec![
+            Span::styled("TIME ", theme::label_caps_inline()),
+            Span::styled(time_str, theme::dock_value()),
+            Span::raw("   "),
+            Span::styled("WORKSPACE ", theme::label_caps_inline()),
+            Span::styled(workspace_name.to_string(), theme::workspace_value()),
+            Span::raw("   "),
+            Span::styled("CWD ", theme::label_caps_inline()),
+            Span::styled(cwd_truncated, theme::dock_value()),
+        ];
         if self.working {
-            self.render_activity_button(frame, value_cols[3]);
+            let frame_idx = (Self::animation_now_ms() / 80) as usize;
+            let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
+            spans.push(Span::raw("   "));
+            spans.push(Span::styled("ACTIVITY ", theme::label_caps_inline()));
+            spans.push(Span::styled(format!("{glyph} working"), theme::chevron()));
         }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Compact single-row status fallback for narrow terminals.
@@ -1368,48 +1438,39 @@ impl ReplApp {
             .as_ref()
             .map(|w| w.name.as_str())
             .unwrap_or("unnamed");
-        let activity = if self.working { " ⠹ working" } else { "" };
+        let activity = if self.working { "  working" } else { "" };
         let line = Line::from(vec![
+            Span::styled("TIME ", theme::label_caps_inline()),
             Span::styled(time_str, theme::dock_value()),
             Span::raw("  "),
+            Span::styled("WORKSPACE ", theme::label_caps_inline()),
             Span::styled(workspace_name.to_string(), theme::workspace_value()),
-            Span::styled(activity.to_string(), theme::chevron()),
+            Span::styled(activity.to_string(), theme::out_dim()),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// Renders the rust-pill activity button shown in the ACTIVITY slot.
-    fn render_activity_button(&self, frame: &mut Frame, area: Rect) {
-        let frame_idx = (Self::animation_now_ms() / 80) as usize;
-        let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
-        // Pad to fill the slot so the rust background covers the entire pill.
-        let total = area.width as usize;
-        let label = format!(" {glyph} INTERRUPT \u{25A0} ");
-        let padded = if label.chars().count() < total {
-            format!(
-                "{label}{:width$}",
-                "",
-                width = total - label.chars().count()
-            )
-        } else {
-            label
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(padded, theme::pill_rust())),
-            area,
-        );
-    }
-
-    /// Renders the inline slash-command completion menu with scrolling.
+    /// Renders the inline slash-command completion menu as an overlay.
     ///
     /// The selected entry is highlighted with a cyan foreground; all others
     /// use the default terminal style. When the total number of matches
     /// exceeds [`Self::SLASH_MENU_VISIBLE`], a scroll indicator (e.g.
     /// `3/12`) is shown at the bottom.
     fn render_slash_menu(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
         if self.slash_matches.is_empty() {
             return;
         }
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
         let total = self.slash_matches.len();
         let visible = total.min(Self::SLASH_MENU_VISIBLE);
@@ -1419,7 +1480,7 @@ impl ReplApp {
         let row_areas = Layout::vertical(
             std::iter::repeat_n(Constraint::Length(1), row_count).collect::<Vec<_>>(),
         )
-        .split(area);
+        .split(inner);
 
         let offset = self.slash_scroll_offset;
         for (i, sm) in self
@@ -1470,13 +1531,26 @@ impl ReplApp {
         input_mode: &Option<PanelInputMode>,
         status_msg: &Option<(String, OutputStyle)>,
     ) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
         let providers = self.config.effective_providers();
         let mut lines: Vec<Line<'_>> = Vec::new();
+
+        let inner_width = inner.width as usize;
 
         // Header
         lines.push(Line::from(vec![
             Span::styled("  Select Model", theme::brand_word()),
-            Span::raw(" ".repeat(area.width.saturating_sub(40) as usize)),
+            Span::raw(" ".repeat(inner_width.saturating_sub(40))),
             Span::styled("(Esc to close)", theme::out_dim()),
         ]));
 
@@ -1544,7 +1618,7 @@ impl ReplApp {
                 lines.clear();
                 lines.push(Line::from(vec![
                     Span::styled("  Add Provider", theme::brand_word()),
-                    Span::raw(" ".repeat(area.width.saturating_sub(45) as usize)),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(45))),
                     Span::styled("(Esc to cancel)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
@@ -1571,7 +1645,7 @@ impl ReplApp {
                         format!("  Select Model for {provider}"),
                         theme::brand_word(),
                     ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(55) as usize)),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(55))),
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
@@ -1611,7 +1685,7 @@ impl ReplApp {
                         format!("  Authentication for {provider} ({model})"),
                         theme::brand_word(),
                     ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(60) as usize)),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(60))),
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
@@ -1655,7 +1729,7 @@ impl ReplApp {
                 lines.clear();
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {label} for {provider}"), theme::brand_word()),
-                    Span::raw(" ".repeat(area.width.saturating_sub(50) as usize)),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(50))),
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
@@ -1734,7 +1808,7 @@ impl ReplApp {
             }
         }
 
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
 

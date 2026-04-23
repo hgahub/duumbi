@@ -261,12 +261,45 @@ pub mod tui {
         Style::default().fg(col(HAIRLINE_DIM))
     }
 
+    /// Subtle panel surface used for inset cards and overlays.
+    #[must_use]
+    pub fn panel_surface() -> Style {
+        Style::default().bg(col(Color::Rgb(0x1a, 0x19, 0x17)))
+    }
+
+    /// Border colour for inset panels and cards.
+    #[must_use]
+    pub fn panel_border() -> Style {
+        Style::default().fg(col(HAIRLINE_DIM))
+    }
+
+    /// Rust accent used for the left edge of the empty-state card.
+    #[must_use]
+    pub fn panel_accent() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Outline pill used for mode badges and empty-state tags.
+    #[must_use]
+    pub fn pill_outline() -> Style {
+        Style::default()
+            .fg(col(RUST))
+            .bg(col(Color::Rgb(0x22, 0x1d, 0x19)))
+            .add_modifier(Modifier::BOLD)
+    }
+
     /// Uppercase status-dock labels ("TIME", "WORKSPACE", …).
     #[must_use]
     pub fn label_caps() -> Style {
         Style::default()
             .fg(col(HAIRLINE))
             .add_modifier(Modifier::DIM)
+    }
+
+    /// Inline uppercase labels for the single-row footer.
+    #[must_use]
+    pub fn label_caps_inline() -> Style {
+        Style::default().fg(col(HAIRLINE))
     }
 
     /// Bold rust for status-dock workspace name.
@@ -287,6 +320,14 @@ pub mod tui {
         Style::default()
             .fg(col(BLUE_MID))
             .add_modifier(Modifier::BOLD)
+    }
+
+    /// Placeholder text inside the prompt well.
+    #[must_use]
+    pub fn placeholder() -> Style {
+        Style::default()
+            .fg(col(HAIRLINE))
+            .add_modifier(Modifier::DIM)
     }
 
     // ---- Output buffer styles (replaces the inline OutputStyle match) -----
@@ -354,11 +395,12 @@ pub mod tui {
 
     // ---- Mode strip --------------------------------------------------------
 
-    /// Bold parchment for the active mode label.
+    /// Outlined blue pill for the active mode indicator.
     #[must_use]
-    pub fn mode_label() -> Style {
+    pub fn mode_pill() -> Style {
         Style::default()
-            .fg(col(PARCHMENT))
+            .fg(col(BLUE_INK))
+            .bg(col(Color::Rgb(0x1d, 0x23, 0x2c)))
             .add_modifier(Modifier::BOLD)
     }
 
@@ -424,10 +466,16 @@ mod tests {
         let _ = tui::focus_border();
         let _ = tui::hairline();
         let _ = tui::hairline_dim();
+        let _ = tui::panel_surface();
+        let _ = tui::panel_border();
+        let _ = tui::panel_accent();
+        let _ = tui::pill_outline();
         let _ = tui::label_caps();
+        let _ = tui::label_caps_inline();
         let _ = tui::workspace_value();
         let _ = tui::dock_value();
         let _ = tui::intent_slug();
+        let _ = tui::placeholder();
         let _ = tui::out_normal();
         let _ = tui::out_error();
         let _ = tui::out_success();
@@ -437,7 +485,8 @@ mod tests {
         let _ = tui::out_help_desc();
         let _ = tui::slash_selected();
         let _ = tui::slash_normal();
-        let _ = tui::mode_label();
+        let _ = tui::mode_pill();
+        let _ = tui::mode_pill();
         let _ = tui::mode_hint();
         let _ = tui::mode_dot();
     }
