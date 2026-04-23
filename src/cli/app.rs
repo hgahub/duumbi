@@ -87,6 +87,28 @@ fn default_auth_token_env(kind: &crate::config::ProviderKind) -> &'static str {
     }
 }
 
+/// Truncates a path string to fit within `max_chars` columns by inserting
+/// a single ellipsis (`…`) into the middle. Returns the original string
+/// when it already fits.
+///
+/// Operates on Unicode scalar values, not bytes, so multi-byte path
+/// segments are not split mid-character.
+#[must_use]
+fn truncate_path(path: &str, max_chars: usize) -> String {
+    let total: usize = path.chars().count();
+    if total <= max_chars || max_chars < 4 {
+        return path.to_string();
+    }
+    // Reserve one column for the ellipsis; split the remaining budget
+    // unevenly to favour the basename (right side).
+    let budget = max_chars - 1;
+    let right = (budget * 2) / 3;
+    let left = budget - right;
+    let head: String = path.chars().take(left).collect();
+    let tail: String = path.chars().skip(total - right).collect();
+    format!("{head}\u{2026}{tail}")
+}
+
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
     use crate::config::ProviderKind;
@@ -940,49 +962,46 @@ impl ReplApp {
             },
         };
         let has_output = !self.output_lines.is_empty();
-        let header_height = if has_output { 0u16 } else { 1u16 };
-        let mid_height = if self.show_tip && !has_output {
-            5u16 // 1 empty + 3 tip lines + 1 empty
-        } else {
-            0
-        };
+        let show_card = self.show_tip && !has_output;
+        let card_height = if show_card { 5u16 } else { 0 };
+        let area_width = frame.area().width;
+        // Focus ring needs 3 rows (top + content + bottom border); narrow
+        // terminals collapse to a single-row prompt without a border.
+        let input_height = if area_width >= 60 { 3u16 } else { 1u16 };
 
+        // REPL-01..REPL-10 region order, top to bottom.
         let chunks = Layout::vertical([
-            Constraint::Min(0),                // 0 output area
-            Constraint::Length(header_height), // 1 header (duumbi line, hidden when output present)
-            Constraint::Length(mid_height),    // 2 tip block
-            Constraint::Length(1),             // 3 empty spacer above mode line (always)
-            Constraint::Length(1),             // 4 mode line
-            Constraint::Length(1),             // 5 top separator
-            Constraint::Length(1),             // 6 input
-            Constraint::Length(1),             // 7 bottom separator
-            Constraint::Length(1),             // 8 status bar
-            Constraint::Length(bottom_height), // 9 bottom zone (slash menu OR panel)
+            Constraint::Length(1),             // 0 REPL-01 brand header (always visible)
+            Constraint::Length(card_height),   // 1 REPL-02 empty-state card
+            Constraint::Min(0),                // 2 REPL-03 conversation pane (expanding)
+            Constraint::Length(1),             // 3 REPL-06 mode strip
+            Constraint::Length(1),             // 4 REPL-07 top hairline separator
+            Constraint::Length(input_height),  // 5 REPL-08 prompt well (with focus ring)
+            Constraint::Length(1),             // 6 REPL-09 bottom hairline separator
+            Constraint::Length(2),             // 7 REPL-10 status dock (label row + value row)
+            Constraint::Length(bottom_height), // 8 slash menu / model panel
         ])
         .split(frame.area());
 
-        self.render_output(frame, chunks[0]);
-        if header_height > 0 {
-            self.render_header(frame, chunks[1]);
+        self.render_brand_header(frame, chunks[0]);
+        if card_height > 0 {
+            self.render_empty_state_card(frame, chunks[1]);
         }
-        if mid_height > 0 {
-            self.render_tip(frame, chunks[2]);
-        }
-        // chunks[3] is always an empty spacer line — no render needed
-        self.render_mode_line(frame, chunks[4]);
-        self.render_separator(frame, chunks[5]);
-        self.render_input(frame, chunks[6], textarea);
-        self.render_separator(frame, chunks[7]);
-        self.render_status_bar(frame, chunks[8]);
+        self.render_conversation_pane(frame, chunks[2]);
+        self.render_mode_strip(frame, chunks[3]);
+        self.render_hairline_with_dots(frame, chunks[4]);
+        self.render_prompt_well(frame, chunks[5], textarea);
+        self.render_hairline_with_dots(frame, chunks[6]);
+        self.render_status_dock(frame, chunks[7]);
         if bottom_height > 0 {
             match &self.panel {
-                PanelState::None => self.render_slash_menu(frame, chunks[9]),
+                PanelState::None => self.render_slash_menu(frame, chunks[8]),
                 PanelState::ModelSelector {
                     selected,
                     input_mode,
                     status_msg,
                 } => {
-                    self.render_model_panel(frame, chunks[9], *selected, input_mode, status_msg);
+                    self.render_model_panel(frame, chunks[8], *selected, input_mode, status_msg);
                 }
             }
         }
@@ -992,8 +1011,8 @@ impl ReplApp {
     // Individual render helpers
     // -----------------------------------------------------------------------
 
-    /// Renders the top header bar.
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-01 — brand header (always visible at the top).
+    fn render_brand_header(&self, frame: &mut Frame, area: Rect) {
         let version = env!("CARGO_PKG_VERSION");
 
         let line = Line::from(vec![
@@ -1009,45 +1028,69 @@ impl ReplApp {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// Renders the tip block (onboarding hint).
-    fn render_tip(&self, frame: &mut Frame, area: Rect) {
-        let tip = if !self.has_workspace {
-            // No .duumbi/ directory — suggest /init
-            vec![
-                Line::from(""),
+    /// REPL-02 — empty-state card with a rust ▌ left pillar.
+    ///
+    /// The card spans 5 rows: padding, badge, primary tip, secondary tip,
+    /// padding. The leftmost cell of every row is painted rust as a
+    /// vertical pillar; the rest of the row carries the content.
+    fn render_empty_state_card(&self, frame: &mut Frame, area: Rect) {
+        // Pillar | content split.
+        let cols = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
+        let pillar = cols[0];
+        let content = cols[1];
+
+        // Paint a `▌` pillar in every row of the card.
+        for row in 0..pillar.height {
+            let cell = Rect::new(pillar.x, pillar.y + row, pillar.width, 1);
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{258C}", theme::chevron())),
+                cell,
+            );
+        }
+
+        // Card body — 5 lines mapping to rows 0..4 of `content`.
+        let (badge_text, primary, secondary) = if !self.has_workspace {
+            (
+                " NO WORKSPACE ",
+                Line::from(vec![
+                    Span::styled("\u{203A} ", theme::chevron()),
+                    Span::styled("/init", theme::brand_word()),
+                    Span::styled("  initialise a new workspace here", theme::out_dim()),
+                ]),
                 Line::from(Span::styled(
-                    "Tip: No workspace found. Initialise one with:",
+                    "  or run `duumbi --help` to see all commands",
                     theme::out_dim(),
                 )),
-                Line::from(Span::styled("  /init", theme::chevron())),
-                Line::from(""),
-            ]
+            )
         } else {
-            // Empty workspace — suggest intent or direct mutation
-            vec![
-                Line::from(""),
+            (
+                " EMPTY WORKSPACE ",
+                Line::from(vec![
+                    Span::styled("\u{203A} ", theme::chevron()),
+                    Span::styled("/intent create \"build a calculator\"", theme::brand_word()),
+                ]),
                 Line::from(Span::styled(
-                    "Tip: This is an empty workspace. Try one of these:",
+                    "  or just describe what you want and press Enter",
                     theme::out_dim(),
                 )),
-                Line::from(Span::styled(
-                    "  /intent create  \"Build a calculator with add and multiply\"",
-                    theme::chevron(),
-                )),
-                Line::from(Span::styled(
-                    "  or type a request directly: \"Add a function that adds two numbers\"",
-                    theme::out_dim(),
-                )),
-            ]
+            )
         };
-        frame.render_widget(Paragraph::new(tip).wrap(Wrap { trim: false }), area);
+
+        let body = vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(badge_text, theme::pill_rust())]),
+            Line::from(""),
+            primary,
+            secondary,
+        ];
+        frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), content);
     }
 
-    /// Renders the scrollable output area, bottom-aligned.
+    /// REPL-03 — scrollable conversation pane, bottom-aligned.
     ///
     /// When `output_scroll_offset > 0`, the view shifts upward to show
     /// older lines. PageUp/PageDown control the offset.
-    fn render_output(&self, frame: &mut Frame, area: Rect) {
+    fn render_conversation_pane(&self, frame: &mut Frame, area: Rect) {
         let max_lines = area.height as usize;
         let total = self.output_lines.len();
         let bottom = total.saturating_sub(self.output_scroll_offset);
@@ -1092,22 +1135,8 @@ impl ReplApp {
         }
 
         frame.render_widget(Paragraph::new(lines), area);
-
-        // Animated spinner when an async operation is in progress.
-        if self.working {
-            let frame_idx = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                / 120) as usize;
-            let ch = Self::SPINNER[frame_idx % Self::SPINNER.len()];
-            let spinner = format!("{ch} Working…");
-            let y = area.bottom().saturating_sub(1);
-            frame.render_widget(
-                Paragraph::new(Span::styled(spinner, theme::chevron())),
-                Rect::new(area.x, y, 12, 1),
-            );
-        }
+        // The "Working…" spinner now lives in the status dock activity slot
+        // (see render_activity_button). No inline spinner overlay here.
 
         // Scroll indicator overlay when scrolled up.
         if self.output_scroll_offset > 0 {
@@ -1121,8 +1150,8 @@ impl ReplApp {
         }
     }
 
-    /// Renders the mode indicator line below the output area.
-    fn render_mode_line(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-06 — mode strip with active mode label and focused intent slug.
+    fn render_mode_strip(&self, frame: &mut Frame, area: Rect) {
         let hint = Span::styled("Shift+Tab switch mode", theme::mode_hint());
         let sep = Span::raw("  ");
         let mode_label = self.mode.label();
@@ -1148,73 +1177,182 @@ impl ReplApp {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    /// Renders a full-width horizontal separator line.
-    fn render_separator(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-07 / REPL-09 — hairline separator with rust dots at both edges.
+    ///
+    /// On terminals narrower than 4 columns, falls back to a plain dim line.
+    fn render_hairline_with_dots(&self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
-        let line_str = "─".repeat(width);
-        frame.render_widget(
-            Paragraph::new(Span::styled(line_str, theme::hairline_dim())),
-            area,
-        );
+        if width < 4 {
+            let line_str = "─".repeat(width);
+            frame.render_widget(
+                Paragraph::new(Span::styled(line_str, theme::hairline_dim())),
+                area,
+            );
+            return;
+        }
+        // Body: dim hairline between the two rust dots.
+        let body = "─".repeat(width.saturating_sub(2));
+        let line = Line::from(vec![
+            Span::styled("\u{2022}", theme::chevron()),
+            Span::styled(body, theme::hairline_dim()),
+            Span::styled("\u{2022}", theme::chevron()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// Renders the single-line text input with a `❯ ` prefix.
-    fn render_input(&self, frame: &mut Frame, area: Rect, textarea: &TextArea<'_>) {
-        let chunks = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
+    /// REPL-08 — prompt input well with rust focus ring around the textarea.
+    ///
+    /// On terminals < 60 cols, the focus border is dropped and the prompt
+    /// renders as a single line with a `› ` prefix.
+    fn render_prompt_well(&self, frame: &mut Frame, area: Rect, textarea: &TextArea<'_>) {
+        use ratatui::widgets::{Block, BorderType, Borders};
 
-        // Chevron prefix
-        frame.render_widget(
-            Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
-            chunks[0],
-        );
+        if area.height >= 3 {
+            // Boxed input with rust focus ring (REPL-08 default).
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(theme::focus_border());
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
 
-        // Textarea (implements Widget)
-        frame.render_widget(textarea, chunks[1]);
+            let chunks =
+                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(inner);
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
+                chunks[0],
+            );
+            frame.render_widget(textarea, chunks[1]);
+        } else {
+            // Compact single-row fallback for narrow terminals.
+            let chunks =
+                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
+                chunks[0],
+            );
+            frame.render_widget(textarea, chunks[1]);
+        }
     }
 
-    /// Renders the bottom status bar with time, workspace path, name, and model.
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-10 — two-row status dock (uppercase labels above values).
+    ///
+    /// Slots: TIME · WORKSPACE · CWD · ACTIVITY. The ACTIVITY slot is
+    /// blank when idle and shows the activity button when `working` is true
+    /// (rendered by [`Self::render_activity_button`]).
+    fn render_status_dock(&self, frame: &mut Frame, area: Rect) {
+        // Narrow-terminal fallback: single-row compact dock.
+        if area.height < 2 || area.width < 40 {
+            self.render_compact_status(frame, area);
+            return;
+        }
+
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+
+        // Four equal slots — labels and values share the same horizontal split.
+        let cols = Layout::horizontal([
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+        ])
+        .split(rows[0]);
+        let value_cols = Layout::horizontal([
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+        ])
+        .split(rows[1]);
+
+        // Label row.
+        for (i, label) in ["TIME", "WORKSPACE", "CWD", "ACTIVITY"].iter().enumerate() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(*label, theme::label_caps())),
+                cols[i],
+            );
+        }
+
+        // Value row.
         let time_str = Local::now().format("%H:%M").to_string();
-        let full_path = self
-            .workspace_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace_root.clone())
-            .display()
-            .to_string();
-
         let workspace_name = self
             .config
             .workspace
             .as_ref()
             .map(|w| w.name.as_str())
             .unwrap_or("unnamed");
+        let cwd = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace_root.clone())
+            .display()
+            .to_string();
+        let cwd_truncated = truncate_path(&cwd, value_cols[2].width.saturating_sub(1) as usize);
 
-        let model_str = {
-            let providers = self.config.effective_providers();
-            providers
-                .iter()
-                .find(|p| p.role == crate::config::ProviderRole::Primary)
-                .or(providers.first())
-                .map(|p| p.model.clone())
-                .unwrap_or_else(|| "no model".to_string())
-        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(time_str, theme::dock_value())),
+            value_cols[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                workspace_name.to_string(),
+                theme::workspace_value(),
+            )),
+            value_cols[1],
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(cwd_truncated, theme::dock_value())),
+            value_cols[2],
+        );
 
-        let right_str = format!("workspace: {workspace_name}  {model_str}");
-        let left_str = format!("{time_str}  {full_path}");
-        let width = area.width as usize;
-        let padding = width.saturating_sub(left_str.len() + right_str.len());
+        if self.working {
+            self.render_activity_button(frame, value_cols[3]);
+        }
+    }
 
-        let spans: Vec<Span<'_>> = vec![
-            Span::styled(format!("{time_str}  "), theme::out_dim()),
-            Span::styled(full_path, theme::dock_value()),
-            Span::raw(" ".repeat(padding)),
-            Span::styled("workspace: ", theme::label_caps()),
-            Span::styled(workspace_name.to_string(), theme::workspace_value()),
+    /// Compact single-row status fallback for narrow terminals.
+    fn render_compact_status(&self, frame: &mut Frame, area: Rect) {
+        let time_str = Local::now().format("%H:%M").to_string();
+        let workspace_name = self
+            .config
+            .workspace
+            .as_ref()
+            .map(|w| w.name.as_str())
+            .unwrap_or("unnamed");
+        let activity = if self.working { " ⠹ working" } else { "" };
+        let line = Line::from(vec![
+            Span::styled(time_str, theme::dock_value()),
             Span::raw("  "),
-            Span::styled(model_str, theme::version_badge()),
-        ];
+            Span::styled(workspace_name.to_string(), theme::workspace_value()),
+            Span::styled(activity.to_string(), theme::chevron()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
 
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    /// Renders the rust-pill activity button shown in the ACTIVITY slot.
+    fn render_activity_button(&self, frame: &mut Frame, area: Rect) {
+        let frame_idx = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 80) as usize;
+        let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
+        // Pad to fill the slot so the rust background covers the entire pill.
+        let total = area.width as usize;
+        let label = format!(" {glyph} INTERRUPT \u{25A0} ");
+        let padded = if label.chars().count() < total {
+            format!(
+                "{label}{:width$}",
+                "",
+                width = total - label.chars().count()
+            )
+        } else {
+            label
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(padded, theme::pill_rust())),
+            area,
+        );
     }
 
     /// Renders the inline slash-command completion menu with scrolling.
