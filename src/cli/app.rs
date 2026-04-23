@@ -104,6 +104,7 @@ use super::completion::SLASH_COMMANDS;
 use super::mode::{
     Action, OutputLine, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch,
 };
+use super::theme::tui as theme;
 
 // ---------------------------------------------------------------------------
 // Turn
@@ -996,17 +997,13 @@ impl ReplApp {
         let version = env!("CARGO_PKG_VERSION");
 
         let line = Line::from(vec![
-            Span::styled(
-                "duumbi",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" v{version}"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::raw(" · Type a request or /help for commands. Ctrl+D to exit."),
+            Span::styled("duumbi", theme::brand_word()),
+            Span::raw(" "),
+            Span::styled(format!("v{version}"), theme::version_badge()),
+            Span::styled("  ·  ", theme::hairline()),
+            Span::styled("type /help", theme::helper()),
+            Span::raw("   "),
+            Span::styled(" Ctrl+D ", theme::keycap()),
         ]);
 
         frame.render_widget(Paragraph::new(line), area);
@@ -1020,9 +1017,9 @@ impl ReplApp {
                 Line::from(""),
                 Line::from(Span::styled(
                     "Tip: No workspace found. Initialise one with:",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )),
-                Line::from(Span::styled("  /init", Style::default().fg(Color::Cyan))),
+                Line::from(Span::styled("  /init", theme::chevron())),
                 Line::from(""),
             ]
         } else {
@@ -1031,15 +1028,15 @@ impl ReplApp {
                 Line::from(""),
                 Line::from(Span::styled(
                     "Tip: This is an empty workspace. Try one of these:",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )),
                 Line::from(Span::styled(
                     "  /intent create  \"Build a calculator with add and multiply\"",
-                    Style::default().fg(Color::Cyan),
+                    theme::chevron(),
                 )),
                 Line::from(Span::styled(
                     "  or type a request directly: \"Add a function that adds two numbers\"",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )),
             ]
         };
@@ -1065,32 +1062,28 @@ impl ReplApp {
         for ol in visible {
             match ol.style {
                 OutputStyle::Help => {
-                    // Split at column 35: command in magenta, description in white.
+                    // Split at column 35: command in rust, description in parchment.
                     let text = &ol.text;
                     if text.len() > 35 {
                         let (cmd_part, desc_part) = text.split_at(35);
                         lines.push(Line::from(vec![
-                            Span::styled(cmd_part.to_string(), Style::default().fg(Color::Magenta)),
-                            Span::styled(desc_part.to_string(), Style::default().fg(Color::White)),
+                            Span::styled(cmd_part.to_string(), theme::out_help_cmd()),
+                            Span::styled(desc_part.to_string(), theme::out_help_desc()),
                         ]));
                     } else {
                         lines.push(Line::from(Span::styled(
                             text.clone(),
-                            Style::default().fg(Color::Magenta),
+                            theme::out_help_cmd(),
                         )));
                     }
                 }
                 _ => {
                     let style = match ol.style {
-                        OutputStyle::Normal => Style::default().fg(Color::White),
-                        OutputStyle::Error => {
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                        }
-                        OutputStyle::Success => Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                        OutputStyle::Dim => Style::default().fg(Color::Gray),
-                        OutputStyle::Ai => Style::default().fg(Color::Cyan),
+                        OutputStyle::Normal => theme::out_normal(),
+                        OutputStyle::Error => theme::out_error(),
+                        OutputStyle::Success => theme::out_success(),
+                        OutputStyle::Dim => theme::out_dim(),
+                        OutputStyle::Ai => theme::out_ai(),
                         OutputStyle::Help => unreachable!(),
                     };
                     lines.push(Line::from(Span::styled(ol.text.clone(), style)));
@@ -1109,12 +1102,9 @@ impl ReplApp {
                 / 120) as usize;
             let ch = Self::SPINNER[frame_idx % Self::SPINNER.len()];
             let spinner = format!("{ch} Working…");
-            let style = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
             let y = area.bottom().saturating_sub(1);
             frame.render_widget(
-                Paragraph::new(Span::styled(spinner, style)),
+                Paragraph::new(Span::styled(spinner, theme::chevron())),
                 Rect::new(area.x, y, 12, 1),
             );
         }
@@ -1122,11 +1112,10 @@ impl ReplApp {
         // Scroll indicator overlay when scrolled up.
         if self.output_scroll_offset > 0 {
             let indicator = format!(" \u{2191} {} lines above ", self.output_scroll_offset);
-            let style = Style::default().fg(Color::Gray);
             let x = area.right().saturating_sub(indicator.len() as u16);
             let indicator_area = Rect::new(x, area.y, indicator.len() as u16, 1);
             frame.render_widget(
-                Paragraph::new(Span::styled(indicator, style)),
+                Paragraph::new(Span::styled(indicator, theme::out_dim())),
                 indicator_area,
             );
         }
@@ -1134,13 +1123,10 @@ impl ReplApp {
 
     /// Renders the mode indicator line below the output area.
     fn render_mode_line(&self, frame: &mut Frame, area: Rect) {
-        let hint = Span::styled(
-            "Shift+Tab switch mode",
-            Style::default().add_modifier(Modifier::DIM),
-        );
+        let hint = Span::styled("Shift+Tab switch mode", theme::mode_hint());
         let sep = Span::raw("  ");
         let mode_label = self.mode.label();
-        let mode_span = Span::styled(mode_label, Style::default().fg(Color::Yellow));
+        let mode_span = Span::styled(mode_label, theme::mode_label());
 
         let right_text = if let Some(ref slug) = self.focused_intent {
             format!("[{slug}]")
@@ -1156,7 +1142,7 @@ impl ReplApp {
         let mut spans = vec![hint, sep, mode_span, Span::raw(" ".repeat(padding))];
 
         if !right_text.is_empty() {
-            spans.push(Span::styled(right_text, Style::default().fg(Color::Cyan)));
+            spans.push(Span::styled(right_text, theme::intent_slug()));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1167,10 +1153,7 @@ impl ReplApp {
         let width = area.width as usize;
         let line_str = "─".repeat(width);
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                line_str,
-                Style::default().add_modifier(Modifier::DIM),
-            )),
+            Paragraph::new(Span::styled(line_str, theme::hairline_dim())),
             area,
         );
     }
@@ -1181,7 +1164,7 @@ impl ReplApp {
 
         // Chevron prefix
         frame.render_widget(
-            Paragraph::new(Span::styled("❯ ", Style::default().fg(Color::Cyan))),
+            Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
             chunks[0],
         );
 
@@ -1222,19 +1205,13 @@ impl ReplApp {
         let padding = width.saturating_sub(left_str.len() + right_str.len());
 
         let spans: Vec<Span<'_>> = vec![
-            Span::styled(
-                format!("{time_str}  "),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::styled(full_path, Style::default().fg(Color::Green)),
+            Span::styled(format!("{time_str}  "), theme::out_dim()),
+            Span::styled(full_path, theme::dock_value()),
             Span::raw(" ".repeat(padding)),
-            Span::styled("workspace: ", Style::default().add_modifier(Modifier::DIM)),
-            Span::styled(
-                workspace_name.to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("workspace: ", theme::label_caps()),
+            Span::styled(workspace_name.to_string(), theme::workspace_value()),
             Span::raw("  "),
-            Span::styled(model_str, Style::default().fg(Color::Magenta)),
+            Span::styled(model_str, theme::version_badge()),
         ];
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1275,11 +1252,9 @@ impl ReplApp {
             let text = format!("{prefix}{:<20}  {}", sm.command, sm.description);
 
             let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::slash_selected()
             } else {
-                Style::default().add_modifier(Modifier::DIM)
+                theme::out_dim()
             };
 
             frame.render_widget(Paragraph::new(Span::styled(text, style)), row_areas[i]);
@@ -1295,7 +1270,7 @@ impl ReplApp {
                 (false, false) => "",
             };
             let indicator = format!("  {pos}/{total}{arrows}");
-            let style = Style::default().add_modifier(Modifier::DIM);
+            let style = theme::out_dim();
             frame.render_widget(
                 Paragraph::new(Span::styled(indicator, style)),
                 row_areas[visible],
@@ -1317,15 +1292,9 @@ impl ReplApp {
 
         // Header
         lines.push(Line::from(vec![
-            Span::styled(
-                "  Select Model",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  Select Model", theme::brand_word()),
             Span::raw(" ".repeat(area.width.saturating_sub(40) as usize)),
-            Span::styled(
-                "(Esc to close)",
-                Style::default().add_modifier(Modifier::DIM),
-            ),
+            Span::styled("(Esc to close)", theme::out_dim()),
         ]));
 
         // Empty line
@@ -1335,7 +1304,7 @@ impl ReplApp {
         if providers.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  No providers configured. Press [A] to add one.",
-                Style::default().add_modifier(Modifier::DIM),
+                theme::out_dim(),
             )));
         } else {
             for (i, p) in providers.iter().enumerate() {
@@ -1360,11 +1329,9 @@ impl ReplApp {
                 );
 
                 let style = if is_sel {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
+                    theme::slash_selected()
                 } else {
-                    Style::default().add_modifier(Modifier::DIM)
+                    theme::out_dim()
                 };
 
                 lines.push(Line::from(Span::styled(text, style)));
@@ -1378,36 +1345,24 @@ impl ReplApp {
         match input_mode {
             Some(PanelInputMode::AddProvider(buf)) => {
                 lines.push(Line::from(vec![
-                    Span::styled("  Add: ", Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        format!("{buf}\u{2588}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "  (provider model api_key_env)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("  Add: ", theme::out_help_cmd()),
+                    Span::styled(format!("{buf}\u{2588}"), theme::brand_word()),
+                    Span::styled("  (provider model api_key_env)", theme::out_dim()),
                 ]));
             }
             Some(PanelInputMode::ConfirmDelete) => {
                 lines.push(Line::from(Span::styled(
                     format!("  Delete provider #{}? [y/N]", selected + 1),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    theme::out_error(),
                 )));
             }
             Some(PanelInputMode::AddStep1Provider { selected: step_sel }) => {
                 // Replace entire panel with provider selection.
                 lines.clear();
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        "  Add Provider",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("  Add Provider", theme::brand_word()),
                     Span::raw(" ".repeat(area.width.saturating_sub(45) as usize)),
-                    Span::styled(
-                        "(Esc to cancel)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("(Esc to cancel)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
@@ -1415,11 +1370,9 @@ impl ReplApp {
                     let prefix = if is_sel { "  \u{25cf} " } else { "    " };
                     let text = format!("{prefix}{}. {:<14} {}", i + 1, name, desc);
                     let style = if is_sel {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
+                        theme::slash_selected()
                     } else {
-                        Style::default().add_modifier(Modifier::DIM)
+                        theme::out_dim()
                     };
                     lines.push(Line::from(Span::styled(text, style)));
                 }
@@ -1433,22 +1386,16 @@ impl ReplApp {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  Select Model for {provider}"),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        theme::brand_word(),
                     ),
                     Span::raw(" ".repeat(area.width.saturating_sub(55) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 if let Some(manual) = manual_input {
                     lines.push(Line::from(vec![
-                        Span::styled("  Model: ", Style::default().fg(Color::Cyan)),
-                        Span::styled(
-                            format!("{manual}\u{2588}"),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled("  Model: ", theme::out_help_cmd()),
+                        Span::styled(format!("{manual}\u{2588}"), theme::brand_word()),
                     ]));
                 } else {
                     let models = recommended_models(provider);
@@ -1457,18 +1404,16 @@ impl ReplApp {
                         let prefix = if is_sel { "  \u{25cf} " } else { "    " };
                         let text = format!("{prefix}{}. {:<30} {}", i + 1, name, desc);
                         let style = if is_sel {
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD)
+                            theme::slash_selected()
                         } else {
-                            Style::default().add_modifier(Modifier::DIM)
+                            theme::out_dim()
                         };
                         lines.push(Line::from(Span::styled(text, style)));
                     }
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "  [M] Enter model name manually",
-                        Style::default().add_modifier(Modifier::DIM),
+                        theme::out_dim(),
                     )));
                 }
             }
@@ -1481,13 +1426,10 @@ impl ReplApp {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  Authentication for {provider} ({model})"),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        theme::brand_word(),
                     ),
                     Span::raw(" ".repeat(area.width.saturating_sub(60) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 let options = [
@@ -1500,24 +1442,19 @@ impl ReplApp {
                 for (i, (label, hint)) in options.iter().enumerate() {
                     let marker = if i == *auth_sel { "> " } else { "  " };
                     let style = if i == *auth_sel {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
+                        theme::slash_selected()
                     } else {
-                        Style::default().add_modifier(Modifier::DIM)
+                        theme::out_dim()
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {marker}{label}"), style),
-                        Span::styled(
-                            format!("  \u{2014} {hint}"),
-                            Style::default().add_modifier(Modifier::DIM),
-                        ),
+                        Span::styled(format!("  \u{2014} {hint}"), theme::out_dim()),
                     ]));
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [\u{2191}/\u{2193}] Select  [Enter] Continue  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             Some(PanelInputMode::AddStep3Key {
@@ -1534,20 +1471,14 @@ impl ReplApp {
                 let key_set = std::env::var(env_name).is_ok();
                 lines.clear();
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {label} for {provider}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(format!("  {label} for {provider}"), theme::brand_word()),
                     Span::raw(" ".repeat(area.width.saturating_sub(50) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  Model: {model}"),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
                 let hint = if *is_subscription {
                     "  Tip: generate a token with `claude setup-token`"
@@ -1563,29 +1494,21 @@ impl ReplApp {
                             "\u{2717} not set \u{2014} enter below"
                         }
                     ),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
                 if !hint.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        hint,
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::DIM),
-                    )));
+                    lines.push(Line::from(Span::styled(hint, theme::label_caps())));
                 }
                 lines.push(Line::from(""));
                 let masked = "\u{25cf}".repeat(key_buf.len());
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label}: "), Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        format!("{masked}\u{2588}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(format!("  {label}: "), theme::out_help_cmd()),
+                    Span::styled(format!("{masked}\u{2588}"), theme::brand_word()),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [Enter] Continue  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             Some(PanelInputMode::AddStep3Confirm {
@@ -1602,32 +1525,28 @@ impl ReplApp {
                 lines.clear();
                 lines.push(Line::from(Span::styled(
                     format!("  Store {label} for {provider} ({model})?"),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    theme::brand_word(),
                 )));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [K] Save to ~/.duumbi/credentials.toml  [E] Session only  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             None => {
                 // Show status message if present (e.g. "Provider added").
                 if let Some((msg, style)) = status_msg {
                     let s = match style {
-                        OutputStyle::Success => Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                        OutputStyle::Error => {
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                        }
-                        _ => Style::default().add_modifier(Modifier::DIM),
+                        OutputStyle::Success => theme::out_success(),
+                        OutputStyle::Error => theme::out_error(),
+                        _ => theme::out_dim(),
                     };
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                     lines.push(Line::from(""));
                 }
                 lines.push(Line::from(Span::styled(
                     "  [A] Add  [D] Delete  [T] Toggle role  [Enter] Select primary",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
         }

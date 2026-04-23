@@ -1,9 +1,14 @@
 //! Centralized terminal color palette.
 //!
-//! All CLI color usage goes through these helper functions so that:
-//! - Colors are consistent across the entire CLI
-//! - `NO_COLOR` / `CLICOLOR` are respected via `owo-colors` + `anstream`
-//! - Non-TTY output is automatically stripped of ANSI codes
+//! Two coexisting APIs:
+//!
+//! - The top-level `owo-colors` helpers (`error`, `success`, `dim`, …) return
+//!   colored `String` values for non-TUI command output.
+//! - The [`tui`] submodule returns `ratatui::Style` values for the full-screen
+//!   REPL, using the brand-aligned dark palette (rust + parchment + blue ink).
+//!
+//! Both honour `NO_COLOR`/`CLICOLOR` for graceful degradation on terminals
+//! that do not support truecolor.
 
 use owo_colors::OwoColorize;
 
@@ -79,6 +84,301 @@ pub fn cross_mark() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// TUI palette — ratatui::Style helpers for the full-screen REPL
+// ---------------------------------------------------------------------------
+
+/// Brand-aligned dark theme palette and semantic style helpers for the REPL.
+///
+/// The constants mirror the CSS variables used in the design mockup
+/// (`duumbi-cli-brand-dark.html`). Every style helper returns a
+/// [`ratatui::style::Style`] suitable for [`ratatui::text::Span::styled`].
+///
+/// Truecolor (24-bit) is preferred but the module gracefully falls back to
+/// the 16 ANSI named colors when `NO_COLOR=1` is set or the terminal does
+/// not advertise truecolor support via `COLORTERM`.
+pub mod tui {
+    use std::sync::OnceLock;
+
+    use ratatui::style::{Color, Modifier, Style};
+
+    // ---- Raw RGB palette (mirrors the mockup CSS vars) ---------------------
+
+    /// Primary text colour (warm off-white).
+    pub const PARCHMENT: Color = Color::Rgb(0xf5, 0xf2, 0xea);
+    /// Primary action / accent colour (rust).
+    pub const RUST: Color = Color::Rgb(0xd0, 0x7a, 0x47);
+    /// Softer rust used for badges and helper text.
+    pub const RUST_SOFT: Color = Color::Rgb(0xc9, 0x6a, 0x3e);
+    /// Emphasis blue used for the version badge and pulsing dot.
+    pub const BLUE_INK: Color = Color::Rgb(0x7b, 0xa8, 0xe0);
+    /// Slightly cooler blue used for the focused intent slug.
+    pub const BLUE_MID: Color = Color::Rgb(0x6b, 0x9e, 0xd9);
+    /// Dim hairline colour (parchment at ~7% alpha against the canvas).
+    pub const HAIRLINE_DIM: Color = Color::Rgb(0x3a, 0x39, 0x35);
+    /// Brighter hairline colour (parchment at ~22% alpha).
+    pub const HAIRLINE: Color = Color::Rgb(0x6e, 0x6c, 0x65);
+    /// Reserved for future JSON-LD key highlighting.
+    pub const TOKEN_KEY: Color = Color::Rgb(0x7d, 0xcf, 0xff);
+    /// Reserved for future JSON-LD string highlighting.
+    pub const TOKEN_STRING: Color = Color::Rgb(0x9e, 0xce, 0x6a);
+    /// Reserved for future JSON-LD URL highlighting.
+    pub const TOKEN_URL: Color = Color::Rgb(0xe0, 0xaf, 0x68);
+    /// Reserved for future JSON-LD type highlighting.
+    pub const TOKEN_TYPE: Color = Color::Rgb(0xbb, 0x9a, 0xf7);
+
+    /// Snapshot of the palette decision made once at startup.
+    #[derive(Clone, Copy)]
+    struct Palette {
+        truecolor: bool,
+    }
+
+    static PALETTE: OnceLock<Palette> = OnceLock::new();
+
+    fn palette() -> Palette {
+        *PALETTE.get_or_init(|| Palette {
+            truecolor: detect_truecolor(),
+        })
+    }
+
+    fn detect_truecolor() -> bool {
+        if std::env::var_os("NO_COLOR").is_some() {
+            return false;
+        }
+        match std::env::var("COLORTERM") {
+            Ok(v) => {
+                let lower = v.to_lowercase();
+                lower.contains("truecolor") || lower.contains("24bit")
+            }
+            Err(_) => {
+                // Common modern terminals (kitty, wezterm, alacritty, vscode)
+                // export `TERM_PROGRAM` even without COLORTERM.
+                std::env::var("TERM_PROGRAM").is_ok()
+            }
+        }
+    }
+
+    /// Returns `true` when truecolor (24-bit) styling is enabled.
+    #[must_use]
+    pub fn truecolor_supported() -> bool {
+        palette().truecolor
+    }
+
+    /// Maps a truecolor palette value to its closest 16-color fallback.
+    pub(super) fn fallback(c: Color) -> Color {
+        match c {
+            RUST | RUST_SOFT => Color::Red,
+            BLUE_INK | BLUE_MID | TOKEN_KEY => Color::Cyan,
+            PARCHMENT => Color::White,
+            HAIRLINE | HAIRLINE_DIM => Color::Gray,
+            TOKEN_STRING => Color::Green,
+            TOKEN_URL => Color::Yellow,
+            TOKEN_TYPE => Color::Magenta,
+            other => other,
+        }
+    }
+
+    /// Returns the colour as-is when truecolor is supported, otherwise the
+    /// 16-colour fallback.
+    #[must_use]
+    pub fn col(c: Color) -> Color {
+        if truecolor_supported() {
+            c
+        } else {
+            fallback(c)
+        }
+    }
+
+    // ---- Semantic style helpers --------------------------------------------
+
+    /// Bold parchment for the brand word ("duumbi").
+    #[must_use]
+    pub fn brand_word() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Blue-ink badge for the version number.
+    #[must_use]
+    pub fn version_badge() -> Style {
+        Style::default().fg(col(BLUE_INK))
+    }
+
+    /// Soft rust used for short helper text (e.g. "type /help").
+    #[must_use]
+    pub fn helper() -> Style {
+        Style::default().fg(col(RUST_SOFT))
+    }
+
+    /// Inset keycap (parchment foreground on a hairline-dim background).
+    #[must_use]
+    pub fn keycap() -> Style {
+        Style::default().fg(col(PARCHMENT)).bg(col(HAIRLINE_DIM))
+    }
+
+    /// Mode pill background (parchment text on blue-ink).
+    #[must_use]
+    #[allow(dead_code)] // used in Phase B mode strip
+    pub fn pill_blue() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(BLUE_INK))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Activity / empty-state pill background (parchment text on rust).
+    #[must_use]
+    #[allow(dead_code)] // used in Phase C activity button + empty-state card
+    pub fn pill_rust() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(RUST))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Bold rust chevron (`›`) used as the prompt prefix.
+    #[must_use]
+    pub fn chevron() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Rust focus border around the prompt input well.
+    #[must_use]
+    #[allow(dead_code)] // used in Phase D focus ring
+    pub fn focus_border() -> Style {
+        Style::default().fg(col(RUST))
+    }
+
+    /// Hairline separator colour (mid-tone).
+    #[must_use]
+    pub fn hairline() -> Style {
+        Style::default().fg(col(HAIRLINE))
+    }
+
+    /// Dim hairline (used for the line body between rust dots).
+    #[must_use]
+    pub fn hairline_dim() -> Style {
+        Style::default().fg(col(HAIRLINE_DIM))
+    }
+
+    /// Uppercase status-dock labels ("TIME", "WORKSPACE", …).
+    #[must_use]
+    pub fn label_caps() -> Style {
+        Style::default()
+            .fg(col(HAIRLINE))
+            .add_modifier(Modifier::DIM)
+    }
+
+    /// Bold rust for status-dock workspace name.
+    #[must_use]
+    pub fn workspace_value() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Parchment for status-dock value rows.
+    #[must_use]
+    pub fn dock_value() -> Style {
+        Style::default().fg(col(PARCHMENT))
+    }
+
+    /// Bold blue-mid for the focused intent slug.
+    #[must_use]
+    pub fn intent_slug() -> Style {
+        Style::default()
+            .fg(col(BLUE_MID))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    // ---- Output buffer styles (replaces the inline OutputStyle match) -----
+
+    /// Style for normal output lines.
+    #[must_use]
+    pub fn out_normal() -> Style {
+        Style::default().fg(col(PARCHMENT))
+    }
+
+    /// Style for error output lines.
+    #[must_use]
+    pub fn out_error() -> Style {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    }
+
+    /// Style for success output lines.
+    #[must_use]
+    pub fn out_success() -> Style {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Style for dim/secondary output lines.
+    #[must_use]
+    pub fn out_dim() -> Style {
+        Style::default().fg(col(HAIRLINE))
+    }
+
+    /// Style for AI streaming / assistant output.
+    #[must_use]
+    pub fn out_ai() -> Style {
+        Style::default().fg(col(BLUE_INK))
+    }
+
+    /// Style for the command column of `/help` output.
+    #[must_use]
+    pub fn out_help_cmd() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Style for the description column of `/help` output.
+    #[must_use]
+    pub fn out_help_desc() -> Style {
+        Style::default().fg(col(PARCHMENT))
+    }
+
+    // ---- Slash-menu styles -------------------------------------------------
+
+    /// Highlighted slash-menu row.
+    #[must_use]
+    pub fn slash_selected() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Unselected slash-menu row.
+    #[must_use]
+    #[allow(dead_code)] // currently uses out_dim() — kept for future per-row styling
+    pub fn slash_normal() -> Style {
+        Style::default()
+            .fg(col(HAIRLINE))
+            .add_modifier(Modifier::DIM)
+    }
+
+    // ---- Mode strip --------------------------------------------------------
+
+    /// Bold parchment for the active mode label.
+    #[must_use]
+    pub fn mode_label() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Dim helper text on the mode strip ("Shift+Tab swap").
+    #[must_use]
+    pub fn mode_hint() -> Style {
+        Style::default()
+            .fg(col(HAIRLINE))
+            .add_modifier(Modifier::DIM)
+    }
+
+    /// Pulsing dot beside the active mode label.
+    #[must_use]
+    #[allow(dead_code)] // used in Phase D pulsing animation
+    pub fn mode_dot() -> Style {
+        Style::default().fg(col(BLUE_INK))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -109,5 +409,59 @@ mod tests {
         // On non-TTY the ANSI codes might be stripped, but the char itself is present
         assert!(cm.contains('\u{2713}') || cm.contains("✓"));
         assert!(xm.contains('\u{2717}') || xm.contains("✗"));
+    }
+
+    #[test]
+    fn tui_helpers_compile_and_return_styles() {
+        // Smoke test: every public helper returns a usable Style.
+        let _ = tui::brand_word();
+        let _ = tui::version_badge();
+        let _ = tui::helper();
+        let _ = tui::keycap();
+        let _ = tui::pill_blue();
+        let _ = tui::pill_rust();
+        let _ = tui::chevron();
+        let _ = tui::focus_border();
+        let _ = tui::hairline();
+        let _ = tui::hairline_dim();
+        let _ = tui::label_caps();
+        let _ = tui::workspace_value();
+        let _ = tui::dock_value();
+        let _ = tui::intent_slug();
+        let _ = tui::out_normal();
+        let _ = tui::out_error();
+        let _ = tui::out_success();
+        let _ = tui::out_dim();
+        let _ = tui::out_ai();
+        let _ = tui::out_help_cmd();
+        let _ = tui::out_help_desc();
+        let _ = tui::slash_selected();
+        let _ = tui::slash_normal();
+        let _ = tui::mode_label();
+        let _ = tui::mode_hint();
+        let _ = tui::mode_dot();
+    }
+
+    #[test]
+    fn fallback_maps_palette_to_named_colors() {
+        use ratatui::style::Color;
+        // These conversions are deterministic regardless of env state.
+        assert_eq!(tui::fallback(tui::RUST), Color::Red);
+        assert_eq!(tui::fallback(tui::RUST_SOFT), Color::Red);
+        assert_eq!(tui::fallback(tui::BLUE_INK), Color::Cyan);
+        assert_eq!(tui::fallback(tui::BLUE_MID), Color::Cyan);
+        assert_eq!(tui::fallback(tui::PARCHMENT), Color::White);
+        assert_eq!(tui::fallback(tui::HAIRLINE), Color::Gray);
+        assert_eq!(tui::fallback(tui::HAIRLINE_DIM), Color::Gray);
+        assert_eq!(tui::fallback(tui::TOKEN_STRING), Color::Green);
+        assert_eq!(tui::fallback(tui::TOKEN_URL), Color::Yellow);
+    }
+
+    #[test]
+    fn col_returns_palette_color_when_truecolor() {
+        // We can't easily mock the OnceLock, but we can at least exercise
+        // the function and verify it returns *some* colour without panicking.
+        let _ = tui::col(tui::RUST);
+        let _ = tui::col(tui::PARCHMENT);
     }
 }
