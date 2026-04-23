@@ -1898,6 +1898,97 @@ mod tests {
         assert_eq!(ReplApp::mode_dot_glyph(), "\u{25CF}");
     }
 
+    /// Returns the full buffer content for a rendered frame as a single
+    /// string (cells joined row by row, no separator). Used by the status
+    /// dock render tests to assert what the user actually sees.
+    fn render_to_string(width: u16, height: u16) -> (String, Vec<String>) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, textarea) = make_app();
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("invariant: test terminal");
+        terminal
+            .draw(|frame| app.render(frame, &textarea))
+            .expect("invariant: draw");
+        let cells = terminal.backend().buffer().content();
+        let joined: String = cells.iter().map(|c| c.symbol()).collect();
+        // Split by width to also get per-row dump for debugging.
+        let rows: Vec<String> = (0..height as usize)
+            .map(|r| {
+                cells[r * width as usize..(r + 1) * width as usize]
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect()
+            })
+            .collect();
+        let _ = &mut app;
+        let _ = &textarea;
+        (joined, rows)
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels_at_30_rows() {
+        let (_buf, rows) = render_to_string(120, 30);
+        let last_rows = rows.iter().rev().take(4).cloned().collect::<Vec<_>>();
+        let last_chunk = last_rows.join("\n");
+        assert!(
+            last_chunk.contains("time") && last_chunk.contains("workspace"),
+            "expected status-dock labels in the last rows; got:\n{last_chunk}"
+        );
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels_at_small_heights() {
+        // The status dock must render even when the terminal is short,
+        // because the Min(0) conversation pane should collapse first.
+        for h in [20u16, 22, 24, 28] {
+            let (_buf, rows) = render_to_string(120, h);
+            let last_rows = rows.iter().rev().take(5).cloned().collect::<Vec<_>>();
+            let last_chunk = last_rows.join("\n");
+            assert!(
+                last_chunk.contains("time") && last_chunk.contains("workspace"),
+                "h={h}: status-dock missing from last rows:\n{last_chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels() {
+        // Render a full frame into an in-memory buffer and verify the
+        // lowercase status-dock labels actually reach the buffer. If this
+        // ever fails silently, the status row has fallen out of the layout
+        // (e.g. from a bad constraint total or an errant early return).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, mut textarea) = make_app();
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("invariant: test terminal");
+        terminal
+            .draw(|frame| app.render(frame, &textarea))
+            .expect("invariant: draw");
+
+        let buf_dump = terminal.backend().buffer().content();
+        let rendered: String = buf_dump.iter().map(|c| c.symbol()).collect();
+
+        assert!(
+            rendered.contains("time"),
+            "status dock should render 'time' label; buffer:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("workspace"),
+            "status dock should render 'workspace' label"
+        );
+        assert!(
+            rendered.contains("cwd"),
+            "status dock should render 'cwd' label"
+        );
+
+        // Unused to silence the mut warning in case the test harness evolves.
+        let _ = &mut textarea;
+        let _ = &mut app;
+    }
+
     #[test]
     fn backtab_toggles_mode() {
         let (mut app, mut textarea) = make_app();

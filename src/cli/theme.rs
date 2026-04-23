@@ -320,9 +320,10 @@ pub mod tui {
     /// Inline uppercase labels for the single-row footer.
     #[must_use]
     pub fn label_caps_inline() -> Style {
-        Style::default()
-            .fg(col(HAIRLINE))
-            .add_modifier(Modifier::DIM)
+        // Use the brighter hairline without DIM so the labels remain
+        // perceptible against the warm canvas bg (DIM pushed the contrast
+        // ratio below WCAG AA on the #1a1a18 surface).
+        Style::default().fg(col(HAIRLINE))
     }
 
     /// Bold rust for status-dock workspace name.
