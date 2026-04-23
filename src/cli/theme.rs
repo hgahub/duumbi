@@ -105,6 +105,8 @@ pub mod tui {
 
     /// Primary text colour (warm off-white).
     pub const PARCHMENT: Color = Color::Rgb(0xf5, 0xf2, 0xea);
+    /// Global canvas background for the whole TUI.
+    pub const CANVAS_BG: Color = Color::Rgb(0x0f, 0x1f, 0x27);
     /// Primary action / accent colour (rust).
     pub const RUST: Color = Color::Rgb(0xd0, 0x7a, 0x47);
     /// Softer rust used for badges and helper text.
@@ -216,6 +218,12 @@ pub mod tui {
         Style::default().fg(col(PARCHMENT)).bg(col(HAIRLINE_DIM))
     }
 
+    /// Base canvas style used across the whole TUI.
+    #[must_use]
+    pub fn canvas() -> Style {
+        Style::default().bg(col(CANVAS_BG))
+    }
+
     /// Mode pill background (parchment text on blue-ink).
     #[must_use]
     #[allow(dead_code)] // used in Phase B mode strip
@@ -275,8 +283,15 @@ pub mod tui {
 
     /// Rust accent used for the left edge of the empty-state card.
     #[must_use]
+    #[allow(dead_code)] // kept for future glyph-style accents (currently using panel_accent_bar)
     pub fn panel_accent() -> Style {
         Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
+    /// Solid accent strip for the empty-state card.
+    #[must_use]
+    pub fn panel_accent_bar() -> Style {
+        Style::default().bg(col(RUST))
     }
 
     /// Outline pill used for mode badges and empty-state tags.
@@ -299,7 +314,9 @@ pub mod tui {
     /// Inline uppercase labels for the single-row footer.
     #[must_use]
     pub fn label_caps_inline() -> Style {
-        Style::default().fg(col(HAIRLINE))
+        Style::default()
+            .fg(col(HAIRLINE))
+            .add_modifier(Modifier::DIM)
     }
 
     /// Bold rust for status-dock workspace name.
@@ -312,6 +329,12 @@ pub mod tui {
     #[must_use]
     pub fn dock_value() -> Style {
         Style::default().fg(col(PARCHMENT))
+    }
+
+    /// Muted value style for dense footer rows.
+    #[must_use]
+    pub fn dock_value_muted() -> Style {
+        Style::default().fg(col(Color::Rgb(0xd9, 0xd4, 0xc8)))
     }
 
     /// Bold blue-mid for the focused intent slug.
@@ -460,6 +483,7 @@ mod tests {
         let _ = tui::version_badge();
         let _ = tui::helper();
         let _ = tui::keycap();
+        let _ = tui::canvas();
         let _ = tui::pill_blue();
         let _ = tui::pill_rust();
         let _ = tui::chevron();
@@ -469,11 +493,13 @@ mod tests {
         let _ = tui::panel_surface();
         let _ = tui::panel_border();
         let _ = tui::panel_accent();
+        let _ = tui::panel_accent_bar();
         let _ = tui::pill_outline();
         let _ = tui::label_caps();
         let _ = tui::label_caps_inline();
         let _ = tui::workspace_value();
         let _ = tui::dock_value();
+        let _ = tui::dock_value_muted();
         let _ = tui::intent_slug();
         let _ = tui::placeholder();
         let _ = tui::out_normal();

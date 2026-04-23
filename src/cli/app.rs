@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
@@ -232,12 +232,6 @@ impl ReplApp {
     /// Braille spinner frames for the working indicator (80 ms per frame).
     const SPINNER: &'static [char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-    /// Pulsing dot glyphs for the active mode indicator (2.6 s cycle).
-    const MODE_DOT_GLYPHS: &'static [&'static str] = &[" ", "\u{2219}", "\u{25CF}"];
-
-    /// Duration of one full pulse cycle for the mode dot, in milliseconds.
-    const MODE_DOT_CYCLE_MS: u128 = 2_600;
-
     // -----------------------------------------------------------------------
     // Animation
     // -----------------------------------------------------------------------
@@ -252,20 +246,22 @@ impl ReplApp {
             .as_millis()
     }
 
-    /// Returns the current pulsing-dot glyph for the active mode label.
+    /// Returns the static glyph for the active mode label.
+    ///
+    /// The dot is drawn solid and unchanging — pulsing felt distracting in
+    /// the user's terminal, so the animation was retired. The helper is kept
+    /// (rather than inlined) so re-introducing motion later is a one-line
+    /// change.
     fn mode_dot_glyph() -> &'static str {
-        let phase = (Self::animation_now_ms() % Self::MODE_DOT_CYCLE_MS) as f32
-            / Self::MODE_DOT_CYCLE_MS as f32;
-        let idx = (phase * Self::MODE_DOT_GLYPHS.len() as f32) as usize;
-        Self::MODE_DOT_GLYPHS[idx.min(Self::MODE_DOT_GLYPHS.len() - 1)]
+        "\u{25CF}"
     }
 
-    /// Returns `true` whenever the mode-dot animation should be redrawn.
-    /// Currently always animated; the wrapper exists so the event loop can
-    /// disable redraws for accessibility settings in the future.
+    /// Returns `true` whenever the mode-dot animation should drive a redraw.
+    /// Static dot now, so this is always `false` — only an active spinner
+    /// (`self.working`) keeps the event loop ticking.
     #[must_use]
     pub fn mode_dot_animated(&self) -> bool {
-        true
+        false
     }
 
     // -----------------------------------------------------------------------
@@ -932,6 +928,14 @@ impl ReplApp {
     /// anchored near the bottom. Transient menus render as overlays so the
     /// footer does not jump when assistance panels open.
     pub fn render(&self, frame: &mut Frame, textarea: &TextArea<'_>) {
+        // Two-pass canvas fill: outer frame area first (covers margins), then
+        // explicitly set the buffer style for every cell so subsequent
+        // Paragraph renders preserve the dark canvas background even on
+        // terminals that otherwise fall back to the default ANSI bg.
+        let area = frame.area();
+        frame.render_widget(Block::default().style(theme::canvas()), area);
+        frame.buffer_mut().set_style(area, theme::canvas());
+
         let has_output = !self.output_lines.is_empty();
         let show_card = self.show_tip && !has_output;
         let outer = frame.area();
@@ -1098,20 +1102,22 @@ impl ReplApp {
             return;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::panel_border())
-            .padding(Padding::new(2, 2, 1, 1))
-            .style(theme::panel_surface());
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let cols = Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).split(area);
+        let accent = cols[0];
+        let card_area = cols[1];
 
-        for row in area.y..area.bottom() {
-            frame.render_widget(
-                Paragraph::new(Span::styled("│", theme::panel_accent())),
-                Rect::new(area.x, row, 1, 1),
-            );
-        }
+        frame.render_widget(Block::default().style(theme::panel_accent_bar()), accent);
+
+        // Only top + bottom borders — the rust pillar on the left already
+        // visually anchors the card; a full border made the right edge feel
+        // too heavy in the rendered output.
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(2, 2, 0, 0))
+            .style(theme::panel_surface());
+        let inner = block.inner(card_area);
+        frame.render_widget(block, card_area);
 
         let (badge_text, heading, left_lines, right_lines) = if !self.has_workspace {
             (
@@ -1400,8 +1406,28 @@ impl ReplApp {
             .unwrap_or_else(|_| self.workspace_root.clone())
             .display()
             .to_string();
-        let prefix_len = 5 + time_str.len() + 3 + 10 + workspace_name.len() + 3 + 4;
-        let activity_len = if self.working { 13 } else { 0 };
+        // Lowercase labels feel "smaller" than uppercase in monospace fonts;
+        // paired with the dim hairline colour they recede visually so the
+        // values (workspace name, time) remain the read targets.
+        let lbl_time = "time";
+        let lbl_ws = "workspace";
+        let lbl_cwd = "cwd";
+        let lbl_activity = "activity";
+        let prefix_len = lbl_time.len()
+            + 1
+            + time_str.len()
+            + 3
+            + lbl_ws.len()
+            + 1
+            + workspace_name.len()
+            + 3
+            + lbl_cwd.len()
+            + 1;
+        let activity_len = if self.working {
+            lbl_activity.len() + 1 + 6 + 3
+        } else {
+            0
+        };
         let cwd_budget = area
             .width
             .saturating_sub((prefix_len + activity_len) as u16)
@@ -1409,24 +1435,30 @@ impl ReplApp {
         let cwd_truncated = truncate_path(&cwd, cwd_budget);
 
         let mut spans = vec![
-            Span::styled("TIME ", theme::label_caps_inline()),
-            Span::styled(time_str, theme::dock_value()),
+            Span::styled(format!("{lbl_time} "), theme::label_caps_inline()),
+            Span::styled(time_str, theme::dock_value_muted()),
             Span::raw("   "),
-            Span::styled("WORKSPACE ", theme::label_caps_inline()),
+            Span::styled(format!("{lbl_ws} "), theme::label_caps_inline()),
             Span::styled(workspace_name.to_string(), theme::workspace_value()),
             Span::raw("   "),
-            Span::styled("CWD ", theme::label_caps_inline()),
-            Span::styled(cwd_truncated, theme::dock_value()),
+            Span::styled(format!("{lbl_cwd} "), theme::label_caps_inline()),
+            Span::styled(cwd_truncated, theme::dock_value_muted()),
         ];
         if self.working {
             let frame_idx = (Self::animation_now_ms() / 80) as usize;
             let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
             spans.push(Span::raw("   "));
-            spans.push(Span::styled("ACTIVITY ", theme::label_caps_inline()));
-            spans.push(Span::styled(format!("{glyph} working"), theme::chevron()));
+            spans.push(Span::styled(
+                format!("{lbl_activity} "),
+                theme::label_caps_inline(),
+            ));
+            spans.push(Span::styled(format!("{glyph} work"), theme::chevron()));
         }
 
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(theme::canvas()),
+            area,
+        );
     }
 
     /// Compact single-row status fallback for narrow terminals.
@@ -1438,16 +1470,16 @@ impl ReplApp {
             .as_ref()
             .map(|w| w.name.as_str())
             .unwrap_or("unnamed");
-        let activity = if self.working { "  working" } else { "" };
+        let activity = if self.working { "  work" } else { "" };
         let line = Line::from(vec![
-            Span::styled("TIME ", theme::label_caps_inline()),
-            Span::styled(time_str, theme::dock_value()),
-            Span::raw("  "),
-            Span::styled("WORKSPACE ", theme::label_caps_inline()),
+            Span::styled("time ", theme::label_caps_inline()),
+            Span::styled(time_str, theme::dock_value_muted()),
+            Span::raw("   "),
+            Span::styled("workspace ", theme::label_caps_inline()),
             Span::styled(workspace_name.to_string(), theme::workspace_value()),
             Span::styled(activity.to_string(), theme::out_dim()),
         ]);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(line).style(theme::canvas()), area);
     }
 
     /// Renders the inline slash-command completion menu as an overlay.
@@ -1867,9 +1899,9 @@ mod tests {
     }
 
     #[test]
-    fn mode_dot_glyph_returns_known_value() {
-        let g = ReplApp::mode_dot_glyph();
-        assert!(ReplApp::MODE_DOT_GLYPHS.contains(&g));
+    fn mode_dot_glyph_returns_solid_circle() {
+        // Static dot now; only the solid bullet (U+25CF) is allowed.
+        assert_eq!(ReplApp::mode_dot_glyph(), "\u{25CF}");
     }
 
     #[test]
