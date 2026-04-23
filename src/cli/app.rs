@@ -937,12 +937,15 @@ impl ReplApp {
         let show_card = self.show_tip && !has_output;
         let outer = frame.area();
         let page = Self::page_area(outer);
+        let input_height = if page.width >= 60 { 3u16 } else { 1u16 };
+        // header(1) + spacer(1) + spacer-before-controls(1) + mode(1) + sep(1) + prompt + sep(1) + status(1)
+        let fixed_ui_rows: u16 = 8 + input_height;
         let card_height = if show_card {
-            if page.width >= 90 { 7u16 } else { 8u16 }
+            let desired = if page.width >= 90 { 7u16 } else { 8u16 };
+            desired.min(page.height.saturating_sub(fixed_ui_rows))
         } else {
             0
         };
-        let input_height = if page.width >= 60 { 3u16 } else { 1u16 };
 
         let chunks = Layout::vertical([
             Constraint::Length(1),            // header
@@ -1103,7 +1106,13 @@ impl ReplApp {
         let accent = cols[0];
         let card_area = cols[1];
 
-        frame.render_widget(Block::default().style(theme::panel_accent_bar()), accent);
+        // U+258F LEFT ONE EIGHTH BLOCK — narrow block char that fills the
+        // full cell height, so the bar stays continuous across rows even on
+        // terminals where the box-drawing │ leaves vertical gaps.
+        let bar_lines: Vec<Line<'_>> = (0..accent.height)
+            .map(|_| Line::from(Span::styled("\u{258F}", theme::panel_accent())))
+            .collect();
+        frame.render_widget(Paragraph::new(bar_lines), accent);
 
         // Only top + bottom borders — the rust pillar on the left already
         // visually anchors the card; a full border made the right edge feel

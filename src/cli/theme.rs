@@ -289,15 +289,8 @@ pub mod tui {
 
     /// Rust accent used for the left edge of the empty-state card.
     #[must_use]
-    #[allow(dead_code)] // kept for future glyph-style accents (currently using panel_accent_bar)
     pub fn panel_accent() -> Style {
         Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
-    }
-
-    /// Solid accent strip for the empty-state card.
-    #[must_use]
-    pub fn panel_accent_bar() -> Style {
-        Style::default().bg(col(RUST))
     }
 
     /// Outline pill used for mode badges and empty-state tags.
@@ -500,7 +493,6 @@ mod tests {
         let _ = tui::panel_surface();
         let _ = tui::panel_border();
         let _ = tui::panel_accent();
-        let _ = tui::panel_accent_bar();
         let _ = tui::pill_outline();
         let _ = tui::label_caps();
         let _ = tui::label_caps_inline();
