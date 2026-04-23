@@ -96,15 +96,27 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Drives the ratatui event loop until the user exits or an I/O error occurs.
+///
+/// Polls events on a 40 ms tick (a clean divisor of the 80 ms spinner
+/// frame). Redraws fire on three triggers: a real terminal event, an
+/// active animation (working spinner or pulsing mode dot), or the first
+/// iteration of the loop. When idle and no animation is running the
+/// terminal is left untouched, keeping CPU usage near zero.
 async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ReplApp,
     textarea: &mut TextArea<'_>,
 ) -> Result<()> {
-    loop {
-        terminal.draw(|frame| app.render(frame, textarea))?;
+    use std::time::{Duration, Instant};
 
-        if event::poll(std::time::Duration::from_millis(50))? {
+    const TICK: Duration = Duration::from_millis(40);
+    // Initial paint so the user sees the UI immediately.
+    terminal.draw(|frame| app.render(frame, textarea))?;
+    let mut last_draw = Instant::now();
+
+    loop {
+        let event_ready = event::poll(TICK)?;
+        if event_ready {
             match event::read()? {
                 Event::Key(key) => match app.handle_key(key, textarea) {
                     super::mode::Action::Continue => {}
@@ -113,13 +125,13 @@ async fn event_loop(
                             mgr.archive().ok();
                         }
                         app.push_output("Goodbye!", OutputStyle::Dim);
-                        // Draw one last frame so the farewell message is visible.
                         terminal.draw(|frame| app.render(frame, textarea))?;
                         break;
                     }
                     super::mode::Action::Submit(input) => {
                         app.working = true;
                         terminal.draw(|frame| app.render(frame, textarea))?;
+                        last_draw = Instant::now();
 
                         if process_input(terminal, app, textarea, &input).await {
                             if let Some(ref mut mgr) = app.session_mgr {
@@ -135,6 +147,12 @@ async fn event_loop(
                 }
                 _ => {}
             }
+        }
+
+        let needs_anim = app.working || app.mode_dot_animated();
+        if event_ready || (needs_anim && last_draw.elapsed() >= TICK) {
+            terminal.draw(|frame| app.render(frame, textarea))?;
+            last_draw = Instant::now();
         }
     }
     Ok(())

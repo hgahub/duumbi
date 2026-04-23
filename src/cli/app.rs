@@ -229,8 +229,44 @@ impl ReplApp {
         }
     }
 
-    /// Braille spinner frames for the working indicator.
+    /// Braille spinner frames for the working indicator (80 ms per frame).
     const SPINNER: &'static [char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    /// Pulsing dot glyphs for the active mode indicator (2.6 s cycle).
+    const MODE_DOT_GLYPHS: &'static [&'static str] = &[" ", "\u{2219}", "\u{25CF}"];
+
+    /// Duration of one full pulse cycle for the mode dot, in milliseconds.
+    const MODE_DOT_CYCLE_MS: u128 = 2_600;
+
+    // -----------------------------------------------------------------------
+    // Animation
+    // -----------------------------------------------------------------------
+
+    /// Returns the current monotonic-ish time in milliseconds since the
+    /// Unix epoch. Used as the source of truth for spinner and pulse phase
+    /// so that all animated widgets stay in sync within a single frame.
+    fn animation_now_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    }
+
+    /// Returns the current pulsing-dot glyph for the active mode label.
+    fn mode_dot_glyph() -> &'static str {
+        let phase = (Self::animation_now_ms() % Self::MODE_DOT_CYCLE_MS) as f32
+            / Self::MODE_DOT_CYCLE_MS as f32;
+        let idx = (phase * Self::MODE_DOT_GLYPHS.len() as f32) as usize;
+        Self::MODE_DOT_GLYPHS[idx.min(Self::MODE_DOT_GLYPHS.len() - 1)]
+    }
+
+    /// Returns `true` whenever the mode-dot animation should be redrawn.
+    /// Currently always animated; the wrapper exists so the event loop can
+    /// disable redraws for accessibility settings in the future.
+    #[must_use]
+    pub fn mode_dot_animated(&self) -> bool {
+        true
+    }
 
     // -----------------------------------------------------------------------
     // Key handling
@@ -1150,29 +1186,42 @@ impl ReplApp {
         }
     }
 
-    /// REPL-06 — mode strip with active mode label and focused intent slug.
+    /// REPL-06 — mode strip with pulsing dot, active mode label, intent slug.
     fn render_mode_strip(&self, frame: &mut Frame, area: Rect) {
-        let hint = Span::styled("Shift+Tab switch mode", theme::mode_hint());
-        let sep = Span::raw("  ");
+        let dot_glyph = Self::mode_dot_glyph();
         let mode_label = self.mode.label();
-        let mode_span = Span::styled(mode_label, theme::mode_label());
 
-        let right_text = if let Some(ref slug) = self.focused_intent {
-            format!("[{slug}]")
+        // Right-side intent indicator: "intent —" (empty) or "intent [slug]".
+        let intent_label = "intent ";
+        let intent_value: String = self
+            .focused_intent
+            .as_deref()
+            .map(|s| format!("[{s}]"))
+            .unwrap_or_else(|| "—".to_string());
+
+        let hint_text = "Shift+Tab swap";
+        // Layout (left → right):
+        //   ● mode_label   intent <value>                       hint
+        //   ^^ ^^^^^^^^^   ^^^^^^^^^^^^^^^                      ^^^^
+        //   2  N           7+m                                  N
+        let left_len = 2 + mode_label.len() + 3 + intent_label.len() + intent_value.chars().count();
+        let right_len = hint_text.len();
+        let padding = (area.width as usize).saturating_sub(left_len + right_len);
+
+        let mut spans = vec![
+            Span::styled(dot_glyph, theme::mode_dot()),
+            Span::raw(" "),
+            Span::styled(mode_label, theme::mode_label()),
+            Span::raw("   "),
+            Span::styled(intent_label, theme::label_caps()),
+        ];
+        if self.focused_intent.is_some() {
+            spans.push(Span::styled(intent_value, theme::intent_slug()));
         } else {
-            String::new()
-        };
-
-        let width = area.width as usize;
-        let left_len = "Shift+Tab switch mode".len() + 2 + mode_label.len();
-        let right_len = right_text.len();
-        let padding = width.saturating_sub(left_len + right_len);
-
-        let mut spans = vec![hint, sep, mode_span, Span::raw(" ".repeat(padding))];
-
-        if !right_text.is_empty() {
-            spans.push(Span::styled(right_text, theme::intent_slug()));
+            spans.push(Span::styled(intent_value, theme::out_dim()));
         }
+        spans.push(Span::raw(" ".repeat(padding)));
+        spans.push(Span::styled(hint_text, theme::mode_hint()));
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
@@ -1331,11 +1380,7 @@ impl ReplApp {
 
     /// Renders the rust-pill activity button shown in the ACTIVITY slot.
     fn render_activity_button(&self, frame: &mut Frame, area: Rect) {
-        let frame_idx = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            / 80) as usize;
+        let frame_idx = (Self::animation_now_ms() / 80) as usize;
         let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
         // Pad to fill the slot so the rust background covers the entire pill.
         let total = area.width as usize;
@@ -1722,6 +1767,35 @@ mod tests {
     fn new_starts_in_agent_mode() {
         let (app, _) = make_app();
         assert_eq!(app.mode, ReplMode::Agent);
+    }
+
+    #[test]
+    fn truncate_path_returns_input_when_short() {
+        assert_eq!(truncate_path("/a/b", 80), "/a/b");
+    }
+
+    #[test]
+    fn truncate_path_inserts_ellipsis() {
+        let p = "/Users/foo/space/hgahub/duumbi-cli-ux/target/debug/duumbi-binary";
+        let out = truncate_path(p, 30);
+        assert!(out.chars().count() <= 30);
+        assert!(out.contains('\u{2026}'));
+        // Tail should be preserved (it carries the most identifying suffix).
+        assert!(out.ends_with("ary"));
+    }
+
+    #[test]
+    fn truncate_path_handles_unicode() {
+        let p = "/föö/bär/baz/qüüx";
+        let out = truncate_path(p, 10);
+        assert!(out.chars().count() <= 10);
+        assert!(out.contains('\u{2026}'));
+    }
+
+    #[test]
+    fn mode_dot_glyph_returns_known_value() {
+        let g = ReplApp::mode_dot_glyph();
+        assert!(ReplApp::MODE_DOT_GLYPHS.contains(&g));
     }
 
     #[test]
