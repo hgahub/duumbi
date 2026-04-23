@@ -928,13 +928,10 @@ impl ReplApp {
     /// anchored near the bottom. Transient menus render as overlays so the
     /// footer does not jump when assistance panels open.
     pub fn render(&self, frame: &mut Frame, textarea: &TextArea<'_>) {
-        // Two-pass canvas fill: outer frame area first (covers margins), then
-        // explicitly set the buffer style for every cell so subsequent
-        // Paragraph renders preserve the dark canvas background even on
-        // terminals that otherwise fall back to the default ANSI bg.
-        let area = frame.area();
-        frame.render_widget(Block::default().style(theme::canvas()), area);
-        frame.buffer_mut().set_style(area, theme::canvas());
+        // Paint the canvas first. Every subsequent widget renders with its
+        // own style on top; Spans without an explicit `bg` preserve the
+        // canvas colour set here.
+        frame.render_widget(Block::default().style(theme::canvas()), frame.area());
 
         let has_output = !self.output_lines.is_empty();
         let show_card = self.show_tip && !has_output;
@@ -1455,10 +1452,7 @@ impl ReplApp {
             spans.push(Span::styled(format!("{glyph} work"), theme::chevron()));
         }
 
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)).style(theme::canvas()),
-            area,
-        );
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Compact single-row status fallback for narrow terminals.
@@ -1479,7 +1473,7 @@ impl ReplApp {
             Span::styled(workspace_name.to_string(), theme::workspace_value()),
             Span::styled(activity.to_string(), theme::out_dim()),
         ]);
-        frame.render_widget(Paragraph::new(line).style(theme::canvas()), area);
+        frame.render_widget(Paragraph::new(line), area);
     }
 
     /// Renders the inline slash-command completion menu as an overlay.

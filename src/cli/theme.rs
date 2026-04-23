@@ -105,8 +105,10 @@ pub mod tui {
 
     /// Primary text colour (warm off-white).
     pub const PARCHMENT: Color = Color::Rgb(0xf5, 0xf2, 0xea);
-    /// Global canvas background for the whole TUI.
-    pub const CANVAS_BG: Color = Color::Rgb(0x0f, 0x1f, 0x27);
+    /// Global canvas background for the whole TUI (matches the mockup
+    /// `--ink` canvas). Deliberately lightened slightly from pure black so
+    /// the brand tone is perceptible on every modern terminal.
+    pub const CANVAS_BG: Color = Color::Rgb(0x1a, 0x1a, 0x18);
     /// Primary action / accent colour (rust).
     pub const RUST: Color = Color::Rgb(0xd0, 0x7a, 0x47);
     /// Softer rust used for badges and helper text.
@@ -270,9 +272,13 @@ pub mod tui {
     }
 
     /// Subtle panel surface used for inset cards and overlays.
+    ///
+    /// Matches the canvas bg exactly so a card embedded in the main view
+    /// has no visible "stripe" where its background ends — only the rust
+    /// pillar and top/bottom hairline borders mark the card boundary.
     #[must_use]
     pub fn panel_surface() -> Style {
-        Style::default().bg(col(Color::Rgb(0x1a, 0x19, 0x17)))
+        Style::default().bg(col(CANVAS_BG))
     }
 
     /// Border colour for inset panels and cards.
