@@ -25,7 +25,7 @@ use super::app::{ReplApp, Turn};
 use super::commands;
 use super::mode::{OutputStyle, ReplMode};
 
-const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1006h";
+const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 // ---------------------------------------------------------------------------
@@ -1730,10 +1730,10 @@ mod tests {
     }
 
     #[test]
-    fn balanced_mouse_reporting_avoids_drag_modes() {
+    fn balanced_mouse_reporting_enables_app_drag_without_all_motion() {
         assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1000h"));
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1002h"));
         assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1006h"));
-        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1002h"));
         assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1003h"));
         assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1015h"));
 

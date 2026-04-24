@@ -147,6 +147,7 @@ pub struct Turn {
 #[derive(Debug, Clone)]
 struct ConversationVisualRow {
     line: Line<'static>,
+    plain_text: String,
     block_index: Option<usize>,
     menu_button_block: Option<usize>,
     menu_button_range: Option<(u16, u16)>,
@@ -154,6 +155,7 @@ struct ConversationVisualRow {
 
 #[derive(Debug, Clone)]
 struct VisibleConversationLayout {
+    start_index: usize,
     padding: usize,
     rows: Vec<ConversationVisualRow>,
 }
@@ -161,6 +163,39 @@ struct VisibleConversationLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ConversationActionMenu {
     block_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationSelectionPoint {
+    row: usize,
+    column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationTextSelection {
+    anchor: ConversationSelectionPoint,
+    focus: ConversationSelectionPoint,
+    dragged: bool,
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "clipboard stdin closed".to_string())?;
+    std::io::Write::write_all(stdin, text.as_bytes()).map_err(|e| e.to_string())?;
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(status.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +235,8 @@ pub struct ReplApp {
     selected_conversation_block: Option<usize>,
     /// Open action menu for a selected conversation user block.
     conversation_action_menu: Option<ConversationActionMenu>,
+    /// App-managed text selection inside the conversation pane.
+    conversation_text_selection: Option<ConversationTextSelection>,
     /// Selected row inside the open conversation action menu.
     conversation_action_selected: usize,
     /// Last rendered conversation pane rectangle, used for mouse hit testing.
@@ -265,6 +302,7 @@ impl ReplApp {
             current_output_block: None,
             selected_conversation_block: None,
             conversation_action_menu: None,
+            conversation_text_selection: None,
             conversation_action_selected: 0,
             last_conversation_area: Cell::new(None),
             output_scroll_offset: 0,
@@ -335,6 +373,8 @@ impl ReplApp {
         }
 
         match key.code {
+            KeyCode::Esc if self.conversation_text_selection.take().is_some() => Action::Continue,
+
             // Shift+Tab: toggle Agent ↔ Intent mode
             KeyCode::BackTab => {
                 self.mode = match self.mode {
@@ -468,8 +508,7 @@ impl ReplApp {
 
     /// Handles mouse events when the terminal delivers them.
     ///
-    /// The REPL enables only basic mouse reporting, avoiding drag-motion
-    /// capture so terminals can keep native text selection available.
+    /// Handles wheel scrolling, block clicks, and app-managed text selection.
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
         use crossterm::event::MouseEventKind;
         match mouse.kind {
@@ -482,7 +521,13 @@ impl ReplApp {
                 true
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_conversation_click(mouse.column, mouse.row)
+                self.handle_conversation_mouse_down(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.handle_conversation_mouse_drag(mouse.column, mouse.row)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.handle_conversation_mouse_up(mouse.column, mouse.row)
             }
             _ => false,
         }
@@ -1168,6 +1213,7 @@ impl ReplApp {
         self.current_output_block = None;
         self.selected_conversation_block = None;
         self.conversation_action_menu = None;
+        self.conversation_text_selection = None;
         self.output_scroll_offset = 0;
     }
 
@@ -1284,35 +1330,9 @@ impl ReplApp {
             return;
         };
 
-        match std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(mut child) => {
-                let write_result = child.stdin.as_mut().map_or_else(
-                    || {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::BrokenPipe,
-                            "stdin closed",
-                        ))
-                    },
-                    |stdin| std::io::Write::write_all(stdin, text.as_bytes()),
-                );
-                let wait_result = child.wait();
-                match (write_result, wait_result) {
-                    (Ok(()), Ok(status)) if status.success() => {
-                        self.push_feedback("Copied message.", OutputStyle::Success);
-                    }
-                    (Err(e), _) => {
-                        self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
-                    }
-                    (_, Ok(status)) => {
-                        self.push_feedback(format!("Copy failed: {status}"), OutputStyle::Error);
-                    }
-                    (_, Err(e)) => {
-                        self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
-                    }
-                }
+        match copy_text_to_clipboard(&text) {
+            Ok(()) => {
+                self.push_feedback("Copied message.", OutputStyle::Success);
             }
             Err(e) => {
                 self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
@@ -1399,6 +1419,81 @@ impl ReplApp {
         idx
     }
 
+    fn handle_conversation_mouse_down(&mut self, column: u16, row: u16) -> bool {
+        let Some(area) = self.last_conversation_area.get() else {
+            return false;
+        };
+
+        if let Some((menu_area, _)) = self.conversation_action_menu_rect(area)
+            && self.rect_contains(menu_area, column, row)
+        {
+            self.conversation_text_selection = None;
+            return self.handle_conversation_click(column, row);
+        }
+
+        let point = self.conversation_point_at(area, column, row);
+        self.conversation_text_selection = point.map(|anchor| ConversationTextSelection {
+            anchor,
+            focus: anchor,
+            dragged: false,
+        });
+        self.handle_conversation_click(column, row)
+    }
+
+    fn handle_conversation_mouse_drag(&mut self, column: u16, row: u16) -> bool {
+        let Some(area) = self.last_conversation_area.get() else {
+            return false;
+        };
+        let Some(focus) = self.conversation_point_at(area, column, row) else {
+            return false;
+        };
+        let Some(selection) = self.conversation_text_selection.as_mut() else {
+            self.conversation_text_selection = Some(ConversationTextSelection {
+                anchor: focus,
+                focus,
+                dragged: false,
+            });
+            return false;
+        };
+
+        selection.focus = focus;
+        selection.dragged = selection.anchor != focus;
+        selection.dragged
+    }
+
+    fn handle_conversation_mouse_up(&mut self, column: u16, row: u16) -> bool {
+        let Some(mut selection) = self.conversation_text_selection else {
+            return false;
+        };
+
+        if let Some(area) = self.last_conversation_area.get()
+            && let Some(focus) = self.conversation_point_at(area, column, row)
+        {
+            selection.focus = focus;
+            selection.dragged = selection.dragged || selection.anchor != focus;
+            self.conversation_text_selection = Some(selection);
+        }
+
+        if !selection.dragged {
+            self.conversation_text_selection = None;
+            return false;
+        }
+
+        let selected_text = self
+            .last_conversation_area
+            .get()
+            .and_then(|area| self.selected_conversation_text(area));
+        self.conversation_text_selection = None;
+
+        if let Some(text) = selected_text
+            && !text.trim().is_empty()
+            && let Err(e) = copy_text_to_clipboard(&text)
+        {
+            self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+        }
+        true
+    }
+
     fn handle_conversation_click(&mut self, column: u16, row: u16) -> bool {
         let Some(area) = self.last_conversation_area.get() else {
             return false;
@@ -1463,6 +1558,84 @@ impl ReplApp {
             self.conversation_action_menu = None;
         }
         true
+    }
+
+    fn conversation_point_at(
+        &self,
+        area: Rect,
+        column: u16,
+        row: u16,
+    ) -> Option<ConversationSelectionPoint> {
+        if !self.rect_contains(area, column, row) {
+            return None;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let relative_y = row.saturating_sub(area.y) as usize;
+        if relative_y < layout.padding {
+            return None;
+        }
+
+        let visible_row = relative_y - layout.padding;
+        let row_data = layout.rows.get(visible_row)?;
+        let max_column = row_data.plain_text.chars().count();
+        let column = column.saturating_sub(area.x) as usize;
+
+        Some(ConversationSelectionPoint {
+            row: layout.start_index + visible_row,
+            column: column.min(max_column),
+        })
+    }
+
+    fn selected_conversation_text(&self, area: Rect) -> Option<String> {
+        let selection = self.conversation_text_selection?;
+        let rows = if self.conversation_blocks.is_empty() {
+            self.legacy_output_rows()
+        } else {
+            self.conversation_visual_rows(area.width)
+        };
+        let (start, end) = Self::normalise_selection(selection);
+        if start.row >= rows.len() || end.row >= rows.len() {
+            return None;
+        }
+
+        let mut selected = Vec::new();
+        for (row_idx, row) in rows.iter().enumerate().take(end.row + 1).skip(start.row) {
+            let text_len = row.plain_text.chars().count();
+            let start_col = if row_idx == start.row {
+                start.column.min(text_len)
+            } else {
+                0
+            };
+            let end_col = if row_idx == end.row {
+                end.column.min(text_len)
+            } else {
+                text_len
+            };
+            let line = row
+                .plain_text
+                .chars()
+                .skip(start_col)
+                .take(end_col.saturating_sub(start_col))
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            selected.push(line);
+        }
+
+        Some(selected.join("\n"))
+    }
+
+    fn normalise_selection(
+        selection: ConversationTextSelection,
+    ) -> (ConversationSelectionPoint, ConversationSelectionPoint) {
+        if (selection.anchor.row, selection.anchor.column)
+            <= (selection.focus.row, selection.focus.column)
+        {
+            (selection.anchor, selection.focus)
+        } else {
+            (selection.focus, selection.anchor)
+        }
     }
 
     fn rect_contains(&self, rect: Rect, column: u16, row: u16) -> bool {
@@ -1764,7 +1937,13 @@ impl ReplApp {
         // Bottom-align: pad with empty lines above content so messages
         // appear just above the header, close to the prompt.
         let mut lines: Vec<Line<'_>> = (0..layout.padding).map(|_| Line::from("")).collect();
-        lines.extend(layout.rows.iter().map(|row| row.line.clone()));
+        lines.extend(
+            layout
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(idx, row)| self.conversation_row_line(row, layout.start_index + idx)),
+        );
 
         frame.render_widget(Paragraph::new(lines), area);
         // The "Working…" spinner now lives in the status dock activity slot
@@ -1796,7 +1975,59 @@ impl ReplApp {
         let start = bottom.saturating_sub(max_lines);
         let rows = all_rows[start..bottom].to_vec();
         let padding = max_lines.saturating_sub(rows.len());
-        VisibleConversationLayout { padding, rows }
+        VisibleConversationLayout {
+            start_index: start,
+            padding,
+            rows,
+        }
+    }
+
+    fn conversation_row_line(
+        &self,
+        row: &ConversationVisualRow,
+        row_index: usize,
+    ) -> Line<'static> {
+        let Some(selection) = self.conversation_text_selection else {
+            return row.line.clone();
+        };
+        if !selection.dragged {
+            return row.line.clone();
+        }
+
+        let (start, end) = Self::normalise_selection(selection);
+        if row_index < start.row || row_index > end.row {
+            return row.line.clone();
+        }
+
+        let text_len = row.plain_text.chars().count();
+        let start_col = if row_index == start.row {
+            start.column.min(text_len)
+        } else {
+            0
+        };
+        let end_col = if row_index == end.row {
+            end.column.min(text_len)
+        } else {
+            text_len
+        };
+        if start_col == end_col {
+            return row.line.clone();
+        }
+
+        let before = row.plain_text.chars().take(start_col).collect::<String>();
+        let selected = row
+            .plain_text
+            .chars()
+            .skip(start_col)
+            .take(end_col.saturating_sub(start_col))
+            .collect::<String>();
+        let after = row.plain_text.chars().skip(end_col).collect::<String>();
+
+        Line::from(vec![
+            Span::raw(before),
+            Span::styled(selected, theme::conversation_text_selection()),
+            Span::raw(after),
+        ])
     }
 
     fn render_conversation_action_menu(&self, frame: &mut Frame, area: Rect) {
@@ -1867,6 +2098,7 @@ impl ReplApp {
             .iter()
             .map(|ol| ConversationVisualRow {
                 line: Self::line_from_output(ol),
+                plain_text: ol.text.clone(),
                 block_index: None,
                 menu_button_block: None,
                 menu_button_range: None,
@@ -1880,6 +2112,7 @@ impl ReplApp {
             if !rows.is_empty() {
                 rows.push(ConversationVisualRow {
                     line: Line::from(""),
+                    plain_text: String::new(),
                     block_index: None,
                     menu_button_block: None,
                     menu_button_range: None,
@@ -1893,6 +2126,7 @@ impl ReplApp {
                     for ol in &block.lines {
                         rows.push(ConversationVisualRow {
                             line: Self::line_from_output(ol),
+                            plain_text: ol.text.clone(),
                             block_index: Some(idx),
                             menu_button_block: None,
                             menu_button_range: None,
@@ -1901,6 +2135,7 @@ impl ReplApp {
                     if let Some(elapsed) = &block.elapsed {
                         rows.push(ConversationVisualRow {
                             line: Line::from(Span::styled(elapsed.clone(), theme::out_dim())),
+                            plain_text: elapsed.clone(),
                             block_index: Some(idx),
                             menu_button_block: None,
                             menu_button_range: None,
@@ -1927,18 +2162,21 @@ impl ReplApp {
         let submitted_at = block.submitted_at.as_deref().unwrap_or("");
         let selected = self.selected_conversation_block == Some(block_index);
         let action_trigger = if selected { "..." } else { "" };
-        let (line, range) = self.user_panel_line(input, action_trigger, width, true, selected);
+        let (line, range, plain_text) =
+            self.user_panel_line(input, action_trigger, width, true, selected);
+        let (meta_line, _, meta_plain_text) =
+            self.user_panel_line(submitted_at, "", width, false, selected);
         vec![
             ConversationVisualRow {
                 line,
+                plain_text,
                 block_index: Some(block_index),
                 menu_button_block: selected.then_some(block_index),
                 menu_button_range: range,
             },
             ConversationVisualRow {
-                line: self
-                    .user_panel_line(submitted_at, "", width, false, selected)
-                    .0,
+                line: meta_line,
+                plain_text: meta_plain_text,
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
@@ -1953,7 +2191,7 @@ impl ReplApp {
         width: usize,
         strong: bool,
         selected: bool,
-    ) -> (Line<'static>, Option<(u16, u16)>) {
+    ) -> (Line<'static>, Option<(u16, u16)>, String) {
         let accent = "\u{258f} ";
         let right_len = right.chars().count();
         let left_budget = width
@@ -1996,14 +2234,16 @@ impl ReplApp {
             right_start.min(u16::MAX as usize) as u16,
             (right_start + right_len).min(u16::MAX as usize) as u16,
         ));
+        let plain_text = format!("{accent}{left_text}{}{right}", " ".repeat(fill));
         (
             Line::from(vec![
                 Span::styled(accent.to_string(), accent_style),
-                Span::styled(left_text, left_style),
+                Span::styled(left_text.clone(), left_style),
                 Span::styled(" ".repeat(fill), surface_style),
                 Span::styled(right.to_string(), right_style),
             ]),
             right_range,
+            plain_text,
         )
     }
 
@@ -2996,6 +3236,79 @@ mod tests {
 
         let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
         assert!(rendered.contains("Copy message"));
+    }
+
+    #[test]
+    fn conversation_drag_selection_collects_text() {
+        let (mut app, textarea) = make_app();
+        app.push_output("alpha beta gamma", OutputStyle::Normal);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("alpha beta gamma"))
+            .expect("output row must render") as u16;
+        let start_col = rows[row as usize]
+            .find("beta")
+            .expect("selection start must be findable") as u16;
+        let end_col = start_col + "beta".len() as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: start_col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(MouseButton::Left),
+            column: end_col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let area = app
+            .last_conversation_area
+            .get()
+            .expect("conversation area must be cached");
+        assert_eq!(
+            app.selected_conversation_text(area).as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn conversation_mouse_up_clears_drag_selection() {
+        let (mut app, textarea) = make_app();
+        app.push_output("alpha beta gamma", OutputStyle::Normal);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("alpha beta gamma"))
+            .expect("output row must render") as u16;
+        let col = rows[row as usize]
+            .find("beta")
+            .expect("selection point must be findable") as u16;
+        let area = app
+            .last_conversation_area
+            .get()
+            .expect("conversation area must be cached");
+        let point = app
+            .conversation_point_at(area, col, row)
+            .expect("point must map to conversation row");
+        app.conversation_text_selection = Some(ConversationTextSelection {
+            anchor: point,
+            focus: point,
+            dragged: true,
+        });
+
+        let redrew = app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(redrew);
+        assert!(app.conversation_text_selection.is_none());
     }
 
     #[test]

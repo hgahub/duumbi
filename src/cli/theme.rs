@@ -505,6 +505,15 @@ pub mod tui {
         Style::default().fg(col(RUST))
     }
 
+    /// Highlight used for app-managed mouse text selection.
+    #[must_use]
+    pub fn conversation_text_selection() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(Color::Rgb(0x36, 0x45, 0x58)))
+            .add_modifier(Modifier::BOLD)
+    }
+
     /// Unselected slash-menu row.
     #[must_use]
     #[allow(dead_code)] // currently uses out_dim() — kept for future per-row styling
@@ -612,6 +621,7 @@ mod tests {
         let _ = tui::slash_group();
         let _ = tui::conversation_user_text();
         let _ = tui::conversation_user_meta();
+        let _ = tui::conversation_text_selection();
         let _ = tui::slash_normal();
         let _ = tui::mode_pill();
         let _ = tui::mode_pill();
