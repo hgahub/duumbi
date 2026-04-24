@@ -4,6 +4,7 @@
 //! using ratatui. Key handling delegates to `handle_key` which returns an
 //! [`Action`] that the event loop acts on.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::Local;
@@ -122,9 +123,10 @@ fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKin
     }
 }
 
-use super::completion::SLASH_COMMANDS;
+use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
     Action, OutputLine, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch,
+    SlashMenuItem,
 };
 use super::theme::tui as theme;
 
@@ -174,6 +176,12 @@ pub struct ReplApp {
     pub output_scroll_offset: usize,
     /// All matching slash-command entries (untruncated).
     pub slash_matches: Vec<SlashMatch>,
+    /// Rows currently visible in the slash menu.
+    pub slash_rows: Vec<SlashMenuItem>,
+    /// Current slash-menu filter text.
+    pub slash_filter: String,
+    /// Expanded discovery groups for the current slash-menu session.
+    pub slash_expanded_groups: HashSet<SlashGroup>,
     /// Index of the highlighted entry in the slash menu.
     pub slash_selected: usize,
     /// Scroll offset for the slash menu (first visible row index).
@@ -191,8 +199,11 @@ pub struct ReplApp {
 }
 
 impl ReplApp {
+    /// Preferred minimum number of slash-menu rows when the terminal has room.
+    const SLASH_MENU_VISIBLE: usize = 7;
+
     /// Maximum number of slash-menu rows visible at once.
-    const SLASH_MENU_VISIBLE: usize = 5;
+    const SLASH_MENU_VISIBLE_MAX: usize = 12;
 
     /// Maximum number of lines kept in the output buffer.
     const OUTPUT_BUFFER_MAX: usize = 10_000;
@@ -220,6 +231,9 @@ impl ReplApp {
             output_lines: Vec::new(),
             output_scroll_offset: 0,
             slash_matches: Vec::new(),
+            slash_rows: Vec::new(),
+            slash_filter: String::new(),
+            slash_expanded_groups: HashSet::new(),
             slash_selected: 0,
             slash_scroll_offset: 0,
             show_tip,
@@ -288,26 +302,10 @@ impl ReplApp {
                 Action::Continue
             }
 
-            // Enter: if single slash match → execute directly; multi → accept into textarea; else submit
+            // Enter: execute selected slash command, expand discovery groups, or submit input.
             KeyCode::Enter => {
-                if self.slash_matches.len() == 1 {
-                    // Single match: execute it directly.
-                    let cmd = self.slash_matches[0].command.clone();
-                    textarea.move_cursor(CursorMove::Head);
-                    textarea.delete_line_by_end();
-                    self.slash_matches.clear();
-                    self.slash_selected = 0;
-                    return Action::Submit(cmd);
-                }
-                if !self.slash_matches.is_empty() {
-                    // Multiple matches: execute the highlighted command directly.
-                    let cmd = self.slash_matches[self.slash_selected].command.clone();
-                    textarea.move_cursor(CursorMove::Head);
-                    textarea.delete_line_by_end();
-                    self.slash_matches.clear();
-                    self.slash_selected = 0;
-                    self.slash_scroll_offset = 0;
-                    return Action::Submit(cmd);
+                if let Some(action) = self.activate_selected_slash_row(textarea) {
+                    return action;
                 }
 
                 let input: String = textarea.lines().join("\n");
@@ -324,7 +322,7 @@ impl ReplApp {
             }
 
             // Up: move slash menu selection up (scrolls window)
-            KeyCode::Up if !self.slash_matches.is_empty() => {
+            KeyCode::Up if !self.slash_rows.is_empty() => {
                 if self.slash_selected > 0 {
                     self.slash_selected -= 1;
                     if self.slash_selected < self.slash_scroll_offset {
@@ -335,8 +333,8 @@ impl ReplApp {
             }
 
             // Down: move slash menu selection down (scrolls window)
-            KeyCode::Down if !self.slash_matches.is_empty() => {
-                let max = self.slash_matches.len().saturating_sub(1);
+            KeyCode::Down if !self.slash_rows.is_empty() => {
+                let max = self.slash_rows.len().saturating_sub(1);
                 if self.slash_selected < max {
                     self.slash_selected += 1;
                     let visible = Self::SLASH_MENU_VISIBLE;
@@ -348,22 +346,33 @@ impl ReplApp {
             }
 
             // Tab: accept selected slash command without submitting
-            KeyCode::Tab if !self.slash_matches.is_empty() => {
-                let cmd = self.slash_matches[self.slash_selected].command.clone();
-                textarea.move_cursor(CursorMove::Head);
-                textarea.delete_line_by_end();
-                textarea.insert_str(&cmd);
-                self.slash_matches.clear();
-                self.slash_selected = 0;
-                self.slash_scroll_offset = 0;
+            KeyCode::Tab if !self.slash_rows.is_empty() => {
+                if let Some(cmd) = self.selected_slash_command() {
+                    textarea.move_cursor(CursorMove::Head);
+                    textarea.delete_line_by_end();
+                    textarea.insert_str(&cmd);
+                    self.clear_slash_menu();
+                } else {
+                    self.toggle_selected_slash_group();
+                }
+                Action::Continue
+            }
+
+            // Right: expand selected slash discovery group.
+            KeyCode::Right if !self.slash_rows.is_empty() => {
+                self.expand_selected_slash_group();
+                Action::Continue
+            }
+
+            // Left: collapse selected slash discovery group.
+            KeyCode::Left if !self.slash_rows.is_empty() => {
+                self.collapse_selected_slash_group();
                 Action::Continue
             }
 
             // Esc: dismiss slash menu
             KeyCode::Esc => {
-                self.slash_matches.clear();
-                self.slash_selected = 0;
-                self.slash_scroll_offset = 0;
+                self.clear_slash_menu();
                 Action::Continue
             }
 
@@ -879,20 +888,147 @@ impl ReplApp {
     /// populates `slash_matches` with all results. Clears matches when input
     /// does not start with `/`.
     pub fn update_slash_matches(&mut self, input: &str) {
-        if input.starts_with('/') {
+        if input.starts_with('/') && !input.contains('\n') {
+            let filter_changed = self.slash_filter != input;
+            let was_discovery = self.slash_filter == "/";
+            let is_discovery = input == "/";
+            if !was_discovery || !is_discovery {
+                self.slash_expanded_groups.clear();
+            }
+            self.slash_filter = input.to_string();
             self.slash_matches = SLASH_COMMANDS
                 .iter()
-                .filter(|(cmd, _)| cmd.starts_with(input) && *cmd != input)
-                .map(|(cmd, desc)| SlashMatch {
-                    command: (*cmd).to_string(),
-                    description: (*desc).to_string(),
+                .filter(|entry| entry.command.starts_with(input))
+                .map(|entry| SlashMatch {
+                    command: entry.command.to_string(),
+                    description: entry.description.to_string(),
+                    group: entry.group,
+                    matched_prefix_len: input.len().min(entry.command.len()),
                 })
                 .collect();
+            self.rebuild_slash_rows();
+            if filter_changed {
+                self.slash_selected = 0;
+                self.slash_scroll_offset = 0;
+            }
         } else {
-            self.slash_matches.clear();
+            self.clear_slash_menu();
         }
+        self.clamp_slash_selection();
+    }
+
+    fn clear_slash_menu(&mut self) {
+        self.slash_matches.clear();
+        self.slash_rows.clear();
+        self.slash_filter.clear();
+        self.slash_expanded_groups.clear();
         self.slash_selected = 0;
         self.slash_scroll_offset = 0;
+    }
+
+    fn rebuild_slash_rows(&mut self) {
+        if self.slash_filter == "/" {
+            let mut rows = Vec::new();
+            for group in SLASH_GROUPS {
+                let group_matches: Vec<SlashMatch> = self
+                    .slash_matches
+                    .iter()
+                    .filter(|sm| sm.group == *group)
+                    .cloned()
+                    .collect();
+                if group_matches.is_empty() {
+                    continue;
+                }
+                let expanded = self.slash_expanded_groups.contains(group);
+                rows.push(SlashMenuItem::Group {
+                    group: *group,
+                    count: group_matches.len(),
+                    expanded,
+                });
+                if expanded {
+                    rows.extend(group_matches.into_iter().map(SlashMenuItem::Command));
+                }
+            }
+            self.slash_rows = rows;
+        } else {
+            self.slash_rows = self
+                .slash_matches
+                .iter()
+                .cloned()
+                .map(SlashMenuItem::Command)
+                .collect();
+        }
+    }
+
+    fn clamp_slash_selection(&mut self) {
+        if self.slash_rows.is_empty() {
+            self.slash_selected = 0;
+            self.slash_scroll_offset = 0;
+            return;
+        }
+        self.slash_selected = self
+            .slash_selected
+            .min(self.slash_rows.len().saturating_sub(1));
+        if self.slash_scroll_offset > self.slash_selected {
+            self.slash_scroll_offset = self.slash_selected;
+        }
+        if self.slash_selected >= self.slash_scroll_offset + Self::SLASH_MENU_VISIBLE {
+            self.slash_scroll_offset = self.slash_selected + 1 - Self::SLASH_MENU_VISIBLE;
+        }
+    }
+
+    fn selected_slash_command(&self) -> Option<String> {
+        match self.slash_rows.get(self.slash_selected) {
+            Some(SlashMenuItem::Command(sm)) => Some(sm.command.clone()),
+            _ => None,
+        }
+    }
+
+    fn selected_slash_group(&self) -> Option<SlashGroup> {
+        match self.slash_rows.get(self.slash_selected) {
+            Some(SlashMenuItem::Group { group, .. }) => Some(*group),
+            _ => None,
+        }
+    }
+
+    fn activate_selected_slash_row(&mut self, textarea: &mut TextArea<'_>) -> Option<Action> {
+        if let Some(cmd) = self.selected_slash_command() {
+            textarea.move_cursor(CursorMove::Head);
+            textarea.delete_line_by_end();
+            self.clear_slash_menu();
+            return Some(Action::Submit(cmd));
+        }
+        if self.selected_slash_group().is_some() {
+            self.toggle_selected_slash_group();
+            return Some(Action::Continue);
+        }
+        None
+    }
+
+    fn toggle_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            if !self.slash_expanded_groups.remove(&group) {
+                self.slash_expanded_groups.insert(group);
+            }
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
+    }
+
+    fn expand_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            self.slash_expanded_groups.insert(group);
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
+    }
+
+    fn collapse_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            self.slash_expanded_groups.remove(&group);
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -938,8 +1074,8 @@ impl ReplApp {
         let outer = frame.area();
         let page = Self::page_area(outer);
         let input_height = if page.width >= 60 { 3u16 } else { 1u16 };
-        // header(1) + spacer(1) + spacer-before-controls(1) + mode(1) + sep(1) + prompt + sep(1) + status(1)
-        let fixed_ui_rows: u16 = 8 + input_height;
+        // header(1) + spacer(1) + spacer-before-controls(1) + mode(1) + prompt + status(1)
+        let fixed_ui_rows: u16 = 5 + input_height;
         let card_height = if show_card {
             let desired = if page.width >= 90 { 7u16 } else { 8u16 };
             desired.min(page.height.saturating_sub(fixed_ui_rows))
@@ -954,9 +1090,7 @@ impl ReplApp {
             Constraint::Min(0),               // conversation
             Constraint::Length(1),            // spacer before controls
             Constraint::Length(1),            // mode row
-            Constraint::Length(1),            // separator
             Constraint::Length(input_height), // prompt
-            Constraint::Length(1),            // separator
             Constraint::Length(1),            // status row
         ])
         .split(page);
@@ -967,24 +1101,24 @@ impl ReplApp {
         }
         self.render_conversation_pane(frame, chunks[3]);
         self.render_mode_strip(frame, chunks[5]);
-        self.render_hairline_with_dots(frame, chunks[6]);
-        self.render_prompt_well(frame, chunks[7], textarea);
-        self.render_hairline_with_dots(frame, chunks[8]);
-        self.render_status_dock(frame, chunks[9]);
+        self.render_prompt_well(frame, chunks[6], textarea);
+        self.render_status_dock(frame, chunks[7]);
 
-        if let Some(overlay_height) = self.overlay_height() {
-            let overlay_width = match &self.panel {
-                PanelState::None => page.width.saturating_sub(6).clamp(40, 96),
-                PanelState::ModelSelector { .. } => page.width.saturating_sub(4).clamp(52, 110),
-            };
-            let overlay_area = Self::overlay_rect(page, chunks[7], overlay_width, overlay_height);
-            match &self.panel {
-                PanelState::None => self.render_slash_menu(frame, overlay_area),
-                PanelState::ModelSelector {
-                    selected,
-                    input_mode,
-                    status_msg,
-                } => {
+        match &self.panel {
+            PanelState::None => {
+                if let Some(overlay_area) = self.slash_overlay_rect(page, chunks[6]) {
+                    self.render_slash_menu(frame, overlay_area);
+                }
+            }
+            PanelState::ModelSelector {
+                selected,
+                input_mode,
+                status_msg,
+            } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 110);
+                    let overlay_area =
+                        Self::overlay_rect(page, chunks[6], overlay_width, overlay_height);
                     self.render_model_panel(frame, overlay_area, *selected, input_mode, status_msg)
                 }
             }
@@ -1009,7 +1143,7 @@ impl ReplApp {
     fn overlay_height(&self) -> Option<u16> {
         match &self.panel {
             PanelState::None => {
-                let total = self.slash_matches.len();
+                let total = self.slash_rows.len();
                 if total == 0 {
                     None
                 } else {
@@ -1057,6 +1191,28 @@ impl ReplApp {
         }
     }
 
+    /// Returns a prompt-aligned slash menu rectangle directly above the prompt.
+    fn slash_overlay_rect(&self, page: Rect, anchor: Rect) -> Option<Rect> {
+        let total = self.slash_rows.len();
+        if total == 0 {
+            return None;
+        }
+
+        let available_above = anchor.y.saturating_sub(page.y);
+        if available_above < 5 {
+            return None;
+        }
+
+        let max_visible = available_above
+            .saturating_sub(4)
+            .max(1)
+            .min(Self::SLASH_MENU_VISIBLE_MAX as u16) as usize;
+        let visible = total.min(max_visible);
+        let height = (visible as u16).saturating_add(4).min(available_above);
+        let y = anchor.y.saturating_sub(height);
+        Some(Rect::new(page.x, y, page.width, height))
+    }
+
     /// Returns an overlay rectangle anchored above the prompt well.
     fn overlay_rect(page: Rect, anchor: Rect, width: u16, height: u16) -> Rect {
         let width = width.min(page.width).max(1);
@@ -1096,7 +1252,7 @@ impl ReplApp {
 
     /// REPL-02 — inset empty-state card with examples and stronger onboarding.
     fn render_empty_state_card(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::widgets::{Block, Borders, Padding};
+        use ratatui::widgets::{Block, Padding};
 
         if area.width < 12 || area.height < 5 {
             return;
@@ -1112,20 +1268,18 @@ impl ReplApp {
         let bar_lines: Vec<Line<'_>> = (0..accent.height)
             .map(|_| Line::from(Span::styled("\u{258F}", theme::panel_accent())))
             .collect();
-        frame.render_widget(Paragraph::new(bar_lines), accent);
+        frame.render_widget(
+            Paragraph::new(bar_lines).style(theme::panel_surface()),
+            accent,
+        );
 
-        // Only top + bottom borders — the rust pillar on the left already
-        // visually anchors the card; a full border made the right edge feel
-        // too heavy in the rendered output.
         let block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(theme::panel_border())
-            .padding(Padding::new(2, 2, 0, 0))
+            .padding(Padding::new(2, 2, 1, 1))
             .style(theme::panel_surface());
         let inner = block.inner(card_area);
         frame.render_widget(block, card_area);
 
-        let (badge_text, heading, left_lines, right_lines) = if !self.has_workspace {
+        let (badge_text, heading, example_lines) = if !self.has_workspace {
             (
                 " no workspace ",
                 "INITIALISE A WORKSPACE",
@@ -1139,10 +1293,6 @@ impl ReplApp {
                         theme::out_dim(),
                     )]),
                 ],
-                vec![Line::from(vec![Span::styled(
-                    "Once initialised, natural language requests work directly in the prompt.",
-                    theme::out_dim(),
-                )])],
             )
         } else {
             (
@@ -1164,56 +1314,27 @@ impl ReplApp {
                             "\"Add a function that adds two numbers\"",
                             theme::dock_value(),
                         ),
-                        Span::styled("  natural language works too", theme::out_dim()),
+                        Span::styled(" - natural language works too", theme::out_dim()),
                     ]),
                 ],
-                vec![Line::from(vec![Span::styled(
-                    "Use the prompt below for direct requests, or switch to intent mode when you want focused planning.",
-                    theme::out_dim(),
-                )])],
             )
         };
 
-        if inner.width >= 70 {
-            let rows = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(1),
-            ])
-            .split(inner);
-            let header = Line::from(vec![
+        let mut body = vec![
+            Line::from(vec![
                 Span::styled(badge_text, theme::pill_outline()),
                 Span::raw("  "),
                 Span::styled(heading, theme::label_caps()),
-            ]);
-            frame.render_widget(Paragraph::new(header), rows[0]);
-
-            let cols = Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
-                .split(rows[2]);
-            frame.render_widget(
-                Paragraph::new(left_lines).wrap(Wrap { trim: false }),
-                cols[0],
-            );
-            frame.render_widget(
-                Paragraph::new(right_lines).wrap(Wrap { trim: false }),
-                cols[1],
-            );
-        } else {
-            let body = vec![
-                Line::from(vec![
-                    Span::styled(badge_text, theme::pill_outline()),
-                    Span::raw("  "),
-                    Span::styled(heading, theme::label_caps()),
-                ]),
-                Line::from(""),
-                left_lines[0].clone(),
-                left_lines.get(1).cloned().unwrap_or_else(|| Line::from("")),
-                Line::from(""),
-                right_lines[0].clone(),
-            ];
-            frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
-        }
+            ]),
+            Line::from(""),
+        ];
+        body.extend(example_lines);
+        frame.render_widget(
+            Paragraph::new(body)
+                .style(theme::panel_surface())
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
     }
 
     /// REPL-03 — scrollable conversation pane, bottom-aligned.
@@ -1301,7 +1422,7 @@ impl ReplApp {
 
         let mut spans = vec![
             Span::styled(" Shift ", theme::keycap()),
-            Span::raw(" "),
+            Span::styled(" + ", theme::hairline()),
             Span::styled(" Tab ", theme::keycap()),
             Span::styled(" switch mode  ", theme::mode_hint()),
             Span::styled(format!(" {dot_glyph} {mode_label} "), theme::mode_pill()),
@@ -1316,29 +1437,6 @@ impl ReplApp {
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    }
-
-    /// REPL-07 / REPL-09 — hairline separator with rust dots at both edges.
-    ///
-    /// On terminals narrower than 4 columns, falls back to a plain dim line.
-    fn render_hairline_with_dots(&self, frame: &mut Frame, area: Rect) {
-        let width = area.width as usize;
-        if width < 4 {
-            let line_str = "─".repeat(width);
-            frame.render_widget(
-                Paragraph::new(Span::styled(line_str, theme::hairline_dim())),
-                area,
-            );
-            return;
-        }
-        // Body: dim hairline between the two rust dots.
-        let body = "─".repeat(width.saturating_sub(2));
-        let line = Line::from(vec![
-            Span::styled("\u{2022}", theme::chevron()),
-            Span::styled(body, theme::hairline_dim()),
-            Span::styled("\u{2022}", theme::chevron()),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
     }
 
     /// REPL-08 — prompt input well with rust focus ring and placeholder.
@@ -1486,15 +1584,10 @@ impl ReplApp {
     }
 
     /// Renders the inline slash-command completion menu as an overlay.
-    ///
-    /// The selected entry is highlighted with a cyan foreground; all others
-    /// use the default terminal style. When the total number of matches
-    /// exceeds [`Self::SLASH_MENU_VISIBLE`], a scroll indicator (e.g.
-    /// `3/12`) is shown at the bottom.
     fn render_slash_menu(&self, frame: &mut Frame, area: Rect) {
         use ratatui::widgets::{Block, Borders, Padding};
 
-        if self.slash_matches.is_empty() {
+        if self.slash_rows.is_empty() {
             return;
         }
 
@@ -1502,24 +1595,56 @@ impl ReplApp {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::panel_border())
-            .padding(Padding::new(1, 1, 1, 1))
+            .padding(Padding::new(1, 1, 0, 0))
             .style(theme::panel_surface());
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let total = self.slash_matches.len();
-        let visible = total.min(Self::SLASH_MENU_VISIBLE);
-        let has_indicator = total > Self::SLASH_MENU_VISIBLE;
-        let row_count = if has_indicator { visible + 1 } else { visible };
+        if inner.height < 3 {
+            return;
+        }
 
-        let row_areas = Layout::vertical(
-            std::iter::repeat_n(Constraint::Length(1), row_count).collect::<Vec<_>>(),
+        let header = if self.slash_filter == "/" {
+            Line::from(vec![
+                Span::styled("DISCOVER", theme::slash_group()),
+                Span::styled(
+                    format!(
+                        "  {} commands across {} groups",
+                        SLASH_COMMANDS.len(),
+                        SLASH_GROUPS.len()
+                    ),
+                    theme::dock_value(),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("FILTER", theme::slash_group()),
+                Span::styled("  matching ", theme::dock_value()),
+                Span::styled(self.slash_filter.as_str(), theme::keycap()),
+                Span::styled(
+                    format!("  {} matches", self.slash_matches.len()),
+                    theme::out_dim(),
+                ),
+            ])
+        };
+
+        let body_capacity = inner.height.saturating_sub(2) as usize;
+        let total = self.slash_rows.len();
+        let visible = total.min(body_capacity);
+        if visible == 0 {
+            return;
+        }
+        let offset = self.slash_scroll_offset.min(total.saturating_sub(1));
+
+        let rows = Layout::vertical(
+            std::iter::repeat_n(Constraint::Length(1), visible + 2).collect::<Vec<_>>(),
         )
         .split(inner);
 
-        let offset = self.slash_scroll_offset;
-        for (i, sm) in self
-            .slash_matches
+        frame.render_widget(Paragraph::new(header), rows[0]);
+
+        for (i, item) in self
+            .slash_rows
             .iter()
             .skip(offset)
             .take(visible)
@@ -1527,34 +1652,111 @@ impl ReplApp {
         {
             let abs_index = offset + i;
             let is_selected = abs_index == self.slash_selected;
-            let prefix = if is_selected { "> " } else { "  " };
-            let text = format!("{prefix}{:<20}  {}", sm.command, sm.description);
-
-            let style = if is_selected {
-                theme::slash_selected()
-            } else {
-                theme::out_dim()
-            };
-
-            frame.render_widget(Paragraph::new(Span::styled(text, style)), row_areas[i]);
+            let row = rows[i + 1];
+            if is_selected {
+                frame.render_widget(Block::default().style(theme::slash_selected_row()), row);
+            }
+            match item {
+                SlashMenuItem::Group {
+                    group,
+                    count,
+                    expanded,
+                } => self.render_slash_group_row(frame, row, *group, *count, *expanded),
+                SlashMenuItem::Command(sm) => {
+                    self.render_slash_command_row(frame, row, sm, is_selected);
+                }
+            }
         }
 
-        // Scroll indicator: "  3/12 ↑↓"
-        if has_indicator {
-            let pos = self.slash_selected + 1;
-            let arrows = match (offset > 0, offset + visible < total) {
-                (true, true) => " \u{2191}\u{2193}",
-                (true, false) => " \u{2191}",
-                (false, true) => " \u{2193}",
-                (false, false) => "",
-            };
-            let indicator = format!("  {pos}/{total}{arrows}");
-            let style = theme::out_dim();
-            frame.render_widget(
-                Paragraph::new(Span::styled(indicator, style)),
-                row_areas[visible],
-            );
-        }
+        let pos = self.slash_selected.saturating_add(1).min(total);
+        let arrows = match (offset > 0, offset + visible < total) {
+            (true, true) => " \u{2191}\u{2193}",
+            (true, false) => " \u{2191}",
+            (false, true) => " \u{2193}",
+            (false, false) => "",
+        };
+        let footer = if self.slash_filter == "/" {
+            format!(
+                " \u{2191}\u{2193} navigate   \u{2192}/Enter expand   Tab complete   Esc close   {pos}/{total}{arrows}"
+            )
+        } else {
+            format!(
+                " \u{2191}\u{2193} navigate   Tab complete   Enter run   Esc close   {pos}/{total}{arrows}"
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(footer, theme::out_dim())),
+            rows[visible + 1],
+        );
+    }
+
+    fn render_slash_group_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        group: SlashGroup,
+        count: usize,
+        expanded: bool,
+    ) {
+        let marker = if expanded { "\u{25be}" } else { "\u{203a}" };
+        let count_text = count.to_string();
+        let label = group.label();
+        let pad = area
+            .width
+            .saturating_sub((label.len() + count_text.len() + 5) as u16) as usize;
+        let line = Line::from(vec![
+            Span::styled(format!(" {marker} "), theme::slash_selected()),
+            Span::styled(label, theme::slash_group()),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(count_text, theme::out_dim()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_slash_command_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        sm: &SlashMatch,
+        selected: bool,
+    ) {
+        let command_width = area.width.saturating_sub(28).clamp(18, 34);
+        let cols = Layout::horizontal([
+            Constraint::Length(3),
+            Constraint::Length(command_width),
+            Constraint::Min(1),
+        ])
+        .split(area);
+        let marker = if selected { "\u{25cf}" } else { "\u{00b7}" };
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" {marker} "), theme::slash_selected())),
+            cols[0],
+        );
+        frame.render_widget(Paragraph::new(self.slash_command_line(sm)), cols[1]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                sm.description.as_str(),
+                theme::dock_value_muted(),
+            )),
+            cols[2],
+        );
+    }
+
+    fn slash_command_line<'a>(&self, sm: &'a SlashMatch) -> Line<'a> {
+        let split_at = sm
+            .matched_prefix_len
+            .min(sm.command.len())
+            .min(sm.command.chars().count());
+        let byte_split = sm
+            .command
+            .char_indices()
+            .nth(split_at)
+            .map_or(sm.command.len(), |(idx, _)| idx);
+        let (matched, rest) = sm.command.split_at(byte_split);
+        Line::from(vec![
+            Span::styled(matched, theme::slash_match()),
+            Span::styled(rest, theme::slash_command()),
+        ])
     }
 
     /// Renders the interactive model/provider selector panel.
@@ -1872,6 +2074,28 @@ mod tests {
         (app, textarea)
     }
 
+    fn make_app_with_workspace_state(
+        has_workspace: bool,
+        show_tip: bool,
+    ) -> (ReplApp, TextArea<'static>) {
+        let tmp = tempfile::TempDir::new().expect("invariant: tempdir");
+        let session_mgr = if has_workspace {
+            Some(SessionManager::load_or_create(tmp.path()).expect("invariant: session manager"))
+        } else {
+            None
+        };
+        let app = ReplApp::new(
+            DuumbiConfig::default(),
+            tmp.path().to_path_buf(),
+            None,
+            session_mgr,
+            has_workspace,
+            show_tip,
+        );
+        let textarea = TextArea::default();
+        (app, textarea)
+    }
+
     #[test]
     fn new_starts_in_agent_mode() {
         let (app, _) = make_app();
@@ -1910,14 +2134,18 @@ mod tests {
     /// Returns the full buffer content for a rendered frame as a single
     /// string (cells joined row by row, no separator). Used by the status
     /// dock render tests to assert what the user actually sees.
-    fn render_to_string(width: u16, height: u16) -> (String, Vec<String>) {
+    fn render_app_to_string(
+        app: &ReplApp,
+        textarea: &TextArea<'_>,
+        width: u16,
+        height: u16,
+    ) -> (String, Vec<String>) {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let (mut app, textarea) = make_app();
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("invariant: test terminal");
         terminal
-            .draw(|frame| app.render(frame, &textarea))
+            .draw(|frame| app.render(frame, textarea))
             .expect("invariant: draw");
         let cells = terminal.backend().buffer().content();
         let joined: String = cells.iter().map(|c| c.symbol()).collect();
@@ -1930,9 +2158,86 @@ mod tests {
                     .collect()
             })
             .collect();
-        let _ = &mut app;
-        let _ = &textarea;
         (joined, rows)
+    }
+
+    fn render_to_string(width: u16, height: u16) -> (String, Vec<String>) {
+        let (app, textarea) = make_app();
+        render_app_to_string(&app, &textarea, width, height)
+    }
+
+    #[test]
+    fn empty_workspace_tip_uses_single_column_copy() {
+        let (app, textarea) = make_app_with_workspace_state(true, true);
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains(" empty workspace "));
+        assert!(rendered.contains("TRY ONE OF THESE"));
+        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("\"Build a calculator with add and multiply\""));
+        assert!(!rendered.contains("Use the prompt"));
+
+        let card_rows = rows.iter().skip(2).take(9).cloned().collect::<Vec<_>>();
+        let card_chunk = card_rows.join("\n");
+        assert!(
+            !card_chunk.contains('\u{2500}'),
+            "empty-state card should not render top/bottom borders:\n{card_chunk}"
+        );
+    }
+
+    #[test]
+    fn no_workspace_tip_uses_single_column_copy() {
+        let (app, textarea) = make_app_with_workspace_state(false, true);
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains(" no workspace "));
+        assert!(rendered.contains("INITIALISE A WORKSPACE"));
+        assert!(rendered.contains("/init"));
+        assert!(rendered.contains("duumbi init"));
+    }
+
+    #[test]
+    fn slash_menu_discovery_render_shows_collapsed_groups() {
+        let (mut app, textarea) = make_app();
+        app.update_slash_matches("/");
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("DISCOVER"));
+        assert!(rendered.contains("BUILD & RUN"));
+        assert!(rendered.contains("INTENT"));
+        assert!(rendered.contains("SYSTEM"));
+        assert!(!rendered.contains("/build"));
+    }
+
+    #[test]
+    fn slash_menu_filter_render_shows_prefix_matches() {
+        let (mut app, textarea) = make_app();
+        app.update_slash_matches("/in");
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("FILTER"));
+        assert!(rendered.contains("/intent"));
+        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/init"));
+    }
+
+    #[test]
+    fn slash_menu_enter_expands_group_then_runs_command() {
+        let (mut app, mut textarea) = make_app();
+        app.update_slash_matches("/");
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = app.handle_key(enter, &mut textarea);
+        assert!(matches!(action, Action::Continue));
+        assert!(
+            app.slash_rows
+                .iter()
+                .any(|row| matches!(row, SlashMenuItem::Command(sm) if sm.command == "/build"))
+        );
+
+        app.slash_selected = 1;
+        let action = app.handle_key(enter, &mut textarea);
+        assert!(matches!(action, Action::Submit(cmd) if cmd == "/build"));
     }
 
     #[test]
@@ -2040,6 +2345,7 @@ mod tests {
         let (mut app, _) = make_app();
         app.update_slash_matches("/bui");
         assert!(!app.slash_matches.is_empty());
+        assert!(!app.slash_rows.is_empty());
         assert!(app.slash_matches.iter().any(|m| m.command == "/build"));
     }
 
@@ -2050,6 +2356,7 @@ mod tests {
         assert!(!app.slash_matches.is_empty());
         app.update_slash_matches("hello");
         assert!(app.slash_matches.is_empty());
+        assert!(app.slash_rows.is_empty());
     }
 
     #[test]
@@ -2059,13 +2366,33 @@ mod tests {
         app.update_slash_matches("/");
         // There are more than 5 total slash commands
         assert!(app.slash_matches.len() > 5);
+        assert!(app.slash_rows.iter().all(|row| matches!(
+            row,
+            SlashMenuItem::Group {
+                expanded: false,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn slash_menu_filter_rows_include_exact_match_while_typing() {
+        let (mut app, _) = make_app();
+        app.update_slash_matches("/build");
+
+        assert!(app.slash_matches.iter().any(|m| m.command == "/build"));
+        assert!(
+            app.slash_rows
+                .iter()
+                .any(|row| matches!(row, SlashMenuItem::Command(sm) if sm.command == "/build"))
+        );
     }
 
     #[test]
     fn slash_menu_scroll_offset_adjusts_on_down() {
         let (mut app, mut textarea) = make_app();
-        app.update_slash_matches("/");
-        let total = app.slash_matches.len();
+        app.update_slash_matches("/de");
+        let total = app.slash_rows.len();
         assert!(total > ReplApp::SLASH_MENU_VISIBLE);
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
@@ -2082,7 +2409,7 @@ mod tests {
     #[test]
     fn slash_menu_scroll_offset_adjusts_on_up() {
         let (mut app, mut textarea) = make_app();
-        app.update_slash_matches("/");
+        app.update_slash_matches("/de");
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
@@ -2110,6 +2437,7 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
         assert!(app.slash_matches.is_empty());
+        assert!(app.slash_rows.is_empty());
     }
 
     #[test]

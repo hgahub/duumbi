@@ -429,8 +429,8 @@ async fn handle_slash(
             // "Did you mean?" suggestion using Levenshtein distance.
             let known_cmds: Vec<&str> = super::completion::SLASH_COMMANDS
                 .iter()
-                .filter(|(c, _)| !c.contains(' '))
-                .map(|(c, _)| *c)
+                .filter(|entry| !entry.command.contains(' '))
+                .map(|entry| entry.command)
                 .collect();
             if let Some(suggestion) = find_closest_command(cmd, &known_cmds) {
                 app.push_output(

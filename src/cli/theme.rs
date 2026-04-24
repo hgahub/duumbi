@@ -109,6 +109,8 @@ pub mod tui {
     /// `--ink` canvas). Deliberately lightened slightly from pure black so
     /// the brand tone is perceptible on every modern terminal.
     pub const CANVAS_BG: Color = Color::Rgb(0x1a, 0x1a, 0x18);
+    /// Slightly lifted surface used for inset cards.
+    pub const PANEL_BG: Color = Color::Rgb(0x21, 0x21, 0x1e);
     /// Primary action / accent colour (rust).
     pub const RUST: Color = Color::Rgb(0xd0, 0x7a, 0x47);
     /// Softer rust used for badges and helper text.
@@ -265,20 +267,10 @@ pub mod tui {
         Style::default().fg(col(HAIRLINE))
     }
 
-    /// Dim hairline (used for the line body between rust dots).
-    #[must_use]
-    pub fn hairline_dim() -> Style {
-        Style::default().fg(col(HAIRLINE_DIM))
-    }
-
     /// Subtle panel surface used for inset cards and overlays.
-    ///
-    /// Matches the canvas bg exactly so a card embedded in the main view
-    /// has no visible "stripe" where its background ends — only the rust
-    /// pillar and top/bottom hairline borders mark the card boundary.
     #[must_use]
     pub fn panel_surface() -> Style {
-        Style::default().bg(col(CANVAS_BG))
+        Style::default().bg(col(PANEL_BG))
     }
 
     /// Border colour for inset panels and cards.
@@ -290,7 +282,10 @@ pub mod tui {
     /// Rust accent used for the left edge of the empty-state card.
     #[must_use]
     pub fn panel_accent() -> Style {
-        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(col(RUST))
+            .bg(col(PANEL_BG))
+            .add_modifier(Modifier::BOLD)
     }
 
     /// Outline pill used for mode badges and empty-state tags.
@@ -407,6 +402,35 @@ pub mod tui {
         Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
     }
 
+    /// Background for the highlighted slash-menu row.
+    #[must_use]
+    pub fn slash_selected_row() -> Style {
+        Style::default().bg(col(Color::Rgb(0x2d, 0x25, 0x1f)))
+    }
+
+    /// Highlight for the matched slash-command prefix.
+    #[must_use]
+    pub fn slash_match() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(Color::Rgb(0x5a, 0x34, 0x24)))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Slash command text.
+    #[must_use]
+    pub fn slash_command() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Slash-menu group label.
+    #[must_use]
+    pub fn slash_group() -> Style {
+        Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
+    }
+
     /// Unselected slash-menu row.
     #[must_use]
     #[allow(dead_code)] // currently uses out_dim() — kept for future per-row styling
@@ -489,7 +513,6 @@ mod tests {
         let _ = tui::chevron();
         let _ = tui::focus_border();
         let _ = tui::hairline();
-        let _ = tui::hairline_dim();
         let _ = tui::panel_surface();
         let _ = tui::panel_border();
         let _ = tui::panel_accent();
@@ -509,6 +532,10 @@ mod tests {
         let _ = tui::out_help_cmd();
         let _ = tui::out_help_desc();
         let _ = tui::slash_selected();
+        let _ = tui::slash_selected_row();
+        let _ = tui::slash_match();
+        let _ = tui::slash_command();
+        let _ = tui::slash_group();
         let _ = tui::slash_normal();
         let _ = tui::mode_pill();
         let _ = tui::mode_pill();

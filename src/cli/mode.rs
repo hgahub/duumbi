@@ -69,6 +69,26 @@ pub struct SlashMatch {
     pub command: String,
     /// Description text.
     pub description: String,
+    /// Discovery-menu group.
+    pub group: crate::cli::completion::SlashGroup,
+    /// Number of leading command characters matched by the current input.
+    pub matched_prefix_len: usize,
+}
+
+/// A visible row in the slash-command menu.
+#[derive(Debug, Clone)]
+pub enum SlashMenuItem {
+    /// Collapsible discovery group header.
+    Group {
+        /// Group identity.
+        group: crate::cli::completion::SlashGroup,
+        /// Number of commands in the group.
+        count: usize,
+        /// Whether commands under this group are currently visible.
+        expanded: bool,
+    },
+    /// Executable slash command row.
+    Command(SlashMatch),
 }
 
 /// Action returned by key handling to control the event loop.
