@@ -4,11 +4,12 @@
 //! using ratatui. Key handling delegates to `handle_key` which returns an
 //! [`Action`] that the event loop acts on.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::Local;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
@@ -125,8 +126,8 @@ fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKin
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
-    Action, OutputLine, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch,
-    SlashMenuItem,
+    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine, OutputStyle,
+    PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
 use super::theme::tui as theme;
 
@@ -141,6 +142,25 @@ pub struct Turn {
     pub request: String,
     /// Human-readable summary of the changes made.
     pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+struct ConversationVisualRow {
+    line: Line<'static>,
+    block_index: Option<usize>,
+    menu_button_block: Option<usize>,
+    menu_button_range: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone)]
+struct VisibleConversationLayout {
+    padding: usize,
+    rows: Vec<ConversationVisualRow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationActionMenu {
+    block_index: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +192,18 @@ pub struct ReplApp {
     pub has_workspace: bool,
     /// Scrollable output buffer.
     pub output_lines: Vec<OutputLine>,
+    /// Scrollable conversation blocks rendered in the main pane.
+    pub conversation_blocks: Vec<ConversationBlock>,
+    /// Index of the active output block receiving `push_output` lines.
+    current_output_block: Option<usize>,
+    /// User block selected by clicking inside the conversation pane.
+    selected_conversation_block: Option<usize>,
+    /// Open action menu for a selected conversation user block.
+    conversation_action_menu: Option<ConversationActionMenu>,
+    /// Selected row inside the open conversation action menu.
+    conversation_action_selected: usize,
+    /// Last rendered conversation pane rectangle, used for mouse hit testing.
+    last_conversation_area: Cell<Option<Rect>>,
     /// Scroll offset for the output area (lines from the bottom; 0 = latest).
     pub output_scroll_offset: usize,
     /// All matching slash-command entries (untruncated).
@@ -229,6 +261,12 @@ impl ReplApp {
             session_mgr,
             has_workspace,
             output_lines: Vec::new(),
+            conversation_blocks: Vec::new(),
+            current_output_block: None,
+            selected_conversation_block: None,
+            conversation_action_menu: None,
+            conversation_action_selected: 0,
+            last_conversation_area: Cell::new(None),
             output_scroll_offset: 0,
             slash_matches: Vec::new(),
             slash_rows: Vec::new(),
@@ -292,6 +330,10 @@ impl ReplApp {
             return self.handle_model_panel_key(key, textarea);
         }
 
+        if self.conversation_action_menu.is_some() {
+            return self.handle_conversation_action_menu_key(key);
+        }
+
         match key.code {
             // Shift+Tab: toggle Agent ↔ Intent mode
             KeyCode::BackTab => {
@@ -345,6 +387,23 @@ impl ReplApp {
                 Action::Continue
             }
 
+            // Ctrl+Up/Ctrl+Down: move conversation block selection without mouse capture.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_previous_user_block();
+                Action::Continue
+            }
+
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_next_user_block();
+                Action::Continue
+            }
+
+            // Ctrl+O: open the selected conversation block action menu.
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_selected_conversation_action_menu();
+                Action::Continue
+            }
+
             // Tab: accept selected slash command without submitting
             KeyCode::Tab if !self.slash_rows.is_empty() => {
                 if let Some(cmd) = self.selected_slash_command() {
@@ -378,14 +437,13 @@ impl ReplApp {
 
             // PageUp: scroll output buffer up (toward older lines)
             KeyCode::PageUp => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.output_scroll_offset = (self.output_scroll_offset + 10).min(max_scroll);
+                self.scroll_conversation_up(10, 1, 80);
                 Action::Continue
             }
 
             // PageDown: scroll output buffer down (toward latest)
             KeyCode::PageDown => {
-                self.output_scroll_offset = self.output_scroll_offset.saturating_sub(10);
+                self.scroll_conversation_down(10);
                 Action::Continue
             }
 
@@ -394,7 +452,7 @@ impl ReplApp {
 
             // Ctrl+C: friendly quit reminder
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.push_output("(Use Ctrl+D to quit)", OutputStyle::Dim);
+                self.push_feedback("(Use Ctrl+D to quit)", OutputStyle::Dim);
                 Action::Continue
             }
 
@@ -408,23 +466,59 @@ impl ReplApp {
         }
     }
 
-    /// Handles mouse events (scroll wheel for output buffer scrolling).
+    /// Handles mouse events when the terminal delivers them.
     ///
-    /// Currently unused — mouse capture is disabled to allow native text
-    /// selection. Scroll is available via keyboard (PageUp/PageDown).
+    /// The REPL does not enable global mouse capture by default, so terminals
+    /// can keep native drag-selection available.
     #[allow(dead_code)]
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.output_scroll_offset = (self.output_scroll_offset + 1).min(max_scroll);
+                self.scroll_conversation_up(3, 1, 80);
             }
             MouseEventKind::ScrollDown => {
-                self.output_scroll_offset = self.output_scroll_offset.saturating_sub(1);
+                self.scroll_conversation_down(3);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_conversation_click(mouse.column, mouse.row);
             }
             _ => {}
         }
+    }
+
+    fn handle_conversation_action_menu_key(&mut self, key: KeyEvent) -> Action {
+        let Some(menu) = self.conversation_action_menu else {
+            return Action::Continue;
+        };
+        let actions = self.conversation_menu_actions(menu.block_index);
+        match key.code {
+            KeyCode::Esc => {
+                self.conversation_action_menu = None;
+            }
+            KeyCode::Up => {
+                self.conversation_action_selected =
+                    self.conversation_action_selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let max = actions.len().saturating_sub(1);
+                self.conversation_action_selected =
+                    (self.conversation_action_selected + 1).min(max);
+            }
+            KeyCode::Enter => {
+                if let Some(action) = actions.get(self.conversation_action_selected).copied() {
+                    self.execute_conversation_action(menu.block_index, action);
+                }
+            }
+            KeyCode::Char('c') => {
+                self.execute_conversation_action(menu.block_index, ConversationAction::Copy);
+            }
+            KeyCode::Char('r') if actions.contains(&ConversationAction::Revert) => {
+                self.execute_conversation_action(menu.block_index, ConversationAction::Revert);
+            }
+            _ => {}
+        }
+        Action::Continue
     }
 
     /// Handles key events when the model selector panel is active.
@@ -1041,9 +1135,13 @@ impl ReplApp {
     /// unbounded memory growth.
     pub fn push_output(&mut self, text: impl Into<String>, style: OutputStyle) {
         let text = text.into();
+        let output_idx = self.ensure_output_block();
         for line in text.split('\n') {
-            self.output_lines
-                .push(OutputLine::new(line.to_string(), style));
+            let output_line = OutputLine::new(line.to_string(), style);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
         }
         if self.output_lines.len() > Self::OUTPUT_BUFFER_MAX {
             let excess = self.output_lines.len() - Self::OUTPUT_BUFFER_MAX;
@@ -1051,6 +1149,321 @@ impl ReplApp {
         }
         // Reset scroll to bottom when new output arrives.
         self.output_scroll_offset = 0;
+    }
+
+    fn push_feedback(&mut self, text: impl Into<String>, style: OutputStyle) {
+        self.current_output_block = None;
+        self.push_output(text, style);
+        self.current_output_block = None;
+    }
+
+    /// Starts a new conversation turn with a persistent user input block.
+    pub fn begin_user_block(&mut self, input: &str) {
+        let submitted_at = Local::now().format("%H:%M").to_string();
+        self.conversation_blocks
+            .push(ConversationBlock::user(input.to_string(), submitted_at));
+        self.output_lines
+            .push(OutputLine::new(input.to_string(), OutputStyle::Dim));
+        self.current_output_block = None;
+        self.selected_conversation_block = None;
+        self.conversation_action_menu = None;
+        self.output_scroll_offset = 0;
+    }
+
+    fn user_block_indices(&self) -> Vec<usize> {
+        self.conversation_blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, block)| (block.kind == ConversationBlockKind::User).then_some(idx))
+            .collect()
+    }
+
+    fn select_previous_user_block(&mut self) {
+        let indices = self.user_block_indices();
+        if indices.is_empty() {
+            return;
+        }
+
+        let next = self
+            .selected_conversation_block
+            .and_then(|selected| indices.iter().position(|idx| *idx == selected))
+            .and_then(|pos| pos.checked_sub(1))
+            .map_or_else(
+                || *indices.last().expect("invariant: non-empty indices"),
+                |pos| indices[pos],
+            );
+
+        self.selected_conversation_block = Some(next);
+        self.conversation_action_menu = None;
+        self.conversation_action_selected = 0;
+    }
+
+    fn select_next_user_block(&mut self) {
+        let indices = self.user_block_indices();
+        if indices.is_empty() {
+            return;
+        }
+
+        let next = self
+            .selected_conversation_block
+            .and_then(|selected| indices.iter().position(|idx| *idx == selected))
+            .and_then(|pos| indices.get(pos + 1).copied())
+            .unwrap_or(indices[0]);
+
+        self.selected_conversation_block = Some(next);
+        self.conversation_action_menu = None;
+        self.conversation_action_selected = 0;
+    }
+
+    fn open_selected_conversation_action_menu(&mut self) {
+        let Some(block_index) = self.selected_conversation_block else {
+            self.select_previous_user_block();
+            return;
+        };
+        if self.conversation_menu_actions(block_index).is_empty() {
+            return;
+        }
+        self.conversation_action_menu = Some(ConversationActionMenu { block_index });
+        self.conversation_action_selected = 0;
+    }
+
+    /// Marks the latest user block as revertable.
+    pub fn mark_latest_user_block_revertable(&mut self, snapshot_path: PathBuf) {
+        if let Some(block) = self
+            .conversation_blocks
+            .iter_mut()
+            .rev()
+            .find(|block| block.kind == ConversationBlockKind::User)
+        {
+            if !block.actions.contains(&ConversationAction::Revert) {
+                block.actions.push(ConversationAction::Revert);
+            }
+            block.revert_snapshot = Some(snapshot_path);
+        }
+    }
+
+    /// Adds a runtime footer to the active output block.
+    pub fn finish_current_output_elapsed(&mut self, elapsed: std::time::Duration) {
+        if let Some(idx) = self.current_output_block
+            && let Some(block) = self.conversation_blocks.get_mut(idx)
+        {
+            block.elapsed = Some(format!("completed in {:.2}s", elapsed.as_secs_f64()));
+        }
+    }
+
+    fn scroll_conversation_up(&mut self, amount: usize, fallback_height: u16, fallback_width: u16) {
+        let total = self.conversation_line_count(fallback_width);
+        let max_scroll = total.saturating_sub(fallback_height as usize);
+        self.output_scroll_offset = (self.output_scroll_offset + amount).min(max_scroll);
+    }
+
+    fn scroll_conversation_down(&mut self, amount: usize) {
+        self.output_scroll_offset = self.output_scroll_offset.saturating_sub(amount);
+    }
+
+    fn conversation_line_count(&self, width: u16) -> usize {
+        if self.conversation_blocks.is_empty() {
+            self.output_lines.len()
+        } else {
+            self.conversation_visual_rows(width).len()
+        }
+    }
+
+    fn user_block_text(&self, block_index: usize) -> Option<String> {
+        self.conversation_blocks
+            .get(block_index)
+            .filter(|block| block.kind == ConversationBlockKind::User)
+            .and_then(|block| block.lines.first())
+            .map(|line| line.text.clone())
+    }
+
+    fn copy_user_block(&mut self, block_index: usize) {
+        let Some(text) = self.user_block_text(block_index) else {
+            self.push_feedback("Nothing to copy.", OutputStyle::Dim);
+            return;
+        };
+
+        match std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                let write_result = child.stdin.as_mut().map_or_else(
+                    || {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "stdin closed",
+                        ))
+                    },
+                    |stdin| std::io::Write::write_all(stdin, text.as_bytes()),
+                );
+                let wait_result = child.wait();
+                match (write_result, wait_result) {
+                    (Ok(()), Ok(status)) if status.success() => {
+                        self.push_feedback("Copied message.", OutputStyle::Success);
+                    }
+                    (Err(e), _) => {
+                        self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+                    }
+                    (_, Ok(status)) => {
+                        self.push_feedback(format!("Copy failed: {status}"), OutputStyle::Error);
+                    }
+                    (_, Err(e)) => {
+                        self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+                    }
+                }
+            }
+            Err(e) => {
+                self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+            }
+        }
+    }
+
+    fn latest_revertable_block_index(&self) -> Option<usize> {
+        self.conversation_blocks
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, block)| {
+                block.kind == ConversationBlockKind::User
+                    && block.actions.contains(&ConversationAction::Revert)
+            })
+            .map(|(idx, _)| idx)
+    }
+
+    fn conversation_menu_actions(&self, block_index: usize) -> Vec<ConversationAction> {
+        let Some(block) = self.conversation_blocks.get(block_index) else {
+            return Vec::new();
+        };
+        if block.kind != ConversationBlockKind::User {
+            return Vec::new();
+        }
+
+        let mut actions = vec![ConversationAction::Copy];
+        if block.actions.contains(&ConversationAction::Revert)
+            && self.latest_revertable_block_index() == Some(block_index)
+        {
+            actions.push(ConversationAction::Revert);
+        }
+        actions
+    }
+
+    fn execute_conversation_action(&mut self, block_index: usize, action: ConversationAction) {
+        self.conversation_action_menu = None;
+        match action {
+            ConversationAction::Copy => self.copy_user_block(block_index),
+            ConversationAction::Revert => self.revert_user_block_change(block_index),
+        }
+    }
+
+    fn revert_user_block_change(&mut self, block_index: usize) {
+        if self.latest_revertable_block_index() != Some(block_index) {
+            self.push_feedback("Nothing to revert.", OutputStyle::Dim);
+            return;
+        }
+
+        match crate::snapshot::restore_latest(&self.workspace_root) {
+            Ok(true) => {
+                self.history.pop();
+                if let Some(block) = self.conversation_blocks.get_mut(block_index) {
+                    block
+                        .actions
+                        .retain(|action| *action != ConversationAction::Revert);
+                    block.revert_snapshot = None;
+                }
+                self.push_feedback("Reverted latest graph change.", OutputStyle::Success);
+            }
+            Ok(false) => {
+                self.push_feedback("Nothing to revert.", OutputStyle::Dim);
+            }
+            Err(e) => {
+                self.push_feedback(format!("Revert failed: {e:#}"), OutputStyle::Error);
+            }
+        }
+    }
+
+    fn ensure_output_block(&mut self) -> usize {
+        if let Some(idx) = self.current_output_block
+            && self
+                .conversation_blocks
+                .get(idx)
+                .is_some_and(|block| block.kind == ConversationBlockKind::Output)
+        {
+            return idx;
+        }
+
+        self.conversation_blocks.push(ConversationBlock::output());
+        let idx = self.conversation_blocks.len() - 1;
+        self.current_output_block = Some(idx);
+        idx
+    }
+
+    fn handle_conversation_click(&mut self, column: u16, row: u16) {
+        let Some(area) = self.last_conversation_area.get() else {
+            return;
+        };
+
+        if let Some((menu_area, actions)) = self.conversation_action_menu_rect(area)
+            && self.rect_contains(menu_area, column, row)
+        {
+            let action_idx = row.saturating_sub(menu_area.y + 1) as usize;
+            if let Some(action) = actions.get(action_idx).copied()
+                && let Some(menu) = self.conversation_action_menu
+            {
+                self.execute_conversation_action(menu.block_index, action);
+            }
+            return;
+        }
+
+        if self.conversation_action_menu.is_some() {
+            self.conversation_action_menu = None;
+        }
+
+        if !self.rect_contains(area, column, row) {
+            return;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let relative_y = row.saturating_sub(area.y) as usize;
+        if relative_y < layout.padding {
+            return;
+        }
+        let Some(visual_row) = layout.rows.get(relative_y - layout.padding) else {
+            return;
+        };
+
+        if let (Some(block_index), Some((start, end))) =
+            (visual_row.menu_button_block, visual_row.menu_button_range)
+            && column >= area.x + start
+            && column < area.x + end
+            && self.selected_conversation_block == Some(block_index)
+        {
+            self.conversation_action_menu = Some(ConversationActionMenu { block_index });
+            return;
+        }
+
+        let Some(block_index) = visual_row.block_index else {
+            return;
+        };
+        if self
+            .conversation_blocks
+            .get(block_index)
+            .is_none_or(|block| block.kind != ConversationBlockKind::User)
+        {
+            return;
+        }
+
+        if self.selected_conversation_block == Some(block_index) {
+            self.selected_conversation_block = None;
+            self.conversation_action_menu = None;
+        } else {
+            self.selected_conversation_block = Some(block_index);
+            self.conversation_action_menu = None;
+        }
+    }
+
+    fn rect_contains(&self, rect: Rect, column: u16, row: u16) -> bool {
+        column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
     }
 
     // -----------------------------------------------------------------------
@@ -1342,48 +1755,13 @@ impl ReplApp {
     /// When `output_scroll_offset > 0`, the view shifts upward to show
     /// older lines. PageUp/PageDown control the offset.
     fn render_conversation_pane(&self, frame: &mut Frame, area: Rect) {
-        let max_lines = area.height as usize;
-        let total = self.output_lines.len();
-        let bottom = total.saturating_sub(self.output_scroll_offset);
-        let start = bottom.saturating_sub(max_lines);
-        let visible = &self.output_lines[start..bottom];
+        self.last_conversation_area.set(Some(area));
+        let layout = self.visible_conversation_layout(area);
 
         // Bottom-align: pad with empty lines above content so messages
         // appear just above the header, close to the prompt.
-        let padding = max_lines.saturating_sub(visible.len());
-        let mut lines: Vec<Line<'_>> = (0..padding).map(|_| Line::from("")).collect();
-
-        for ol in visible {
-            match ol.style {
-                OutputStyle::Help => {
-                    // Split at column 35: command in rust, description in parchment.
-                    let text = &ol.text;
-                    if text.len() > 35 {
-                        let (cmd_part, desc_part) = text.split_at(35);
-                        lines.push(Line::from(vec![
-                            Span::styled(cmd_part.to_string(), theme::out_help_cmd()),
-                            Span::styled(desc_part.to_string(), theme::out_help_desc()),
-                        ]));
-                    } else {
-                        lines.push(Line::from(Span::styled(
-                            text.clone(),
-                            theme::out_help_cmd(),
-                        )));
-                    }
-                }
-                _ => {
-                    let style = match ol.style {
-                        OutputStyle::Normal => theme::out_normal(),
-                        OutputStyle::Error => theme::out_error(),
-                        OutputStyle::Success => theme::out_success(),
-                        OutputStyle::Dim => theme::out_dim(),
-                        OutputStyle::Ai => theme::out_ai(),
-                        OutputStyle::Help => unreachable!(),
-                    };
-                    lines.push(Line::from(Span::styled(ol.text.clone(), style)));
-                }
-            }
-        }
+        let mut lines: Vec<Line<'_>> = (0..layout.padding).map(|_| Line::from("")).collect();
+        lines.extend(layout.rows.iter().map(|row| row.line.clone()));
 
         frame.render_widget(Paragraph::new(lines), area);
         // The "Working…" spinner now lives in the status dock activity slot
@@ -1398,6 +1776,271 @@ impl ReplApp {
                 Paragraph::new(Span::styled(indicator, theme::out_dim())),
                 indicator_area,
             );
+        }
+
+        self.render_conversation_action_menu(frame, area);
+    }
+
+    fn visible_conversation_layout(&self, area: Rect) -> VisibleConversationLayout {
+        let max_lines = area.height as usize;
+        let all_rows = if self.conversation_blocks.is_empty() {
+            self.legacy_output_rows()
+        } else {
+            self.conversation_visual_rows(area.width)
+        };
+        let total = all_rows.len();
+        let bottom = total.saturating_sub(self.output_scroll_offset);
+        let start = bottom.saturating_sub(max_lines);
+        let rows = all_rows[start..bottom].to_vec();
+        let padding = max_lines.saturating_sub(rows.len());
+        VisibleConversationLayout { padding, rows }
+    }
+
+    fn render_conversation_action_menu(&self, frame: &mut Frame, area: Rect) {
+        let Some((menu_area, actions)) = self.conversation_action_menu_rect(area) else {
+            return;
+        };
+
+        let lines = actions
+            .iter()
+            .enumerate()
+            .map(|(idx, action)| {
+                let label = match action {
+                    ConversationAction::Copy => "Copy message",
+                    ConversationAction::Revert => "Revert change",
+                };
+                let style = if idx == self.conversation_action_selected {
+                    theme::conversation_action_menu_selected()
+                } else {
+                    theme::conversation_action_menu()
+                };
+                Line::from(Span::styled(format!(" {label:<18}"), style))
+            })
+            .collect::<Vec<_>>();
+
+        frame.render_widget(Clear, menu_area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(theme::conversation_action_menu())
+                .block(
+                    Block::bordered()
+                        .border_style(theme::conversation_action_menu_border())
+                        .style(theme::conversation_action_menu()),
+                ),
+            menu_area,
+        );
+    }
+
+    fn conversation_action_menu_rect(&self, area: Rect) -> Option<(Rect, Vec<ConversationAction>)> {
+        let menu = self.conversation_action_menu?;
+        if self.selected_conversation_block != Some(menu.block_index) {
+            return None;
+        }
+        let actions = self.conversation_menu_actions(menu.block_index);
+        if actions.is_empty() {
+            return None;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let row_offset = layout
+            .rows
+            .iter()
+            .position(|row| row.block_index == Some(menu.block_index))?;
+        let anchor_y = area.y + layout.padding as u16 + row_offset as u16;
+        let width = 22_u16.min(area.width);
+        let height = (actions.len() as u16 + 2).min(area.height.max(1));
+        let x = area.right().saturating_sub(width);
+        let y = if anchor_y + height < area.bottom() {
+            anchor_y.saturating_add(1)
+        } else {
+            anchor_y.saturating_sub(height.saturating_sub(1))
+        };
+
+        Some((Rect::new(x, y, width, height), actions))
+    }
+
+    fn legacy_output_rows(&self) -> Vec<ConversationVisualRow> {
+        self.output_lines
+            .iter()
+            .map(|ol| ConversationVisualRow {
+                line: Self::line_from_output(ol),
+                block_index: None,
+                menu_button_block: None,
+                menu_button_range: None,
+            })
+            .collect()
+    }
+
+    fn conversation_visual_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
+        let mut rows = Vec::new();
+        for (idx, block) in self.conversation_blocks.iter().enumerate() {
+            if !rows.is_empty() {
+                rows.push(ConversationVisualRow {
+                    line: Line::from(""),
+                    block_index: None,
+                    menu_button_block: None,
+                    menu_button_range: None,
+                });
+            }
+            match block.kind {
+                ConversationBlockKind::User => {
+                    rows.extend(self.user_block_rows(idx, block, width));
+                }
+                ConversationBlockKind::Output => {
+                    for ol in &block.lines {
+                        rows.push(ConversationVisualRow {
+                            line: Self::line_from_output(ol),
+                            block_index: Some(idx),
+                            menu_button_block: None,
+                            menu_button_range: None,
+                        });
+                    }
+                    if let Some(elapsed) = &block.elapsed {
+                        rows.push(ConversationVisualRow {
+                            line: Line::from(Span::styled(elapsed.clone(), theme::out_dim())),
+                            block_index: Some(idx),
+                            menu_button_block: None,
+                            menu_button_range: None,
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn user_block_rows(
+        &self,
+        block_index: usize,
+        block: &ConversationBlock,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let width = width as usize;
+        let input = block
+            .lines
+            .first()
+            .map(|line| line.text.as_str())
+            .unwrap_or("");
+        let submitted_at = block.submitted_at.as_deref().unwrap_or("");
+        let selected = self.selected_conversation_block == Some(block_index);
+        let action_trigger = if selected { "..." } else { "" };
+        let (line, range) = self.user_panel_line(input, action_trigger, width, true, selected);
+        vec![
+            ConversationVisualRow {
+                line,
+                block_index: Some(block_index),
+                menu_button_block: selected.then_some(block_index),
+                menu_button_range: range,
+            },
+            ConversationVisualRow {
+                line: self
+                    .user_panel_line(submitted_at, "", width, false, selected)
+                    .0,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+            },
+        ]
+    }
+
+    fn user_panel_line(
+        &self,
+        left: &str,
+        right: &str,
+        width: usize,
+        strong: bool,
+        selected: bool,
+    ) -> (Line<'static>, Option<(u16, u16)>) {
+        let accent = "\u{258f} ";
+        let right_len = right.chars().count();
+        let left_budget = width
+            .saturating_sub(accent.chars().count())
+            .saturating_sub(right_len)
+            .saturating_sub(3);
+        let left_text = Self::truncate_inline(left, left_budget);
+        let left_len = left_text.chars().count();
+        let fill = width.saturating_sub(accent.chars().count() + left_len + right_len);
+        let left_style = if strong {
+            if selected {
+                theme::conversation_user_selected_text()
+            } else {
+                theme::conversation_user_text()
+            }
+        } else if selected {
+            theme::conversation_user_selected_meta()
+        } else {
+            theme::conversation_user_meta()
+        };
+        let surface_style = if selected {
+            theme::conversation_user_selected_surface()
+        } else {
+            theme::panel_surface()
+        };
+        let accent_style = if selected {
+            theme::conversation_user_selected_accent()
+        } else {
+            theme::panel_accent()
+        };
+        let right_style = if selected && !right.is_empty() {
+            theme::conversation_user_action()
+        } else if selected {
+            theme::conversation_user_selected_meta()
+        } else {
+            theme::conversation_user_meta()
+        };
+        let right_start = accent.chars().count() + left_len + fill;
+        let right_range = (!right.is_empty()).then_some((
+            right_start.min(u16::MAX as usize) as u16,
+            (right_start + right_len).min(u16::MAX as usize) as u16,
+        ));
+        (
+            Line::from(vec![
+                Span::styled(accent.to_string(), accent_style),
+                Span::styled(left_text, left_style),
+                Span::styled(" ".repeat(fill), surface_style),
+                Span::styled(right.to_string(), right_style),
+            ]),
+            right_range,
+        )
+    }
+
+    fn truncate_inline(text: &str, max_chars: usize) -> String {
+        if text.chars().count() <= max_chars {
+            return text.to_string();
+        }
+        if max_chars <= 1 {
+            return "\u{2026}".to_string();
+        }
+        let mut out = text.chars().take(max_chars - 1).collect::<String>();
+        out.push('\u{2026}');
+        out
+    }
+
+    fn line_from_output(ol: &OutputLine) -> Line<'static> {
+        match ol.style {
+            OutputStyle::Help => {
+                let text = &ol.text;
+                if text.len() > 35 {
+                    let (cmd_part, desc_part) = text.split_at(35);
+                    Line::from(vec![
+                        Span::styled(cmd_part.to_string(), theme::out_help_cmd()),
+                        Span::styled(desc_part.to_string(), theme::out_help_desc()),
+                    ])
+                } else {
+                    Line::from(Span::styled(text.clone(), theme::out_help_cmd()))
+                }
+            }
+            _ => {
+                let style = match ol.style {
+                    OutputStyle::Normal => theme::out_normal(),
+                    OutputStyle::Error => theme::out_error(),
+                    OutputStyle::Success => theme::out_success(),
+                    OutputStyle::Dim => theme::out_dim(),
+                    OutputStyle::Ai => theme::out_ai(),
+                    OutputStyle::Help => unreachable!(),
+                };
+                Line::from(Span::styled(ol.text.clone(), style))
+            }
         }
     }
 
@@ -2194,6 +2837,184 @@ mod tests {
         assert!(rendered.contains("INITIALISE A WORKSPACE"));
         assert!(rendered.contains("/init"));
         assert!(rendered.contains("duumbi init"));
+    }
+
+    #[test]
+    fn conversation_render_keeps_user_block_and_output() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        app.push_output("Workspace: /tmp/example", OutputStyle::Normal);
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("/status"));
+        assert!(!rendered.contains("copy"));
+        assert!(rendered.contains("Workspace: /tmp/example"));
+    }
+
+    #[test]
+    fn conversation_render_shows_elapsed_footer() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/describe");
+        app.push_output("function main() -> i64 {", OutputStyle::Normal);
+        app.finish_current_output_elapsed(std::time::Duration::from_millis(1250));
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("completed in 1.25s"));
+    }
+
+    #[test]
+    fn conversation_page_up_down_scrolls_rendered_blocks() {
+        let (mut app, mut textarea) = make_app();
+        for i in 0..20 {
+            app.begin_user_block(&format!("/status {i}"));
+            app.push_output(format!("line {i}"), OutputStyle::Normal);
+        }
+
+        let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        app.handle_key(page_up, &mut textarea);
+        assert!(app.output_scroll_offset > 0);
+
+        let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        app.handle_key(page_down, &mut textarea);
+        assert_eq!(app.output_scroll_offset, 0);
+    }
+
+    #[test]
+    fn conversation_feedback_blocks_render_with_spacing() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/help");
+        app.push_output("Slash commands:", OutputStyle::Normal);
+        app.push_feedback("Copied message.", OutputStyle::Success);
+        app.push_feedback("Copied message.", OutputStyle::Success);
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let help_row = rows
+            .iter()
+            .position(|line| line.contains("Slash commands:"))
+            .expect("help output row must render");
+        let copied_rows = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| line.contains("Copied message.").then_some(idx))
+            .collect::<Vec<_>>();
+
+        assert_eq!(copied_rows.len(), 2);
+        assert!(
+            rows[help_row + 1].trim().is_empty(),
+            "feedback should not touch previous command output"
+        );
+        assert!(
+            rows[copied_rows[0] + 1].trim().is_empty(),
+            "consecutive feedback blocks should be separated"
+        );
+    }
+
+    #[test]
+    fn conversation_click_selects_and_toggles_user_block() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("/status"))
+            .expect("user block row must render") as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_conversation_block, Some(0));
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_conversation_block, None);
+    }
+
+    #[test]
+    fn conversation_keyboard_selection_opens_action_menu() {
+        let (mut app, mut textarea) = make_app();
+        app.begin_user_block("/status");
+        app.begin_user_block("/help");
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+            &mut textarea,
+        );
+        assert_eq!(app.selected_conversation_block, Some(1));
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            &mut textarea,
+        );
+        assert!(app.conversation_action_menu.is_some());
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("Copy message"));
+    }
+
+    #[test]
+    fn conversation_selected_block_shows_action_menu_trigger() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("/status"))
+            .expect("user block row must render") as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("..."));
+
+        let menu_row = rows
+            .iter()
+            .position(|line| line.contains("..."))
+            .expect("selected block must expose menu trigger") as u16;
+        let menu_col = rows[menu_row as usize]
+            .find("...")
+            .expect("menu trigger must be findable") as u16;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: menu_col,
+            row: menu_row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("Copy message"));
+    }
+
+    #[test]
+    fn conversation_menu_limits_revert_to_latest_revertable_block() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("first change");
+        app.conversation_blocks[0]
+            .actions
+            .push(ConversationAction::Revert);
+        app.begin_user_block("second change");
+        app.conversation_blocks[1]
+            .actions
+            .push(ConversationAction::Revert);
+
+        assert_eq!(
+            app.conversation_menu_actions(0),
+            vec![ConversationAction::Copy]
+        );
+        assert_eq!(
+            app.conversation_menu_actions(1),
+            vec![ConversationAction::Copy, ConversationAction::Revert]
+        );
     }
 
     #[test]

@@ -431,6 +431,80 @@ pub mod tui {
         Style::default().fg(col(RUST)).add_modifier(Modifier::BOLD)
     }
 
+    /// User-submitted text inside a conversation block.
+    #[must_use]
+    pub fn conversation_user_text() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(PANEL_BG))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Timestamp and action text inside a conversation user block.
+    #[must_use]
+    pub fn conversation_user_meta() -> Style {
+        Style::default().fg(col(HAIRLINE)).bg(col(PANEL_BG))
+    }
+
+    /// User block surface while selected by mouse.
+    #[must_use]
+    pub fn conversation_user_selected_surface() -> Style {
+        Style::default().bg(col(Color::Rgb(0x2a, 0x28, 0x23)))
+    }
+
+    /// User text inside the selected conversation block.
+    #[must_use]
+    pub fn conversation_user_selected_text() -> Style {
+        conversation_user_selected_surface()
+            .fg(col(PARCHMENT))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Timestamp and muted controls inside the selected conversation block.
+    #[must_use]
+    pub fn conversation_user_selected_meta() -> Style {
+        conversation_user_selected_surface().fg(col(Color::Rgb(0xb0, 0xaa, 0x9d)))
+    }
+
+    /// Active action trigger inside the selected conversation block.
+    #[must_use]
+    pub fn conversation_user_action() -> Style {
+        conversation_user_selected_surface()
+            .fg(col(RUST))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Rust accent used for selected conversation blocks.
+    #[must_use]
+    pub fn conversation_user_selected_accent() -> Style {
+        conversation_user_selected_surface()
+            .fg(col(RUST))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Popup row used for conversation block actions.
+    #[must_use]
+    pub fn conversation_action_menu() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(Color::Rgb(0x24, 0x23, 0x20)))
+    }
+
+    /// Selected popup row used for conversation block actions.
+    #[must_use]
+    pub fn conversation_action_menu_selected() -> Style {
+        Style::default()
+            .fg(col(PARCHMENT))
+            .bg(col(Color::Rgb(0x3a, 0x2b, 0x22)))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Popup border used for conversation block actions.
+    #[must_use]
+    pub fn conversation_action_menu_border() -> Style {
+        Style::default().fg(col(RUST))
+    }
+
     /// Unselected slash-menu row.
     #[must_use]
     #[allow(dead_code)] // currently uses out_dim() — kept for future per-row styling
@@ -536,6 +610,8 @@ mod tests {
         let _ = tui::slash_match();
         let _ = tui::slash_command();
         let _ = tui::slash_group();
+        let _ = tui::conversation_user_text();
+        let _ = tui::conversation_user_meta();
         let _ = tui::slash_normal();
         let _ = tui::mode_pill();
         let _ = tui::mode_pill();

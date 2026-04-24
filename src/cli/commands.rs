@@ -218,6 +218,16 @@ pub(crate) fn describe(input: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Returns a human-readable pseudocode description of the graph.
+pub(crate) fn describe_to_string(input: &Path) -> Result<String> {
+    if let Some(workspace_root) = workspace_root_for_graph_input(input) {
+        return describe_workspace_program_to_string(&workspace_root, input);
+    }
+
+    let semantic_graph = parse_and_validate(input)?;
+    Ok(crate::cli::describe::describe_to_string(&semantic_graph))
+}
+
 /// If `input` is `<workspace>/.duumbi/graph/*.jsonld`, returns `<workspace>`.
 fn workspace_root_for_graph_input(input: &Path) -> Option<std::path::PathBuf> {
     let parent = input.parent()?;
@@ -279,6 +289,39 @@ fn describe_workspace_program(workspace_root: &Path, input: &Path) -> Result<()>
 
     crate::cli::describe::describe(module_graph);
     Ok(())
+}
+
+fn describe_workspace_program_to_string(workspace_root: &Path, input: &Path) -> Result<String> {
+    let source = fs::read_to_string(input)
+        .with_context(|| format!("Failed to read input file '{}'", input.display()))?;
+
+    let module_ast = parser::parse_jsonld(&source).map_err(|e| {
+        let diag = match &e {
+            parser::ParseError::Json { code, .. } => Diagnostic::error(code, e.to_string()),
+            parser::ParseError::MissingField { code, node_id, .. } => {
+                Diagnostic::error(code, e.to_string()).with_node(&types::NodeId(node_id.clone()))
+            }
+            parser::ParseError::UnknownOp { code, node_id, .. } => {
+                Diagnostic::error(code, e.to_string()).with_node(&types::NodeId(node_id.clone()))
+            }
+            parser::ParseError::SchemaInvalid { code, .. } => {
+                Diagnostic::error(code, e.to_string())
+            }
+        };
+        emit_diagnostic(&diag);
+        anyhow::anyhow!("Parse failed")
+    })?;
+
+    let program = deps::load_program_with_deps(workspace_root).map_err(|e| {
+        emit_program_error_diagnostics(&e);
+        anyhow::anyhow!("Graph construction failed: {e}")
+    })?;
+
+    let module_graph = program.modules.get(&module_ast.name).ok_or_else(|| {
+        anyhow::anyhow!("Module '{}' not found in loaded program", module_ast.name.0)
+    })?;
+
+    Ok(crate::cli::describe::describe_to_string(module_graph))
 }
 
 fn emit_program_error_diagnostics(err: &deps::DepsError) {

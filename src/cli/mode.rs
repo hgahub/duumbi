@@ -4,6 +4,8 @@
 //! - **Agent** — free-form AI mutation (default)
 //! - **Intent** — intent-focused planning and modification
 
+use std::path::PathBuf;
+
 /// The two REPL interaction modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplMode {
@@ -58,6 +60,69 @@ impl OutputLine {
         Self {
             text: text.into(),
             style,
+        }
+    }
+}
+
+/// Kind of a conversation-pane block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationBlockKind {
+    /// User-submitted prompt or selected slash command.
+    User,
+    /// Assistant or command output.
+    Output,
+}
+
+/// Action shown in a conversation block header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationAction {
+    /// Copy the block text to the clipboard.
+    Copy,
+    /// Revert graph changes associated with this turn.
+    Revert,
+}
+
+/// One scrollable conversation-pane block.
+#[derive(Debug, Clone)]
+pub struct ConversationBlock {
+    /// Block type.
+    pub kind: ConversationBlockKind,
+    /// Lines rendered inside the block.
+    pub lines: Vec<OutputLine>,
+    /// Time the user submitted the block, formatted for display.
+    pub submitted_at: Option<String>,
+    /// Runtime footer text, if applicable.
+    pub elapsed: Option<String>,
+    /// Header actions shown for the block.
+    pub actions: Vec<ConversationAction>,
+    /// Snapshot file associated with this user turn, if it changed the graph.
+    pub revert_snapshot: Option<PathBuf>,
+}
+
+impl ConversationBlock {
+    /// Creates a user block.
+    #[must_use]
+    pub fn user(input: impl Into<String>, submitted_at: impl Into<String>) -> Self {
+        Self {
+            kind: ConversationBlockKind::User,
+            lines: vec![OutputLine::new(input, OutputStyle::Normal)],
+            submitted_at: Some(submitted_at.into()),
+            elapsed: None,
+            actions: vec![ConversationAction::Copy],
+            revert_snapshot: None,
+        }
+    }
+
+    /// Creates an empty output block.
+    #[must_use]
+    pub fn output() -> Self {
+        Self {
+            kind: ConversationBlockKind::Output,
+            lines: Vec::new(),
+            submitted_at: None,
+            elapsed: None,
+            actions: Vec::new(),
+            revert_snapshot: None,
         }
     }
 }
