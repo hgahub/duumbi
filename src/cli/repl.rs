@@ -6,6 +6,7 @@
 //! the async command dispatch.
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -23,6 +24,9 @@ use crate::snapshot;
 use super::app::{ReplApp, Turn};
 use super::commands;
 use super::mode::{OutputStyle, ReplMode};
+
+const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1006h";
+const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -77,6 +81,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     // Initialise ratatui (enters alternate screen, enables raw mode).
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableBracketedPaste)?;
+    enable_balanced_mouse_reporting()?;
 
     // Single-line textarea — we intercept Enter ourselves.
     let mut textarea = TextArea::default();
@@ -85,6 +90,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &mut textarea).await;
 
     // Always restore the terminal, even on error.
+    disable_balanced_mouse_reporting().ok();
     execute!(std::io::stdout(), DisableBracketedPaste).ok();
     ratatui::restore();
 
@@ -116,10 +122,13 @@ async fn event_loop(
 
     loop {
         let event_ready = event::poll(TICK)?;
+        let mut should_redraw = false;
         if event_ready {
             match event::read()? {
                 Event::Key(key) => match app.handle_key(key, textarea) {
-                    super::mode::Action::Continue => {}
+                    super::mode::Action::Continue => {
+                        should_redraw = true;
+                    }
                     super::mode::Action::Exit => {
                         if let Some(ref mut mgr) = app.session_mgr {
                             mgr.archive().ok();
@@ -140,20 +149,24 @@ async fn event_loop(
                             break;
                         }
                         app.working = false;
+                        should_redraw = true;
                     }
                 },
                 Event::Paste(text) => {
                     textarea.insert_str(&text);
+                    should_redraw = true;
                 }
                 Event::Mouse(mouse) => {
-                    app.handle_mouse(mouse);
+                    should_redraw = app.handle_mouse(mouse);
                 }
-                _ => {}
+                _ => {
+                    should_redraw = true;
+                }
             }
         }
 
         let needs_anim = app.working || app.mode_dot_animated();
-        if event_ready || (needs_anim && last_draw.elapsed() >= TICK) {
+        if should_redraw || (needs_anim && last_draw.elapsed() >= TICK) {
             terminal.draw(|frame| app.render(frame, textarea))?;
             last_draw = Instant::now();
         }
@@ -405,13 +418,10 @@ async fn handle_slash(
             if app.has_workspace {
                 app.push_output("Workspace already initialised.", OutputStyle::Dim);
             } else {
-                run_with_terminal_restore(terminal, app, textarea, || {
-                    // run_init writes messages to stderr — visible outside alternate screen.
+                let workspace_root = app.workspace_root.clone();
+                let init_result = run_with_terminal_restore(terminal, app, textarea, || {
+                    super::init::run_init(&workspace_root)
                 });
-                ratatui::restore();
-                let init_result = super::init::run_init(&app.workspace_root);
-                *terminal = ratatui::init();
-                let _ = terminal.draw(|frame| app.render(frame, textarea));
                 match init_result {
                     Ok(()) => {
                         app.has_workspace = true;
@@ -475,18 +485,20 @@ async fn handle_slash(
 /// This is necessary for commands like `/build`, `/run`, `/check`, and
 /// `/describe` that write diagnostics directly to stderr — output that would
 /// be hidden inside the alternate screen.
-fn run_with_terminal_restore<F>(
+fn run_with_terminal_restore<F, R>(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ReplApp,
     textarea: &mut TextArea<'_>,
     f: F,
-) where
-    F: FnOnce(),
+) -> R
+where
+    F: FnOnce() -> R,
 {
     // Leave alternate screen so the command's stderr output is visible.
+    disable_balanced_mouse_reporting().ok();
     ratatui::restore();
 
-    f();
+    let result = f();
 
     // Prompt the user to return to the TUI.
     eprintln!("\n[Press Enter to return to the REPL]");
@@ -494,8 +506,25 @@ fn run_with_terminal_restore<F>(
 
     // Re-enter alternate screen.
     *terminal = ratatui::init();
+    enable_balanced_mouse_reporting().ok();
     // Redraw immediately so the TUI is not blank.
     let _ = terminal.draw(|frame| app.render(frame, textarea));
+    result
+}
+
+fn enable_balanced_mouse_reporting() -> io::Result<()> {
+    write_terminal_sequence(DISABLE_ALL_MOUSE_REPORTING)?;
+    write_terminal_sequence(ENABLE_BALANCED_MOUSE_REPORTING)
+}
+
+fn disable_balanced_mouse_reporting() -> io::Result<()> {
+    write_terminal_sequence(DISABLE_ALL_MOUSE_REPORTING)
+}
+
+fn write_terminal_sequence(sequence: &str) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(sequence.as_bytes())?;
+    stdout.flush()
 }
 
 // ---------------------------------------------------------------------------
@@ -1698,6 +1727,21 @@ mod tests {
         assert!(!should_show_elapsed("/status"));
         assert!(should_show_elapsed("/describe"));
         assert!(should_show_elapsed("create a calculator"));
+    }
+
+    #[test]
+    fn balanced_mouse_reporting_avoids_drag_modes() {
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1000h"));
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1006h"));
+        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1002h"));
+        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1003h"));
+        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1015h"));
+
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1006l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1015l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1003l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1002l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1000l"));
     }
 
     #[test]

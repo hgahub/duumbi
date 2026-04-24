@@ -468,22 +468,23 @@ impl ReplApp {
 
     /// Handles mouse events when the terminal delivers them.
     ///
-    /// The REPL does not enable global mouse capture by default, so terminals
-    /// can keep native drag-selection available.
-    #[allow(dead_code)]
-    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+    /// The REPL enables only basic mouse reporting, avoiding drag-motion
+    /// capture so terminals can keep native text selection available.
+    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
         use crossterm::event::MouseEventKind;
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.scroll_conversation_up(3, 1, 80);
+                true
             }
             MouseEventKind::ScrollDown => {
                 self.scroll_conversation_down(3);
+                true
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_conversation_click(mouse.column, mouse.row);
+                self.handle_conversation_click(mouse.column, mouse.row)
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -1398,9 +1399,9 @@ impl ReplApp {
         idx
     }
 
-    fn handle_conversation_click(&mut self, column: u16, row: u16) {
+    fn handle_conversation_click(&mut self, column: u16, row: u16) -> bool {
         let Some(area) = self.last_conversation_area.get() else {
-            return;
+            return false;
         };
 
         if let Some((menu_area, actions)) = self.conversation_action_menu_rect(area)
@@ -1412,24 +1413,25 @@ impl ReplApp {
             {
                 self.execute_conversation_action(menu.block_index, action);
             }
-            return;
+            return true;
         }
 
         if self.conversation_action_menu.is_some() {
             self.conversation_action_menu = None;
+            return true;
         }
 
         if !self.rect_contains(area, column, row) {
-            return;
+            return false;
         }
 
         let layout = self.visible_conversation_layout(area);
         let relative_y = row.saturating_sub(area.y) as usize;
         if relative_y < layout.padding {
-            return;
+            return false;
         }
         let Some(visual_row) = layout.rows.get(relative_y - layout.padding) else {
-            return;
+            return false;
         };
 
         if let (Some(block_index), Some((start, end))) =
@@ -1439,18 +1441,18 @@ impl ReplApp {
             && self.selected_conversation_block == Some(block_index)
         {
             self.conversation_action_menu = Some(ConversationActionMenu { block_index });
-            return;
+            return true;
         }
 
         let Some(block_index) = visual_row.block_index else {
-            return;
+            return false;
         };
         if self
             .conversation_blocks
             .get(block_index)
             .is_none_or(|block| block.kind != ConversationBlockKind::User)
         {
-            return;
+            return false;
         }
 
         if self.selected_conversation_block == Some(block_index) {
@@ -1460,6 +1462,7 @@ impl ReplApp {
             self.selected_conversation_block = Some(block_index);
             self.conversation_action_menu = None;
         }
+        true
     }
 
     fn rect_contains(&self, rect: Rect, column: u16, row: u16) -> bool {
