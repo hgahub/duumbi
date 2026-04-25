@@ -171,18 +171,16 @@ pub enum Action {
 // Interactive panel state
 // ---------------------------------------------------------------------------
 
-/// Active interactive panel rendered below the prompt.
-// ModelSelector is constructed by the /model slash command handler in repl.rs
-// and by tests; the variant is intentionally used only when the panel is opened.
+/// Active interactive panel rendered above the REPL.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub enum PanelState {
     /// No panel open — normal REPL mode.
     #[default]
     None,
-    /// Model/provider selector panel.
-    ModelSelector {
-        /// Index of highlighted provider (0-based).
+    /// Provider connection manager panel.
+    ProviderManager {
+        /// Index of highlighted provider kind (0-based).
         selected: usize,
         /// Sub-mode for inline input within the panel.
         input_mode: Option<PanelInputMode>,
@@ -202,25 +200,25 @@ pub enum PanelInputMode {
         /// Index of the highlighted provider kind.
         selected: usize,
     },
-    /// Step 2: Selecting a model for the chosen provider.
+    /// Step 2: Choose authentication type (API Key vs Subscription Token).
+    AddStepAuthType {
+        /// The provider kind chosen in step 1.
+        provider: crate::config::ProviderKind,
+        /// 0 = API Key, 1 = Subscription Token (Bearer).
+        selected: usize,
+    },
+    /// Step 3: Selecting a default model for the chosen provider.
     AddStep2Model {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,
+        /// If true, the key is a subscription/Bearer token.
+        is_subscription: bool,
         /// Index of highlighted model in the recommendations list.
         selected: usize,
         /// When `Some`, the user is typing a manual model name.
         manual_input: Option<String>,
     },
-    /// Step 2.5: Choose authentication type (API Key vs Subscription Token).
-    AddStepAuthType {
-        /// The provider kind chosen in step 1.
-        provider: crate::config::ProviderKind,
-        /// The model chosen in step 2.
-        model: String,
-        /// 0 = API Key, 1 = Subscription Token (Bearer).
-        selected: usize,
-    },
-    /// Step 3: Entering the API key or subscription token (characters are masked).
+    /// Step 4: Entering the API key or subscription token (characters are masked).
     AddStep3Key {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,
@@ -231,7 +229,7 @@ pub enum PanelInputMode {
         /// If true, the key is a subscription/Bearer token.
         is_subscription: bool,
     },
-    /// Step 3 confirmation: choose keychain vs session-only storage.
+    /// Step 5 confirmation: choose keychain vs session-only storage.
     AddStep3Confirm {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,

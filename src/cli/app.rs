@@ -31,6 +31,18 @@ const PROVIDER_KINDS: &[(&str, &str)] = &[
     ("minimax", "MiniMax"),
 ];
 
+/// Returns a short provider label for the provider manager.
+fn provider_kind_label(kind: &crate::config::ProviderKind) -> &'static str {
+    use crate::config::ProviderKind;
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::OpenAI => "openai",
+        ProviderKind::Grok => "grok",
+        ProviderKind::OpenRouter => "openrouter",
+        ProviderKind::MiniMax => "minimax",
+    }
+}
+
 /// Returns recommended models for a given provider kind.
 fn recommended_models(kind: &crate::config::ProviderKind) -> Vec<(&'static str, &'static str)> {
     use crate::config::ProviderKind;
@@ -122,6 +134,22 @@ fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKin
         4 => Some(ProviderKind::MiniMax),
         _ => None,
     }
+}
+
+/// Finds the configured provider entry for a provider kind.
+fn configured_provider_index(
+    config: &DuumbiConfig,
+    kind: &crate::config::ProviderKind,
+) -> Option<usize> {
+    config.providers.iter().position(|p| &p.provider == kind)
+}
+
+/// Returns the credential env var that is active for a provider config.
+fn active_credential_env(config: &crate::config::ProviderConfig) -> &str {
+    config
+        .auth_token_env
+        .as_deref()
+        .unwrap_or(&config.api_key_env)
 }
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
@@ -364,8 +392,8 @@ impl ReplApp {
     /// mode toggles, slash-menu navigation, and output buffer updates.
     pub fn handle_key(&mut self, key: KeyEvent, textarea: &mut TextArea<'_>) -> Action {
         // Interactive panel gets priority over normal key handling.
-        if matches!(self.panel, PanelState::ModelSelector { .. }) {
-            return self.handle_model_panel_key(key, textarea);
+        if matches!(self.panel, PanelState::ProviderManager { .. }) {
+            return self.handle_provider_panel_key(key, textarea);
         }
 
         if self.conversation_action_menu.is_some() {
@@ -567,29 +595,79 @@ impl ReplApp {
         Action::Continue
     }
 
-    /// Handles key events when the model selector panel is active.
+    /// Handles key events when the provider manager panel is active.
     ///
     /// Extracts panel state by value, processes the key, then writes back.
-    fn handle_model_panel_key(
+    fn handle_provider_panel_key(
         &mut self,
         key_event: KeyEvent,
         textarea: &mut TextArea<'_>,
     ) -> Action {
-        // Extract current panel state (take ownership to avoid borrow issues).
         let (mut selected, mut input_mode) = match &self.panel {
-            PanelState::ModelSelector {
+            PanelState::ProviderManager {
                 selected,
                 input_mode,
                 ..
             } => (*selected, input_mode.clone()),
             PanelState::None => return Action::Continue,
         };
-        // Status message is cleared on every key press; handlers may set a new one.
         let mut new_status_msg: Option<(String, OutputStyle)> = None;
 
-        // --- Sub-mode input handling ---
         if let Some(ref mut mode) = input_mode {
             match mode {
+                PanelInputMode::ConfirmDelete => match key_event.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let Some(kind) = parse_provider_kind_by_index(selected) else {
+                            self.panel = PanelState::ProviderManager {
+                                selected,
+                                input_mode: None,
+                                status_msg: Some((
+                                    "Unknown provider selection.".to_string(),
+                                    OutputStyle::Error,
+                                )),
+                            };
+                            return Action::Continue;
+                        };
+                        let removed = self.remove_provider_connection(&kind);
+                        input_mode = None;
+                        if removed {
+                            self.save_config_and_rebuild_client();
+                            new_status_msg = Some((
+                                format!("{} connection deleted.", provider_kind_label(&kind)),
+                                OutputStyle::Success,
+                            ));
+                        } else {
+                            new_status_msg = Some((
+                                format!("{} is not configured.", provider_kind_label(&kind)),
+                                OutputStyle::Dim,
+                            ));
+                        }
+                    }
+                    _ => {
+                        input_mode = None;
+                    }
+                },
+                PanelInputMode::AddStep1Provider { selected: step_sel } => match key_event.code {
+                    KeyCode::Esc => {
+                        input_mode = None;
+                    }
+                    KeyCode::Up if *step_sel > 0 => {
+                        *step_sel -= 1;
+                    }
+                    KeyCode::Down if *step_sel < PROVIDER_KINDS.len() - 1 => {
+                        *step_sel += 1;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(kind) = parse_provider_kind_by_index(*step_sel) {
+                            selected = *step_sel;
+                            input_mode = Some(PanelInputMode::AddStepAuthType {
+                                provider: kind,
+                                selected: 0,
+                            });
+                        }
+                    }
+                    _ => {}
+                },
                 PanelInputMode::AddProvider(buf) => match key_event.code {
                     KeyCode::Esc => {
                         input_mode = None;
@@ -611,47 +689,29 @@ impl ReplApp {
                     }
                     _ => {}
                 },
-                PanelInputMode::ConfirmDelete => match key_event.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        let selector = (selected + 1).to_string();
-                        input_mode = None;
-                        let lines = super::provider::remove_provider(&mut self.config, &selector);
-                        for line in lines {
-                            self.output_lines.push(line);
-                        }
-                        self.save_config_and_rebuild_client();
-                        let count = self.config.effective_providers().len();
-                        if selected >= count && count > 0 {
-                            selected = count - 1;
-                        }
-                    }
-                    _ => {
-                        input_mode = None;
-                    }
-                },
-                PanelInputMode::AddStep1Provider { selected: step_sel } => match key_event.code {
+                PanelInputMode::AddStepAuthType {
+                    provider,
+                    selected: auth_sel,
+                } => match key_event.code {
                     KeyCode::Esc => {
-                        input_mode = None;
+                        input_mode = Some(PanelInputMode::AddStep1Provider { selected });
                     }
-                    KeyCode::Up if *step_sel > 0 => {
-                        *step_sel -= 1;
-                    }
-                    KeyCode::Down if *step_sel < PROVIDER_KINDS.len() - 1 => {
-                        *step_sel += 1;
+                    KeyCode::Up | KeyCode::Down => {
+                        *auth_sel = 1 - *auth_sel;
                     }
                     KeyCode::Enter => {
-                        if let Some(kind) = parse_provider_kind_by_index(*step_sel) {
-                            input_mode = Some(PanelInputMode::AddStep2Model {
-                                provider: kind,
-                                selected: 0,
-                                manual_input: None,
-                            });
-                        }
+                        input_mode = Some(PanelInputMode::AddStep2Model {
+                            provider: provider.clone(),
+                            is_subscription: *auth_sel == 1,
+                            selected: 0,
+                            manual_input: None,
+                        });
                     }
                     _ => {}
                 },
                 PanelInputMode::AddStep2Model {
                     provider,
+                    is_subscription,
                     selected: model_sel,
                     manual_input,
                 } => {
@@ -669,10 +729,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter if !manual.is_empty() => {
                                 let model = manual.clone();
-                                input_mode = Some(PanelInputMode::AddStepAuthType {
+                                input_mode = Some(PanelInputMode::AddStep3Key {
                                     provider: provider.clone(),
                                     model,
-                                    selected: 0,
+                                    key_buf: String::new(),
+                                    is_subscription: *is_subscription,
                                 });
                             }
                             _ => {}
@@ -682,7 +743,10 @@ impl ReplApp {
                         let models = recommended_models(provider);
                         match key_event.code {
                             KeyCode::Esc => {
-                                input_mode = Some(PanelInputMode::AddStep1Provider { selected: 0 });
+                                input_mode = Some(PanelInputMode::AddStepAuthType {
+                                    provider: provider.clone(),
+                                    selected: if *is_subscription { 1 } else { 0 },
+                                });
                             }
                             KeyCode::Up if *model_sel > 0 => {
                                 *model_sel -= 1;
@@ -695,10 +759,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter => {
                                 if let Some((model_name, _)) = models.get(*model_sel) {
-                                    input_mode = Some(PanelInputMode::AddStepAuthType {
+                                    input_mode = Some(PanelInputMode::AddStep3Key {
                                         provider: provider.clone(),
                                         model: (*model_name).to_string(),
-                                        selected: 0,
+                                        key_buf: String::new(),
+                                        is_subscription: *is_subscription,
                                     });
                                 }
                             }
@@ -706,32 +771,6 @@ impl ReplApp {
                         }
                     }
                 }
-                PanelInputMode::AddStepAuthType {
-                    provider,
-                    model,
-                    selected: auth_sel,
-                } => match key_event.code {
-                    KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStep2Model {
-                            provider: provider.clone(),
-                            selected: 0,
-                            manual_input: None,
-                        });
-                    }
-                    KeyCode::Up | KeyCode::Down => {
-                        *auth_sel = 1 - *auth_sel;
-                    }
-                    KeyCode::Enter => {
-                        let is_subscription = *auth_sel == 1;
-                        input_mode = Some(PanelInputMode::AddStep3Key {
-                            provider: provider.clone(),
-                            model: model.clone(),
-                            key_buf: String::new(),
-                            is_subscription,
-                        });
-                    }
-                    _ => {}
-                },
                 PanelInputMode::AddStep3Key {
                     provider,
                     model,
@@ -739,10 +778,11 @@ impl ReplApp {
                     is_subscription,
                 } => match key_event.code {
                     KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStepAuthType {
+                        input_mode = Some(PanelInputMode::AddStep2Model {
                             provider: provider.clone(),
-                            model: model.clone(),
-                            selected: if *is_subscription { 1 } else { 0 },
+                            is_subscription: *is_subscription,
+                            selected: 0,
+                            manual_input: None,
                         });
                     }
                     KeyCode::Backspace => {
@@ -785,13 +825,9 @@ impl ReplApp {
                                 unsafe {
                                     std::env::set_var(store_env, &key_clone);
                                 }
-                                self.config.providers.push(crate::config::ProviderConfig {
+                                self.upsert_provider_connection(crate::config::ProviderConfig {
                                     provider: prov_clone,
-                                    role: if self.config.providers.is_empty() {
-                                        crate::config::ProviderRole::Primary
-                                    } else {
-                                        crate::config::ProviderRole::Fallback
-                                    },
+                                    role: crate::config::ProviderRole::Primary,
                                     model: model_clone,
                                     api_key_env: api_key_env.clone(),
                                     base_url: None,
@@ -800,11 +836,10 @@ impl ReplApp {
                                     auth_token_env: token_env,
                                 });
                                 self.save_config_and_rebuild_client();
-                                selected = self.config.providers.len() - 1;
                                 let auth_msg = if *is_subscription {
-                                    "Provider added (subscription/Bearer). Token saved to ~/.duumbi/credentials.toml."
+                                    "Provider connection saved (subscription/Bearer token in ~/.duumbi/credentials.toml)."
                                 } else {
-                                    "Provider added. Key saved to ~/.duumbi/credentials.toml."
+                                    "Provider connection saved (API key in ~/.duumbi/credentials.toml)."
                                 };
                                 new_status_msg = Some((auth_msg.to_string(), OutputStyle::Success));
                             }
@@ -814,13 +849,9 @@ impl ReplApp {
                                 unsafe {
                                     std::env::set_var(store_env, &key_clone);
                                 }
-                                self.config.providers.push(crate::config::ProviderConfig {
+                                self.upsert_provider_connection(crate::config::ProviderConfig {
                                     provider: prov_clone,
-                                    role: if self.config.providers.is_empty() {
-                                        crate::config::ProviderRole::Primary
-                                    } else {
-                                        crate::config::ProviderRole::Fallback
-                                    },
+                                    role: crate::config::ProviderRole::Primary,
                                     model: model_clone,
                                     api_key_env,
                                     base_url: None,
@@ -829,7 +860,6 @@ impl ReplApp {
                                     auth_token_env: token_env,
                                 });
                                 self.save_config_and_rebuild_client();
-                                selected = self.config.providers.len() - 1;
                                 new_status_msg = Some((
                                     format!("File storage error: {e}. Token set for session only."),
                                     OutputStyle::Error,
@@ -854,13 +884,9 @@ impl ReplApp {
                         unsafe {
                             std::env::set_var(&store_env_name, &key_clone);
                         }
-                        self.config.providers.push(crate::config::ProviderConfig {
+                        self.upsert_provider_connection(crate::config::ProviderConfig {
                             provider: prov_clone,
-                            role: if self.config.providers.is_empty() {
-                                crate::config::ProviderRole::Primary
-                            } else {
-                                crate::config::ProviderRole::Fallback
-                            },
+                            role: crate::config::ProviderRole::Primary,
                             model: model_clone,
                             api_key_env: api_key_env.clone(),
                             base_url: None,
@@ -869,13 +895,12 @@ impl ReplApp {
                             auth_token_env: token_env,
                         });
                         self.save_config_and_rebuild_client();
-                        selected = self.config.providers.len() - 1;
                         let auth_msg = if *is_subscription {
                             format!(
-                                "Provider added (subscription/Bearer, {store_env_name}, session only)."
+                                "Provider connection saved (subscription/Bearer, {store_env_name}, session only)."
                             )
                         } else {
-                            format!("Provider added ({api_key_env}, session only).")
+                            format!("Provider connection saved ({api_key_env}, session only).")
                         };
                         new_status_msg = Some((auth_msg, OutputStyle::Success));
                         input_mode = None; // back to list view
@@ -892,16 +917,13 @@ impl ReplApp {
                     _ => {}
                 },
             }
-            self.panel = PanelState::ModelSelector {
+            self.panel = PanelState::ProviderManager {
                 selected,
                 input_mode,
                 status_msg: new_status_msg,
             };
             return Action::Continue;
         }
-
-        // --- Main panel key handling (no sub-mode) ---
-        let provider_count = self.config.effective_providers().len();
 
         match key_event.code {
             KeyCode::Esc => {
@@ -912,7 +934,7 @@ impl ReplApp {
             }
             KeyCode::Up => {
                 selected = selected.saturating_sub(1);
-                self.panel = PanelState::ModelSelector {
+                self.panel = PanelState::ProviderManager {
                     selected,
                     input_mode: None,
                     status_msg: None,
@@ -920,10 +942,10 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Down => {
-                if provider_count > 0 && selected < provider_count - 1 {
+                if selected < PROVIDER_KINDS.len().saturating_sub(1) {
                     selected += 1;
                 }
-                self.panel = PanelState::ModelSelector {
+                self.panel = PanelState::ProviderManager {
                     selected,
                     input_mode: None,
                     status_msg: None,
@@ -931,35 +953,33 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Enter => {
-                // Set selected provider as primary, all others as fallback.
-                if provider_count > 0 && selected < self.config.providers.len() {
-                    for (i, p) in self.config.providers.iter_mut().enumerate() {
-                        p.role = if i == selected {
-                            crate::config::ProviderRole::Primary
-                        } else {
-                            crate::config::ProviderRole::Fallback
-                        };
-                    }
-                    let model = self.config.providers[selected].model.clone();
-                    self.push_output(format!("Selected: {model}"), OutputStyle::Success);
-                    self.save_config_and_rebuild_client();
+                if let Some(kind) = parse_provider_kind_by_index(selected) {
+                    input_mode = Some(PanelInputMode::AddStepAuthType {
+                        provider: kind,
+                        selected: 0,
+                    });
                 }
-                self.panel = PanelState::None;
-                textarea.move_cursor(CursorMove::Head);
-                textarea.delete_line_by_end();
+                self.panel = PanelState::ProviderManager {
+                    selected,
+                    input_mode,
+                    status_msg: None,
+                };
                 Action::Continue
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                self.panel = PanelState::ModelSelector {
+                self.panel = PanelState::ProviderManager {
                     selected,
-                    input_mode: Some(PanelInputMode::AddStep1Provider { selected: 0 }),
+                    input_mode: Some(PanelInputMode::AddStep1Provider { selected }),
                     status_msg: None,
                 };
                 Action::Continue
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                if provider_count > 0 {
-                    self.panel = PanelState::ModelSelector {
+                if parse_provider_kind_by_index(selected)
+                    .and_then(|kind| configured_provider_index(&self.config, &kind))
+                    .is_some()
+                {
+                    self.panel = PanelState::ProviderManager {
                         selected,
                         input_mode: Some(PanelInputMode::ConfirmDelete),
                         status_msg: None,
@@ -968,21 +988,118 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Char('t') | KeyCode::Char('T') => {
-                if provider_count > 0 && selected < self.config.providers.len() {
-                    self.config.providers[selected].role =
-                        match self.config.providers[selected].role {
-                            crate::config::ProviderRole::Primary => {
-                                crate::config::ProviderRole::Fallback
-                            }
-                            crate::config::ProviderRole::Fallback => {
-                                crate::config::ProviderRole::Primary
-                            }
-                        };
+                if let Some(kind) = parse_provider_kind_by_index(selected) {
+                    new_status_msg = Some(self.test_provider_connection_config(&kind));
+                }
+                self.panel = PanelState::ProviderManager {
+                    selected,
+                    input_mode: None,
+                    status_msg: new_status_msg,
+                };
+                Action::Continue
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                if let Some(kind) = parse_provider_kind_by_index(selected) {
+                    new_status_msg = Some(self.set_provider_priority(&kind));
                     self.save_config_and_rebuild_client();
                 }
+                self.panel = PanelState::ProviderManager {
+                    selected,
+                    input_mode: None,
+                    status_msg: new_status_msg,
+                };
                 Action::Continue
             }
             _ => Action::Continue,
+        }
+    }
+
+    /// Inserts or replaces one provider-kind connection while preserving fallback priority.
+    fn upsert_provider_connection(&mut self, mut provider: crate::config::ProviderConfig) {
+        if let Some(index) = configured_provider_index(&self.config, &provider.provider) {
+            provider.role = self.config.providers[index].role.clone();
+            self.config.providers[index] = provider;
+        } else {
+            provider.role = if self.config.providers.is_empty() {
+                crate::config::ProviderRole::Primary
+            } else {
+                crate::config::ProviderRole::Fallback
+            };
+            self.config.providers.push(provider);
+        }
+    }
+
+    /// Removes a provider connection and its file-stored credential, when present.
+    fn remove_provider_connection(&mut self, kind: &crate::config::ProviderKind) -> bool {
+        let Some(index) = configured_provider_index(&self.config, kind) else {
+            return false;
+        };
+        let removed = self.config.providers.remove(index);
+        if matches!(removed.key_storage, Some(crate::config::KeyStorage::File)) {
+            let _ = super::keystore::delete_api_key(&removed.api_key_env);
+            if let Some(token_env) = removed.auth_token_env {
+                let _ = super::keystore::delete_api_key(&token_env);
+            }
+        }
+        if !self
+            .config
+            .providers
+            .iter()
+            .any(|p| p.role == crate::config::ProviderRole::Primary)
+            && let Some(first) = self.config.providers.first_mut()
+        {
+            first.role = crate::config::ProviderRole::Primary;
+        }
+        true
+    }
+
+    /// Marks a configured provider as the first provider in the fallback chain.
+    fn set_provider_priority(
+        &mut self,
+        kind: &crate::config::ProviderKind,
+    ) -> (String, OutputStyle) {
+        let Some(index) = configured_provider_index(&self.config, kind) else {
+            return (
+                format!("{} is not configured.", provider_kind_label(kind)),
+                OutputStyle::Dim,
+            );
+        };
+        for (i, provider) in self.config.providers.iter_mut().enumerate() {
+            provider.role = if i == index {
+                crate::config::ProviderRole::Primary
+            } else {
+                crate::config::ProviderRole::Fallback
+            };
+        }
+        (
+            format!(
+                "{} is now first in the fallback chain.",
+                provider_kind_label(kind)
+            ),
+            OutputStyle::Success,
+        )
+    }
+
+    /// Performs a local provider config check without making a network call.
+    fn test_provider_connection_config(
+        &self,
+        kind: &crate::config::ProviderKind,
+    ) -> (String, OutputStyle) {
+        let Some(index) = configured_provider_index(&self.config, kind) else {
+            return (
+                format!("{} is not configured.", provider_kind_label(kind)),
+                OutputStyle::Dim,
+            );
+        };
+        match crate::agents::factory::create_provider(&self.config.providers[index]) {
+            Ok(_) => (
+                format!("{} connection config is ready.", provider_kind_label(kind)),
+                OutputStyle::Success,
+            ),
+            Err(e) => (
+                format!("{} connection is not ready: {e}", provider_kind_label(kind)),
+                OutputStyle::Error,
+            ),
         }
     }
 
@@ -1008,12 +1125,17 @@ impl ReplApp {
             .effective_providers()
             .iter()
             .filter(|p| matches!(p.key_storage, Some(crate::config::KeyStorage::File)))
-            .filter_map(|p| {
+            .flat_map(|p| {
+                let mut names = Vec::new();
                 if super::keystore::load_api_key(&p.api_key_env).is_some() {
-                    Some(p.api_key_env.clone())
-                } else {
-                    None
+                    names.push(p.api_key_env.clone());
                 }
+                if let Some(token_env) = &p.auth_token_env
+                    && super::keystore::load_api_key(token_env).is_some()
+                {
+                    names.push(token_env.clone());
+                }
+                names
             })
             .collect()
     }
@@ -1699,7 +1821,7 @@ impl ReplApp {
                     self.render_slash_menu(frame, overlay_area);
                 }
             }
-            PanelState::ModelSelector {
+            PanelState::ProviderManager {
                 selected,
                 input_mode,
                 status_msg,
@@ -1707,8 +1829,14 @@ impl ReplApp {
                 if let Some(overlay_height) = self.overlay_height() {
                     let overlay_width = page.width.saturating_sub(4).clamp(52, 110);
                     let overlay_area =
-                        Self::overlay_rect(page, chunks[6], overlay_width, overlay_height);
-                    self.render_model_panel(frame, overlay_area, *selected, input_mode, status_msg)
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_provider_panel(
+                        frame,
+                        overlay_area,
+                        *selected,
+                        input_mode,
+                        status_msg,
+                    )
                 }
             }
         }
@@ -1744,7 +1872,7 @@ impl ReplApp {
                     })
                 }
             }
-            PanelState::ModelSelector { input_mode, .. } => Some(match input_mode {
+            PanelState::ProviderManager { input_mode, .. } => Some(match input_mode {
                 Some(PanelInputMode::AddStep1Provider { .. }) => (PROVIDER_KINDS.len() as u16) + 4,
                 Some(PanelInputMode::AddStep2Model {
                     provider,
@@ -1762,11 +1890,11 @@ impl ReplApp {
                 Some(PanelInputMode::AddStep3Key { .. }) => 10,
                 Some(PanelInputMode::AddStep3Confirm { .. }) => 5,
                 _ => {
-                    let provider_count = self.config.effective_providers().len().max(1);
+                    let provider_count = PROVIDER_KINDS.len().max(1);
                     let input_line = if input_mode.is_some() { 1 } else { 0 };
                     let status_line = match (&self.panel, input_mode) {
                         (
-                            PanelState::ModelSelector {
+                            PanelState::ProviderManager {
                                 status_msg: Some(_),
                                 ..
                             },
@@ -1802,14 +1930,12 @@ impl ReplApp {
         Some(Rect::new(page.x, y, page.width, height))
     }
 
-    /// Returns an overlay rectangle anchored above the prompt well.
-    fn overlay_rect(page: Rect, anchor: Rect, width: u16, height: u16) -> Rect {
+    /// Returns a centered overlay rectangle inside the page.
+    fn centered_overlay_rect(page: Rect, width: u16, height: u16) -> Rect {
         let width = width.min(page.width).max(1);
         let height = height.min(page.height).max(1);
         let x = page.x + page.width.saturating_sub(width) / 2;
-        let min_y = page.y.saturating_add(1);
-        let preferred_y = anchor.y.saturating_sub(height.saturating_add(1));
-        let y = preferred_y.max(min_y);
+        let y = page.y + page.height.saturating_sub(height) / 2;
         Rect::new(x, y, width, height)
     }
 
@@ -2645,8 +2771,8 @@ impl ReplApp {
         ])
     }
 
-    /// Renders the interactive model/provider selector panel.
-    fn render_model_panel(
+    /// Renders the interactive provider connection manager panel.
+    fn render_provider_panel(
         &self,
         frame: &mut Frame,
         area: Rect,
@@ -2665,63 +2791,61 @@ impl ReplApp {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let providers = self.config.effective_providers();
         let mut lines: Vec<Line<'_>> = Vec::new();
 
         let inner_width = inner.width as usize;
 
-        // Header
         lines.push(Line::from(vec![
-            Span::styled("  Select Model", theme::brand_word()),
-            Span::raw(" ".repeat(inner_width.saturating_sub(40))),
+            Span::styled("  Provider Connections", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(48))),
             Span::styled("(Esc to close)", theme::out_dim()),
         ]));
-
-        // Empty line
         lines.push(Line::from(""));
 
-        // Provider list
-        if providers.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  No providers configured. Press [A] to add one.",
-                theme::out_dim(),
-            )));
-        } else {
-            for (i, p) in providers.iter().enumerate() {
-                let is_sel = i == selected;
-                let prefix = if is_sel { "  \u{25cf} " } else { "    " };
-                let key_indicator = if std::env::var(&p.api_key_env).is_ok() {
-                    "key (env)"
-                } else if self.keychain_cache.contains(&p.api_key_env) {
-                    "key (file)"
+        for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
+            let Some(kind) = parse_provider_kind_by_index(i) else {
+                continue;
+            };
+            let is_sel = i == selected;
+            let prefix = if is_sel { "  \u{25cf} " } else { "    " };
+            let status = if let Some(index) = configured_provider_index(&self.config, &kind) {
+                let provider = &self.config.providers[index];
+                let auth = if provider.auth_token_env.is_some() {
+                    "subscription"
                 } else {
-                    "no key"
+                    "key"
                 };
-                let role_str = format!("{:?}", p.role).to_lowercase();
-
-                let text = format!(
-                    "{prefix}{}. {:<12} {:<25} ({:<8})  {}",
-                    i + 1,
-                    format!("{:?}", p.provider).to_lowercase(),
-                    p.model,
-                    role_str,
-                    key_indicator,
-                );
-
-                let style = if is_sel {
-                    theme::slash_selected()
+                let credential_env = active_credential_env(provider);
+                let source = if std::env::var(credential_env).is_ok() {
+                    "env"
+                } else if self.keychain_cache.contains(credential_env) {
+                    "file"
                 } else {
-                    theme::out_dim()
+                    "missing"
                 };
-
-                lines.push(Line::from(Span::styled(text, style)));
-            }
+                let priority = if provider.role == crate::config::ProviderRole::Primary {
+                    "priority"
+                } else {
+                    "fallback"
+                };
+                format!(
+                    "configured  {:<12} {:<8} {:<8} default {}",
+                    auth, source, priority, provider.model
+                )
+            } else {
+                "not configured  key/subscription".to_string()
+            };
+            let text = format!("{prefix}{}. {:<11} {:<34} {}", i + 1, name, desc, status);
+            let style = if is_sel {
+                theme::slash_selected()
+            } else {
+                theme::out_dim()
+            };
+            lines.push(Line::from(Span::styled(text, style)));
         }
 
-        // Empty line
         lines.push(Line::from(""));
 
-        // Footer / input mode — wizard steps replace the footer entirely.
         match input_mode {
             Some(PanelInputMode::AddProvider(buf)) => {
                 lines.push(Line::from(vec![
@@ -2731,16 +2855,18 @@ impl ReplApp {
                 ]));
             }
             Some(PanelInputMode::ConfirmDelete) => {
+                let provider_name = parse_provider_kind_by_index(selected)
+                    .map(|kind| provider_kind_label(&kind))
+                    .unwrap_or("provider");
                 lines.push(Line::from(Span::styled(
-                    format!("  Delete provider #{}? [y/N]", selected + 1),
+                    format!("  Delete {provider_name} connection? [y/N]"),
                     theme::out_error(),
                 )));
             }
             Some(PanelInputMode::AddStep1Provider { selected: step_sel }) => {
-                // Replace entire panel with provider selection.
                 lines.clear();
                 lines.push(Line::from(vec![
-                    Span::styled("  Add Provider", theme::brand_word()),
+                    Span::styled("  Select Provider", theme::brand_word()),
                     Span::raw(" ".repeat(inner_width.saturating_sub(45))),
                     Span::styled("(Esc to cancel)", theme::out_dim()),
                 ]));
@@ -2757,55 +2883,14 @@ impl ReplApp {
                     lines.push(Line::from(Span::styled(text, style)));
                 }
             }
-            Some(PanelInputMode::AddStep2Model {
-                provider,
-                selected: model_sel,
-                manual_input,
-            }) => {
-                lines.clear();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  Select Model for {provider}"),
-                        theme::brand_word(),
-                    ),
-                    Span::raw(" ".repeat(inner_width.saturating_sub(55))),
-                    Span::styled("(Esc to go back)", theme::out_dim()),
-                ]));
-                lines.push(Line::from(""));
-                if let Some(manual) = manual_input {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Model: ", theme::out_help_cmd()),
-                        Span::styled(format!("{manual}\u{2588}"), theme::brand_word()),
-                    ]));
-                } else {
-                    let models = recommended_models(provider);
-                    for (i, (name, desc)) in models.iter().enumerate() {
-                        let is_sel = i == *model_sel;
-                        let prefix = if is_sel { "  \u{25cf} " } else { "    " };
-                        let text = format!("{prefix}{}. {:<30} {}", i + 1, name, desc);
-                        let style = if is_sel {
-                            theme::slash_selected()
-                        } else {
-                            theme::out_dim()
-                        };
-                        lines.push(Line::from(Span::styled(text, style)));
-                    }
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "  [M] Enter model name manually",
-                        theme::out_dim(),
-                    )));
-                }
-            }
             Some(PanelInputMode::AddStepAuthType {
                 provider,
-                model,
                 selected: auth_sel,
             }) => {
                 lines.clear();
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("  Authentication for {provider} ({model})"),
+                        format!("  Authentication for {provider}"),
                         theme::brand_word(),
                     ),
                     Span::raw(" ".repeat(inner_width.saturating_sub(60))),
@@ -2836,6 +2921,58 @@ impl ReplApp {
                     "  [\u{2191}/\u{2193}] Select  [Enter] Continue  [Esc] Back",
                     theme::out_dim(),
                 )));
+            }
+            Some(PanelInputMode::AddStep2Model {
+                provider,
+                is_subscription,
+                selected: model_sel,
+                manual_input,
+            }) => {
+                lines.clear();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  Default Model for {provider}"),
+                        theme::brand_word(),
+                    ),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(56))),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  Auth: {}",
+                        if *is_subscription {
+                            "subscription"
+                        } else {
+                            "key"
+                        }
+                    ),
+                    theme::out_dim(),
+                )));
+                lines.push(Line::from(""));
+                if let Some(manual) = manual_input {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Model: ", theme::out_help_cmd()),
+                        Span::styled(format!("{manual}\u{2588}"), theme::brand_word()),
+                    ]));
+                } else {
+                    let models = recommended_models(provider);
+                    for (i, (name, desc)) in models.iter().enumerate() {
+                        let is_sel = i == *model_sel;
+                        let prefix = if is_sel { "  \u{25cf} " } else { "    " };
+                        let text = format!("{prefix}{}. {:<30} {}", i + 1, name, desc);
+                        let style = if is_sel {
+                            theme::slash_selected()
+                        } else {
+                            theme::out_dim()
+                        };
+                        lines.push(Line::from(Span::styled(text, style)));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "  [M] Enter model name manually",
+                        theme::out_dim(),
+                    )));
+                }
             }
             Some(PanelInputMode::AddStep3Key {
                 provider,
@@ -2914,7 +3051,6 @@ impl ReplApp {
                 )));
             }
             None => {
-                // Show status message if present (e.g. "Provider added").
                 if let Some((msg, style)) = status_msg {
                     let s = match style {
                         OutputStyle::Success => theme::out_success(),
@@ -2925,7 +3061,7 @@ impl ReplApp {
                     lines.push(Line::from(""));
                 }
                 lines.push(Line::from(Span::styled(
-                    "  [A] Add  [D] Delete  [T] Toggle role  [Enter] Select primary",
+                    "  [Enter] Configure  [A] Add  [D] Delete  [P] Priority  [T] Test",
                     theme::out_dim(),
                 )));
             }
@@ -3599,9 +3735,9 @@ mod tests {
     }
 
     #[test]
-    fn model_panel_esc_closes_panel() {
+    fn provider_panel_esc_closes_panel() {
         let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ModelSelector {
+        app.panel = PanelState::ProviderManager {
             selected: 0,
             input_mode: None,
             status_msg: None,
@@ -3613,40 +3749,37 @@ mod tests {
     }
 
     #[test]
-    fn model_panel_up_down_stays_in_bounds() {
+    fn provider_panel_up_down_stays_in_bounds() {
         let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ModelSelector {
+        app.panel = PanelState::ProviderManager {
             selected: 0,
             input_mode: None,
             status_msg: None,
         };
-        // No providers — Down should not panic or change selected.
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
         app.handle_key(down, &mut textarea);
-        // Still 0 because no providers.
-        if let PanelState::ModelSelector { selected, .. } = &app.panel {
-            assert_eq!(*selected, 0);
+        if let PanelState::ProviderManager { selected, .. } = &app.panel {
+            assert_eq!(*selected, 1);
         }
 
-        // Up from 0 should also stay at 0.
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         app.handle_key(up, &mut textarea);
-        if let PanelState::ModelSelector { selected, .. } = &app.panel {
+        if let PanelState::ProviderManager { selected, .. } = &app.panel {
             assert_eq!(*selected, 0);
         }
     }
 
     #[test]
-    fn model_panel_a_opens_add_provider_mode() {
+    fn provider_panel_a_opens_provider_selection() {
         let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ModelSelector {
+        app.panel = PanelState::ProviderManager {
             selected: 0,
             input_mode: None,
             status_msg: None,
         };
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
-        if let PanelState::ModelSelector { input_mode, .. } = &app.panel {
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
             assert!(matches!(
                 input_mode,
                 Some(PanelInputMode::AddStep1Provider { .. })
@@ -3655,20 +3788,88 @@ mod tests {
     }
 
     #[test]
-    fn model_panel_add_provider_esc_cancels() {
+    fn provider_panel_add_provider_esc_cancels() {
         let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ModelSelector {
+        app.panel = PanelState::ProviderManager {
             selected: 0,
             input_mode: Some(PanelInputMode::AddProvider("partial".to_string())),
             status_msg: None,
         };
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
-        // input_mode cleared, panel still open
-        if let PanelState::ModelSelector { input_mode, .. } = &app.panel {
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
             assert!(input_mode.is_none());
         } else {
-            panic!("panel should still be ModelSelector after Esc in AddProvider mode");
+            panic!("panel should still be ProviderManager after Esc in AddProvider mode");
+        }
+    }
+
+    #[test]
+    fn provider_panel_enter_starts_auth_step_for_selected_provider() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 1,
+            input_mode: None,
+            status_msg: None,
+        };
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+            assert!(matches!(
+                input_mode,
+                Some(PanelInputMode::AddStepAuthType {
+                    provider: crate::config::ProviderKind::OpenAI,
+                    ..
+                })
+            ));
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+    }
+
+    #[test]
+    fn provider_panel_delete_removes_configured_connection() {
+        let (mut app, mut textarea) = make_app();
+        app.config.providers.push(crate::config::ProviderConfig {
+            provider: crate::config::ProviderKind::Anthropic,
+            role: crate::config::ProviderRole::Primary,
+            model: "claude-sonnet-4-6".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        });
+        app.panel = PanelState::ProviderManager {
+            selected: 0,
+            input_mode: Some(PanelInputMode::ConfirmDelete),
+            status_msg: None,
+        };
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+        assert!(app.config.providers.is_empty());
+    }
+
+    #[test]
+    fn provider_panel_auth_back_navigation_returns_to_provider_selection() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 0,
+            input_mode: Some(PanelInputMode::AddStepAuthType {
+                provider: crate::config::ProviderKind::Anthropic,
+                selected: 0,
+            }),
+            status_msg: None,
+        };
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+            assert!(matches!(
+                input_mode,
+                Some(PanelInputMode::AddStep1Provider { selected: 0 })
+            ));
+        } else {
+            panic!("panel should remain ProviderManager");
         }
     }
 }

@@ -320,17 +320,14 @@ async fn handle_slash(
         }
 
         "/model" => {
-            // Open the interactive model selector panel with the primary provider selected.
-            let primary_idx = app
-                .config
-                .effective_providers()
-                .iter()
-                .position(|p| p.role == crate::config::ProviderRole::Primary)
-                .unwrap_or(0);
-            app.panel = super::mode::PanelState::ModelSelector {
-                selected: primary_idx,
+            app.push_output("Use /provider to manage LLM connections.", OutputStyle::Dim);
+            app.panel = super::mode::PanelState::ProviderManager {
+                selected: 0,
                 input_mode: None,
-                status_msg: None,
+                status_msg: Some((
+                    "/model is a compatibility alias for /provider.".to_string(),
+                    OutputStyle::Dim,
+                )),
             };
             textarea.move_cursor(ratatui_textarea::CursorMove::Head);
             textarea.delete_line_by_end();
@@ -440,11 +437,13 @@ async fn handle_slash(
         }
 
         "/provider" => {
-            app.push_output("The /provider command has been removed.", OutputStyle::Dim);
-            app.push_output(
-                "Use /model for interactive provider management, or `duumbi provider` from the CLI.",
-                OutputStyle::Dim,
-            );
+            app.panel = super::mode::PanelState::ProviderManager {
+                selected: 0,
+                input_mode: None,
+                status_msg: None,
+            };
+            textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+            textarea.delete_line_by_end();
         }
 
         "/help" => {
@@ -1590,6 +1589,16 @@ fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
             // SAFETY: single-threaded CLI — no concurrent env access.
             unsafe {
                 std::env::set_var(&p.api_key_env, &key);
+            }
+        }
+        if let Some(token_env) = &p.auth_token_env
+            && matches!(p.key_storage, Some(crate::config::KeyStorage::File))
+            && std::env::var(token_env).is_err()
+            && let Some(token) = super::keystore::load_api_key(token_env)
+        {
+            // SAFETY: single-threaded CLI — no concurrent env access.
+            unsafe {
+                std::env::set_var(token_env, &token);
             }
         }
     }
