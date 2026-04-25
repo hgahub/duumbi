@@ -4,12 +4,14 @@
 //! using ratatui. Key handling delegates to `handle_key` which returns an
 //! [`Action`] that the event loop acts on.
 
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::Local;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
 use ratatui::prelude::*;
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
@@ -87,6 +89,28 @@ fn default_auth_token_env(kind: &crate::config::ProviderKind) -> &'static str {
     }
 }
 
+/// Truncates a path string to fit within `max_chars` columns by inserting
+/// a single ellipsis (`…`) into the middle. Returns the original string
+/// when it already fits.
+///
+/// Operates on Unicode scalar values, not bytes, so multi-byte path
+/// segments are not split mid-character.
+#[must_use]
+fn truncate_path(path: &str, max_chars: usize) -> String {
+    let total: usize = path.chars().count();
+    if total <= max_chars || max_chars < 4 {
+        return path.to_string();
+    }
+    // Reserve one column for the ellipsis; split the remaining budget
+    // unevenly to favour the basename (right side).
+    let budget = max_chars - 1;
+    let right = (budget * 2) / 3;
+    let left = budget - right;
+    let head: String = path.chars().take(left).collect();
+    let tail: String = path.chars().skip(total - right).collect();
+    format!("{head}\u{2026}{tail}")
+}
+
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
     use crate::config::ProviderKind;
@@ -100,10 +124,12 @@ fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKin
     }
 }
 
-use super::completion::SLASH_COMMANDS;
+use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
-    Action, OutputLine, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch,
+    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine, OutputStyle,
+    PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
+use super::theme::tui as theme;
 
 // ---------------------------------------------------------------------------
 // Turn
@@ -116,6 +142,60 @@ pub struct Turn {
     pub request: String,
     /// Human-readable summary of the changes made.
     pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+struct ConversationVisualRow {
+    line: Line<'static>,
+    plain_text: String,
+    block_index: Option<usize>,
+    menu_button_block: Option<usize>,
+    menu_button_range: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone)]
+struct VisibleConversationLayout {
+    start_index: usize,
+    padding: usize,
+    rows: Vec<ConversationVisualRow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationActionMenu {
+    block_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationSelectionPoint {
+    row: usize,
+    column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationTextSelection {
+    anchor: ConversationSelectionPoint,
+    focus: ConversationSelectionPoint,
+    dragged: bool,
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "clipboard stdin closed".to_string())?;
+    std::io::Write::write_all(stdin, text.as_bytes()).map_err(|e| e.to_string())?;
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(status.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,10 +227,30 @@ pub struct ReplApp {
     pub has_workspace: bool,
     /// Scrollable output buffer.
     pub output_lines: Vec<OutputLine>,
+    /// Scrollable conversation blocks rendered in the main pane.
+    pub conversation_blocks: Vec<ConversationBlock>,
+    /// Index of the active output block receiving `push_output` lines.
+    current_output_block: Option<usize>,
+    /// User block selected by clicking inside the conversation pane.
+    selected_conversation_block: Option<usize>,
+    /// Open action menu for a selected conversation user block.
+    conversation_action_menu: Option<ConversationActionMenu>,
+    /// App-managed text selection inside the conversation pane.
+    conversation_text_selection: Option<ConversationTextSelection>,
+    /// Selected row inside the open conversation action menu.
+    conversation_action_selected: usize,
+    /// Last rendered conversation pane rectangle, used for mouse hit testing.
+    last_conversation_area: Cell<Option<Rect>>,
     /// Scroll offset for the output area (lines from the bottom; 0 = latest).
     pub output_scroll_offset: usize,
     /// All matching slash-command entries (untruncated).
     pub slash_matches: Vec<SlashMatch>,
+    /// Rows currently visible in the slash menu.
+    pub slash_rows: Vec<SlashMenuItem>,
+    /// Current slash-menu filter text.
+    pub slash_filter: String,
+    /// Expanded discovery groups for the current slash-menu session.
+    pub slash_expanded_groups: HashSet<SlashGroup>,
     /// Index of the highlighted entry in the slash menu.
     pub slash_selected: usize,
     /// Scroll offset for the slash menu (first visible row index).
@@ -168,8 +268,11 @@ pub struct ReplApp {
 }
 
 impl ReplApp {
+    /// Preferred minimum number of slash-menu rows when the terminal has room.
+    const SLASH_MENU_VISIBLE: usize = 7;
+
     /// Maximum number of slash-menu rows visible at once.
-    const SLASH_MENU_VISIBLE: usize = 5;
+    const SLASH_MENU_VISIBLE_MAX: usize = 12;
 
     /// Maximum number of lines kept in the output buffer.
     const OUTPUT_BUFFER_MAX: usize = 10_000;
@@ -195,8 +298,18 @@ impl ReplApp {
             session_mgr,
             has_workspace,
             output_lines: Vec::new(),
+            conversation_blocks: Vec::new(),
+            current_output_block: None,
+            selected_conversation_block: None,
+            conversation_action_menu: None,
+            conversation_text_selection: None,
+            conversation_action_selected: 0,
+            last_conversation_area: Cell::new(None),
             output_scroll_offset: 0,
             slash_matches: Vec::new(),
+            slash_rows: Vec::new(),
+            slash_filter: String::new(),
+            slash_expanded_groups: HashSet::new(),
             slash_selected: 0,
             slash_scroll_offset: 0,
             show_tip,
@@ -206,8 +319,40 @@ impl ReplApp {
         }
     }
 
-    /// Braille spinner frames for the working indicator.
+    /// Braille spinner frames for the working indicator (80 ms per frame).
     const SPINNER: &'static [char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    // -----------------------------------------------------------------------
+    // Animation
+    // -----------------------------------------------------------------------
+
+    /// Returns the current monotonic-ish time in milliseconds since the
+    /// Unix epoch. Used as the source of truth for spinner and pulse phase
+    /// so that all animated widgets stay in sync within a single frame.
+    fn animation_now_ms() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    }
+
+    /// Returns the static glyph for the active mode label.
+    ///
+    /// The dot is drawn solid and unchanging — pulsing felt distracting in
+    /// the user's terminal, so the animation was retired. The helper is kept
+    /// (rather than inlined) so re-introducing motion later is a one-line
+    /// change.
+    fn mode_dot_glyph() -> &'static str {
+        "\u{25CF}"
+    }
+
+    /// Returns `true` whenever the mode-dot animation should drive a redraw.
+    /// Static dot now, so this is always `false` — only an active spinner
+    /// (`self.working`) keeps the event loop ticking.
+    #[must_use]
+    pub fn mode_dot_animated(&self) -> bool {
+        false
+    }
 
     // -----------------------------------------------------------------------
     // Key handling
@@ -223,7 +368,13 @@ impl ReplApp {
             return self.handle_model_panel_key(key, textarea);
         }
 
+        if self.conversation_action_menu.is_some() {
+            return self.handle_conversation_action_menu_key(key);
+        }
+
         match key.code {
+            KeyCode::Esc if self.conversation_text_selection.take().is_some() => Action::Continue,
+
             // Shift+Tab: toggle Agent ↔ Intent mode
             KeyCode::BackTab => {
                 self.mode = match self.mode {
@@ -233,26 +384,10 @@ impl ReplApp {
                 Action::Continue
             }
 
-            // Enter: if single slash match → execute directly; multi → accept into textarea; else submit
+            // Enter: execute selected slash command, expand discovery groups, or submit input.
             KeyCode::Enter => {
-                if self.slash_matches.len() == 1 {
-                    // Single match: execute it directly.
-                    let cmd = self.slash_matches[0].command.clone();
-                    textarea.move_cursor(CursorMove::Head);
-                    textarea.delete_line_by_end();
-                    self.slash_matches.clear();
-                    self.slash_selected = 0;
-                    return Action::Submit(cmd);
-                }
-                if !self.slash_matches.is_empty() {
-                    // Multiple matches: execute the highlighted command directly.
-                    let cmd = self.slash_matches[self.slash_selected].command.clone();
-                    textarea.move_cursor(CursorMove::Head);
-                    textarea.delete_line_by_end();
-                    self.slash_matches.clear();
-                    self.slash_selected = 0;
-                    self.slash_scroll_offset = 0;
-                    return Action::Submit(cmd);
+                if let Some(action) = self.activate_selected_slash_row(textarea) {
+                    return action;
                 }
 
                 let input: String = textarea.lines().join("\n");
@@ -269,7 +404,7 @@ impl ReplApp {
             }
 
             // Up: move slash menu selection up (scrolls window)
-            KeyCode::Up if !self.slash_matches.is_empty() => {
+            KeyCode::Up if !self.slash_rows.is_empty() => {
                 if self.slash_selected > 0 {
                     self.slash_selected -= 1;
                     if self.slash_selected < self.slash_scroll_offset {
@@ -280,8 +415,8 @@ impl ReplApp {
             }
 
             // Down: move slash menu selection down (scrolls window)
-            KeyCode::Down if !self.slash_matches.is_empty() => {
-                let max = self.slash_matches.len().saturating_sub(1);
+            KeyCode::Down if !self.slash_rows.is_empty() => {
+                let max = self.slash_rows.len().saturating_sub(1);
                 if self.slash_selected < max {
                     self.slash_selected += 1;
                     let visible = Self::SLASH_MENU_VISIBLE;
@@ -292,36 +427,63 @@ impl ReplApp {
                 Action::Continue
             }
 
+            // Ctrl+Up/Ctrl+Down: move conversation block selection without mouse capture.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_previous_user_block();
+                Action::Continue
+            }
+
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_next_user_block();
+                Action::Continue
+            }
+
+            // Ctrl+O: open the selected conversation block action menu.
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_selected_conversation_action_menu();
+                Action::Continue
+            }
+
             // Tab: accept selected slash command without submitting
-            KeyCode::Tab if !self.slash_matches.is_empty() => {
-                let cmd = self.slash_matches[self.slash_selected].command.clone();
-                textarea.move_cursor(CursorMove::Head);
-                textarea.delete_line_by_end();
-                textarea.insert_str(&cmd);
-                self.slash_matches.clear();
-                self.slash_selected = 0;
-                self.slash_scroll_offset = 0;
+            KeyCode::Tab if !self.slash_rows.is_empty() => {
+                if let Some(cmd) = self.selected_slash_command() {
+                    textarea.move_cursor(CursorMove::Head);
+                    textarea.delete_line_by_end();
+                    textarea.insert_str(&cmd);
+                    self.clear_slash_menu();
+                } else {
+                    self.toggle_selected_slash_group();
+                }
+                Action::Continue
+            }
+
+            // Right: expand selected slash discovery group.
+            KeyCode::Right if !self.slash_rows.is_empty() => {
+                self.expand_selected_slash_group();
+                Action::Continue
+            }
+
+            // Left: collapse selected slash discovery group.
+            KeyCode::Left if !self.slash_rows.is_empty() => {
+                self.collapse_selected_slash_group();
                 Action::Continue
             }
 
             // Esc: dismiss slash menu
             KeyCode::Esc => {
-                self.slash_matches.clear();
-                self.slash_selected = 0;
-                self.slash_scroll_offset = 0;
+                self.clear_slash_menu();
                 Action::Continue
             }
 
             // PageUp: scroll output buffer up (toward older lines)
             KeyCode::PageUp => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.output_scroll_offset = (self.output_scroll_offset + 10).min(max_scroll);
+                self.scroll_conversation_up(10, 1, 80);
                 Action::Continue
             }
 
             // PageDown: scroll output buffer down (toward latest)
             KeyCode::PageDown => {
-                self.output_scroll_offset = self.output_scroll_offset.saturating_sub(10);
+                self.scroll_conversation_down(10);
                 Action::Continue
             }
 
@@ -330,7 +492,7 @@ impl ReplApp {
 
             // Ctrl+C: friendly quit reminder
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.push_output("(Use Ctrl+D to quit)", OutputStyle::Dim);
+                self.push_feedback("(Use Ctrl+D to quit)", OutputStyle::Dim);
                 Action::Continue
             }
 
@@ -344,23 +506,65 @@ impl ReplApp {
         }
     }
 
-    /// Handles mouse events (scroll wheel for output buffer scrolling).
+    /// Handles mouse events when the terminal delivers them.
     ///
-    /// Currently unused — mouse capture is disabled to allow native text
-    /// selection. Scroll is available via keyboard (PageUp/PageDown).
-    #[allow(dead_code)]
-    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+    /// Handles wheel scrolling, block clicks, and app-managed text selection.
+    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
         use crossterm::event::MouseEventKind;
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.output_scroll_offset = (self.output_scroll_offset + 1).min(max_scroll);
+                self.scroll_conversation_up(3, 1, 80);
+                true
             }
             MouseEventKind::ScrollDown => {
-                self.output_scroll_offset = self.output_scroll_offset.saturating_sub(1);
+                self.scroll_conversation_down(3);
+                true
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_conversation_mouse_down(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.handle_conversation_mouse_drag(mouse.column, mouse.row)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.handle_conversation_mouse_up(mouse.column, mouse.row)
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_conversation_action_menu_key(&mut self, key: KeyEvent) -> Action {
+        let Some(menu) = self.conversation_action_menu else {
+            return Action::Continue;
+        };
+        let actions = self.conversation_menu_actions(menu.block_index);
+        match key.code {
+            KeyCode::Esc => {
+                self.conversation_action_menu = None;
+            }
+            KeyCode::Up => {
+                self.conversation_action_selected =
+                    self.conversation_action_selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let max = actions.len().saturating_sub(1);
+                self.conversation_action_selected =
+                    (self.conversation_action_selected + 1).min(max);
+            }
+            KeyCode::Enter => {
+                if let Some(action) = actions.get(self.conversation_action_selected).copied() {
+                    self.execute_conversation_action(menu.block_index, action);
+                }
+            }
+            KeyCode::Char('c') => {
+                self.execute_conversation_action(menu.block_index, ConversationAction::Copy);
+            }
+            KeyCode::Char('r') if actions.contains(&ConversationAction::Revert) => {
+                self.execute_conversation_action(menu.block_index, ConversationAction::Revert);
             }
             _ => {}
         }
+        Action::Continue
     }
 
     /// Handles key events when the model selector panel is active.
@@ -824,20 +1028,147 @@ impl ReplApp {
     /// populates `slash_matches` with all results. Clears matches when input
     /// does not start with `/`.
     pub fn update_slash_matches(&mut self, input: &str) {
-        if input.starts_with('/') {
+        if input.starts_with('/') && !input.contains('\n') {
+            let filter_changed = self.slash_filter != input;
+            let was_discovery = self.slash_filter == "/";
+            let is_discovery = input == "/";
+            if !was_discovery || !is_discovery {
+                self.slash_expanded_groups.clear();
+            }
+            self.slash_filter = input.to_string();
             self.slash_matches = SLASH_COMMANDS
                 .iter()
-                .filter(|(cmd, _)| cmd.starts_with(input) && *cmd != input)
-                .map(|(cmd, desc)| SlashMatch {
-                    command: (*cmd).to_string(),
-                    description: (*desc).to_string(),
+                .filter(|entry| entry.command.starts_with(input))
+                .map(|entry| SlashMatch {
+                    command: entry.command.to_string(),
+                    description: entry.description.to_string(),
+                    group: entry.group,
+                    matched_prefix_len: input.len().min(entry.command.len()),
                 })
                 .collect();
+            self.rebuild_slash_rows();
+            if filter_changed {
+                self.slash_selected = 0;
+                self.slash_scroll_offset = 0;
+            }
         } else {
-            self.slash_matches.clear();
+            self.clear_slash_menu();
         }
+        self.clamp_slash_selection();
+    }
+
+    fn clear_slash_menu(&mut self) {
+        self.slash_matches.clear();
+        self.slash_rows.clear();
+        self.slash_filter.clear();
+        self.slash_expanded_groups.clear();
         self.slash_selected = 0;
         self.slash_scroll_offset = 0;
+    }
+
+    fn rebuild_slash_rows(&mut self) {
+        if self.slash_filter == "/" {
+            let mut rows = Vec::new();
+            for group in SLASH_GROUPS {
+                let group_matches: Vec<SlashMatch> = self
+                    .slash_matches
+                    .iter()
+                    .filter(|sm| sm.group == *group)
+                    .cloned()
+                    .collect();
+                if group_matches.is_empty() {
+                    continue;
+                }
+                let expanded = self.slash_expanded_groups.contains(group);
+                rows.push(SlashMenuItem::Group {
+                    group: *group,
+                    count: group_matches.len(),
+                    expanded,
+                });
+                if expanded {
+                    rows.extend(group_matches.into_iter().map(SlashMenuItem::Command));
+                }
+            }
+            self.slash_rows = rows;
+        } else {
+            self.slash_rows = self
+                .slash_matches
+                .iter()
+                .cloned()
+                .map(SlashMenuItem::Command)
+                .collect();
+        }
+    }
+
+    fn clamp_slash_selection(&mut self) {
+        if self.slash_rows.is_empty() {
+            self.slash_selected = 0;
+            self.slash_scroll_offset = 0;
+            return;
+        }
+        self.slash_selected = self
+            .slash_selected
+            .min(self.slash_rows.len().saturating_sub(1));
+        if self.slash_scroll_offset > self.slash_selected {
+            self.slash_scroll_offset = self.slash_selected;
+        }
+        if self.slash_selected >= self.slash_scroll_offset + Self::SLASH_MENU_VISIBLE {
+            self.slash_scroll_offset = self.slash_selected + 1 - Self::SLASH_MENU_VISIBLE;
+        }
+    }
+
+    fn selected_slash_command(&self) -> Option<String> {
+        match self.slash_rows.get(self.slash_selected) {
+            Some(SlashMenuItem::Command(sm)) => Some(sm.command.clone()),
+            _ => None,
+        }
+    }
+
+    fn selected_slash_group(&self) -> Option<SlashGroup> {
+        match self.slash_rows.get(self.slash_selected) {
+            Some(SlashMenuItem::Group { group, .. }) => Some(*group),
+            _ => None,
+        }
+    }
+
+    fn activate_selected_slash_row(&mut self, textarea: &mut TextArea<'_>) -> Option<Action> {
+        if let Some(cmd) = self.selected_slash_command() {
+            textarea.move_cursor(CursorMove::Head);
+            textarea.delete_line_by_end();
+            self.clear_slash_menu();
+            return Some(Action::Submit(cmd));
+        }
+        if self.selected_slash_group().is_some() {
+            self.toggle_selected_slash_group();
+            return Some(Action::Continue);
+        }
+        None
+    }
+
+    fn toggle_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            if !self.slash_expanded_groups.remove(&group) {
+                self.slash_expanded_groups.insert(group);
+            }
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
+    }
+
+    fn expand_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            self.slash_expanded_groups.insert(group);
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
+    }
+
+    fn collapse_selected_slash_group(&mut self) {
+        if let Some(group) = self.selected_slash_group() {
+            self.slash_expanded_groups.remove(&group);
+            self.rebuild_slash_rows();
+            self.clamp_slash_selection();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -850,9 +1181,13 @@ impl ReplApp {
     /// unbounded memory growth.
     pub fn push_output(&mut self, text: impl Into<String>, style: OutputStyle) {
         let text = text.into();
+        let output_idx = self.ensure_output_block();
         for line in text.split('\n') {
-            self.output_lines
-                .push(OutputLine::new(line.to_string(), style));
+            let output_line = OutputLine::new(line.to_string(), style);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
         }
         if self.output_lines.len() > Self::OUTPUT_BUFFER_MAX {
             let excess = self.output_lines.len() - Self::OUTPUT_BUFFER_MAX;
@@ -862,64 +1197,570 @@ impl ReplApp {
         self.output_scroll_offset = 0;
     }
 
+    fn push_feedback(&mut self, text: impl Into<String>, style: OutputStyle) {
+        self.current_output_block = None;
+        self.push_output(text, style);
+        self.current_output_block = None;
+    }
+
+    /// Starts a new conversation turn with a persistent user input block.
+    pub fn begin_user_block(&mut self, input: &str) {
+        let submitted_at = Local::now().format("%H:%M").to_string();
+        self.conversation_blocks
+            .push(ConversationBlock::user(input.to_string(), submitted_at));
+        self.output_lines
+            .push(OutputLine::new(input.to_string(), OutputStyle::Dim));
+        self.current_output_block = None;
+        self.selected_conversation_block = None;
+        self.conversation_action_menu = None;
+        self.conversation_text_selection = None;
+        self.output_scroll_offset = 0;
+    }
+
+    fn user_block_indices(&self) -> Vec<usize> {
+        self.conversation_blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, block)| (block.kind == ConversationBlockKind::User).then_some(idx))
+            .collect()
+    }
+
+    fn select_previous_user_block(&mut self) {
+        let indices = self.user_block_indices();
+        if indices.is_empty() {
+            return;
+        }
+
+        let next = self
+            .selected_conversation_block
+            .and_then(|selected| indices.iter().position(|idx| *idx == selected))
+            .and_then(|pos| pos.checked_sub(1))
+            .map_or_else(
+                || *indices.last().expect("invariant: non-empty indices"),
+                |pos| indices[pos],
+            );
+
+        self.selected_conversation_block = Some(next);
+        self.conversation_action_menu = None;
+        self.conversation_action_selected = 0;
+    }
+
+    fn select_next_user_block(&mut self) {
+        let indices = self.user_block_indices();
+        if indices.is_empty() {
+            return;
+        }
+
+        let next = self
+            .selected_conversation_block
+            .and_then(|selected| indices.iter().position(|idx| *idx == selected))
+            .and_then(|pos| indices.get(pos + 1).copied())
+            .unwrap_or(indices[0]);
+
+        self.selected_conversation_block = Some(next);
+        self.conversation_action_menu = None;
+        self.conversation_action_selected = 0;
+    }
+
+    fn open_selected_conversation_action_menu(&mut self) {
+        let Some(block_index) = self.selected_conversation_block else {
+            self.select_previous_user_block();
+            return;
+        };
+        if self.conversation_menu_actions(block_index).is_empty() {
+            return;
+        }
+        self.conversation_action_menu = Some(ConversationActionMenu { block_index });
+        self.conversation_action_selected = 0;
+    }
+
+    /// Marks the latest user block as revertable.
+    pub fn mark_latest_user_block_revertable(&mut self, snapshot_path: PathBuf) {
+        if let Some(block) = self
+            .conversation_blocks
+            .iter_mut()
+            .rev()
+            .find(|block| block.kind == ConversationBlockKind::User)
+        {
+            if !block.actions.contains(&ConversationAction::Revert) {
+                block.actions.push(ConversationAction::Revert);
+            }
+            block.revert_snapshot = Some(snapshot_path);
+        }
+    }
+
+    /// Adds a runtime footer to the active output block.
+    pub fn finish_current_output_elapsed(&mut self, elapsed: std::time::Duration) {
+        if let Some(idx) = self.current_output_block
+            && let Some(block) = self.conversation_blocks.get_mut(idx)
+        {
+            block.elapsed = Some(format!("completed in {:.2}s", elapsed.as_secs_f64()));
+        }
+    }
+
+    fn scroll_conversation_up(&mut self, amount: usize, fallback_height: u16, fallback_width: u16) {
+        let total = self.conversation_line_count(fallback_width);
+        let max_scroll = total.saturating_sub(fallback_height as usize);
+        self.output_scroll_offset = (self.output_scroll_offset + amount).min(max_scroll);
+    }
+
+    fn scroll_conversation_down(&mut self, amount: usize) {
+        self.output_scroll_offset = self.output_scroll_offset.saturating_sub(amount);
+    }
+
+    fn conversation_line_count(&self, width: u16) -> usize {
+        if self.conversation_blocks.is_empty() {
+            self.output_lines.len()
+        } else {
+            self.conversation_visual_rows(width).len()
+        }
+    }
+
+    fn user_block_text(&self, block_index: usize) -> Option<String> {
+        self.conversation_blocks
+            .get(block_index)
+            .filter(|block| block.kind == ConversationBlockKind::User)
+            .and_then(|block| block.lines.first())
+            .map(|line| line.text.clone())
+    }
+
+    fn copy_user_block(&mut self, block_index: usize) {
+        let Some(text) = self.user_block_text(block_index) else {
+            self.push_feedback("Nothing to copy.", OutputStyle::Dim);
+            return;
+        };
+
+        match copy_text_to_clipboard(&text) {
+            Ok(()) => {
+                self.push_feedback("Copied message.", OutputStyle::Success);
+            }
+            Err(e) => {
+                self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+            }
+        }
+    }
+
+    fn latest_revertable_block_index(&self) -> Option<usize> {
+        self.conversation_blocks
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, block)| {
+                block.kind == ConversationBlockKind::User
+                    && block.actions.contains(&ConversationAction::Revert)
+            })
+            .map(|(idx, _)| idx)
+    }
+
+    fn conversation_menu_actions(&self, block_index: usize) -> Vec<ConversationAction> {
+        let Some(block) = self.conversation_blocks.get(block_index) else {
+            return Vec::new();
+        };
+        if block.kind != ConversationBlockKind::User {
+            return Vec::new();
+        }
+
+        let mut actions = vec![ConversationAction::Copy];
+        if block.actions.contains(&ConversationAction::Revert)
+            && self.latest_revertable_block_index() == Some(block_index)
+        {
+            actions.push(ConversationAction::Revert);
+        }
+        actions
+    }
+
+    fn execute_conversation_action(&mut self, block_index: usize, action: ConversationAction) {
+        self.conversation_action_menu = None;
+        match action {
+            ConversationAction::Copy => self.copy_user_block(block_index),
+            ConversationAction::Revert => self.revert_user_block_change(block_index),
+        }
+    }
+
+    fn revert_user_block_change(&mut self, block_index: usize) {
+        if self.latest_revertable_block_index() != Some(block_index) {
+            self.push_feedback("Nothing to revert.", OutputStyle::Dim);
+            return;
+        }
+
+        match crate::snapshot::restore_latest(&self.workspace_root) {
+            Ok(true) => {
+                self.history.pop();
+                if let Some(block) = self.conversation_blocks.get_mut(block_index) {
+                    block
+                        .actions
+                        .retain(|action| *action != ConversationAction::Revert);
+                    block.revert_snapshot = None;
+                }
+                self.push_feedback("Reverted latest graph change.", OutputStyle::Success);
+            }
+            Ok(false) => {
+                self.push_feedback("Nothing to revert.", OutputStyle::Dim);
+            }
+            Err(e) => {
+                self.push_feedback(format!("Revert failed: {e:#}"), OutputStyle::Error);
+            }
+        }
+    }
+
+    fn ensure_output_block(&mut self) -> usize {
+        if let Some(idx) = self.current_output_block
+            && self
+                .conversation_blocks
+                .get(idx)
+                .is_some_and(|block| block.kind == ConversationBlockKind::Output)
+        {
+            return idx;
+        }
+
+        self.conversation_blocks.push(ConversationBlock::output());
+        let idx = self.conversation_blocks.len() - 1;
+        self.current_output_block = Some(idx);
+        idx
+    }
+
+    fn handle_conversation_mouse_down(&mut self, column: u16, row: u16) -> bool {
+        let Some(area) = self.last_conversation_area.get() else {
+            return false;
+        };
+
+        if let Some((menu_area, _)) = self.conversation_action_menu_rect(area)
+            && self.rect_contains(menu_area, column, row)
+        {
+            self.conversation_text_selection = None;
+            return self.handle_conversation_click(column, row);
+        }
+
+        let point = self.conversation_point_at(area, column, row);
+        self.conversation_text_selection = point.map(|anchor| ConversationTextSelection {
+            anchor,
+            focus: anchor,
+            dragged: false,
+        });
+        self.handle_conversation_click(column, row)
+    }
+
+    fn handle_conversation_mouse_drag(&mut self, column: u16, row: u16) -> bool {
+        let Some(area) = self.last_conversation_area.get() else {
+            return false;
+        };
+        let Some(focus) = self.conversation_point_at(area, column, row) else {
+            return false;
+        };
+        let Some(selection) = self.conversation_text_selection.as_mut() else {
+            self.conversation_text_selection = Some(ConversationTextSelection {
+                anchor: focus,
+                focus,
+                dragged: false,
+            });
+            return false;
+        };
+
+        selection.focus = focus;
+        selection.dragged = selection.anchor != focus;
+        selection.dragged
+    }
+
+    fn handle_conversation_mouse_up(&mut self, column: u16, row: u16) -> bool {
+        let Some(mut selection) = self.conversation_text_selection else {
+            return false;
+        };
+
+        if let Some(area) = self.last_conversation_area.get()
+            && let Some(focus) = self.conversation_point_at(area, column, row)
+        {
+            selection.focus = focus;
+            selection.dragged = selection.dragged || selection.anchor != focus;
+            self.conversation_text_selection = Some(selection);
+        }
+
+        if !selection.dragged {
+            self.conversation_text_selection = None;
+            return false;
+        }
+
+        let selected_text = self
+            .last_conversation_area
+            .get()
+            .and_then(|area| self.selected_conversation_text(area));
+        self.conversation_text_selection = None;
+
+        if let Some(text) = selected_text
+            && !text.trim().is_empty()
+            && let Err(e) = copy_text_to_clipboard(&text)
+        {
+            self.push_feedback(format!("Copy failed: {e}"), OutputStyle::Error);
+        }
+        true
+    }
+
+    fn handle_conversation_click(&mut self, column: u16, row: u16) -> bool {
+        let Some(area) = self.last_conversation_area.get() else {
+            return false;
+        };
+
+        if let Some((menu_area, actions)) = self.conversation_action_menu_rect(area)
+            && self.rect_contains(menu_area, column, row)
+        {
+            let action_idx = row.saturating_sub(menu_area.y + 1) as usize;
+            if let Some(action) = actions.get(action_idx).copied()
+                && let Some(menu) = self.conversation_action_menu
+            {
+                self.execute_conversation_action(menu.block_index, action);
+            }
+            return true;
+        }
+
+        if self.conversation_action_menu.is_some() {
+            self.conversation_action_menu = None;
+            return true;
+        }
+
+        if !self.rect_contains(area, column, row) {
+            return false;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let relative_y = row.saturating_sub(area.y) as usize;
+        if relative_y < layout.padding {
+            return false;
+        }
+        let Some(visual_row) = layout.rows.get(relative_y - layout.padding) else {
+            return false;
+        };
+
+        if let (Some(block_index), Some((start, end))) =
+            (visual_row.menu_button_block, visual_row.menu_button_range)
+            && column >= area.x + start
+            && column < area.x + end
+            && self.selected_conversation_block == Some(block_index)
+        {
+            self.conversation_action_menu = Some(ConversationActionMenu { block_index });
+            return true;
+        }
+
+        let Some(block_index) = visual_row.block_index else {
+            return false;
+        };
+        if self
+            .conversation_blocks
+            .get(block_index)
+            .is_none_or(|block| block.kind != ConversationBlockKind::User)
+        {
+            return false;
+        }
+
+        if self.selected_conversation_block == Some(block_index) {
+            self.selected_conversation_block = None;
+            self.conversation_action_menu = None;
+        } else {
+            self.selected_conversation_block = Some(block_index);
+            self.conversation_action_menu = None;
+        }
+        true
+    }
+
+    fn conversation_point_at(
+        &self,
+        area: Rect,
+        column: u16,
+        row: u16,
+    ) -> Option<ConversationSelectionPoint> {
+        if !self.rect_contains(area, column, row) {
+            return None;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let relative_y = row.saturating_sub(area.y) as usize;
+        if relative_y < layout.padding {
+            return None;
+        }
+
+        let visible_row = relative_y - layout.padding;
+        let row_data = layout.rows.get(visible_row)?;
+        let max_column = row_data.plain_text.chars().count();
+        let column = column.saturating_sub(area.x) as usize;
+
+        Some(ConversationSelectionPoint {
+            row: layout.start_index + visible_row,
+            column: column.min(max_column),
+        })
+    }
+
+    fn selected_conversation_text(&self, area: Rect) -> Option<String> {
+        let selection = self.conversation_text_selection?;
+        let rows = if self.conversation_blocks.is_empty() {
+            self.legacy_output_rows()
+        } else {
+            self.conversation_visual_rows(area.width)
+        };
+        let (start, end) = Self::normalise_selection(selection);
+        if start.row >= rows.len() || end.row >= rows.len() {
+            return None;
+        }
+
+        let mut selected = Vec::new();
+        for (row_idx, row) in rows.iter().enumerate().take(end.row + 1).skip(start.row) {
+            let text_len = row.plain_text.chars().count();
+            let start_col = if row_idx == start.row {
+                start.column.min(text_len)
+            } else {
+                0
+            };
+            let end_col = if row_idx == end.row {
+                end.column.min(text_len)
+            } else {
+                text_len
+            };
+            let line = row
+                .plain_text
+                .chars()
+                .skip(start_col)
+                .take(end_col.saturating_sub(start_col))
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            selected.push(line);
+        }
+
+        Some(selected.join("\n"))
+    }
+
+    fn normalise_selection(
+        selection: ConversationTextSelection,
+    ) -> (ConversationSelectionPoint, ConversationSelectionPoint) {
+        if (selection.anchor.row, selection.anchor.column)
+            <= (selection.focus.row, selection.focus.column)
+        {
+            (selection.anchor, selection.focus)
+        } else {
+            (selection.focus, selection.anchor)
+        }
+    }
+
+    fn rect_contains(&self, rect: Rect, column: u16, row: u16) -> bool {
+        column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+    }
+
     // -----------------------------------------------------------------------
     // Rendering
     // -----------------------------------------------------------------------
 
     /// Renders the full terminal UI into `frame`.
     ///
-    /// Layout (top to bottom):
-    /// 1. Header bar (1 line)
-    /// 2. Output area (fills remaining space)
-    /// 3. Mode line (1 line)
-    /// 4. Top separator (1 line)
-    /// 5. Input line (1 line)
-    /// 6. Bottom separator (1 line)
-    /// 7. Status bar (1 line)
-    /// 8. Slash menu or interactive panel (0–N lines)
+    /// The screen uses an inset page layout: content fills the upper portion,
+    /// while a stable footer stack keeps mode, prompt, and status information
+    /// anchored near the bottom. Transient menus render as overlays so the
+    /// footer does not jump when assistance panels open.
     pub fn render(&self, frame: &mut Frame, textarea: &TextArea<'_>) {
-        let bottom_height = match &self.panel {
+        // Paint the canvas first. Every subsequent widget renders with its
+        // own style on top; Spans without an explicit `bg` preserve the
+        // canvas colour set here.
+        frame.render_widget(Block::default().style(theme::canvas()), frame.area());
+
+        let has_output = !self.output_lines.is_empty();
+        let show_card = self.show_tip && !has_output;
+        let outer = frame.area();
+        let page = Self::page_area(outer);
+        let input_height = if page.width >= 60 { 3u16 } else { 1u16 };
+        // header(1) + spacer(1) + spacer-before-controls(1) + mode(1) + prompt + status(1)
+        let fixed_ui_rows: u16 = 5 + input_height;
+        let card_height = if show_card {
+            let desired = if page.width >= 90 { 7u16 } else { 8u16 };
+            desired.min(page.height.saturating_sub(fixed_ui_rows))
+        } else {
+            0
+        };
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1),            // header
+            Constraint::Length(1),            // spacer
+            Constraint::Length(card_height),  // empty-state
+            Constraint::Min(0),               // conversation
+            Constraint::Length(1),            // spacer before controls
+            Constraint::Length(1),            // mode row
+            Constraint::Length(input_height), // prompt
+            Constraint::Length(1),            // status row
+        ])
+        .split(page);
+
+        self.render_brand_header(frame, chunks[0]);
+        if card_height > 0 {
+            self.render_empty_state_card(frame, chunks[2]);
+        }
+        self.render_conversation_pane(frame, chunks[3]);
+        self.render_mode_strip(frame, chunks[5]);
+        self.render_prompt_well(frame, chunks[6], textarea);
+        self.render_status_dock(frame, chunks[7]);
+
+        match &self.panel {
             PanelState::None => {
-                let total = self.slash_matches.len();
-                let visible = total.min(Self::SLASH_MENU_VISIBLE) as u16;
-                // Extra line for the "N/M" indicator when there are more matches
-                if total > Self::SLASH_MENU_VISIBLE {
-                    visible + 1
-                } else {
-                    visible
+                if let Some(overlay_area) = self.slash_overlay_rect(page, chunks[6]) {
+                    self.render_slash_menu(frame, overlay_area);
                 }
             }
-            PanelState::ModelSelector { input_mode, .. } => match input_mode {
-                Some(PanelInputMode::AddStep1Provider { .. }) => {
-                    // header + empty + N items
-                    (PROVIDER_KINDS.len() as u16) + 2
+            PanelState::ModelSelector {
+                selected,
+                input_mode,
+                status_msg,
+            } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 110);
+                    let overlay_area =
+                        Self::overlay_rect(page, chunks[6], overlay_width, overlay_height);
+                    self.render_model_panel(frame, overlay_area, *selected, input_mode, status_msg)
                 }
+            }
+        }
+    }
+
+    /// Returns the inset content page used for the main layout.
+    fn page_area(area: Rect) -> Rect {
+        let horizontal = match area.width {
+            0..=79 => 1,
+            80..=139 => 2,
+            _ => 3,
+        };
+        let vertical = if area.height >= 26 { 1 } else { 0 };
+        area.inner(Margin {
+            vertical,
+            horizontal,
+        })
+    }
+
+    /// Computes the height of the currently open overlay panel, if any.
+    fn overlay_height(&self) -> Option<u16> {
+        match &self.panel {
+            PanelState::None => {
+                let total = self.slash_rows.len();
+                if total == 0 {
+                    None
+                } else {
+                    let visible = total.min(Self::SLASH_MENU_VISIBLE) as u16;
+                    Some(if total > Self::SLASH_MENU_VISIBLE {
+                        visible + 3
+                    } else {
+                        visible + 2
+                    })
+                }
+            }
+            PanelState::ModelSelector { input_mode, .. } => Some(match input_mode {
+                Some(PanelInputMode::AddStep1Provider { .. }) => (PROVIDER_KINDS.len() as u16) + 4,
                 Some(PanelInputMode::AddStep2Model {
                     provider,
                     manual_input,
                     ..
                 }) => {
                     if manual_input.is_some() {
-                        // header + empty + input line
-                        3
+                        5
                     } else {
                         let models = recommended_models(provider);
-                        // header + empty + N items + empty + [M] hint
-                        (models.len() as u16) + 4
+                        (models.len() as u16) + 6
                     }
                 }
-                Some(PanelInputMode::AddStepAuthType { .. }) => {
-                    // header + empty + 2 options + empty + hint
-                    6
-                }
-                Some(PanelInputMode::AddStep3Key { .. }) => {
-                    // header + empty + model + env + empty + input + empty + hint
-                    8
-                }
-                Some(PanelInputMode::AddStep3Confirm { .. }) => {
-                    // title + empty + options
-                    3
-                }
+                Some(PanelInputMode::AddStepAuthType { .. }) => 8,
+                Some(PanelInputMode::AddStep3Key { .. }) => 10,
+                Some(PanelInputMode::AddStep3Confirm { .. }) => 5,
                 _ => {
                     let provider_count = self.config.effective_providers().len().max(1);
                     let input_line = if input_mode.is_some() { 1 } else { 0 };
@@ -933,337 +1774,763 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    // header + empty + providers + empty + status? + footer
-                    (provider_count as u16) + 4 + input_line + status_line
+                    (provider_count as u16) + 6 + input_line + status_line
                 }
-            },
-        };
-        let has_output = !self.output_lines.is_empty();
-        let header_height = if has_output { 0u16 } else { 1u16 };
-        let mid_height = if self.show_tip && !has_output {
-            5u16 // 1 empty + 3 tip lines + 1 empty
-        } else {
-            0
-        };
+            }),
+        }
+    }
 
-        let chunks = Layout::vertical([
-            Constraint::Min(0),                // 0 output area
-            Constraint::Length(header_height), // 1 header (duumbi line, hidden when output present)
-            Constraint::Length(mid_height),    // 2 tip block
-            Constraint::Length(1),             // 3 empty spacer above mode line (always)
-            Constraint::Length(1),             // 4 mode line
-            Constraint::Length(1),             // 5 top separator
-            Constraint::Length(1),             // 6 input
-            Constraint::Length(1),             // 7 bottom separator
-            Constraint::Length(1),             // 8 status bar
-            Constraint::Length(bottom_height), // 9 bottom zone (slash menu OR panel)
-        ])
-        .split(frame.area());
+    /// Returns a prompt-aligned slash menu rectangle directly above the prompt.
+    fn slash_overlay_rect(&self, page: Rect, anchor: Rect) -> Option<Rect> {
+        let total = self.slash_rows.len();
+        if total == 0 {
+            return None;
+        }
 
-        self.render_output(frame, chunks[0]);
-        if header_height > 0 {
-            self.render_header(frame, chunks[1]);
+        let available_above = anchor.y.saturating_sub(page.y);
+        if available_above < 5 {
+            return None;
         }
-        if mid_height > 0 {
-            self.render_tip(frame, chunks[2]);
-        }
-        // chunks[3] is always an empty spacer line — no render needed
-        self.render_mode_line(frame, chunks[4]);
-        self.render_separator(frame, chunks[5]);
-        self.render_input(frame, chunks[6], textarea);
-        self.render_separator(frame, chunks[7]);
-        self.render_status_bar(frame, chunks[8]);
-        if bottom_height > 0 {
-            match &self.panel {
-                PanelState::None => self.render_slash_menu(frame, chunks[9]),
-                PanelState::ModelSelector {
-                    selected,
-                    input_mode,
-                    status_msg,
-                } => {
-                    self.render_model_panel(frame, chunks[9], *selected, input_mode, status_msg);
-                }
-            }
-        }
+
+        let max_visible = available_above
+            .saturating_sub(4)
+            .max(1)
+            .min(Self::SLASH_MENU_VISIBLE_MAX as u16) as usize;
+        let visible = total.min(max_visible);
+        let height = (visible as u16).saturating_add(4).min(available_above);
+        let y = anchor.y.saturating_sub(height);
+        Some(Rect::new(page.x, y, page.width, height))
+    }
+
+    /// Returns an overlay rectangle anchored above the prompt well.
+    fn overlay_rect(page: Rect, anchor: Rect, width: u16, height: u16) -> Rect {
+        let width = width.min(page.width).max(1);
+        let height = height.min(page.height).max(1);
+        let x = page.x + page.width.saturating_sub(width) / 2;
+        let min_y = page.y.saturating_add(1);
+        let preferred_y = anchor.y.saturating_sub(height.saturating_add(1));
+        let y = preferred_y.max(min_y);
+        Rect::new(x, y, width, height)
     }
 
     // -----------------------------------------------------------------------
     // Individual render helpers
     // -----------------------------------------------------------------------
 
-    /// Renders the top header bar.
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-01 — brand header (always visible at the top).
+    fn render_brand_header(&self, frame: &mut Frame, area: Rect) {
         let version = env!("CARGO_PKG_VERSION");
 
         let line = Line::from(vec![
-            Span::styled(
-                "duumbi",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" v{version}"),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::raw(" · Type a request or /help for commands. Ctrl+D to exit."),
+            Span::styled("duumbi", theme::brand_word()),
+            Span::raw(" "),
+            Span::styled(format!("v{version}"), theme::version_badge()),
+            Span::styled("  ·  ", theme::hairline()),
+            Span::styled("Type a request or ", theme::dock_value()),
+            Span::styled("/help", theme::helper()),
+            Span::styled(" for commands. ", theme::dock_value()),
+            Span::raw("   "),
+            Span::styled(" Ctrl ", theme::keycap()),
+            Span::styled(" + ", theme::hairline()),
+            Span::styled(" D ", theme::keycap()),
+            Span::styled(" to exit.", theme::dock_value()),
         ]);
 
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// Renders the tip block (onboarding hint).
-    fn render_tip(&self, frame: &mut Frame, area: Rect) {
-        let tip = if !self.has_workspace {
-            // No .duumbi/ directory — suggest /init
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Tip: No workspace found. Initialise one with:",
-                    Style::default().add_modifier(Modifier::DIM),
-                )),
-                Line::from(Span::styled("  /init", Style::default().fg(Color::Cyan))),
-                Line::from(""),
-            ]
+    /// REPL-02 — inset empty-state card with examples and stronger onboarding.
+    fn render_empty_state_card(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::{Block, Padding};
+
+        if area.width < 12 || area.height < 5 {
+            return;
+        }
+
+        let cols = Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).split(area);
+        let accent = cols[0];
+        let card_area = cols[1];
+
+        // U+258F LEFT ONE EIGHTH BLOCK — narrow block char that fills the
+        // full cell height, so the bar stays continuous across rows even on
+        // terminals where the box-drawing │ leaves vertical gaps.
+        let bar_lines: Vec<Line<'_>> = (0..accent.height)
+            .map(|_| Line::from(Span::styled("\u{258F}", theme::panel_accent())))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(bar_lines).style(theme::panel_surface()),
+            accent,
+        );
+
+        let block = Block::default()
+            .padding(Padding::new(2, 2, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(card_area);
+        frame.render_widget(block, card_area);
+
+        let (badge_text, heading, example_lines) = if !self.has_workspace {
+            (
+                " no workspace ",
+                "INITIALISE A WORKSPACE",
+                vec![
+                    Line::from(vec![
+                        Span::styled("/init", theme::brand_word()),
+                        Span::styled("  create a new DUUMBI workspace here", theme::dock_value()),
+                    ]),
+                    Line::from(vec![Span::styled(
+                        "or just run `duumbi init` in this folder",
+                        theme::out_dim(),
+                    )]),
+                ],
+            )
         } else {
-            // Empty workspace — suggest intent or direct mutation
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Tip: This is an empty workspace. Try one of these:",
-                    Style::default().add_modifier(Modifier::DIM),
-                )),
-                Line::from(Span::styled(
-                    "  /intent create  \"Build a calculator with add and multiply\"",
-                    Style::default().fg(Color::Cyan),
-                )),
-                Line::from(Span::styled(
-                    "  or type a request directly: \"Add a function that adds two numbers\"",
-                    Style::default().add_modifier(Modifier::DIM),
-                )),
-            ]
+            (
+                " empty workspace ",
+                "TRY ONE OF THESE",
+                vec![
+                    Line::from(vec![
+                        Span::styled("/intent create", theme::brand_word()),
+                        Span::raw("  "),
+                        Span::styled(
+                            "\"Build a calculator with add and multiply\"",
+                            theme::dock_value(),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("or just type", theme::out_dim()),
+                        Span::raw("  "),
+                        Span::styled(
+                            "\"Add a function that adds two numbers\"",
+                            theme::dock_value(),
+                        ),
+                        Span::styled(" - natural language works too", theme::out_dim()),
+                    ]),
+                ],
+            )
         };
-        frame.render_widget(Paragraph::new(tip).wrap(Wrap { trim: false }), area);
+
+        let mut body = vec![
+            Line::from(vec![
+                Span::styled(badge_text, theme::pill_outline()),
+                Span::raw("  "),
+                Span::styled(heading, theme::label_caps()),
+            ]),
+            Line::from(""),
+        ];
+        body.extend(example_lines);
+        frame.render_widget(
+            Paragraph::new(body)
+                .style(theme::panel_surface())
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
     }
 
-    /// Renders the scrollable output area, bottom-aligned.
+    /// REPL-03 — scrollable conversation pane, bottom-aligned.
     ///
     /// When `output_scroll_offset > 0`, the view shifts upward to show
     /// older lines. PageUp/PageDown control the offset.
-    fn render_output(&self, frame: &mut Frame, area: Rect) {
-        let max_lines = area.height as usize;
-        let total = self.output_lines.len();
-        let bottom = total.saturating_sub(self.output_scroll_offset);
-        let start = bottom.saturating_sub(max_lines);
-        let visible = &self.output_lines[start..bottom];
+    fn render_conversation_pane(&self, frame: &mut Frame, area: Rect) {
+        self.last_conversation_area.set(Some(area));
+        let layout = self.visible_conversation_layout(area);
 
         // Bottom-align: pad with empty lines above content so messages
         // appear just above the header, close to the prompt.
-        let padding = max_lines.saturating_sub(visible.len());
-        let mut lines: Vec<Line<'_>> = (0..padding).map(|_| Line::from("")).collect();
-
-        for ol in visible {
-            match ol.style {
-                OutputStyle::Help => {
-                    // Split at column 35: command in magenta, description in white.
-                    let text = &ol.text;
-                    if text.len() > 35 {
-                        let (cmd_part, desc_part) = text.split_at(35);
-                        lines.push(Line::from(vec![
-                            Span::styled(cmd_part.to_string(), Style::default().fg(Color::Magenta)),
-                            Span::styled(desc_part.to_string(), Style::default().fg(Color::White)),
-                        ]));
-                    } else {
-                        lines.push(Line::from(Span::styled(
-                            text.clone(),
-                            Style::default().fg(Color::Magenta),
-                        )));
-                    }
-                }
-                _ => {
-                    let style = match ol.style {
-                        OutputStyle::Normal => Style::default().fg(Color::White),
-                        OutputStyle::Error => {
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                        }
-                        OutputStyle::Success => Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                        OutputStyle::Dim => Style::default().fg(Color::Gray),
-                        OutputStyle::Ai => Style::default().fg(Color::Cyan),
-                        OutputStyle::Help => unreachable!(),
-                    };
-                    lines.push(Line::from(Span::styled(ol.text.clone(), style)));
-                }
-            }
-        }
+        let mut lines: Vec<Line<'_>> = (0..layout.padding).map(|_| Line::from("")).collect();
+        lines.extend(
+            layout
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(idx, row)| self.conversation_row_line(row, layout.start_index + idx)),
+        );
 
         frame.render_widget(Paragraph::new(lines), area);
-
-        // Animated spinner when an async operation is in progress.
-        if self.working {
-            let frame_idx = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                / 120) as usize;
-            let ch = Self::SPINNER[frame_idx % Self::SPINNER.len()];
-            let spinner = format!("{ch} Working…");
-            let style = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
-            let y = area.bottom().saturating_sub(1);
-            frame.render_widget(
-                Paragraph::new(Span::styled(spinner, style)),
-                Rect::new(area.x, y, 12, 1),
-            );
-        }
+        // The "Working…" spinner now lives in the status dock activity slot
+        // (see render_activity_button). No inline spinner overlay here.
 
         // Scroll indicator overlay when scrolled up.
         if self.output_scroll_offset > 0 {
             let indicator = format!(" \u{2191} {} lines above ", self.output_scroll_offset);
-            let style = Style::default().fg(Color::Gray);
             let x = area.right().saturating_sub(indicator.len() as u16);
             let indicator_area = Rect::new(x, area.y, indicator.len() as u16, 1);
             frame.render_widget(
-                Paragraph::new(Span::styled(indicator, style)),
+                Paragraph::new(Span::styled(indicator, theme::out_dim())),
                 indicator_area,
             );
         }
+
+        self.render_conversation_action_menu(frame, area);
     }
 
-    /// Renders the mode indicator line below the output area.
-    fn render_mode_line(&self, frame: &mut Frame, area: Rect) {
-        let hint = Span::styled(
-            "Shift+Tab switch mode",
-            Style::default().add_modifier(Modifier::DIM),
-        );
-        let sep = Span::raw("  ");
-        let mode_label = self.mode.label();
-        let mode_span = Span::styled(mode_label, Style::default().fg(Color::Yellow));
-
-        let right_text = if let Some(ref slug) = self.focused_intent {
-            format!("[{slug}]")
+    fn visible_conversation_layout(&self, area: Rect) -> VisibleConversationLayout {
+        let max_lines = area.height as usize;
+        let all_rows = if self.conversation_blocks.is_empty() {
+            self.legacy_output_rows()
         } else {
-            String::new()
+            self.conversation_visual_rows(area.width)
+        };
+        let total = all_rows.len();
+        let bottom = total.saturating_sub(self.output_scroll_offset);
+        let start = bottom.saturating_sub(max_lines);
+        let rows = all_rows[start..bottom].to_vec();
+        let padding = max_lines.saturating_sub(rows.len());
+        VisibleConversationLayout {
+            start_index: start,
+            padding,
+            rows,
+        }
+    }
+
+    fn conversation_row_line(
+        &self,
+        row: &ConversationVisualRow,
+        row_index: usize,
+    ) -> Line<'static> {
+        let Some(selection) = self.conversation_text_selection else {
+            return row.line.clone();
+        };
+        if !selection.dragged {
+            return row.line.clone();
+        }
+
+        let (start, end) = Self::normalise_selection(selection);
+        if row_index < start.row || row_index > end.row {
+            return row.line.clone();
+        }
+
+        let text_len = row.plain_text.chars().count();
+        let start_col = if row_index == start.row {
+            start.column.min(text_len)
+        } else {
+            0
+        };
+        let end_col = if row_index == end.row {
+            end.column.min(text_len)
+        } else {
+            text_len
+        };
+        if start_col == end_col {
+            return row.line.clone();
+        }
+
+        let before = row.plain_text.chars().take(start_col).collect::<String>();
+        let selected = row
+            .plain_text
+            .chars()
+            .skip(start_col)
+            .take(end_col.saturating_sub(start_col))
+            .collect::<String>();
+        let after = row.plain_text.chars().skip(end_col).collect::<String>();
+
+        Line::from(vec![
+            Span::raw(before),
+            Span::styled(selected, theme::conversation_text_selection()),
+            Span::raw(after),
+        ])
+    }
+
+    fn render_conversation_action_menu(&self, frame: &mut Frame, area: Rect) {
+        let Some((menu_area, actions)) = self.conversation_action_menu_rect(area) else {
+            return;
         };
 
-        let width = area.width as usize;
-        let left_len = "Shift+Tab switch mode".len() + 2 + mode_label.len();
-        let right_len = right_text.len();
-        let padding = width.saturating_sub(left_len + right_len);
+        let lines = actions
+            .iter()
+            .enumerate()
+            .map(|(idx, action)| {
+                let label = match action {
+                    ConversationAction::Copy => "Copy message",
+                    ConversationAction::Revert => "Revert change",
+                };
+                let style = if idx == self.conversation_action_selected {
+                    theme::conversation_action_menu_selected()
+                } else {
+                    theme::conversation_action_menu()
+                };
+                Line::from(Span::styled(format!(" {label:<18}"), style))
+            })
+            .collect::<Vec<_>>();
 
-        let mut spans = vec![hint, sep, mode_span, Span::raw(" ".repeat(padding))];
+        frame.render_widget(Clear, menu_area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(theme::conversation_action_menu())
+                .block(
+                    Block::bordered()
+                        .border_style(theme::conversation_action_menu_border())
+                        .style(theme::conversation_action_menu()),
+                ),
+            menu_area,
+        );
+    }
 
-        if !right_text.is_empty() {
-            spans.push(Span::styled(right_text, Style::default().fg(Color::Cyan)));
+    fn conversation_action_menu_rect(&self, area: Rect) -> Option<(Rect, Vec<ConversationAction>)> {
+        let menu = self.conversation_action_menu?;
+        if self.selected_conversation_block != Some(menu.block_index) {
+            return None;
+        }
+        let actions = self.conversation_menu_actions(menu.block_index);
+        if actions.is_empty() {
+            return None;
+        }
+
+        let layout = self.visible_conversation_layout(area);
+        let row_offset = layout
+            .rows
+            .iter()
+            .position(|row| row.block_index == Some(menu.block_index))?;
+        let anchor_y = area.y + layout.padding as u16 + row_offset as u16;
+        let width = 22_u16.min(area.width);
+        let height = (actions.len() as u16 + 2).min(area.height.max(1));
+        let x = area.right().saturating_sub(width);
+        let y = if anchor_y + height < area.bottom() {
+            anchor_y.saturating_add(1)
+        } else {
+            anchor_y.saturating_sub(height.saturating_sub(1))
+        };
+
+        Some((Rect::new(x, y, width, height), actions))
+    }
+
+    fn legacy_output_rows(&self) -> Vec<ConversationVisualRow> {
+        self.output_lines
+            .iter()
+            .map(|ol| ConversationVisualRow {
+                line: Self::line_from_output(ol),
+                plain_text: ol.text.clone(),
+                block_index: None,
+                menu_button_block: None,
+                menu_button_range: None,
+            })
+            .collect()
+    }
+
+    fn conversation_visual_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
+        let mut rows = Vec::new();
+        for (idx, block) in self.conversation_blocks.iter().enumerate() {
+            if !rows.is_empty() {
+                rows.push(ConversationVisualRow {
+                    line: Line::from(""),
+                    plain_text: String::new(),
+                    block_index: None,
+                    menu_button_block: None,
+                    menu_button_range: None,
+                });
+            }
+            match block.kind {
+                ConversationBlockKind::User => {
+                    rows.extend(self.user_block_rows(idx, block, width));
+                }
+                ConversationBlockKind::Output => {
+                    for ol in &block.lines {
+                        rows.push(ConversationVisualRow {
+                            line: Self::line_from_output(ol),
+                            plain_text: ol.text.clone(),
+                            block_index: Some(idx),
+                            menu_button_block: None,
+                            menu_button_range: None,
+                        });
+                    }
+                    if let Some(elapsed) = &block.elapsed {
+                        rows.push(ConversationVisualRow {
+                            line: Line::from(Span::styled(elapsed.clone(), theme::out_dim())),
+                            plain_text: elapsed.clone(),
+                            block_index: Some(idx),
+                            menu_button_block: None,
+                            menu_button_range: None,
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn user_block_rows(
+        &self,
+        block_index: usize,
+        block: &ConversationBlock,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let width = width as usize;
+        let input = block
+            .lines
+            .first()
+            .map(|line| line.text.as_str())
+            .unwrap_or("");
+        let submitted_at = block.submitted_at.as_deref().unwrap_or("");
+        let selected = self.selected_conversation_block == Some(block_index);
+        let action_trigger = if selected { "..." } else { "" };
+        let (line, range, plain_text) =
+            self.user_panel_line(input, action_trigger, width, true, selected);
+        let (meta_line, _, meta_plain_text) =
+            self.user_panel_line(submitted_at, "", width, false, selected);
+        vec![
+            ConversationVisualRow {
+                line,
+                plain_text,
+                block_index: Some(block_index),
+                menu_button_block: selected.then_some(block_index),
+                menu_button_range: range,
+            },
+            ConversationVisualRow {
+                line: meta_line,
+                plain_text: meta_plain_text,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+            },
+        ]
+    }
+
+    fn user_panel_line(
+        &self,
+        left: &str,
+        right: &str,
+        width: usize,
+        strong: bool,
+        selected: bool,
+    ) -> (Line<'static>, Option<(u16, u16)>, String) {
+        let accent = "\u{258f} ";
+        let right_len = right.chars().count();
+        let left_budget = width
+            .saturating_sub(accent.chars().count())
+            .saturating_sub(right_len)
+            .saturating_sub(3);
+        let left_text = Self::truncate_inline(left, left_budget);
+        let left_len = left_text.chars().count();
+        let fill = width.saturating_sub(accent.chars().count() + left_len + right_len);
+        let left_style = if strong {
+            if selected {
+                theme::conversation_user_selected_text()
+            } else {
+                theme::conversation_user_text()
+            }
+        } else if selected {
+            theme::conversation_user_selected_meta()
+        } else {
+            theme::conversation_user_meta()
+        };
+        let surface_style = if selected {
+            theme::conversation_user_selected_surface()
+        } else {
+            theme::panel_surface()
+        };
+        let accent_style = if selected {
+            theme::conversation_user_selected_accent()
+        } else {
+            theme::panel_accent()
+        };
+        let right_style = if selected && !right.is_empty() {
+            theme::conversation_user_action()
+        } else if selected {
+            theme::conversation_user_selected_meta()
+        } else {
+            theme::conversation_user_meta()
+        };
+        let right_start = accent.chars().count() + left_len + fill;
+        let right_range = (!right.is_empty()).then_some((
+            right_start.min(u16::MAX as usize) as u16,
+            (right_start + right_len).min(u16::MAX as usize) as u16,
+        ));
+        let plain_text = format!("{accent}{left_text}{}{right}", " ".repeat(fill));
+        (
+            Line::from(vec![
+                Span::styled(accent.to_string(), accent_style),
+                Span::styled(left_text.clone(), left_style),
+                Span::styled(" ".repeat(fill), surface_style),
+                Span::styled(right.to_string(), right_style),
+            ]),
+            right_range,
+            plain_text,
+        )
+    }
+
+    fn truncate_inline(text: &str, max_chars: usize) -> String {
+        if text.chars().count() <= max_chars {
+            return text.to_string();
+        }
+        if max_chars <= 1 {
+            return "\u{2026}".to_string();
+        }
+        let mut out = text.chars().take(max_chars - 1).collect::<String>();
+        out.push('\u{2026}');
+        out
+    }
+
+    fn line_from_output(ol: &OutputLine) -> Line<'static> {
+        match ol.style {
+            OutputStyle::Help => {
+                let text = &ol.text;
+                if text.len() > 35 {
+                    let (cmd_part, desc_part) = text.split_at(35);
+                    Line::from(vec![
+                        Span::styled(cmd_part.to_string(), theme::out_help_cmd()),
+                        Span::styled(desc_part.to_string(), theme::out_help_desc()),
+                    ])
+                } else {
+                    Line::from(Span::styled(text.clone(), theme::out_help_cmd()))
+                }
+            }
+            _ => {
+                let style = match ol.style {
+                    OutputStyle::Normal => theme::out_normal(),
+                    OutputStyle::Error => theme::out_error(),
+                    OutputStyle::Success => theme::out_success(),
+                    OutputStyle::Dim => theme::out_dim(),
+                    OutputStyle::Ai => theme::out_ai(),
+                    OutputStyle::Help => unreachable!(),
+                };
+                Line::from(Span::styled(ol.text.clone(), style))
+            }
+        }
+    }
+
+    /// REPL-06 — mode strip with shortcut hint, active mode pill, and intent label.
+    fn render_mode_strip(&self, frame: &mut Frame, area: Rect) {
+        let dot_glyph = Self::mode_dot_glyph();
+        let mode_label = self.mode.label();
+
+        // Right-side intent indicator: "intent —" (empty) or "intent [slug]".
+        let intent_label = "intent ";
+        let intent_value: String = self
+            .focused_intent
+            .as_deref()
+            .map(|s| format!("[{s}]"))
+            .unwrap_or_else(|| "—".to_string());
+
+        let hint_prefix = 14usize;
+        let mode_len = 4 + mode_label.len();
+        let right_len = intent_label.len() + intent_value.chars().count();
+        let left_len = hint_prefix + mode_len;
+        let padding = (area.width as usize).saturating_sub(left_len + right_len);
+
+        let mut spans = vec![
+            Span::styled(" Shift ", theme::keycap()),
+            Span::styled(" + ", theme::hairline()),
+            Span::styled(" Tab ", theme::keycap()),
+            Span::styled(" switch mode  ", theme::mode_hint()),
+            Span::styled(format!(" {dot_glyph} {mode_label} "), theme::mode_pill()),
+            Span::raw("  "),
+        ];
+        spans.push(Span::raw(" ".repeat(padding)));
+        spans.push(Span::styled(intent_label, theme::label_caps_inline()));
+        if self.focused_intent.is_some() {
+            spans.push(Span::styled(intent_value, theme::intent_slug()));
+        } else {
+            spans.push(Span::styled(intent_value, theme::out_dim()));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    /// Renders a full-width horizontal separator line.
-    fn render_separator(&self, frame: &mut Frame, area: Rect) {
-        let width = area.width as usize;
-        let line_str = "─".repeat(width);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                line_str,
-                Style::default().add_modifier(Modifier::DIM),
-            )),
-            area,
-        );
+    /// REPL-08 — prompt input well with rust focus ring and placeholder.
+    ///
+    /// On terminals < 60 cols, the focus border is dropped and the prompt
+    /// renders as a single line with a `› ` prefix.
+    fn render_prompt_well(&self, frame: &mut Frame, area: Rect, textarea: &TextArea<'_>) {
+        use ratatui::widgets::{Block, BorderType, Borders};
+
+        let is_empty = textarea.lines().iter().all(|line| line.is_empty());
+        let placeholder = match self.mode {
+            ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
+            ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
+        };
+
+        if area.height >= 3 {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(theme::focus_border())
+                .style(theme::panel_surface());
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let chunks =
+                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(inner);
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
+                chunks[0],
+            );
+            frame.render_widget(textarea, chunks[1]);
+            if is_empty {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(placeholder, theme::placeholder())),
+                    chunks[1],
+                );
+            }
+        } else {
+            let chunks =
+                Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{203A} ", theme::chevron())),
+                chunks[0],
+            );
+            frame.render_widget(textarea, chunks[1]);
+            if is_empty {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(placeholder, theme::placeholder())),
+                    chunks[1],
+                );
+            }
+        }
     }
 
-    /// Renders the single-line text input with a `❯ ` prefix.
-    fn render_input(&self, frame: &mut Frame, area: Rect, textarea: &TextArea<'_>) {
-        let chunks = Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).split(area);
-
-        // Chevron prefix
-        frame.render_widget(
-            Paragraph::new(Span::styled("❯ ", Style::default().fg(Color::Cyan))),
-            chunks[0],
-        );
-
-        // Textarea (implements Widget)
-        frame.render_widget(textarea, chunks[1]);
-    }
-
-    /// Renders the bottom status bar with time, workspace path, name, and model.
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+    /// REPL-10 — compact single-row status dock.
+    fn render_status_dock(&self, frame: &mut Frame, area: Rect) {
+        if area.width < 40 {
+            self.render_compact_status(frame, area);
+            return;
+        }
         let time_str = Local::now().format("%H:%M").to_string();
-        let full_path = self
-            .workspace_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace_root.clone())
-            .display()
-            .to_string();
-
         let workspace_name = self
             .config
             .workspace
             .as_ref()
             .map(|w| w.name.as_str())
             .unwrap_or("unnamed");
-
-        let model_str = {
-            let providers = self.config.effective_providers();
-            providers
-                .iter()
-                .find(|p| p.role == crate::config::ProviderRole::Primary)
-                .or(providers.first())
-                .map(|p| p.model.clone())
-                .unwrap_or_else(|| "no model".to_string())
+        let cwd = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace_root.clone())
+            .display()
+            .to_string();
+        // Lowercase labels feel "smaller" than uppercase in monospace fonts;
+        // paired with the dim hairline colour they recede visually so the
+        // values (workspace name, time) remain the read targets.
+        let lbl_time = "time";
+        let lbl_ws = "workspace";
+        let lbl_cwd = "cwd";
+        let lbl_activity = "activity";
+        let prefix_len = lbl_time.len()
+            + 1
+            + time_str.len()
+            + 3
+            + lbl_ws.len()
+            + 1
+            + workspace_name.len()
+            + 3
+            + lbl_cwd.len()
+            + 1;
+        let activity_len = if self.working {
+            lbl_activity.len() + 1 + 6 + 3
+        } else {
+            0
         };
+        let cwd_budget = area
+            .width
+            .saturating_sub((prefix_len + activity_len) as u16)
+            .max(12) as usize;
+        let cwd_truncated = truncate_path(&cwd, cwd_budget);
 
-        let right_str = format!("workspace: {workspace_name}  {model_str}");
-        let left_str = format!("{time_str}  {full_path}");
-        let width = area.width as usize;
-        let padding = width.saturating_sub(left_str.len() + right_str.len());
-
-        let spans: Vec<Span<'_>> = vec![
-            Span::styled(
-                format!("{time_str}  "),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-            Span::styled(full_path, Style::default().fg(Color::Green)),
-            Span::raw(" ".repeat(padding)),
-            Span::styled("workspace: ", Style::default().add_modifier(Modifier::DIM)),
-            Span::styled(
-                workspace_name.to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("  "),
-            Span::styled(model_str, Style::default().fg(Color::Magenta)),
+        let mut spans = vec![
+            Span::styled(format!("{lbl_time} "), theme::label_caps_inline()),
+            Span::styled(time_str, theme::dock_value_muted()),
+            Span::raw("   "),
+            Span::styled(format!("{lbl_ws} "), theme::label_caps_inline()),
+            Span::styled(workspace_name.to_string(), theme::workspace_value()),
+            Span::raw("   "),
+            Span::styled(format!("{lbl_cwd} "), theme::label_caps_inline()),
+            Span::styled(cwd_truncated, theme::dock_value_muted()),
         ];
+        if self.working {
+            let frame_idx = (Self::animation_now_ms() / 80) as usize;
+            let glyph = Self::SPINNER[frame_idx % Self::SPINNER.len()];
+            spans.push(Span::raw("   "));
+            spans.push(Span::styled(
+                format!("{lbl_activity} "),
+                theme::label_caps_inline(),
+            ));
+            spans.push(Span::styled(format!("{glyph} work"), theme::chevron()));
+        }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    /// Renders the inline slash-command completion menu with scrolling.
-    ///
-    /// The selected entry is highlighted with a cyan foreground; all others
-    /// use the default terminal style. When the total number of matches
-    /// exceeds [`Self::SLASH_MENU_VISIBLE`], a scroll indicator (e.g.
-    /// `3/12`) is shown at the bottom.
+    /// Compact single-row status fallback for narrow terminals.
+    fn render_compact_status(&self, frame: &mut Frame, area: Rect) {
+        let time_str = Local::now().format("%H:%M").to_string();
+        let workspace_name = self
+            .config
+            .workspace
+            .as_ref()
+            .map(|w| w.name.as_str())
+            .unwrap_or("unnamed");
+        let activity = if self.working { "  work" } else { "" };
+        let line = Line::from(vec![
+            Span::styled("time ", theme::label_caps_inline()),
+            Span::styled(time_str, theme::dock_value_muted()),
+            Span::raw("   "),
+            Span::styled("workspace ", theme::label_caps_inline()),
+            Span::styled(workspace_name.to_string(), theme::workspace_value()),
+            Span::styled(activity.to_string(), theme::out_dim()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    /// Renders the inline slash-command completion menu as an overlay.
     fn render_slash_menu(&self, frame: &mut Frame, area: Rect) {
-        if self.slash_matches.is_empty() {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        if self.slash_rows.is_empty() {
             return;
         }
 
-        let total = self.slash_matches.len();
-        let visible = total.min(Self::SLASH_MENU_VISIBLE);
-        let has_indicator = total > Self::SLASH_MENU_VISIBLE;
-        let row_count = if has_indicator { visible + 1 } else { visible };
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 0, 0))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        let row_areas = Layout::vertical(
-            std::iter::repeat_n(Constraint::Length(1), row_count).collect::<Vec<_>>(),
+        if inner.height < 3 {
+            return;
+        }
+
+        let header = if self.slash_filter == "/" {
+            Line::from(vec![
+                Span::styled("DISCOVER", theme::slash_group()),
+                Span::styled(
+                    format!(
+                        "  {} commands across {} groups",
+                        SLASH_COMMANDS.len(),
+                        SLASH_GROUPS.len()
+                    ),
+                    theme::dock_value(),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("FILTER", theme::slash_group()),
+                Span::styled("  matching ", theme::dock_value()),
+                Span::styled(self.slash_filter.as_str(), theme::keycap()),
+                Span::styled(
+                    format!("  {} matches", self.slash_matches.len()),
+                    theme::out_dim(),
+                ),
+            ])
+        };
+
+        let body_capacity = inner.height.saturating_sub(2) as usize;
+        let total = self.slash_rows.len();
+        let visible = total.min(body_capacity);
+        if visible == 0 {
+            return;
+        }
+        let offset = self.slash_scroll_offset.min(total.saturating_sub(1));
+
+        let rows = Layout::vertical(
+            std::iter::repeat_n(Constraint::Length(1), visible + 2).collect::<Vec<_>>(),
         )
-        .split(area);
+        .split(inner);
 
-        let offset = self.slash_scroll_offset;
-        for (i, sm) in self
-            .slash_matches
+        frame.render_widget(Paragraph::new(header), rows[0]);
+
+        for (i, item) in self
+            .slash_rows
             .iter()
             .skip(offset)
             .take(visible)
@@ -1271,36 +2538,111 @@ impl ReplApp {
         {
             let abs_index = offset + i;
             let is_selected = abs_index == self.slash_selected;
-            let prefix = if is_selected { "> " } else { "  " };
-            let text = format!("{prefix}{:<20}  {}", sm.command, sm.description);
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().add_modifier(Modifier::DIM)
-            };
-
-            frame.render_widget(Paragraph::new(Span::styled(text, style)), row_areas[i]);
+            let row = rows[i + 1];
+            if is_selected {
+                frame.render_widget(Block::default().style(theme::slash_selected_row()), row);
+            }
+            match item {
+                SlashMenuItem::Group {
+                    group,
+                    count,
+                    expanded,
+                } => self.render_slash_group_row(frame, row, *group, *count, *expanded),
+                SlashMenuItem::Command(sm) => {
+                    self.render_slash_command_row(frame, row, sm, is_selected);
+                }
+            }
         }
 
-        // Scroll indicator: "  3/12 ↑↓"
-        if has_indicator {
-            let pos = self.slash_selected + 1;
-            let arrows = match (offset > 0, offset + visible < total) {
-                (true, true) => " \u{2191}\u{2193}",
-                (true, false) => " \u{2191}",
-                (false, true) => " \u{2193}",
-                (false, false) => "",
-            };
-            let indicator = format!("  {pos}/{total}{arrows}");
-            let style = Style::default().add_modifier(Modifier::DIM);
-            frame.render_widget(
-                Paragraph::new(Span::styled(indicator, style)),
-                row_areas[visible],
-            );
-        }
+        let pos = self.slash_selected.saturating_add(1).min(total);
+        let arrows = match (offset > 0, offset + visible < total) {
+            (true, true) => " \u{2191}\u{2193}",
+            (true, false) => " \u{2191}",
+            (false, true) => " \u{2193}",
+            (false, false) => "",
+        };
+        let footer = if self.slash_filter == "/" {
+            format!(
+                " \u{2191}\u{2193} navigate   \u{2192}/Enter expand   Tab complete   Esc close   {pos}/{total}{arrows}"
+            )
+        } else {
+            format!(
+                " \u{2191}\u{2193} navigate   Tab complete   Enter run   Esc close   {pos}/{total}{arrows}"
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(footer, theme::out_dim())),
+            rows[visible + 1],
+        );
+    }
+
+    fn render_slash_group_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        group: SlashGroup,
+        count: usize,
+        expanded: bool,
+    ) {
+        let marker = if expanded { "\u{25be}" } else { "\u{203a}" };
+        let count_text = count.to_string();
+        let label = group.label();
+        let pad = area
+            .width
+            .saturating_sub((label.len() + count_text.len() + 5) as u16) as usize;
+        let line = Line::from(vec![
+            Span::styled(format!(" {marker} "), theme::slash_selected()),
+            Span::styled(label, theme::slash_group()),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(count_text, theme::out_dim()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_slash_command_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        sm: &SlashMatch,
+        selected: bool,
+    ) {
+        let command_width = area.width.saturating_sub(28).clamp(18, 34);
+        let cols = Layout::horizontal([
+            Constraint::Length(3),
+            Constraint::Length(command_width),
+            Constraint::Min(1),
+        ])
+        .split(area);
+        let marker = if selected { "\u{25cf}" } else { "\u{00b7}" };
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" {marker} "), theme::slash_selected())),
+            cols[0],
+        );
+        frame.render_widget(Paragraph::new(self.slash_command_line(sm)), cols[1]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                sm.description.as_str(),
+                theme::dock_value_muted(),
+            )),
+            cols[2],
+        );
+    }
+
+    fn slash_command_line<'a>(&self, sm: &'a SlashMatch) -> Line<'a> {
+        let split_at = sm
+            .matched_prefix_len
+            .min(sm.command.len())
+            .min(sm.command.chars().count());
+        let byte_split = sm
+            .command
+            .char_indices()
+            .nth(split_at)
+            .map_or(sm.command.len(), |(idx, _)| idx);
+        let (matched, rest) = sm.command.split_at(byte_split);
+        Line::from(vec![
+            Span::styled(matched, theme::slash_match()),
+            Span::styled(rest, theme::slash_command()),
+        ])
     }
 
     /// Renders the interactive model/provider selector panel.
@@ -1312,20 +2654,27 @@ impl ReplApp {
         input_mode: &Option<PanelInputMode>,
         status_msg: &Option<(String, OutputStyle)>,
     ) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
         let providers = self.config.effective_providers();
         let mut lines: Vec<Line<'_>> = Vec::new();
 
+        let inner_width = inner.width as usize;
+
         // Header
         lines.push(Line::from(vec![
-            Span::styled(
-                "  Select Model",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" ".repeat(area.width.saturating_sub(40) as usize)),
-            Span::styled(
-                "(Esc to close)",
-                Style::default().add_modifier(Modifier::DIM),
-            ),
+            Span::styled("  Select Model", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(40))),
+            Span::styled("(Esc to close)", theme::out_dim()),
         ]));
 
         // Empty line
@@ -1335,7 +2684,7 @@ impl ReplApp {
         if providers.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  No providers configured. Press [A] to add one.",
-                Style::default().add_modifier(Modifier::DIM),
+                theme::out_dim(),
             )));
         } else {
             for (i, p) in providers.iter().enumerate() {
@@ -1360,11 +2709,9 @@ impl ReplApp {
                 );
 
                 let style = if is_sel {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
+                    theme::slash_selected()
                 } else {
-                    Style::default().add_modifier(Modifier::DIM)
+                    theme::out_dim()
                 };
 
                 lines.push(Line::from(Span::styled(text, style)));
@@ -1378,36 +2725,24 @@ impl ReplApp {
         match input_mode {
             Some(PanelInputMode::AddProvider(buf)) => {
                 lines.push(Line::from(vec![
-                    Span::styled("  Add: ", Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        format!("{buf}\u{2588}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "  (provider model api_key_env)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("  Add: ", theme::out_help_cmd()),
+                    Span::styled(format!("{buf}\u{2588}"), theme::brand_word()),
+                    Span::styled("  (provider model api_key_env)", theme::out_dim()),
                 ]));
             }
             Some(PanelInputMode::ConfirmDelete) => {
                 lines.push(Line::from(Span::styled(
                     format!("  Delete provider #{}? [y/N]", selected + 1),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    theme::out_error(),
                 )));
             }
             Some(PanelInputMode::AddStep1Provider { selected: step_sel }) => {
                 // Replace entire panel with provider selection.
                 lines.clear();
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        "  Add Provider",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(45) as usize)),
-                    Span::styled(
-                        "(Esc to cancel)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled("  Add Provider", theme::brand_word()),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(45))),
+                    Span::styled("(Esc to cancel)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
@@ -1415,11 +2750,9 @@ impl ReplApp {
                     let prefix = if is_sel { "  \u{25cf} " } else { "    " };
                     let text = format!("{prefix}{}. {:<14} {}", i + 1, name, desc);
                     let style = if is_sel {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
+                        theme::slash_selected()
                     } else {
-                        Style::default().add_modifier(Modifier::DIM)
+                        theme::out_dim()
                     };
                     lines.push(Line::from(Span::styled(text, style)));
                 }
@@ -1433,22 +2766,16 @@ impl ReplApp {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  Select Model for {provider}"),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        theme::brand_word(),
                     ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(55) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(55))),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 if let Some(manual) = manual_input {
                     lines.push(Line::from(vec![
-                        Span::styled("  Model: ", Style::default().fg(Color::Cyan)),
-                        Span::styled(
-                            format!("{manual}\u{2588}"),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled("  Model: ", theme::out_help_cmd()),
+                        Span::styled(format!("{manual}\u{2588}"), theme::brand_word()),
                     ]));
                 } else {
                     let models = recommended_models(provider);
@@ -1457,18 +2784,16 @@ impl ReplApp {
                         let prefix = if is_sel { "  \u{25cf} " } else { "    " };
                         let text = format!("{prefix}{}. {:<30} {}", i + 1, name, desc);
                         let style = if is_sel {
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD)
+                            theme::slash_selected()
                         } else {
-                            Style::default().add_modifier(Modifier::DIM)
+                            theme::out_dim()
                         };
                         lines.push(Line::from(Span::styled(text, style)));
                     }
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "  [M] Enter model name manually",
-                        Style::default().add_modifier(Modifier::DIM),
+                        theme::out_dim(),
                     )));
                 }
             }
@@ -1481,13 +2806,10 @@ impl ReplApp {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  Authentication for {provider} ({model})"),
-                        Style::default().add_modifier(Modifier::BOLD),
+                        theme::brand_word(),
                     ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(60) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(60))),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 let options = [
@@ -1500,24 +2822,19 @@ impl ReplApp {
                 for (i, (label, hint)) in options.iter().enumerate() {
                     let marker = if i == *auth_sel { "> " } else { "  " };
                     let style = if i == *auth_sel {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
+                        theme::slash_selected()
                     } else {
-                        Style::default().add_modifier(Modifier::DIM)
+                        theme::out_dim()
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {marker}{label}"), style),
-                        Span::styled(
-                            format!("  \u{2014} {hint}"),
-                            Style::default().add_modifier(Modifier::DIM),
-                        ),
+                        Span::styled(format!("  \u{2014} {hint}"), theme::out_dim()),
                     ]));
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [\u{2191}/\u{2193}] Select  [Enter] Continue  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             Some(PanelInputMode::AddStep3Key {
@@ -1534,20 +2851,14 @@ impl ReplApp {
                 let key_set = std::env::var(env_name).is_ok();
                 lines.clear();
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {label} for {provider}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" ".repeat(area.width.saturating_sub(50) as usize)),
-                    Span::styled(
-                        "(Esc to go back)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
+                    Span::styled(format!("  {label} for {provider}"), theme::brand_word()),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(50))),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  Model: {model}"),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
                 let hint = if *is_subscription {
                     "  Tip: generate a token with `claude setup-token`"
@@ -1563,29 +2874,21 @@ impl ReplApp {
                             "\u{2717} not set \u{2014} enter below"
                         }
                     ),
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
                 if !hint.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        hint,
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::DIM),
-                    )));
+                    lines.push(Line::from(Span::styled(hint, theme::label_caps())));
                 }
                 lines.push(Line::from(""));
                 let masked = "\u{25cf}".repeat(key_buf.len());
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label}: "), Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        format!("{masked}\u{2588}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(format!("  {label}: "), theme::out_help_cmd()),
+                    Span::styled(format!("{masked}\u{2588}"), theme::brand_word()),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [Enter] Continue  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             Some(PanelInputMode::AddStep3Confirm {
@@ -1602,37 +2905,33 @@ impl ReplApp {
                 lines.clear();
                 lines.push(Line::from(Span::styled(
                     format!("  Store {label} for {provider} ({model})?"),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    theme::brand_word(),
                 )));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [K] Save to ~/.duumbi/credentials.toml  [E] Session only  [Esc] Back",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
             None => {
                 // Show status message if present (e.g. "Provider added").
                 if let Some((msg, style)) = status_msg {
                     let s = match style {
-                        OutputStyle::Success => Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                        OutputStyle::Error => {
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                        }
-                        _ => Style::default().add_modifier(Modifier::DIM),
+                        OutputStyle::Success => theme::out_success(),
+                        OutputStyle::Error => theme::out_error(),
+                        _ => theme::out_dim(),
                     };
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                     lines.push(Line::from(""));
                 }
                 lines.push(Line::from(Span::styled(
                     "  [A] Add  [D] Delete  [T] Toggle role  [Enter] Select primary",
-                    Style::default().add_modifier(Modifier::DIM),
+                    theme::out_dim(),
                 )));
             }
         }
 
-        frame.render_widget(Paragraph::new(lines), area);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
 
@@ -1661,10 +2960,484 @@ mod tests {
         (app, textarea)
     }
 
+    fn make_app_with_workspace_state(
+        has_workspace: bool,
+        show_tip: bool,
+    ) -> (ReplApp, TextArea<'static>) {
+        let tmp = tempfile::TempDir::new().expect("invariant: tempdir");
+        let session_mgr = if has_workspace {
+            Some(SessionManager::load_or_create(tmp.path()).expect("invariant: session manager"))
+        } else {
+            None
+        };
+        let app = ReplApp::new(
+            DuumbiConfig::default(),
+            tmp.path().to_path_buf(),
+            None,
+            session_mgr,
+            has_workspace,
+            show_tip,
+        );
+        let textarea = TextArea::default();
+        (app, textarea)
+    }
+
     #[test]
     fn new_starts_in_agent_mode() {
         let (app, _) = make_app();
         assert_eq!(app.mode, ReplMode::Agent);
+    }
+
+    #[test]
+    fn truncate_path_returns_input_when_short() {
+        assert_eq!(truncate_path("/a/b", 80), "/a/b");
+    }
+
+    #[test]
+    fn truncate_path_inserts_ellipsis() {
+        let p = "/Users/foo/space/hgahub/duumbi-cli-ux/target/debug/duumbi-binary";
+        let out = truncate_path(p, 30);
+        assert!(out.chars().count() <= 30);
+        assert!(out.contains('\u{2026}'));
+        // Tail should be preserved (it carries the most identifying suffix).
+        assert!(out.ends_with("ary"));
+    }
+
+    #[test]
+    fn truncate_path_handles_unicode() {
+        let p = "/föö/bär/baz/qüüx";
+        let out = truncate_path(p, 10);
+        assert!(out.chars().count() <= 10);
+        assert!(out.contains('\u{2026}'));
+    }
+
+    #[test]
+    fn mode_dot_glyph_returns_solid_circle() {
+        // Static dot now; only the solid bullet (U+25CF) is allowed.
+        assert_eq!(ReplApp::mode_dot_glyph(), "\u{25CF}");
+    }
+
+    /// Returns the full buffer content for a rendered frame as a single
+    /// string (cells joined row by row, no separator). Used by the status
+    /// dock render tests to assert what the user actually sees.
+    fn render_app_to_string(
+        app: &ReplApp,
+        textarea: &TextArea<'_>,
+        width: u16,
+        height: u16,
+    ) -> (String, Vec<String>) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("invariant: test terminal");
+        terminal
+            .draw(|frame| app.render(frame, textarea))
+            .expect("invariant: draw");
+        let cells = terminal.backend().buffer().content();
+        let joined: String = cells.iter().map(|c| c.symbol()).collect();
+        // Split by width to also get per-row dump for debugging.
+        let rows: Vec<String> = (0..height as usize)
+            .map(|r| {
+                cells[r * width as usize..(r + 1) * width as usize]
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect()
+            })
+            .collect();
+        (joined, rows)
+    }
+
+    fn render_to_string(width: u16, height: u16) -> (String, Vec<String>) {
+        let (app, textarea) = make_app();
+        render_app_to_string(&app, &textarea, width, height)
+    }
+
+    #[test]
+    fn empty_workspace_tip_uses_single_column_copy() {
+        let (app, textarea) = make_app_with_workspace_state(true, true);
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains(" empty workspace "));
+        assert!(rendered.contains("TRY ONE OF THESE"));
+        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("\"Build a calculator with add and multiply\""));
+        assert!(!rendered.contains("Use the prompt"));
+
+        let card_rows = rows.iter().skip(2).take(9).cloned().collect::<Vec<_>>();
+        let card_chunk = card_rows.join("\n");
+        assert!(
+            !card_chunk.contains('\u{2500}'),
+            "empty-state card should not render top/bottom borders:\n{card_chunk}"
+        );
+    }
+
+    #[test]
+    fn no_workspace_tip_uses_single_column_copy() {
+        let (app, textarea) = make_app_with_workspace_state(false, true);
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains(" no workspace "));
+        assert!(rendered.contains("INITIALISE A WORKSPACE"));
+        assert!(rendered.contains("/init"));
+        assert!(rendered.contains("duumbi init"));
+    }
+
+    #[test]
+    fn conversation_render_keeps_user_block_and_output() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        app.push_output("Workspace: /tmp/example", OutputStyle::Normal);
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("/status"));
+        assert!(!rendered.contains("copy"));
+        assert!(rendered.contains("Workspace: /tmp/example"));
+    }
+
+    #[test]
+    fn conversation_render_shows_elapsed_footer() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/describe");
+        app.push_output("function main() -> i64 {", OutputStyle::Normal);
+        app.finish_current_output_elapsed(std::time::Duration::from_millis(1250));
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("completed in 1.25s"));
+    }
+
+    #[test]
+    fn conversation_page_up_down_scrolls_rendered_blocks() {
+        let (mut app, mut textarea) = make_app();
+        for i in 0..20 {
+            app.begin_user_block(&format!("/status {i}"));
+            app.push_output(format!("line {i}"), OutputStyle::Normal);
+        }
+
+        let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        app.handle_key(page_up, &mut textarea);
+        assert!(app.output_scroll_offset > 0);
+
+        let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        app.handle_key(page_down, &mut textarea);
+        assert_eq!(app.output_scroll_offset, 0);
+    }
+
+    #[test]
+    fn conversation_feedback_blocks_render_with_spacing() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/help");
+        app.push_output("Slash commands:", OutputStyle::Normal);
+        app.push_feedback("Copied message.", OutputStyle::Success);
+        app.push_feedback("Copied message.", OutputStyle::Success);
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let help_row = rows
+            .iter()
+            .position(|line| line.contains("Slash commands:"))
+            .expect("help output row must render");
+        let copied_rows = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| line.contains("Copied message.").then_some(idx))
+            .collect::<Vec<_>>();
+
+        assert_eq!(copied_rows.len(), 2);
+        assert!(
+            rows[help_row + 1].trim().is_empty(),
+            "feedback should not touch previous command output"
+        );
+        assert!(
+            rows[copied_rows[0] + 1].trim().is_empty(),
+            "consecutive feedback blocks should be separated"
+        );
+    }
+
+    #[test]
+    fn conversation_click_selects_and_toggles_user_block() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("/status"))
+            .expect("user block row must render") as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_conversation_block, Some(0));
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_conversation_block, None);
+    }
+
+    #[test]
+    fn conversation_keyboard_selection_opens_action_menu() {
+        let (mut app, mut textarea) = make_app();
+        app.begin_user_block("/status");
+        app.begin_user_block("/help");
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+            &mut textarea,
+        );
+        assert_eq!(app.selected_conversation_block, Some(1));
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            &mut textarea,
+        );
+        assert!(app.conversation_action_menu.is_some());
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("Copy message"));
+    }
+
+    #[test]
+    fn conversation_selected_block_shows_action_menu_trigger() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("/status");
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("/status"))
+            .expect("user block row must render") as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("..."));
+
+        let menu_row = rows
+            .iter()
+            .position(|line| line.contains("..."))
+            .expect("selected block must expose menu trigger") as u16;
+        let menu_col = rows[menu_row as usize]
+            .find("...")
+            .expect("menu trigger must be findable") as u16;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: menu_col,
+            row: menu_row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+        assert!(rendered.contains("Copy message"));
+    }
+
+    #[test]
+    fn conversation_drag_selection_collects_text() {
+        let (mut app, textarea) = make_app();
+        app.push_output("alpha beta gamma", OutputStyle::Normal);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("alpha beta gamma"))
+            .expect("output row must render") as u16;
+        let start_col = rows[row as usize]
+            .find("beta")
+            .expect("selection start must be findable") as u16;
+        let end_col = start_col + "beta".len() as u16;
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: start_col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(MouseButton::Left),
+            column: end_col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let area = app
+            .last_conversation_area
+            .get()
+            .expect("conversation area must be cached");
+        assert_eq!(
+            app.selected_conversation_text(area).as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn conversation_mouse_up_clears_drag_selection() {
+        let (mut app, textarea) = make_app();
+        app.push_output("alpha beta gamma", OutputStyle::Normal);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 120, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("alpha beta gamma"))
+            .expect("output row must render") as u16;
+        let col = rows[row as usize]
+            .find("beta")
+            .expect("selection point must be findable") as u16;
+        let area = app
+            .last_conversation_area
+            .get()
+            .expect("conversation area must be cached");
+        let point = app
+            .conversation_point_at(area, col, row)
+            .expect("point must map to conversation row");
+        app.conversation_text_selection = Some(ConversationTextSelection {
+            anchor: point,
+            focus: point,
+            dragged: true,
+        });
+
+        let redrew = app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(redrew);
+        assert!(app.conversation_text_selection.is_none());
+    }
+
+    #[test]
+    fn conversation_menu_limits_revert_to_latest_revertable_block() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("first change");
+        app.conversation_blocks[0]
+            .actions
+            .push(ConversationAction::Revert);
+        app.begin_user_block("second change");
+        app.conversation_blocks[1]
+            .actions
+            .push(ConversationAction::Revert);
+
+        assert_eq!(
+            app.conversation_menu_actions(0),
+            vec![ConversationAction::Copy]
+        );
+        assert_eq!(
+            app.conversation_menu_actions(1),
+            vec![ConversationAction::Copy, ConversationAction::Revert]
+        );
+    }
+
+    #[test]
+    fn slash_menu_discovery_render_shows_collapsed_groups() {
+        let (mut app, textarea) = make_app();
+        app.update_slash_matches("/");
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("DISCOVER"));
+        assert!(rendered.contains("BUILD & RUN"));
+        assert!(rendered.contains("INTENT"));
+        assert!(rendered.contains("SYSTEM"));
+        assert!(!rendered.contains("/build"));
+    }
+
+    #[test]
+    fn slash_menu_filter_render_shows_prefix_matches() {
+        let (mut app, textarea) = make_app();
+        app.update_slash_matches("/in");
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("FILTER"));
+        assert!(rendered.contains("/intent"));
+        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/init"));
+    }
+
+    #[test]
+    fn slash_menu_enter_expands_group_then_runs_command() {
+        let (mut app, mut textarea) = make_app();
+        app.update_slash_matches("/");
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = app.handle_key(enter, &mut textarea);
+        assert!(matches!(action, Action::Continue));
+        assert!(
+            app.slash_rows
+                .iter()
+                .any(|row| matches!(row, SlashMenuItem::Command(sm) if sm.command == "/build"))
+        );
+
+        app.slash_selected = 1;
+        let action = app.handle_key(enter, &mut textarea);
+        assert!(matches!(action, Action::Submit(cmd) if cmd == "/build"));
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels_at_30_rows() {
+        let (_buf, rows) = render_to_string(120, 30);
+        let last_rows = rows.iter().rev().take(4).cloned().collect::<Vec<_>>();
+        let last_chunk = last_rows.join("\n");
+        assert!(
+            last_chunk.contains("time") && last_chunk.contains("workspace"),
+            "expected status-dock labels in the last rows; got:\n{last_chunk}"
+        );
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels_at_small_heights() {
+        // The status dock must render even when the terminal is short,
+        // because the Min(0) conversation pane should collapse first.
+        for h in [20u16, 22, 24, 28] {
+            let (_buf, rows) = render_to_string(120, h);
+            let last_rows = rows.iter().rev().take(5).cloned().collect::<Vec<_>>();
+            let last_chunk = last_rows.join("\n");
+            assert!(
+                last_chunk.contains("time") && last_chunk.contains("workspace"),
+                "h={h}: status-dock missing from last rows:\n{last_chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_render_draws_status_dock_labels() {
+        // Render a full frame into an in-memory buffer and verify the
+        // lowercase status-dock labels actually reach the buffer. If this
+        // ever fails silently, the status row has fallen out of the layout
+        // (e.g. from a bad constraint total or an errant early return).
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, mut textarea) = make_app();
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("invariant: test terminal");
+        terminal
+            .draw(|frame| app.render(frame, &textarea))
+            .expect("invariant: draw");
+
+        let buf_dump = terminal.backend().buffer().content();
+        let rendered: String = buf_dump.iter().map(|c| c.symbol()).collect();
+
+        assert!(
+            rendered.contains("time"),
+            "status dock should render 'time' label; buffer:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("workspace"),
+            "status dock should render 'workspace' label"
+        );
+        assert!(
+            rendered.contains("cwd"),
+            "status dock should render 'cwd' label"
+        );
+
+        // Unused to silence the mut warning in case the test harness evolves.
+        let _ = &mut textarea;
+        let _ = &mut app;
     }
 
     #[test]
@@ -1709,6 +3482,7 @@ mod tests {
         let (mut app, _) = make_app();
         app.update_slash_matches("/bui");
         assert!(!app.slash_matches.is_empty());
+        assert!(!app.slash_rows.is_empty());
         assert!(app.slash_matches.iter().any(|m| m.command == "/build"));
     }
 
@@ -1719,6 +3493,7 @@ mod tests {
         assert!(!app.slash_matches.is_empty());
         app.update_slash_matches("hello");
         assert!(app.slash_matches.is_empty());
+        assert!(app.slash_rows.is_empty());
     }
 
     #[test]
@@ -1728,13 +3503,33 @@ mod tests {
         app.update_slash_matches("/");
         // There are more than 5 total slash commands
         assert!(app.slash_matches.len() > 5);
+        assert!(app.slash_rows.iter().all(|row| matches!(
+            row,
+            SlashMenuItem::Group {
+                expanded: false,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn slash_menu_filter_rows_include_exact_match_while_typing() {
+        let (mut app, _) = make_app();
+        app.update_slash_matches("/build");
+
+        assert!(app.slash_matches.iter().any(|m| m.command == "/build"));
+        assert!(
+            app.slash_rows
+                .iter()
+                .any(|row| matches!(row, SlashMenuItem::Command(sm) if sm.command == "/build"))
+        );
     }
 
     #[test]
     fn slash_menu_scroll_offset_adjusts_on_down() {
         let (mut app, mut textarea) = make_app();
-        app.update_slash_matches("/");
-        let total = app.slash_matches.len();
+        app.update_slash_matches("/de");
+        let total = app.slash_rows.len();
         assert!(total > ReplApp::SLASH_MENU_VISIBLE);
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
@@ -1751,7 +3546,7 @@ mod tests {
     #[test]
     fn slash_menu_scroll_offset_adjusts_on_up() {
         let (mut app, mut textarea) = make_app();
-        app.update_slash_matches("/");
+        app.update_slash_matches("/de");
 
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
@@ -1779,6 +3574,7 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
         assert!(app.slash_matches.is_empty());
+        assert!(app.slash_rows.is_empty());
     }
 
     #[test]

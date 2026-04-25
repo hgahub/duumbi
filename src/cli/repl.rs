@@ -6,6 +6,7 @@
 //! the async command dispatch.
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -23,6 +24,9 @@ use crate::snapshot;
 use super::app::{ReplApp, Turn};
 use super::commands;
 use super::mode::{OutputStyle, ReplMode};
+
+const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -77,6 +81,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     // Initialise ratatui (enters alternate screen, enables raw mode).
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableBracketedPaste)?;
+    enable_balanced_mouse_reporting()?;
 
     // Single-line textarea — we intercept Enter ourselves.
     let mut textarea = TextArea::default();
@@ -85,6 +90,7 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &mut textarea).await;
 
     // Always restore the terminal, even on error.
+    disable_balanced_mouse_reporting().ok();
     execute!(std::io::stdout(), DisableBracketedPaste).ok();
     ratatui::restore();
 
@@ -96,30 +102,45 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Drives the ratatui event loop until the user exits or an I/O error occurs.
+///
+/// Polls events on a 40 ms tick (a clean divisor of the 80 ms spinner
+/// frame). Redraws fire on three triggers: a real terminal event, an
+/// active animation (working spinner or pulsing mode dot), or the first
+/// iteration of the loop. When idle and no animation is running the
+/// terminal is left untouched, keeping CPU usage near zero.
 async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ReplApp,
     textarea: &mut TextArea<'_>,
 ) -> Result<()> {
-    loop {
-        terminal.draw(|frame| app.render(frame, textarea))?;
+    use std::time::{Duration, Instant};
 
-        if event::poll(std::time::Duration::from_millis(50))? {
+    const TICK: Duration = Duration::from_millis(40);
+    // Initial paint so the user sees the UI immediately.
+    terminal.draw(|frame| app.render(frame, textarea))?;
+    let mut last_draw = Instant::now();
+
+    loop {
+        let event_ready = event::poll(TICK)?;
+        let mut should_redraw = false;
+        if event_ready {
             match event::read()? {
                 Event::Key(key) => match app.handle_key(key, textarea) {
-                    super::mode::Action::Continue => {}
+                    super::mode::Action::Continue => {
+                        should_redraw = true;
+                    }
                     super::mode::Action::Exit => {
                         if let Some(ref mut mgr) = app.session_mgr {
                             mgr.archive().ok();
                         }
                         app.push_output("Goodbye!", OutputStyle::Dim);
-                        // Draw one last frame so the farewell message is visible.
                         terminal.draw(|frame| app.render(frame, textarea))?;
                         break;
                     }
                     super::mode::Action::Submit(input) => {
                         app.working = true;
                         terminal.draw(|frame| app.render(frame, textarea))?;
+                        last_draw = Instant::now();
 
                         if process_input(terminal, app, textarea, &input).await {
                             if let Some(ref mut mgr) = app.session_mgr {
@@ -128,13 +149,26 @@ async fn event_loop(
                             break;
                         }
                         app.working = false;
+                        should_redraw = true;
                     }
                 },
                 Event::Paste(text) => {
                     textarea.insert_str(&text);
+                    should_redraw = true;
                 }
-                _ => {}
+                Event::Mouse(mouse) => {
+                    should_redraw = app.handle_mouse(mouse);
+                }
+                _ => {
+                    should_redraw = true;
+                }
             }
+        }
+
+        let needs_anim = app.working || app.mode_dot_animated();
+        if should_redraw || (needs_anim && last_draw.elapsed() >= TICK) {
+            terminal.draw(|frame| app.render(frame, textarea))?;
+            last_draw = Instant::now();
         }
     }
     Ok(())
@@ -153,25 +187,47 @@ async fn process_input(
     textarea: &mut TextArea<'_>,
     input: &str,
 ) -> bool {
-    if input.starts_with('/') {
-        handle_slash(terminal, app, textarea, input).await
-    } else {
-        // Visual separator before user-submitted input output.
-        if !app.output_lines.is_empty() {
-            app.push_output("", OutputStyle::Normal);
-        }
-        app.push_output(format!("\u{25cf} {input}"), OutputStyle::Dim);
+    let trimmed = input.trim();
+    if matches!(trimmed, "/exit" | "/quit") {
+        return handle_slash(terminal, app, textarea, input).await;
+    }
 
+    app.begin_user_block(input);
+    let started = std::time::Instant::now();
+    let show_elapsed = should_show_elapsed(input);
+
+    if input.starts_with('/') {
+        let should_exit = handle_slash(terminal, app, textarea, input).await;
+        if show_elapsed && !should_exit {
+            app.finish_current_output_elapsed(started.elapsed());
+        }
+        should_exit
+    } else {
         match app.mode {
             ReplMode::Agent => {
                 handle_ai_request(terminal, app, textarea, input).await;
+                if show_elapsed {
+                    app.finish_current_output_elapsed(started.elapsed());
+                }
                 false
             }
             ReplMode::Intent => {
                 handle_intent_input(app, input).await;
+                if show_elapsed {
+                    app.finish_current_output_elapsed(started.elapsed());
+                }
                 false
             }
         }
+    }
+}
+
+fn should_show_elapsed(input: &str) -> bool {
+    let mut parts = input.splitn(2, ' ');
+    match parts.next().unwrap_or("") {
+        "/help" | "/status" => false,
+        cmd if cmd.starts_with('/') => true,
+        _ => true,
     }
 }
 
@@ -194,14 +250,6 @@ async fn handle_slash(
 
     let graph_path = app.workspace_root.join(".duumbi/graph/main.jsonld");
     let output_path = app.workspace_root.join(".duumbi/build/output");
-
-    // Visual separator: empty line + bullet header before each command's output.
-    if !matches!(cmd, "/exit" | "/quit") {
-        if !app.output_lines.is_empty() {
-            app.push_output("", OutputStyle::Normal);
-        }
-        app.push_output(format!("\u{25cf} {input}"), OutputStyle::Normal);
-    }
 
     match cmd {
         "/build" => {
@@ -241,13 +289,14 @@ async fn handle_slash(
             });
         }
 
-        "/describe" => {
-            run_with_terminal_restore(terminal, app, textarea, || {
-                commands::describe(&graph_path).unwrap_or_else(|e| {
-                    eprintln!("Describe failed: {e:#}");
-                });
-            });
-        }
+        "/describe" => match commands::describe_to_string(&graph_path) {
+            Ok(description) => {
+                app.push_output(description, OutputStyle::Normal);
+            }
+            Err(e) => {
+                app.push_output(format!("Describe failed: {e:#}"), OutputStyle::Error);
+            }
+        },
 
         "/undo" => match snapshot::restore_latest(&app.workspace_root) {
             Ok(true) => {
@@ -369,13 +418,10 @@ async fn handle_slash(
             if app.has_workspace {
                 app.push_output("Workspace already initialised.", OutputStyle::Dim);
             } else {
-                run_with_terminal_restore(terminal, app, textarea, || {
-                    // run_init writes messages to stderr — visible outside alternate screen.
+                let workspace_root = app.workspace_root.clone();
+                let init_result = run_with_terminal_restore(terminal, app, textarea, || {
+                    super::init::run_init(&workspace_root)
                 });
-                ratatui::restore();
-                let init_result = super::init::run_init(&app.workspace_root);
-                *terminal = ratatui::init();
-                let _ = terminal.draw(|frame| app.render(frame, textarea));
                 match init_result {
                     Ok(()) => {
                         app.has_workspace = true;
@@ -411,8 +457,8 @@ async fn handle_slash(
             // "Did you mean?" suggestion using Levenshtein distance.
             let known_cmds: Vec<&str> = super::completion::SLASH_COMMANDS
                 .iter()
-                .filter(|(c, _)| !c.contains(' '))
-                .map(|(c, _)| *c)
+                .filter(|entry| !entry.command.contains(' '))
+                .map(|entry| entry.command)
                 .collect();
             if let Some(suggestion) = find_closest_command(cmd, &known_cmds) {
                 app.push_output(
@@ -439,18 +485,20 @@ async fn handle_slash(
 /// This is necessary for commands like `/build`, `/run`, `/check`, and
 /// `/describe` that write diagnostics directly to stderr — output that would
 /// be hidden inside the alternate screen.
-fn run_with_terminal_restore<F>(
+fn run_with_terminal_restore<F, R>(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ReplApp,
     textarea: &mut TextArea<'_>,
     f: F,
-) where
-    F: FnOnce(),
+) -> R
+where
+    F: FnOnce() -> R,
 {
     // Leave alternate screen so the command's stderr output is visible.
+    disable_balanced_mouse_reporting().ok();
     ratatui::restore();
 
-    f();
+    let result = f();
 
     // Prompt the user to return to the TUI.
     eprintln!("\n[Press Enter to return to the REPL]");
@@ -458,8 +506,25 @@ fn run_with_terminal_restore<F>(
 
     // Re-enter alternate screen.
     *terminal = ratatui::init();
+    enable_balanced_mouse_reporting().ok();
     // Redraw immediately so the TUI is not blank.
     let _ = terminal.draw(|frame| app.render(frame, textarea));
+    result
+}
+
+fn enable_balanced_mouse_reporting() -> io::Result<()> {
+    write_terminal_sequence(DISABLE_ALL_MOUSE_REPORTING)?;
+    write_terminal_sequence(ENABLE_BALANCED_MOUSE_REPORTING)
+}
+
+fn disable_balanced_mouse_reporting() -> io::Result<()> {
+    write_terminal_sequence(DISABLE_ALL_MOUSE_REPORTING)
+}
+
+fn write_terminal_sequence(sequence: &str) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(sequence.as_bytes())?;
+    stdout.flush()
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +652,11 @@ async fn handle_ai_request(
     let result = match outcome {
         Ok(orchestrator::MutationOutcome::Success(r)) => r,
         Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
-            app.push_output(format!("? {question}"), OutputStyle::Ai);
+            app.push_output(format!("Question: {question}"), OutputStyle::Ai);
+            app.push_output(
+                "Reply in the prompt to continue this turn.",
+                OutputStyle::Dim,
+            );
             app.history.push(Turn {
                 request: request.to_string(),
                 summary: format!("Clarification needed: {question}"),
@@ -613,11 +682,14 @@ async fn handle_ai_request(
     );
 
     // Save snapshot and write the updated graph.
-    if let Err(e) = snapshot::save_snapshot(&workspace, &source_str) {
-        app.push_output(
-            format!("Warning: snapshot save failed: {e:#}"),
-            OutputStyle::Error,
-        );
+    match snapshot::save_snapshot(&workspace, &source_str) {
+        Ok(snapshot_path) => app.mark_latest_user_block_revertable(snapshot_path),
+        Err(e) => {
+            app.push_output(
+                format!("Warning: snapshot save failed: {e:#}"),
+                OutputStyle::Error,
+            );
+        }
     }
     let patched_str = match serde_json::to_string_pretty(&result.patched) {
         Ok(s) => s,
@@ -1481,74 +1553,18 @@ fn print_status_to_buffer(app: &mut ReplApp) {
 
 /// Pushes the available slash commands into the output buffer.
 fn print_help_to_buffer(app: &mut ReplApp) {
-    let entries: &[(&str, &str)] = &[
-        ("Slash commands:", ""),
-        ("  /build", "Compile the current graph to a native binary"),
-        ("  /run [args]", "Run the compiled binary"),
-        ("  /check", "Validate the graph without compiling"),
-        (
-            "  /describe",
-            "Print human-readable pseudocode of the graph",
-        ),
-        ("  /undo", "Restore the previous graph snapshot"),
-        (
-            "  /status",
-            "Show workspace, model, and session information",
-        ),
-        ("  /history", "Show session conversation history"),
-        ("  /model", "Show the current LLM model"),
-        (
-            "  /clear [chat|session|all]",
-            "Clear chat history and screen",
-        ),
-        ("", ""),
-        ("Intent commands:", ""),
-        ("  /intent", "List all active intents"),
-        (
-            "  /intent create <desc>",
-            "Generate and save a new intent spec",
-        ),
-        ("  /intent review [name]", "Show intent details"),
-        ("  /intent execute <name>", "Execute an intent end-to-end"),
-        ("  /intent status [name]", "Show intent execution status"),
-        ("  /intent focus <slug>", "Focus an intent (Intent mode)"),
-        ("  /intent unfocus", "Clear focused intent"),
-        ("", ""),
-        ("Knowledge commands:", ""),
-        ("  /knowledge", "Show knowledge statistics"),
-        ("  /knowledge list", "List all knowledge nodes"),
-        ("  /knowledge show <id>", "Show knowledge node details"),
-        ("  /knowledge prune [days]", "Prune old knowledge nodes"),
-        ("", ""),
-        ("Session commands:", ""),
-        ("  /resume", "List archived sessions"),
-        (
-            "  /resume <N>",
-            "Load session N's history into current context",
-        ),
-        ("", ""),
-        ("Registry & dependency commands:", ""),
-        ("  /search <query>", "Search registries for modules"),
-        ("  /publish", "Package and publish the current module"),
-        ("  /registry list", "List configured registries"),
-        ("  /deps list", "List declared dependencies"),
-        ("  /deps add <name> [path]", "Add a dependency"),
-        ("  /deps remove <name>", "Remove a dependency"),
-        ("  /deps audit", "Verify dependency integrity"),
-        ("  /deps tree", "Show the dependency tree"),
-        ("  /deps update [name]", "Update dependencies"),
-        ("  /deps vendor", "Vendor cached dependencies"),
-        ("", ""),
-        ("  /help", "Show this help text"),
-        ("  /exit", "Exit the REPL"),
-    ];
-    for (cmd, desc) in entries {
-        if cmd.is_empty() {
-            app.push_output("", OutputStyle::Normal);
-        } else if desc.is_empty() {
-            app.push_output(*cmd, OutputStyle::Normal);
-        } else {
-            app.push_output(format!("{cmd:<35} {desc}"), OutputStyle::Help);
+    app.push_output("Slash commands:", OutputStyle::Normal);
+    for group in super::completion::SLASH_GROUPS {
+        app.push_output("", OutputStyle::Normal);
+        app.push_output(group.label(), OutputStyle::Normal);
+        for entry in super::completion::SLASH_COMMANDS
+            .iter()
+            .filter(|entry| entry.group == *group)
+        {
+            app.push_output(
+                format!("  {:<32} {}", entry.command, entry.description),
+                OutputStyle::Help,
+            );
         }
     }
 }
@@ -1703,5 +1719,54 @@ mod tests {
         assert!(prompt.contains("Context from this session"));
         assert!(prompt.contains("add add function"));
         assert!(prompt.ends_with("add multiply"));
+    }
+
+    #[test]
+    fn elapsed_policy_skips_internal_commands() {
+        assert!(!should_show_elapsed("/help"));
+        assert!(!should_show_elapsed("/status"));
+        assert!(should_show_elapsed("/describe"));
+        assert!(should_show_elapsed("create a calculator"));
+    }
+
+    #[test]
+    fn balanced_mouse_reporting_enables_app_drag_without_all_motion() {
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1000h"));
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1002h"));
+        assert!(ENABLE_BALANCED_MOUSE_REPORTING.contains("?1006h"));
+        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1003h"));
+        assert!(!ENABLE_BALANCED_MOUSE_REPORTING.contains("?1015h"));
+
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1006l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1015l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1003l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1002l"));
+        assert!(DISABLE_ALL_MOUSE_REPORTING.contains("?1000l"));
+    }
+
+    #[test]
+    fn help_uses_slash_group_order() {
+        let mut app = ReplApp::new(
+            crate::config::DuumbiConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+            None,
+            true,
+            false,
+        );
+
+        print_help_to_buffer(&mut app);
+        let rendered = app
+            .output_lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let build = rendered.find("BUILD & RUN").expect("build group");
+        let intent = rendered.find("INTENT").expect("intent group");
+        let system = rendered.find("SYSTEM").expect("system group");
+        assert!(build < intent);
+        assert!(intent < system);
     }
 }

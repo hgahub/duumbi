@@ -5,7 +5,7 @@
 //! before a mutation; `restore_latest` reverts to the most recent snapshot.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 ///
 /// Files are named `{N:06}.jsonld` (zero-padded 6-digit sequence numbers).
 /// The next available sequence number is used automatically.
-pub fn save_snapshot(workspace_root: &Path, source: &str) -> Result<()> {
+pub fn save_snapshot(workspace_root: &Path, source: &str) -> Result<PathBuf> {
     let history_dir = workspace_root.join(".duumbi").join("history");
     fs::create_dir_all(&history_dir).context("Failed to create .duumbi/history/ directory")?;
 
@@ -24,7 +24,7 @@ pub fn save_snapshot(workspace_root: &Path, source: &str) -> Result<()> {
         .with_context(|| format!("Failed to write snapshot to '{}'", snapshot_path.display()))?;
 
     tracing::debug!("Snapshot saved: {}", snapshot_path.display());
-    Ok(())
+    Ok(snapshot_path)
 }
 
 /// Restores the most recent snapshot to `.duumbi/graph/main.jsonld`.
