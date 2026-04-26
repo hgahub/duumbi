@@ -223,14 +223,6 @@ fn configured_provider_index(
     config.providers.iter().position(|p| &p.provider == kind)
 }
 
-/// Returns the credential env var that is active for a provider config.
-fn active_credential_env(config: &crate::config::ProviderConfig) -> &str {
-    config
-        .auth_token_env
-        .as_deref()
-        .unwrap_or(&config.api_key_env)
-}
-
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
     Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine, OutputStyle,
@@ -922,11 +914,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter if !manual.is_empty() => {
                                 let model = manual.clone();
-                                input_mode = Some(PanelInputMode::AddStep3Key {
+                                input_mode = Some(PanelInputMode::AddStepCredentialSource {
                                     provider: provider.clone(),
                                     model,
-                                    key_buf: String::new(),
                                     is_subscription: *is_subscription,
+                                    selected: 0,
                                 });
                             }
                             _ => {}
@@ -949,11 +941,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter => {
                                 if let Some((model_name, _)) = models.get(*model_sel) {
-                                    input_mode = Some(PanelInputMode::AddStep3Key {
+                                    input_mode = Some(PanelInputMode::AddStepCredentialSource {
                                         provider: provider.clone(),
                                         model: (*model_name).to_string(),
-                                        key_buf: String::new(),
                                         is_subscription: *is_subscription,
+                                        selected: 0,
                                     });
                                 }
                             }
@@ -961,11 +953,11 @@ impl ReplApp {
                         }
                     }
                 }
-                PanelInputMode::AddStep3Key {
+                PanelInputMode::AddStepCredentialSource {
                     provider,
                     model,
-                    key_buf,
                     is_subscription,
+                    selected: source_sel,
                 } => match key_event.code {
                     KeyCode::Esc => {
                         input_mode = Some(PanelInputMode::AddStep2Model {
@@ -973,6 +965,49 @@ impl ReplApp {
                             is_subscription: *is_subscription,
                             selected: 0,
                             manual_input: None,
+                        });
+                    }
+                    KeyCode::Up if *source_sel > 0 => {
+                        *source_sel -= 1;
+                    }
+                    KeyCode::Down if *source_sel < 1 => {
+                        *source_sel += 1;
+                    }
+                    KeyCode::Enter if *source_sel == 0 => {
+                        self.save_provider_with_env_credential(
+                            provider.clone(),
+                            model.clone(),
+                            *is_subscription,
+                        );
+                        self.save_config_and_rebuild_client();
+                        new_status_msg = Some((
+                            "Provider connection saved.".to_string(),
+                            OutputStyle::Success,
+                        ));
+                        input_mode = None;
+                    }
+                    KeyCode::Enter => {
+                        input_mode = Some(PanelInputMode::AddStep3Key {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            key_buf: String::new(),
+                            is_subscription: *is_subscription,
+                        });
+                    }
+                    _ => {}
+                },
+                PanelInputMode::AddStep3Key {
+                    provider,
+                    model,
+                    key_buf,
+                    is_subscription,
+                } => match key_event.code {
+                    KeyCode::Esc => {
+                        input_mode = Some(PanelInputMode::AddStepCredentialSource {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            is_subscription: *is_subscription,
+                            selected: 0,
                         });
                     }
                     KeyCode::Backspace => {
@@ -1035,130 +1070,30 @@ impl ReplApp {
                         }
                     }
                     KeyCode::Enter if !key_buf.is_empty() => {
-                        // Transition to storage-choice confirmation step.
-                        input_mode = Some(PanelInputMode::AddStep3Confirm {
-                            provider: provider.clone(),
-                            model: model.clone(),
-                            key: key_buf.clone(),
-                            is_subscription: *is_subscription,
-                        });
-                    }
-                    KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
-                        key_buf.push(c);
-                    }
-                    _ => {}
-                },
-                PanelInputMode::AddStep3Confirm {
-                    provider,
-                    model,
-                    key: api_key_value,
-                    is_subscription,
-                } => match key_event.code {
-                    KeyCode::Char('k') | KeyCode::Char('K') => {
-                        let api_key_env = default_api_key_env(provider).to_string();
-                        let token_env = if *is_subscription {
-                            Some(default_auth_token_env(provider).to_string())
-                        } else {
-                            None
-                        };
-                        let store_env = token_env.as_deref().unwrap_or(&api_key_env);
-                        let prov_clone = provider.clone();
-                        let model_clone = model.clone();
-                        let key_clone = api_key_value.clone();
-                        match super::keystore::store_api_key(store_env, &key_clone) {
+                        match self.save_provider_with_file_credential(
+                            provider.clone(),
+                            model.clone(),
+                            key_buf.clone(),
+                            *is_subscription,
+                        ) {
                             Ok(()) => {
-                                // SAFETY: single-threaded CLI — no concurrent env access.
-                                unsafe {
-                                    std::env::set_var(store_env, &key_clone);
-                                }
-                                self.upsert_provider_connection(crate::config::ProviderConfig {
-                                    provider: prov_clone,
-                                    role: crate::config::ProviderRole::Primary,
-                                    model: model_clone,
-                                    api_key_env: api_key_env.clone(),
-                                    base_url: None,
-                                    timeout_secs: None,
-                                    key_storage: Some(crate::config::KeyStorage::File),
-                                    auth_token_env: token_env,
-                                });
-                                self.save_config_and_rebuild_client();
-                                let auth_msg = if *is_subscription {
-                                    "Provider connection saved (subscription/Bearer token in ~/.duumbi/credentials.toml)."
-                                } else {
-                                    "Provider connection saved (API key in ~/.duumbi/credentials.toml)."
-                                };
-                                new_status_msg = Some((auth_msg.to_string(), OutputStyle::Success));
-                            }
-                            Err(e) => {
-                                // File storage failed — fall back to session-only.
-                                // SAFETY: single-threaded CLI — no concurrent env access.
-                                unsafe {
-                                    std::env::set_var(store_env, &key_clone);
-                                }
-                                self.upsert_provider_connection(crate::config::ProviderConfig {
-                                    provider: prov_clone,
-                                    role: crate::config::ProviderRole::Primary,
-                                    model: model_clone,
-                                    api_key_env,
-                                    base_url: None,
-                                    timeout_secs: None,
-                                    key_storage: None,
-                                    auth_token_env: token_env,
-                                });
                                 self.save_config_and_rebuild_client();
                                 new_status_msg = Some((
-                                    format!("File storage error: {e}. Token set for session only."),
+                                    "Provider connection saved.".to_string(),
+                                    OutputStyle::Success,
+                                ));
+                                input_mode = None;
+                            }
+                            Err(e) => {
+                                new_status_msg = Some((
+                                    format!("Credential save failed: {e}"),
                                     OutputStyle::Error,
                                 ));
                             }
                         }
-                        input_mode = None; // back to list view
                     }
-                    KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
-                        let api_key_env = default_api_key_env(provider).to_string();
-                        let token_env = if *is_subscription {
-                            Some(default_auth_token_env(provider).to_string())
-                        } else {
-                            None
-                        };
-                        let store_env_name =
-                            token_env.as_deref().unwrap_or(&api_key_env).to_string();
-                        let prov_clone = provider.clone();
-                        let model_clone = model.clone();
-                        let key_clone = api_key_value.clone();
-                        // SAFETY: single-threaded CLI — no concurrent env access.
-                        unsafe {
-                            std::env::set_var(&store_env_name, &key_clone);
-                        }
-                        self.upsert_provider_connection(crate::config::ProviderConfig {
-                            provider: prov_clone,
-                            role: crate::config::ProviderRole::Primary,
-                            model: model_clone,
-                            api_key_env: api_key_env.clone(),
-                            base_url: None,
-                            timeout_secs: None,
-                            key_storage: None,
-                            auth_token_env: token_env,
-                        });
-                        self.save_config_and_rebuild_client();
-                        let auth_msg = if *is_subscription {
-                            format!(
-                                "Provider connection saved (subscription/Bearer, {store_env_name}, session only)."
-                            )
-                        } else {
-                            format!("Provider connection saved ({api_key_env}, session only).")
-                        };
-                        new_status_msg = Some((auth_msg, OutputStyle::Success));
-                        input_mode = None; // back to list view
-                    }
-                    KeyCode::Esc => {
-                        // Back to key entry step with the key pre-filled.
-                        input_mode = Some(PanelInputMode::AddStep3Key {
-                            provider: provider.clone(),
-                            model: model.clone(),
-                            key_buf: api_key_value.clone(),
-                            is_subscription: *is_subscription,
-                        });
+                    KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
+                        key_buf.push(c);
                     }
                     _ => {}
                 },
@@ -1296,6 +1231,62 @@ impl ReplApp {
         Self::ensure_primary_provider(&mut self.user_config);
         self.refresh_effective_config();
         true
+    }
+
+    fn save_provider_with_env_credential(
+        &mut self,
+        provider: crate::config::ProviderKind,
+        model: String,
+        is_subscription: bool,
+    ) {
+        let api_key_env = default_api_key_env(&provider).to_string();
+        let token_env = if is_subscription {
+            Some(default_auth_token_env(&provider).to_string())
+        } else {
+            None
+        };
+        self.upsert_provider_connection(crate::config::ProviderConfig {
+            provider,
+            role: crate::config::ProviderRole::Primary,
+            model,
+            api_key_env,
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: token_env,
+        });
+    }
+
+    fn save_provider_with_file_credential(
+        &mut self,
+        provider: crate::config::ProviderKind,
+        model: String,
+        key: String,
+        is_subscription: bool,
+    ) -> Result<(), String> {
+        let api_key_env = default_api_key_env(&provider).to_string();
+        let token_env = if is_subscription {
+            Some(default_auth_token_env(&provider).to_string())
+        } else {
+            None
+        };
+        let store_env = token_env.as_deref().unwrap_or(&api_key_env);
+        super::keystore::store_api_key(store_env, &key)?;
+        // SAFETY: single-threaded CLI — no concurrent env access.
+        unsafe {
+            std::env::set_var(store_env, &key);
+        }
+        self.upsert_provider_connection(crate::config::ProviderConfig {
+            provider,
+            role: crate::config::ProviderRole::Primary,
+            model,
+            api_key_env,
+            base_url: None,
+            timeout_secs: None,
+            key_storage: Some(crate::config::KeyStorage::File),
+            auth_token_env: token_env,
+        });
+        Ok(())
     }
 
     /// Marks a configured provider as the first provider in the fallback chain.
@@ -2195,8 +2186,8 @@ impl ReplApp {
                 Some(PanelInputMode::AddStepAuthType { provider, .. }) => {
                     provider_auth_modes(provider).len() as u16 + 6
                 }
+                Some(PanelInputMode::AddStepCredentialSource { .. }) => 8,
                 Some(PanelInputMode::AddStep3Key { .. }) => 10,
-                Some(PanelInputMode::AddStep3Confirm { .. }) => 5,
                 _ => {
                     let provider_count = PROVIDER_KINDS.len().max(1);
                     let input_line = if input_mode.is_some() { 1 } else { 0 };
@@ -3123,26 +3114,15 @@ impl ReplApp {
                 } else {
                     "api key"
                 };
-                let credential_env = active_credential_env(provider);
-                let source = if std::env::var(credential_env).is_ok() {
-                    "env"
-                } else if self.keychain_cache.contains(credential_env) {
-                    "file"
-                } else {
-                    "missing"
-                };
-                let priority = if provider.role == crate::config::ProviderRole::Primary {
-                    "priority"
-                } else {
-                    "fallback"
-                };
                 let config_source = self.provider_config_source_label(&kind);
-                format!(
-                    "configured  {:<9} {:<12} {:<8} {:<8} default {}",
-                    config_source, auth, source, priority, provider.model
-                )
+                format!("{:<15} {:<10} {:<12}", "configured", config_source, auth)
             } else {
-                format!("not configured  missing  {}", provider_auth_summary(&kind))
+                format!(
+                    "{:<15} {:<10} {:<12}",
+                    "not configured",
+                    "missing",
+                    provider_auth_summary(&kind)
+                )
             };
             let text = format!("{prefix}{}. {:<11} {:<34} {}", i + 1, name, desc, status);
             let style = if is_sel {
@@ -3281,6 +3261,50 @@ impl ReplApp {
                     )));
                 }
             }
+            Some(PanelInputMode::AddStepCredentialSource {
+                provider,
+                model,
+                is_subscription,
+                selected: source_sel,
+            }) => {
+                let (env_name, label) = if *is_subscription {
+                    (default_auth_token_env(provider), "Subscription token")
+                } else {
+                    (default_api_key_env(provider), "API key")
+                };
+                lines.clear();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {label} source for {provider}"),
+                        theme::brand_word(),
+                    ),
+                    Span::raw(" ".repeat(inner_width.saturating_sub(58))),
+                    Span::styled("(Esc to go back)", theme::out_dim()),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  Model: {model}"),
+                    theme::out_dim(),
+                )));
+                lines.push(Line::from(""));
+                let options = [
+                    format!("Use environment variable: {env_name}"),
+                    format!("Enter {label}"),
+                ];
+                for (i, option) in options.iter().enumerate() {
+                    let prefix = if i == *source_sel {
+                        "  \u{25cf} "
+                    } else {
+                        "    "
+                    };
+                    let style = if i == *source_sel {
+                        theme::slash_selected()
+                    } else {
+                        theme::out_dim()
+                    };
+                    lines.push(Line::from(Span::styled(format!("{prefix}{option}"), style)));
+                }
+            }
             Some(PanelInputMode::AddStep3Key {
                 provider,
                 model,
@@ -3336,29 +3360,7 @@ impl ReplApp {
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "  [Enter] Continue  [Esc] Back",
-                    theme::out_dim(),
-                )));
-            }
-            Some(PanelInputMode::AddStep3Confirm {
-                provider,
-                model,
-                is_subscription,
-                ..
-            }) => {
-                let label = if *is_subscription {
-                    "subscription token"
-                } else {
-                    "API key"
-                };
-                lines.clear();
-                lines.push(Line::from(Span::styled(
-                    format!("  Store {label} for {provider} ({model})?"),
-                    theme::brand_word(),
-                )));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "  [K] Save to ~/.duumbi/credentials.toml  [E] Session only  [Esc] Back",
+                    "  [Enter] Save  [Esc] Back",
                     theme::out_dim(),
                 )));
             }
@@ -3391,6 +3393,36 @@ impl ReplApp {
 mod tests {
     use super::*;
     use crate::session::SessionManager;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct HomeEnvGuard(Option<OsString>);
+
+    impl HomeEnvGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("HOME");
+            // SAFETY: guarded test-only environment mutation.
+            unsafe {
+                std::env::set_var("HOME", path);
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: guarded test-only environment mutation.
+            unsafe {
+                if let Some(previous) = &self.0 {
+                    std::env::set_var("HOME", previous);
+                } else {
+                    std::env::remove_var("HOME");
+                }
+            }
+        }
+    }
 
     fn make_app() -> (ReplApp, TextArea<'static>) {
         let tmp = tempfile::TempDir::new().expect("invariant: tempdir");
@@ -4245,6 +4277,107 @@ mod tests {
             app.provider_config_source_label(&crate::config::ProviderKind::OpenAI),
             "workspace"
         );
+    }
+
+    #[test]
+    fn provider_panel_env_source_saves_config_without_key_input() {
+        let (mut app, _) = make_app();
+
+        app.save_provider_with_env_credential(
+            crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7".to_string(),
+            false,
+        );
+
+        let provider = app
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
+            .expect("invariant: provider should be configured");
+        assert_eq!(provider.api_key_env, "MINIMAX_API_KEY");
+        assert!(provider.key_storage.is_none());
+        assert!(provider.auth_token_env.is_none());
+    }
+
+    #[test]
+    fn provider_panel_api_key_enter_saves_file_and_returns_to_list() {
+        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp home");
+        let _home_guard = HomeEnvGuard::set(home.path());
+
+        let (mut app, mut textarea) = make_app();
+        app.has_workspace = false;
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: "sk-test-key".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+
+        if let PanelState::ProviderManager {
+            input_mode,
+            status_msg,
+            ..
+        } = &app.panel
+        {
+            assert!(input_mode.is_none());
+            assert_eq!(
+                status_msg.as_ref().map(|(msg, _)| msg.as_str()),
+                Some("Provider connection saved.")
+            );
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+        let provider = app
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
+            .expect("invariant: provider should be configured");
+        assert_eq!(provider.key_storage, Some(crate::config::KeyStorage::File));
+        let credentials = std::fs::read_to_string(home.path().join(".duumbi/credentials.toml"))
+            .expect("invariant: credentials file should exist");
+        assert!(credentials.contains("MINIMAX_API_KEY"));
+        assert!(credentials.contains("sk-test-key"));
+    }
+
+    #[test]
+    fn provider_panel_configured_status_is_compact() {
+        let (mut app, textarea) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "MiniMax-M2.7".to_string(),
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: Some(crate::config::KeyStorage::File),
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: None,
+            status_msg: None,
+        };
+
+        let (rendered, _) = render_app_to_string(&app, &textarea, 180, 40);
+
+        assert!(rendered.contains("configured      user       api key"));
+        assert!(rendered.contains("not configured  missing    api key"));
+        assert!(!rendered.contains("priority"));
+        assert!(!rendered.contains("fallback"));
+        assert!(!rendered.contains("default MiniMax-M2.7"));
     }
 
     #[test]

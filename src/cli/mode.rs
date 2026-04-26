@@ -218,7 +218,18 @@ pub enum PanelInputMode {
         /// When `Some`, the user is typing a manual model name.
         manual_input: Option<String>,
     },
-    /// Step 4: Entering the API key or subscription token (characters are masked).
+    /// Step 4: Choose whether to use an environment variable or enter a key.
+    AddStepCredentialSource {
+        /// The provider kind chosen in step 1.
+        provider: crate::config::ProviderKind,
+        /// The model chosen in step 2.
+        model: String,
+        /// If true, the key is a subscription/Bearer token.
+        is_subscription: bool,
+        /// 0 = environment variable, 1 = entered key stored in credentials.
+        selected: usize,
+    },
+    /// Step 5: Entering the API key or subscription token (characters are masked).
     AddStep3Key {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,
@@ -226,17 +237,6 @@ pub enum PanelInputMode {
         model: String,
         /// Raw key text (shown masked in UI).
         key_buf: String,
-        /// If true, the key is a subscription/Bearer token.
-        is_subscription: bool,
-    },
-    /// Step 5 confirmation: choose keychain vs session-only storage.
-    AddStep3Confirm {
-        /// The provider kind chosen in step 1.
-        provider: crate::config::ProviderKind,
-        /// The model chosen in step 2.
-        model: String,
-        /// The API key or token entered in step 3.
-        key: String,
         /// If true, the key is a subscription/Bearer token.
         is_subscription: bool,
     },
