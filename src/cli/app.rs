@@ -31,6 +31,85 @@ const PROVIDER_KINDS: &[(&str, &str)] = &[
     ("minimax", "MiniMax"),
 ];
 
+/// Authentication modes the provider setup TUI can actually configure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderAuthMode {
+    /// Direct provider API key stored in an env var or local credentials file.
+    ApiKey,
+}
+
+const API_KEY_AUTH_MODES: &[ProviderAuthMode] = &[ProviderAuthMode::ApiKey];
+
+impl ProviderAuthMode {
+    /// Returns the short label shown in the provider list.
+    const fn summary(self) -> &'static str {
+        match self {
+            Self::ApiKey => "api key",
+        }
+    }
+
+    /// Returns the title shown in the auth chooser.
+    const fn title(self) -> &'static str {
+        match self {
+            Self::ApiKey => "API Key",
+        }
+    }
+
+    /// Returns the explanatory text shown in the auth chooser.
+    const fn hint(self) -> &'static str {
+        match self {
+            Self::ApiKey => "Direct provider API key",
+        }
+    }
+
+    /// Returns whether this mode stores a bearer/subscription token.
+    const fn is_subscription(self) -> bool {
+        match self {
+            Self::ApiKey => false,
+        }
+    }
+}
+
+/// Returns setup modes that are implemented for this direct provider.
+fn provider_auth_modes(_kind: &crate::config::ProviderKind) -> &'static [ProviderAuthMode] {
+    API_KEY_AUTH_MODES
+}
+
+/// Returns a compact list label for configured setup modes.
+fn provider_auth_summary(kind: &crate::config::ProviderKind) -> String {
+    provider_auth_modes(kind)
+        .iter()
+        .map(|mode| mode.summary())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Returns the selected auth mode, clamped to the provider capability table.
+fn provider_auth_mode_by_index(
+    kind: &crate::config::ProviderKind,
+    selected: usize,
+) -> Option<ProviderAuthMode> {
+    provider_auth_modes(kind).get(selected).copied()
+}
+
+/// Starts the setup wizard for a provider from the main provider list.
+fn provider_setup_mode(kind: crate::config::ProviderKind) -> PanelInputMode {
+    let modes = provider_auth_modes(&kind);
+    if modes.len() == 1 {
+        PanelInputMode::AddStep2Model {
+            provider: kind,
+            is_subscription: modes[0].is_subscription(),
+            selected: 0,
+            manual_input: None,
+        }
+    } else {
+        PanelInputMode::AddStepAuthType {
+            provider: kind,
+            selected: 0,
+        }
+    }
+}
+
 /// Returns a short provider label for the provider manager.
 fn provider_kind_label(kind: &crate::config::ProviderKind) -> &'static str {
     use crate::config::ProviderKind;
@@ -660,10 +739,7 @@ impl ReplApp {
                     KeyCode::Enter => {
                         if let Some(kind) = parse_provider_kind_by_index(*step_sel) {
                             selected = *step_sel;
-                            input_mode = Some(PanelInputMode::AddStepAuthType {
-                                provider: kind,
-                                selected: 0,
-                            });
+                            input_mode = Some(provider_setup_mode(kind));
                         }
                     }
                     _ => {}
@@ -694,18 +770,25 @@ impl ReplApp {
                     selected: auth_sel,
                 } => match key_event.code {
                     KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStep1Provider { selected });
+                        input_mode = None;
                     }
-                    KeyCode::Up | KeyCode::Down => {
-                        *auth_sel = 1 - *auth_sel;
+                    KeyCode::Up if *auth_sel > 0 => {
+                        *auth_sel -= 1;
+                    }
+                    KeyCode::Down
+                        if *auth_sel < provider_auth_modes(provider).len().saturating_sub(1) =>
+                    {
+                        *auth_sel += 1;
                     }
                     KeyCode::Enter => {
-                        input_mode = Some(PanelInputMode::AddStep2Model {
-                            provider: provider.clone(),
-                            is_subscription: *auth_sel == 1,
-                            selected: 0,
-                            manual_input: None,
-                        });
+                        if let Some(auth_mode) = provider_auth_mode_by_index(provider, *auth_sel) {
+                            input_mode = Some(PanelInputMode::AddStep2Model {
+                                provider: provider.clone(),
+                                is_subscription: auth_mode.is_subscription(),
+                                selected: 0,
+                                manual_input: None,
+                            });
+                        }
                     }
                     _ => {}
                 },
@@ -743,10 +826,7 @@ impl ReplApp {
                         let models = recommended_models(provider);
                         match key_event.code {
                             KeyCode::Esc => {
-                                input_mode = Some(PanelInputMode::AddStepAuthType {
-                                    provider: provider.clone(),
-                                    selected: if *is_subscription { 1 } else { 0 },
-                                });
+                                input_mode = None;
                             }
                             KeyCode::Up if *model_sel > 0 => {
                                 *model_sel -= 1;
@@ -954,10 +1034,7 @@ impl ReplApp {
             }
             KeyCode::Enter => {
                 if let Some(kind) = parse_provider_kind_by_index(selected) {
-                    input_mode = Some(PanelInputMode::AddStepAuthType {
-                        provider: kind,
-                        selected: 0,
-                    });
+                    input_mode = Some(provider_setup_mode(kind));
                 }
                 self.panel = PanelState::ProviderManager {
                     selected,
@@ -967,9 +1044,12 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Some(kind) = parse_provider_kind_by_index(selected) {
+                    input_mode = Some(provider_setup_mode(kind));
+                }
                 self.panel = PanelState::ProviderManager {
                     selected,
-                    input_mode: Some(PanelInputMode::AddStep1Provider { selected }),
+                    input_mode,
                     status_msg: None,
                 };
                 Action::Continue
@@ -1886,7 +1966,9 @@ impl ReplApp {
                         (models.len() as u16) + 6
                     }
                 }
-                Some(PanelInputMode::AddStepAuthType { .. }) => 8,
+                Some(PanelInputMode::AddStepAuthType { provider, .. }) => {
+                    provider_auth_modes(provider).len() as u16 + 6
+                }
                 Some(PanelInputMode::AddStep3Key { .. }) => 10,
                 Some(PanelInputMode::AddStep3Confirm { .. }) => 5,
                 _ => {
@@ -2813,7 +2895,7 @@ impl ReplApp {
                 let auth = if provider.auth_token_env.is_some() {
                     "subscription"
                 } else {
-                    "key"
+                    "api key"
                 };
                 let credential_env = active_credential_env(provider);
                 let source = if std::env::var(credential_env).is_ok() {
@@ -2833,7 +2915,7 @@ impl ReplApp {
                     auth, source, priority, provider.model
                 )
             } else {
-                "not configured  key/subscription".to_string()
+                format!("not configured  {}", provider_auth_summary(&kind))
             };
             let text = format!("{prefix}{}. {:<11} {:<34} {}", i + 1, name, desc, status);
             let style = if is_sel {
@@ -2897,14 +2979,8 @@ impl ReplApp {
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
-                let options = [
-                    ("API Key", "Traditional API key (X-Api-Key header)"),
-                    (
-                        "Subscription Token",
-                        "Claude Pro/Max or OAuth token (Bearer header, via `claude setup-token`)",
-                    ),
-                ];
-                for (i, (label, hint)) in options.iter().enumerate() {
+                let options = provider_auth_modes(provider);
+                for (i, auth_mode) in options.iter().enumerate() {
                     let marker = if i == *auth_sel { "> " } else { "  " };
                     let style = if i == *auth_sel {
                         theme::slash_selected()
@@ -2912,8 +2988,8 @@ impl ReplApp {
                         theme::out_dim()
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(format!("  {marker}{label}"), style),
-                        Span::styled(format!("  \u{2014} {hint}"), theme::out_dim()),
+                        Span::styled(format!("  {marker}{}", auth_mode.title()), style),
+                        Span::styled(format!("  \u{2014} {}", auth_mode.hint()), theme::out_dim()),
                     ]));
                 }
                 lines.push(Line::from(""));
@@ -2943,7 +3019,7 @@ impl ReplApp {
                         if *is_subscription {
                             "subscription"
                         } else {
-                            "key"
+                            "api key"
                         }
                     ),
                     theme::out_dim(),
@@ -3770,10 +3846,24 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_a_opens_provider_selection() {
+    fn provider_capability_table_exposes_only_api_key_setup() {
+        for kind in [
+            crate::config::ProviderKind::Anthropic,
+            crate::config::ProviderKind::OpenAI,
+            crate::config::ProviderKind::Grok,
+            crate::config::ProviderKind::OpenRouter,
+            crate::config::ProviderKind::MiniMax,
+        ] {
+            assert_eq!(provider_auth_summary(&kind), "api key");
+            assert_eq!(provider_auth_modes(&kind), &[ProviderAuthMode::ApiKey]);
+        }
+    }
+
+    #[test]
+    fn provider_panel_a_starts_setup_for_selected_provider() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 0,
+            selected: 1,
             input_mode: None,
             status_msg: None,
         };
@@ -3782,7 +3872,11 @@ mod tests {
         if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
             assert!(matches!(
                 input_mode,
-                Some(PanelInputMode::AddStep1Provider { .. })
+                Some(PanelInputMode::AddStep2Model {
+                    provider: crate::config::ProviderKind::OpenAI,
+                    is_subscription: false,
+                    ..
+                })
             ));
         }
     }
@@ -3805,7 +3899,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_enter_starts_auth_step_for_selected_provider() {
+    fn provider_panel_enter_skips_auth_step_for_api_key_only_provider() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 1,
@@ -3817,13 +3911,39 @@ mod tests {
         if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
             assert!(matches!(
                 input_mode,
-                Some(PanelInputMode::AddStepAuthType {
+                Some(PanelInputMode::AddStep2Model {
                     provider: crate::config::ProviderKind::OpenAI,
+                    is_subscription: false,
                     ..
                 })
             ));
         } else {
             panic!("panel should remain ProviderManager");
+        }
+    }
+
+    #[test]
+    fn provider_panel_direct_providers_do_not_offer_subscription_setup() {
+        for selected in 0..PROVIDER_KINDS.len() {
+            let (mut app, mut textarea) = make_app();
+            app.panel = PanelState::ProviderManager {
+                selected,
+                input_mode: None,
+                status_msg: None,
+            };
+            let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            app.handle_key(key, &mut textarea);
+            if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+                assert!(matches!(
+                    input_mode,
+                    Some(PanelInputMode::AddStep2Model {
+                        is_subscription: false,
+                        ..
+                    })
+                ));
+            } else {
+                panic!("panel should remain ProviderManager");
+            }
         }
     }
 
@@ -3851,7 +3971,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_auth_back_navigation_returns_to_provider_selection() {
+    fn provider_panel_auth_back_navigation_returns_to_main_list() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 0,
@@ -3864,10 +3984,29 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
         if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
-            assert!(matches!(
-                input_mode,
-                Some(PanelInputMode::AddStep1Provider { selected: 0 })
-            ));
+            assert!(input_mode.is_none());
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+    }
+
+    #[test]
+    fn provider_panel_model_back_navigation_returns_to_main_list() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 0,
+            input_mode: Some(PanelInputMode::AddStep2Model {
+                provider: crate::config::ProviderKind::Anthropic,
+                is_subscription: false,
+                selected: 0,
+                manual_input: None,
+            }),
+            status_msg: None,
+        };
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+            assert!(input_mode.is_none());
         } else {
             panic!("panel should remain ProviderManager");
         }
