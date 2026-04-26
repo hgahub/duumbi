@@ -323,6 +323,22 @@ fn append_single_line_input(buf: &mut String, text: &str) {
     buf.extend(text.chars().filter(|c| !matches!(c, '\r' | '\n')));
 }
 
+fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
+    if char_count == 0 {
+        return "\u{2588}".to_string();
+    }
+
+    let suffix = format!(" ({char_count} chars)");
+    let suffix_width = suffix.chars().count() + 1; // plus cursor
+    if max_width > suffix_width {
+        let dot_count = char_count.min(max_width - suffix_width).max(1);
+        format!("{}{}{}", ".".repeat(dot_count), suffix, "\u{2588}")
+    } else {
+        let dot_count = char_count.min(max_width.saturating_sub(1)).max(1);
+        format!("{}{}", ".".repeat(dot_count), "\u{2588}")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReplApp
 // ---------------------------------------------------------------------------
@@ -3206,10 +3222,15 @@ impl ReplApp {
                     lines.push(Line::from(Span::styled(hint, theme::label_caps())));
                 }
                 lines.push(Line::from(""));
-                let masked = "\u{25cf}".repeat(key_buf.len());
+                let field_label = format!("  {label}: ");
+                let field_width = field_label.chars().count();
+                let masked = masked_secret_preview(
+                    key_buf.chars().count(),
+                    inner_width.saturating_sub(field_width),
+                );
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {label}: "), theme::out_help_cmd()),
-                    Span::styled(format!("{masked}\u{2588}"), theme::brand_word()),
+                    Span::styled(field_label, theme::out_help_cmd()),
+                    Span::styled(masked, theme::brand_word()),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
@@ -4092,6 +4113,15 @@ mod tests {
         } else {
             panic!("panel should remain in API key input mode");
         }
+    }
+
+    #[test]
+    fn masked_secret_preview_shows_paste_feedback_without_full_secret() {
+        let preview = masked_secret_preview(64, 24);
+        assert!(preview.contains("(64 chars)"));
+        assert!(preview.starts_with('.'));
+        assert!(!preview.contains("sk-"));
+        assert!(preview.chars().count() <= 24);
     }
 
     #[test]
