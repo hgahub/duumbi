@@ -16,7 +16,7 @@ use crossterm::execute;
 use ratatui_textarea::TextArea;
 
 use crate::agents::{LlmClient, orchestrator};
-use crate::config::DuumbiConfig;
+use crate::config::{DuumbiConfig, EffectiveConfig};
 use crate::intent;
 use crate::session::SessionManager;
 use crate::snapshot;
@@ -36,7 +36,8 @@ const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b
 ///
 /// Initialises a ratatui terminal, creates [`ReplApp`] with all workspace
 /// state, and drives the event loop. On exit the session is archived.
-pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
+pub async fn run(workspace_root: PathBuf, effective_config: EffectiveConfig) -> Result<()> {
+    let config = effective_config.config.clone();
     let client = build_client(&config);
     let has_workspace = workspace_root.join(".duumbi").exists();
 
@@ -69,8 +70,11 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
         }
     };
 
-    let mut app = ReplApp::new(
+    let mut app = ReplApp::new_with_config_layers(
         config,
+        effective_config.user_config,
+        effective_config.workspace_config,
+        effective_config.provider_source,
         workspace_root,
         client,
         session_mgr,
@@ -422,8 +426,11 @@ async fn handle_slash(
                 match init_result {
                     Ok(()) => {
                         app.has_workspace = true;
-                        app.config =
-                            crate::config::load_config(&app.workspace_root).unwrap_or_default();
+                        let effective = crate::config::load_effective_config(&app.workspace_root);
+                        app.config = effective.config;
+                        app.user_config = effective.user_config;
+                        app.workspace_config = effective.workspace_config;
+                        app.provider_config_source = effective.provider_source;
                         app.client = build_client(&app.config);
                         app.session_mgr = SessionManager::load_or_create(&app.workspace_root).ok();
                         app.show_tip = true;

@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
-use crate::config::DuumbiConfig;
+use crate::config::{DuumbiConfig, ProviderConfigSource};
 use crate::session::SessionManager;
 
 // ---------------------------------------------------------------------------
@@ -358,6 +358,12 @@ pub struct ReplApp {
     pub workspace_root: PathBuf,
     /// Parsed workspace configuration.
     pub config: DuumbiConfig,
+    /// User-level configuration from `~/.duumbi/config.toml`.
+    pub user_config: DuumbiConfig,
+    /// Workspace-level configuration from `<workspace>/.duumbi/config.toml`.
+    pub workspace_config: DuumbiConfig,
+    /// Source layer that provides the active provider settings.
+    pub provider_config_source: ProviderConfigSource,
     /// LLM client, or `None` when no provider is configured.
     pub client: Option<LlmClient>,
     /// Completed conversation turns for context injection.
@@ -420,8 +426,36 @@ impl ReplApp {
 
     /// Creates a new `ReplApp` with the given workspace context.
     #[must_use]
+    #[allow(dead_code)]
     pub fn new(
         config: DuumbiConfig,
+        workspace_root: PathBuf,
+        client: Option<LlmClient>,
+        session_mgr: Option<SessionManager>,
+        has_workspace: bool,
+        show_tip: bool,
+    ) -> Self {
+        Self::new_with_config_layers(
+            config.clone(),
+            DuumbiConfig::default(),
+            config,
+            ProviderConfigSource::Workspace,
+            workspace_root,
+            client,
+            session_mgr,
+            has_workspace,
+            show_tip,
+        )
+    }
+
+    /// Creates a new `ReplApp` with explicit config layer metadata.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config_layers(
+        config: DuumbiConfig,
+        user_config: DuumbiConfig,
+        workspace_config: DuumbiConfig,
+        provider_config_source: ProviderConfigSource,
         workspace_root: PathBuf,
         client: Option<LlmClient>,
         session_mgr: Option<SessionManager>,
@@ -434,6 +468,9 @@ impl ReplApp {
             focused_intent: None,
             workspace_root,
             config,
+            user_config,
+            workspace_config,
+            provider_config_source,
             client,
             history: Vec::new(),
             session_mgr,
@@ -1224,41 +1261,40 @@ impl ReplApp {
     }
 
     /// Inserts or replaces one provider-kind connection while preserving fallback priority.
-    fn upsert_provider_connection(&mut self, mut provider: crate::config::ProviderConfig) {
-        if let Some(index) = configured_provider_index(&self.config, &provider.provider) {
-            provider.role = self.config.providers[index].role.clone();
-            self.config.providers[index] = provider;
-        } else {
-            provider.role = if self.config.providers.is_empty() {
-                crate::config::ProviderRole::Primary
+    fn upsert_provider_connection(&mut self, provider: crate::config::ProviderConfig) {
+        let target =
+            if configured_provider_index(&self.workspace_config, &provider.provider).is_some() {
+                &mut self.workspace_config
             } else {
-                crate::config::ProviderRole::Fallback
+                &mut self.user_config
             };
-            self.config.providers.push(provider);
-        }
+        Self::upsert_provider_in_config(target, provider);
+        self.refresh_effective_config();
     }
 
     /// Removes a provider connection and its file-stored credential, when present.
     fn remove_provider_connection(&mut self, kind: &crate::config::ProviderKind) -> bool {
-        let Some(index) = configured_provider_index(&self.config, kind) else {
+        let removed = if let Some(index) = configured_provider_index(&self.workspace_config, kind) {
+            Some(self.workspace_config.providers.remove(index))
+        } else if let Some(index) = configured_provider_index(&self.user_config, kind) {
+            Some(self.user_config.providers.remove(index))
+        } else if let Some(index) = configured_provider_index(&self.config, kind) {
+            Some(self.config.providers.remove(index))
+        } else {
+            None
+        };
+        let Some(removed) = removed else {
             return false;
         };
-        let removed = self.config.providers.remove(index);
         if matches!(removed.key_storage, Some(crate::config::KeyStorage::File)) {
             let _ = super::keystore::delete_api_key(&removed.api_key_env);
             if let Some(token_env) = removed.auth_token_env {
                 let _ = super::keystore::delete_api_key(&token_env);
             }
         }
-        if !self
-            .config
-            .providers
-            .iter()
-            .any(|p| p.role == crate::config::ProviderRole::Primary)
-            && let Some(first) = self.config.providers.first_mut()
-        {
-            first.role = crate::config::ProviderRole::Primary;
-        }
+        Self::ensure_primary_provider(&mut self.workspace_config);
+        Self::ensure_primary_provider(&mut self.user_config);
+        self.refresh_effective_config();
         true
     }
 
@@ -1273,13 +1309,19 @@ impl ReplApp {
                 OutputStyle::Dim,
             );
         };
-        for (i, provider) in self.config.providers.iter_mut().enumerate() {
+        let target = if configured_provider_index(&self.workspace_config, kind).is_some() {
+            &mut self.workspace_config
+        } else {
+            &mut self.user_config
+        };
+        for (i, provider) in target.providers.iter_mut().enumerate() {
             provider.role = if i == index {
                 crate::config::ProviderRole::Primary
             } else {
                 crate::config::ProviderRole::Fallback
             };
         }
+        self.refresh_effective_config();
         (
             format!(
                 "{} is now first in the fallback chain.",
@@ -1314,9 +1356,11 @@ impl ReplApp {
 
     /// Persists the current config to disk and rebuilds the LLM client.
     pub fn save_config_and_rebuild_client(&mut self) {
-        if self.has_workspace {
-            let _ = crate::config::save_config(&self.workspace_root, &self.config);
+        let _ = crate::config::save_user_config(&self.user_config);
+        if self.has_workspace && self.workspace_root.join(".duumbi/config.toml").exists() {
+            let _ = crate::config::save_config(&self.workspace_root, &self.workspace_config);
         }
+        self.refresh_effective_config();
         let providers = self.config.effective_providers();
         self.client = if providers.is_empty() {
             None
@@ -1324,6 +1368,59 @@ impl ReplApp {
             crate::agents::factory::create_provider_chain(&providers).ok()
         };
         self.keychain_cache = Self::build_keychain_cache(&self.config);
+    }
+
+    fn upsert_provider_in_config(
+        config: &mut DuumbiConfig,
+        mut provider: crate::config::ProviderConfig,
+    ) {
+        if let Some(index) = configured_provider_index(config, &provider.provider) {
+            provider.role = config.providers[index].role.clone();
+            config.providers[index] = provider;
+        } else {
+            provider.role = if config.providers.is_empty() {
+                crate::config::ProviderRole::Primary
+            } else {
+                crate::config::ProviderRole::Fallback
+            };
+            config.providers.push(provider);
+        }
+    }
+
+    fn ensure_primary_provider(config: &mut DuumbiConfig) {
+        if !config
+            .providers
+            .iter()
+            .any(|p| p.role == crate::config::ProviderRole::Primary)
+            && let Some(first) = config.providers.first_mut()
+        {
+            first.role = crate::config::ProviderRole::Primary;
+        }
+    }
+
+    fn refresh_effective_config(&mut self) {
+        let effective = crate::config::merge_config_layers(
+            DuumbiConfig::default(),
+            self.user_config.clone(),
+            self.workspace_config.clone(),
+        );
+        self.config = effective.config;
+        self.provider_config_source = effective.provider_source;
+    }
+
+    fn provider_config_source_label(&self, kind: &crate::config::ProviderKind) -> &'static str {
+        if configured_provider_index(&self.workspace_config, kind).is_some() {
+            "workspace"
+        } else if configured_provider_index(&self.user_config, kind).is_some() {
+            "user"
+        } else {
+            match self.provider_config_source {
+                ProviderConfigSource::LegacyWorkspace => "workspace",
+                ProviderConfigSource::LegacyUser => "user",
+                ProviderConfigSource::System | ProviderConfigSource::LegacySystem => "system",
+                _ => "missing",
+            }
+        }
     }
 
     /// Reads `~/.duumbi/credentials.toml` once to build a cache of which env
@@ -2113,7 +2210,7 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    (provider_count as u16) + 6 + input_line + status_line
+                    (provider_count as u16) + 7 + input_line + status_line
                 }
             }),
         }
@@ -3039,12 +3136,13 @@ impl ReplApp {
                 } else {
                     "fallback"
                 };
+                let config_source = self.provider_config_source_label(&kind);
                 format!(
-                    "configured  {:<12} {:<8} {:<8} default {}",
-                    auth, source, priority, provider.model
+                    "configured  {:<9} {:<12} {:<8} {:<8} default {}",
+                    config_source, auth, source, priority, provider.model
                 )
             } else {
-                format!("not configured  {}", provider_auth_summary(&kind))
+                format!("not configured  missing  {}", provider_auth_summary(&kind))
             };
             let text = format!("{prefix}{}. {:<11} {:<34} {}", i + 1, name, desc, status);
             let style = if is_sel {
@@ -3056,6 +3154,10 @@ impl ReplApp {
         }
 
         lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Providers are saved to ~/.duumbi/config.toml",
+            theme::out_dim(),
+        )));
 
         match input_mode {
             Some(PanelInputMode::AddProvider(buf)) => {
@@ -4079,6 +4181,70 @@ mod tests {
                 panic!("panel should remain ProviderManager");
             }
         }
+    }
+
+    #[test]
+    fn provider_panel_upsert_without_workspace_targets_user_config() {
+        let (mut app, _) = make_app();
+        app.has_workspace = false;
+
+        app.upsert_provider_connection(crate::config::ProviderConfig {
+            provider: crate::config::ProviderKind::MiniMax,
+            role: crate::config::ProviderRole::Primary,
+            model: "MiniMax-M2.7".to_string(),
+            api_key_env: "MINIMAX_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        });
+
+        assert!(
+            configured_provider_index(&app.user_config, &crate::config::ProviderKind::MiniMax)
+                .is_some()
+        );
+        assert!(
+            configured_provider_index(&app.config, &crate::config::ProviderKind::MiniMax).is_some()
+        );
+        assert_eq!(app.provider_config_source, ProviderConfigSource::User);
+    }
+
+    #[test]
+    fn provider_panel_workspace_provider_overrides_user_provider() {
+        let (mut app, _) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::OpenAI,
+                role: crate::config::ProviderRole::Primary,
+                model: "gpt-4o-mini".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.workspace_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::OpenAI,
+                role: crate::config::ProviderRole::Primary,
+                model: "gpt-4o".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+
+        app.refresh_effective_config();
+
+        assert_eq!(app.provider_config_source, ProviderConfigSource::Workspace);
+        assert_eq!(app.config.providers[0].model, "gpt-4o");
+        assert_eq!(
+            app.provider_config_source_label(&crate::config::ProviderKind::OpenAI),
+            "workspace"
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -485,23 +485,155 @@ impl DuumbiConfig {
     }
 }
 
+/// Source layer that provides the active provider configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderConfigSource {
+    /// No provider or legacy LLM configuration exists in any loaded layer.
+    None,
+    /// Providers came from `/etc/duumbi/config.toml`.
+    System,
+    /// Providers came from `~/.duumbi/config.toml`.
+    User,
+    /// Providers came from `<workspace>/.duumbi/config.toml`.
+    Workspace,
+    /// Legacy `[llm]` came from `/etc/duumbi/config.toml`.
+    LegacySystem,
+    /// Legacy `[llm]` came from `~/.duumbi/config.toml`.
+    LegacyUser,
+    /// Legacy `[llm]` came from `<workspace>/.duumbi/config.toml`.
+    LegacyWorkspace,
+}
+
+/// Configuration assembled from system, user, and workspace layers.
+#[derive(Debug, Clone)]
+pub struct EffectiveConfig {
+    /// Merged config used by runtime clients.
+    pub config: DuumbiConfig,
+    /// User-level config loaded from `~/.duumbi/config.toml`, or default.
+    pub user_config: DuumbiConfig,
+    /// Workspace config loaded from `<workspace>/.duumbi/config.toml`, or default.
+    pub workspace_config: DuumbiConfig,
+    /// Layer that supplied the active provider settings.
+    pub provider_source: ProviderConfigSource,
+}
+
+/// Returns the user-level config path, `~/.duumbi/config.toml`.
+#[must_use]
+pub fn user_config_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".duumbi").join("config.toml")
+}
+
+/// Loads `~/.duumbi/config.toml`.
+pub fn load_user_config() -> Result<DuumbiConfig, ConfigError> {
+    load_config_file(&user_config_path())
+}
+
+/// Saves `~/.duumbi/config.toml`, creating `~/.duumbi/` if needed.
+#[must_use = "save errors should be handled"]
+pub fn save_user_config(config: &DuumbiConfig) -> Result<(), ConfigError> {
+    save_config_file(&user_config_path(), config)
+}
+
+/// Loads system, user, and workspace config layers and returns the effective runtime config.
+pub fn load_effective_config(workspace_root: &Path) -> EffectiveConfig {
+    let system_config = load_config_file(Path::new("/etc/duumbi/config.toml")).unwrap_or_default();
+    let user_config = load_user_config().unwrap_or_default();
+    let workspace_config = load_config(workspace_root).unwrap_or_default();
+
+    merge_config_layers(system_config, user_config, workspace_config)
+}
+
+/// Merges system, user, and workspace config layers into one runtime config.
+pub fn merge_config_layers(
+    system_config: DuumbiConfig,
+    user_config: DuumbiConfig,
+    workspace_config: DuumbiConfig,
+) -> EffectiveConfig {
+    let mut config = system_config.clone();
+    merge_non_provider_fields(&mut config, &user_config);
+    merge_non_provider_fields(&mut config, &workspace_config);
+
+    let provider_source = if !workspace_config.providers.is_empty() {
+        config.providers = workspace_config.providers.clone();
+        config.llm = workspace_config.llm.clone();
+        ProviderConfigSource::Workspace
+    } else if !user_config.providers.is_empty() {
+        config.providers = user_config.providers.clone();
+        config.llm = user_config.llm.clone();
+        ProviderConfigSource::User
+    } else if !system_config.providers.is_empty() {
+        config.providers = system_config.providers.clone();
+        config.llm = system_config.llm.clone();
+        ProviderConfigSource::System
+    } else if workspace_config.llm.is_some() {
+        config.providers.clear();
+        config.llm = workspace_config.llm.clone();
+        ProviderConfigSource::LegacyWorkspace
+    } else if user_config.llm.is_some() {
+        config.providers.clear();
+        config.llm = user_config.llm.clone();
+        ProviderConfigSource::LegacyUser
+    } else if system_config.llm.is_some() {
+        config.providers.clear();
+        config.llm = system_config.llm.clone();
+        ProviderConfigSource::LegacySystem
+    } else {
+        config.providers.clear();
+        config.llm = None;
+        ProviderConfigSource::None
+    };
+
+    EffectiveConfig {
+        config,
+        user_config,
+        workspace_config,
+        provider_source,
+    }
+}
+
+fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
+    if overlay.workspace.is_some() {
+        base.workspace = overlay.workspace.clone();
+    }
+    if !overlay.mcp_clients.is_empty() {
+        base.mcp_clients = overlay.mcp_clients.clone();
+    }
+    if !overlay.registries.is_empty() {
+        base.registries = overlay.registries.clone();
+    }
+    if !overlay.dependencies.is_empty() {
+        base.dependencies = overlay.dependencies.clone();
+    }
+    if overlay.vendor.is_some() {
+        base.vendor = overlay.vendor.clone();
+    }
+    if overlay.cost.is_some() {
+        base.cost = overlay.cost.clone();
+    }
+}
+
 /// Saves a [`DuumbiConfig`] to `<workspace_root>/.duumbi/config.toml`.
 ///
 /// Creates the `.duumbi/` directory if it does not exist.
 /// Overwrites any existing `config.toml`.
 #[must_use = "save errors should be handled"]
 pub fn save_config(workspace_root: &Path, config: &DuumbiConfig) -> Result<(), ConfigError> {
-    let duumbi_dir = workspace_root.join(".duumbi");
-    fs::create_dir_all(&duumbi_dir).map_err(|source| ConfigError::Io {
-        path: duumbi_dir.display().to_string(),
-        source,
-    })?;
-    let path = duumbi_dir.join("config.toml");
+    save_config_file(&workspace_root.join(".duumbi").join("config.toml"), config)
+}
+
+fn save_config_file(path: &Path, config: &DuumbiConfig) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
     let contents = toml::to_string_pretty(config).map_err(|e| ConfigError::Invalid {
         field: "config".to_string(),
         reason: e.to_string(),
     })?;
-    fs::write(&path, contents).map_err(|source| ConfigError::Io {
+    fs::write(path, contents).map_err(|source| ConfigError::Io {
         path: path.display().to_string(),
         source,
     })?;
@@ -515,12 +647,15 @@ pub fn save_config(workspace_root: &Path, config: &DuumbiConfig) -> Result<(), C
 #[allow(dead_code)] // Called in Issue #31 orchestrator and #32 duumbi-add CLI
 pub fn load_config(workspace_root: &Path) -> Result<DuumbiConfig, ConfigError> {
     let path = workspace_root.join(".duumbi").join("config.toml");
+    load_config_file(&path)
+}
 
+fn load_config_file(path: &Path) -> Result<DuumbiConfig, ConfigError> {
     if !path.exists() {
         return Err(ConfigError::NotFound(path.display().to_string()));
     }
 
-    let contents = fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+    let contents = fs::read_to_string(path).map_err(|source| ConfigError::Io {
         path: path.display().to_string(),
         source,
     })?;
@@ -579,6 +714,67 @@ api_key_env = "OPENAI_API_KEY"
         let llm = cfg.llm.expect("llm section must be present");
         assert_eq!(llm.provider, LlmProvider::OpenAI);
         assert_eq!(llm.model, "gpt-4o");
+    }
+
+    fn test_provider(kind: ProviderKind, model: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider: kind,
+            role: ProviderRole::Primary,
+            model: model.to_string(),
+            api_key_env: "TEST_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        }
+    }
+
+    #[test]
+    fn effective_config_uses_user_provider_without_workspace_provider() {
+        let mut user = DuumbiConfig::default();
+        user.providers
+            .push(test_provider(ProviderKind::Anthropic, "user-model"));
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, DuumbiConfig::default());
+
+        assert_eq!(effective.provider_source, ProviderConfigSource::User);
+        assert_eq!(effective.config.providers[0].model, "user-model");
+    }
+
+    #[test]
+    fn effective_config_workspace_provider_overrides_user_provider() {
+        let mut user = DuumbiConfig::default();
+        user.providers
+            .push(test_provider(ProviderKind::Anthropic, "user-model"));
+        let mut workspace = DuumbiConfig::default();
+        workspace
+            .providers
+            .push(test_provider(ProviderKind::Anthropic, "workspace-model"));
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+
+        assert_eq!(effective.provider_source, ProviderConfigSource::Workspace);
+        assert_eq!(effective.config.providers[0].model, "workspace-model");
+    }
+
+    #[test]
+    fn effective_config_falls_back_to_user_legacy_llm() {
+        let user = DuumbiConfig {
+            llm: Some(LlmConfig {
+                provider: LlmProvider::Anthropic,
+                model: "claude-test".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, DuumbiConfig::default());
+
+        assert_eq!(effective.provider_source, ProviderConfigSource::LegacyUser);
+        assert_eq!(
+            effective.config.effective_providers()[0].model,
+            "claude-test"
+        );
     }
 
     #[test]
