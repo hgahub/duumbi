@@ -305,6 +305,24 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     }
 }
 
+fn read_text_from_clipboard() -> Result<String, String> {
+    let output = std::process::Command::new("pbpaste")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(output.status.to_string());
+    }
+    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+}
+
+fn is_clipboard_shortcut(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::META)
+}
+
+fn append_single_line_input(buf: &mut String, text: &str) {
+    buf.extend(text.chars().filter(|c| !matches!(c, '\r' | '\n')));
+}
+
 // ---------------------------------------------------------------------------
 // ReplApp
 // ---------------------------------------------------------------------------
@@ -613,6 +631,45 @@ impl ReplApp {
         }
     }
 
+    /// Processes a bracketed paste event.
+    ///
+    /// When a popup input is active, pasted text belongs to that field instead
+    /// of the underlying REPL prompt.
+    pub fn handle_paste(&mut self, text: &str, textarea: &mut TextArea<'_>) {
+        if self.insert_text_into_active_panel_field(text) {
+            return;
+        }
+
+        textarea.insert_str(text);
+        let current = textarea.lines().join("\n");
+        self.update_slash_matches(&current);
+    }
+
+    fn insert_text_into_active_panel_field(&mut self, text: &str) -> bool {
+        let PanelState::ProviderManager { input_mode, .. } = &mut self.panel else {
+            return false;
+        };
+
+        match input_mode {
+            Some(PanelInputMode::AddProvider(buf)) => {
+                append_single_line_input(buf, text);
+                true
+            }
+            Some(PanelInputMode::AddStep2Model {
+                manual_input: Some(manual),
+                ..
+            }) => {
+                append_single_line_input(manual, text);
+                true
+            }
+            Some(PanelInputMode::AddStep3Key { key_buf, .. }) => {
+                append_single_line_input(key_buf, text);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Handles mouse events when the terminal delivers them.
     ///
     /// Handles wheel scrolling, block clicks, and app-managed text selection.
@@ -760,7 +817,7 @@ impl ReplApp {
                     KeyCode::Backspace => {
                         buf.pop();
                     }
-                    KeyCode::Char(c) => {
+                    KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                         buf.push(c);
                     }
                     _ => {}
@@ -807,7 +864,7 @@ impl ReplApp {
                             KeyCode::Backspace => {
                                 manual.pop();
                             }
-                            KeyCode::Char(c) => {
+                            KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                                 manual.push(c);
                             }
                             KeyCode::Enter if !manual.is_empty() => {
@@ -868,6 +925,62 @@ impl ReplApp {
                     KeyCode::Backspace => {
                         key_buf.pop();
                     }
+                    KeyCode::Char('c' | 'C') if is_clipboard_shortcut(key_event.modifiers) => {
+                        if key_buf.is_empty() {
+                            new_status_msg =
+                                Some(("API key field is empty.".to_string(), OutputStyle::Dim));
+                        } else {
+                            match copy_text_to_clipboard(key_buf) {
+                                Ok(()) => {
+                                    new_status_msg = Some((
+                                        "API key copied to clipboard.".to_string(),
+                                        OutputStyle::Success,
+                                    ));
+                                }
+                                Err(e) => {
+                                    new_status_msg = Some((
+                                        format!("Clipboard copy failed: {e}"),
+                                        OutputStyle::Error,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('x' | 'X') if is_clipboard_shortcut(key_event.modifiers) => {
+                        if key_buf.is_empty() {
+                            new_status_msg =
+                                Some(("API key field is empty.".to_string(), OutputStyle::Dim));
+                        } else {
+                            match copy_text_to_clipboard(key_buf) {
+                                Ok(()) => {
+                                    key_buf.clear();
+                                    new_status_msg = Some((
+                                        "API key cut to clipboard.".to_string(),
+                                        OutputStyle::Success,
+                                    ));
+                                }
+                                Err(e) => {
+                                    new_status_msg = Some((
+                                        format!("Clipboard cut failed: {e}"),
+                                        OutputStyle::Error,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('v' | 'V') if is_clipboard_shortcut(key_event.modifiers) => {
+                        match read_text_from_clipboard() {
+                            Ok(text) => {
+                                append_single_line_input(key_buf, &text);
+                            }
+                            Err(e) => {
+                                new_status_msg = Some((
+                                    format!("Clipboard paste failed: {e}"),
+                                    OutputStyle::Error,
+                                ));
+                            }
+                        }
+                    }
                     KeyCode::Enter if !key_buf.is_empty() => {
                         // Transition to storage-choice confirmation step.
                         input_mode = Some(PanelInputMode::AddStep3Confirm {
@@ -877,7 +990,7 @@ impl ReplApp {
                             is_subscription: *is_subscription,
                         });
                     }
-                    KeyCode::Char(c) => {
+                    KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                         key_buf.push(c);
                     }
                     _ => {}
@@ -3944,6 +4057,68 @@ mod tests {
             } else {
                 panic!("panel should remain ProviderManager");
             }
+        }
+    }
+
+    #[test]
+    fn provider_panel_paste_goes_to_api_key_field_not_prompt() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: String::new(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        app.handle_paste("sk-test-key\n", &mut textarea);
+
+        assert_eq!(textarea.lines(), &[""]);
+        if let PanelState::ProviderManager {
+            input_mode:
+                Some(PanelInputMode::AddStep3Key {
+                    key_buf,
+                    is_subscription,
+                    ..
+                }),
+            ..
+        } = &app.panel
+        {
+            assert_eq!(key_buf, "sk-test-key");
+            assert!(!is_subscription);
+        } else {
+            panic!("panel should remain in API key input mode");
+        }
+    }
+
+    #[test]
+    fn provider_panel_clipboard_shortcut_does_not_type_into_api_key_field() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: String::new(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        app.handle_key(key, &mut textarea);
+
+        if let PanelState::ProviderManager {
+            input_mode: Some(PanelInputMode::AddStep3Key { key_buf, .. }),
+            ..
+        } = &app.panel
+        {
+            assert!(key_buf.is_empty());
+        } else {
+            panic!("panel should remain in API key input mode");
         }
     }
 

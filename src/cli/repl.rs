@@ -153,7 +153,7 @@ async fn event_loop(
                     }
                 },
                 Event::Paste(text) => {
-                    textarea.insert_str(&text);
+                    app.handle_paste(&text, textarea);
                     should_redraw = true;
                 }
                 Event::Mouse(mouse) => {
