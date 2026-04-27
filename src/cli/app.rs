@@ -344,9 +344,7 @@ pub(crate) async fn probe_provider_config_with_key(
         match url {
             "duumbi-test://ok" => return Ok(()),
             "duumbi-test://unauthorized" => {
-                return Err(
-                    "Provider connection test failed with status 401: Unauthorized".to_string(),
-                );
+                return Err("Invalid API key.".to_string());
             }
             _ => {}
         }
@@ -368,14 +366,7 @@ pub(crate) async fn probe_provider_config_with_key(
 
 fn format_provider_probe_error(error: &crate::agents::AgentError) -> String {
     match error {
-        crate::agents::AgentError::ApiError { status, body } => {
-            let summary = body.lines().next().unwrap_or("").trim();
-            if summary.is_empty() {
-                format!("Provider connection test failed with status {status}.")
-            } else {
-                format!("Provider connection test failed with status {status}: {summary}")
-            }
-        }
+        crate::agents::AgentError::ApiError { body, .. } => provider_api_error_message(body),
         crate::agents::AgentError::Http(e) => {
             format!("Provider connection test failed: {e}")
         }
@@ -384,6 +375,43 @@ fn format_provider_probe_error(error: &crate::agents::AgentError) -> String {
             "Provider connection test was rate limited.".to_string()
         }
         other => format!("Provider connection test failed: {other}"),
+    }
+}
+
+fn provider_api_error_message(body: &str) -> String {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(message) = find_json_message(&json)
+    {
+        return message;
+    }
+
+    let summary = body.lines().next().unwrap_or("").trim();
+    if summary.is_empty() {
+        "Provider rejected the API key.".to_string()
+    } else {
+        summary.to_string()
+    }
+}
+
+fn find_json_message(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(message) = map.get("message").and_then(|v| v.as_str()) {
+                let message = message.trim();
+                if !message.is_empty() {
+                    return Some(message.to_string());
+                }
+            }
+
+            for child in map.values() {
+                if let Some(message) = find_json_message(child) {
+                    return Some(message);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_json_message),
+        _ => None,
     }
 }
 
@@ -3334,11 +3362,6 @@ impl ReplApp {
                     };
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                 }
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "  [Enter] Save  [Esc] Back",
-                    theme::out_dim(),
-                )));
             }
             None => {
                 if let Some((msg, style)) = status_msg {
@@ -4456,7 +4479,7 @@ mod tests {
             ));
             assert_eq!(
                 status_msg.as_ref().map(|(msg, _)| msg.as_str()),
-                Some("Provider connection test failed with status 401: Unauthorized")
+                Some("Invalid API key.")
             );
         } else {
             panic!("panel should remain ProviderManager");
@@ -4584,6 +4607,19 @@ mod tests {
         assert!(!rendered.contains("API key env"));
         assert!(!rendered.contains("chars"));
         assert!(!rendered.contains("MiniMax-M2.7"));
+        assert!(!rendered.contains("[Enter] Save"));
+        assert!(!rendered.contains("[Esc] Back"));
+    }
+
+    #[test]
+    fn provider_probe_error_prefers_json_message() {
+        let message = provider_api_error_message(
+            r#"{"error":{"message":"Incorrect API key provided.","type":"auth_error"}}"#,
+        );
+
+        assert_eq!(message, "Incorrect API key provided.");
+        assert!(!message.contains("auth_error"));
+        assert!(!message.contains("status"));
     }
 
     #[test]
