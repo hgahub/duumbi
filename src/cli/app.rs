@@ -681,7 +681,8 @@ impl ReplApp {
     /// When a popup input is active, pasted text belongs to that field instead
     /// of the underlying REPL prompt.
     pub fn handle_paste(&mut self, text: &str, textarea: &mut TextArea<'_>) {
-        if self.insert_text_into_active_panel_field(text) {
+        if matches!(self.panel, PanelState::ProviderManager { .. }) {
+            let _ = self.insert_text_into_active_panel_field(text);
             return;
         }
 
@@ -4411,6 +4412,26 @@ mod tests {
             assert!(!is_subscription);
         } else {
             panic!("panel should remain in API key input mode");
+        }
+    }
+
+    #[test]
+    fn provider_panel_main_list_paste_does_not_change_prompt() {
+        let (mut app, mut textarea) = make_app();
+        textarea.insert_str("/provider");
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: None,
+            status_msg: None,
+        };
+
+        app.handle_paste("API key megadásakor", &mut textarea);
+
+        assert_eq!(textarea.lines(), &["/provider"]);
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+            assert!(input_mode.is_none());
+        } else {
+            panic!("panel should remain ProviderManager");
         }
     }
 
