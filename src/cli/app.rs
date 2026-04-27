@@ -215,6 +215,12 @@ fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKin
     }
 }
 
+fn provider_kind_index(kind: &crate::config::ProviderKind) -> Option<usize> {
+    PROVIDER_KINDS.iter().enumerate().find_map(|(index, _)| {
+        (parse_provider_kind_by_index(index).as_ref() == Some(kind)).then_some(index)
+    })
+}
+
 /// Finds the configured provider entry for a provider kind.
 fn configured_provider_index(
     config: &DuumbiConfig,
@@ -315,13 +321,6 @@ fn append_single_line_input(buf: &mut String, text: &str) {
     buf.extend(text.chars().filter(|c| !matches!(c, '\r' | '\n')));
 }
 
-fn validate_provider_key(key: &str) -> Result<(), &'static str> {
-    if key.trim().chars().count() < 8 {
-        return Err("API key looks too short.");
-    }
-    Ok(())
-}
-
 fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
     if char_count == 0 {
         return "\u{2588}".to_string();
@@ -335,6 +334,59 @@ fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
     } else {
         let dot_count = char_count.min(max_width.saturating_sub(1)).max(1);
         format!("{}{}", ".".repeat(dot_count), "\u{2588}")
+    }
+}
+
+pub(crate) async fn probe_provider_config_with_key(
+    config: crate::config::ProviderConfig,
+    key: String,
+    is_subscription: bool,
+) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(url) = config.base_url.as_deref() {
+        match url {
+            "duumbi-test://ok" => return Ok(()),
+            "duumbi-test://unauthorized" => {
+                return Err(
+                    "Provider connection test failed with status 401: Unauthorized".to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let provider =
+        crate::agents::factory::create_provider_with_api_key(&config, key, is_subscription)
+            .map_err(|e| format_provider_probe_error(&e))?;
+    let probe = provider.call_with_tools(
+        "You are validating DUUMBI provider credentials. Return no graph changes.",
+        "Reply with no tool calls. This request only validates the configured API key.",
+    );
+    match tokio::time::timeout(std::time::Duration::from_secs(15), probe).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format_provider_probe_error(&e)),
+        Err(_) => Err("Provider connection test timed out.".to_string()),
+    }
+}
+
+fn format_provider_probe_error(error: &crate::agents::AgentError) -> String {
+    match error {
+        crate::agents::AgentError::ApiError { status, body } => {
+            let summary = body.lines().next().unwrap_or("").trim();
+            if summary.is_empty() {
+                format!("Provider connection test failed with status {status}.")
+            } else {
+                format!("Provider connection test failed with status {status}: {summary}")
+            }
+        }
+        crate::agents::AgentError::Http(e) => {
+            format!("Provider connection test failed: {e}")
+        }
+        crate::agents::AgentError::Timeout(_) => "Provider connection test timed out.".to_string(),
+        crate::agents::AgentError::RateLimited { .. } => {
+            "Provider connection test was rate limited.".to_string()
+        }
+        other => format!("Provider connection test failed: {other}"),
     }
 }
 
@@ -801,6 +853,7 @@ impl ReplApp {
             PanelState::None => return Action::Continue,
         };
         let mut new_status_msg: Option<(String, OutputStyle)> = None;
+        let mut action = Action::Continue;
 
         if let Some(ref mut mode) = input_mode {
             match mode {
@@ -1034,28 +1087,18 @@ impl ReplApp {
                             }
                         }
                     }
-                    KeyCode::Enter if !key_buf.is_empty() => match validate_provider_key(key_buf) {
-                        Ok(()) => {
-                            match self.save_provider_with_file_credential(
-                                provider.clone(),
-                                model.clone(),
-                                key_buf.clone(),
-                                *is_subscription,
-                            ) {
-                                Ok(()) => {
-                                    self.save_config_and_rebuild_client();
-                                    input_mode = None;
-                                }
-                                Err(e) => {
-                                    new_status_msg = Some((
-                                        format!("Credential save failed: {e}"),
-                                        OutputStyle::Error,
-                                    ));
-                                }
-                            }
-                        }
-                        Err(e) => new_status_msg = Some((e.to_string(), OutputStyle::Error)),
-                    },
+                    KeyCode::Enter if !key_buf.is_empty() => {
+                        new_status_msg = Some((
+                            "Testing provider connection...".to_string(),
+                            OutputStyle::Dim,
+                        ));
+                        action = Action::ProviderKeySubmitted {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            key: key_buf.clone(),
+                            is_subscription: *is_subscription,
+                        };
+                    }
                     KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                         key_buf.push(c);
                     }
@@ -1067,7 +1110,7 @@ impl ReplApp {
                 input_mode,
                 status_msg: new_status_msg,
             };
-            return Action::Continue;
+            return action;
         }
 
         match key_event.code {
@@ -1197,35 +1240,99 @@ impl ReplApp {
         true
     }
 
-    fn save_provider_with_file_credential(
-        &mut self,
+    pub(crate) fn provider_config_for_key_submission(
+        &self,
         provider: crate::config::ProviderKind,
         model: String,
-        key: String,
         is_subscription: bool,
-    ) -> Result<(), String> {
+        key_storage: Option<crate::config::KeyStorage>,
+    ) -> crate::config::ProviderConfig {
+        let existing = self
+            .workspace_config
+            .providers
+            .iter()
+            .chain(self.user_config.providers.iter())
+            .chain(self.config.providers.iter())
+            .find(|candidate| candidate.provider == provider);
         let api_key_env = default_api_key_env(&provider).to_string();
         let token_env = if is_subscription {
             Some(default_auth_token_env(&provider).to_string())
         } else {
             None
         };
-        let store_env = token_env.as_deref().unwrap_or(&api_key_env);
+        crate::config::ProviderConfig {
+            provider,
+            role: existing
+                .map(|provider| provider.role.clone())
+                .unwrap_or(crate::config::ProviderRole::Primary),
+            model,
+            api_key_env,
+            base_url: existing.and_then(|provider| provider.base_url.clone()),
+            timeout_secs: existing.and_then(|provider| provider.timeout_secs),
+            key_storage,
+            auth_token_env: token_env,
+        }
+    }
+
+    pub(crate) async fn probe_provider_key(
+        &self,
+        provider: crate::config::ProviderKind,
+        model: String,
+        key: String,
+        is_subscription: bool,
+    ) -> Result<(), String> {
+        let config =
+            self.provider_config_for_key_submission(provider, model, is_subscription, None);
+        probe_provider_config_with_key(config, key, is_subscription).await
+    }
+
+    pub(crate) fn provider_key_test_failed(&mut self, message: String) {
+        if let PanelState::ProviderManager { status_msg, .. } = &mut self.panel {
+            *status_msg = Some((message, OutputStyle::Error));
+        }
+    }
+
+    pub(crate) fn save_tested_provider_key(
+        &mut self,
+        provider: crate::config::ProviderKind,
+        model: String,
+        key: String,
+        is_subscription: bool,
+    ) -> Result<(), String> {
+        self.save_provider_with_file_credential(provider.clone(), model, key, is_subscription)?;
+        self.save_config_and_rebuild_client();
+        let selected = provider_kind_index(&provider).unwrap_or(0);
+        self.panel = PanelState::ProviderManager {
+            selected,
+            input_mode: None,
+            status_msg: None,
+        };
+        Ok(())
+    }
+
+    pub(crate) fn save_provider_with_file_credential(
+        &mut self,
+        provider: crate::config::ProviderKind,
+        model: String,
+        key: String,
+        is_subscription: bool,
+    ) -> Result<(), String> {
+        let config = self.provider_config_for_key_submission(
+            provider,
+            model,
+            is_subscription,
+            Some(crate::config::KeyStorage::File),
+        );
+        let store_env = config
+            .auth_token_env
+            .as_deref()
+            .unwrap_or(&config.api_key_env);
         super::keystore::store_api_key(store_env, &key)?;
         // SAFETY: single-threaded CLI — no concurrent env access.
         unsafe {
             std::env::set_var(store_env, &key);
         }
-        self.upsert_provider_connection(crate::config::ProviderConfig {
-            provider,
-            role: crate::config::ProviderRole::Primary,
-            model,
-            api_key_env,
-            base_url: None,
-            timeout_secs: None,
-            key_storage: Some(crate::config::KeyStorage::File),
-            auth_token_env: token_env,
-        });
+        self.upsert_provider_connection(config);
         Ok(())
     }
 
@@ -4205,7 +4312,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_api_key_enter_saves_file_and_returns_to_list() {
+    fn provider_panel_api_key_enter_submits_probe_action_without_saving() {
         let _guard = ENV_LOCK.lock().expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
@@ -4224,48 +4331,17 @@ mod tests {
         };
 
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_key(key, &mut textarea);
+        let action = app.handle_key(key, &mut textarea);
 
-        if let PanelState::ProviderManager {
-            input_mode,
-            status_msg,
-            ..
-        } = &app.panel
-        {
-            assert!(input_mode.is_none());
-            assert!(status_msg.is_none());
-        } else {
-            panic!("panel should remain ProviderManager");
-        }
-        let provider = app
-            .config
-            .providers
-            .iter()
-            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
-            .expect("invariant: provider should be configured");
-        assert_eq!(provider.key_storage, Some(crate::config::KeyStorage::File));
-        let credentials = std::fs::read_to_string(home.path().join(".duumbi/credentials.toml"))
-            .expect("invariant: credentials file should exist");
-        assert!(credentials.contains("MINIMAX_API_KEY"));
-        assert!(credentials.contains("sk-test-key"));
-    }
-
-    #[test]
-    fn provider_panel_invalid_api_key_stays_in_input_with_error() {
-        let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ProviderManager {
-            selected: 4,
-            input_mode: Some(PanelInputMode::AddStep3Key {
+        assert!(matches!(
+            action,
+            Action::ProviderKeySubmitted {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
-                key_buf: "123".to_string(),
+                model,
+                key,
                 is_subscription: false,
-            }),
-            status_msg: None,
-        };
-
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_key(key, &mut textarea);
+            } if model == "MiniMax-M2.7" && key == "sk-test-key"
+        ));
 
         if let PanelState::ProviderManager {
             input_mode,
@@ -4279,12 +4355,142 @@ mod tests {
             ));
             assert_eq!(
                 status_msg.as_ref().map(|(msg, _)| msg.as_str()),
-                Some("API key looks too short.")
+                Some("Testing provider connection...")
             );
         } else {
             panic!("panel should remain ProviderManager");
         }
         assert!(app.config.providers.is_empty());
+        assert!(!home.path().join(".duumbi/credentials.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn provider_panel_successful_probe_saves_config_and_credentials() {
+        let (mut app, _) = make_app();
+        app.has_workspace = false;
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "MiniMax-M2.7".to_string(),
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: Some("duumbi-test://ok".to_string()),
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+
+        app.probe_provider_key(
+            crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7".to_string(),
+            "sk-test-key".to_string(),
+            false,
+        )
+        .await
+        .expect("probe should succeed");
+
+        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp home");
+        let _home_guard = HomeEnvGuard::set(home.path());
+        app.save_tested_provider_key(
+            crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7".to_string(),
+            "sk-test-key".to_string(),
+            false,
+        )
+        .expect("save should succeed");
+
+        assert!(matches!(
+            app.panel,
+            PanelState::ProviderManager {
+                input_mode: None,
+                status_msg: None,
+                ..
+            }
+        ));
+        let provider = app
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
+            .expect("invariant: provider should be configured");
+        assert_eq!(provider.key_storage, Some(crate::config::KeyStorage::File));
+        assert_eq!(provider.base_url.as_deref(), Some("duumbi-test://ok"));
+        let credentials = std::fs::read_to_string(home.path().join(".duumbi/credentials.toml"))
+            .expect("invariant: credentials file should exist");
+        assert!(credentials.contains("MINIMAX_API_KEY"));
+        assert!(credentials.contains("sk-test-key"));
+    }
+
+    #[tokio::test]
+    async fn provider_panel_failed_probe_keeps_key_input_without_saving() {
+        let (mut app, mut textarea) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "MiniMax-M2.7".to_string(),
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: Some("duumbi-test://unauthorized".to_string()),
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: "123".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let action = app.handle_key(key, &mut textarea);
+        let Action::ProviderKeySubmitted {
+            provider,
+            model,
+            key,
+            is_subscription,
+        } = action
+        else {
+            panic!("expected provider key action");
+        };
+        let error = app
+            .probe_provider_key(provider, model, key, is_subscription)
+            .await
+            .expect_err("probe should fail");
+        app.provider_key_test_failed(error);
+
+        if let PanelState::ProviderManager {
+            input_mode,
+            status_msg,
+            ..
+        } = &app.panel
+        {
+            assert!(matches!(
+                input_mode,
+                Some(PanelInputMode::AddStep3Key { .. })
+            ));
+            assert_eq!(
+                status_msg.as_ref().map(|(msg, _)| msg.as_str()),
+                Some("Provider connection test failed with status 401: Unauthorized")
+            );
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+        assert!(
+            app.config
+                .providers
+                .iter()
+                .all(|provider| provider.key_storage.is_none())
+        );
     }
 
     #[test]

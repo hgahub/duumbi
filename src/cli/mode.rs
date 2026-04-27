@@ -165,6 +165,17 @@ pub enum Action {
     Exit,
     /// Submit the given input for processing.
     Submit(String),
+    /// Test and save an API key submitted from the provider manager.
+    ProviderKeySubmitted {
+        /// Provider kind being configured.
+        provider: crate::config::ProviderKind,
+        /// Default model selected for this provider.
+        model: String,
+        /// Raw API key or token to test.
+        key: String,
+        /// If true, the key is a subscription/Bearer token.
+        is_subscription: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------

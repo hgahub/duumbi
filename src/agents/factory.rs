@@ -32,6 +32,22 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>, 
         (key, false)
     };
 
+    create_provider_with_api_key(config, api_key, use_auth_token)
+}
+
+/// Creates a single [`LlmProvider`] from explicit credential material.
+///
+/// This is used for connection probes before a key is persisted.
+///
+/// # Errors
+///
+/// Returns an error if provider construction fails.
+pub fn create_provider_with_api_key(
+    config: &ProviderConfig,
+    api_key: impl Into<String>,
+    use_auth_token: bool,
+) -> Result<Box<dyn LlmProvider>, AgentError> {
+    let api_key = api_key.into();
     let provider: Box<dyn LlmProvider> = match config.provider {
         ProviderKind::Anthropic => Box::new(
             super::anthropic::AnthropicClient::new(&config.model, &api_key)

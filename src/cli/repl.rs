@@ -155,6 +155,40 @@ async fn event_loop(
                         app.working = false;
                         should_redraw = true;
                     }
+                    super::mode::Action::ProviderKeySubmitted {
+                        provider,
+                        model,
+                        key,
+                        is_subscription,
+                    } => {
+                        terminal.draw(|frame| app.render(frame, textarea))?;
+                        last_draw = Instant::now();
+
+                        match app
+                            .probe_provider_key(
+                                provider.clone(),
+                                model.clone(),
+                                key.clone(),
+                                is_subscription,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                if let Err(e) = app.save_tested_provider_key(
+                                    provider,
+                                    model,
+                                    key,
+                                    is_subscription,
+                                ) {
+                                    app.provider_key_test_failed(format!(
+                                        "Credential save failed: {e}"
+                                    ));
+                                }
+                            }
+                            Err(e) => app.provider_key_test_failed(e),
+                        }
+                        should_redraw = true;
+                    }
                 },
                 Event::Paste(text) => {
                     app.handle_paste(&text, textarea);
