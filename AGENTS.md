@@ -6,6 +6,16 @@ for native code generation. petgraph for graph IR, serde_json for JSON-LD
 parsing. AI agent graph mutation (OpenAI/Anthropic APIs), intent-driven
 development, registry distribution, DUUMBI Studio web platform.
 
+## Agent interaction style
+- If the user writes in Hungarian, start with a natural everyday American
+  English translation before answering.
+- If the user writes in English, first provide a corrected, natural native
+  American English version when wording can be improved.
+- Be direct and evidence-aware: separate facts, assumptions, interpretations,
+  uncertainty, and speculation when architecture or implementation risk matters.
+- Challenge weak reasoning respectfully and concretely; prefer practical,
+  maintainable solutions over clever but fragile ones.
+
 ## Repository layout
 - **`hgahub/duumbi`** (this repo) — Rust source code, compiler, CLI, tests, technical docs
 - **`hgahub/duumbi-vault`** — Obsidian planning vault (PRD, phase specs, roadmap, architecture diagrams)
