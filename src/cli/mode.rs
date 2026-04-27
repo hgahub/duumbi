@@ -204,13 +204,6 @@ pub enum PanelState {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum PanelInputMode {
-    /// Legacy: single-line text input for adding a provider.
-    AddProvider(String),
-    /// Step 1: Selecting provider type from a list.
-    AddStep1Provider {
-        /// Index of the highlighted provider kind.
-        selected: usize,
-    },
     /// Step 2: Choose authentication type (API Key vs Subscription Token).
     AddStepAuthType {
         /// The provider kind chosen in step 1.

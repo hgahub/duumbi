@@ -781,10 +781,6 @@ impl ReplApp {
         };
 
         match input_mode {
-            Some(PanelInputMode::AddProvider(buf)) => {
-                append_single_line_input(buf, text);
-                true
-            }
             Some(PanelInputMode::AddStep2Model {
                 manual_input: Some(manual),
                 ..
@@ -913,45 +909,6 @@ impl ReplApp {
                     _ => {
                         input_mode = None;
                     }
-                },
-                PanelInputMode::AddStep1Provider { selected: step_sel } => match key_event.code {
-                    KeyCode::Esc => {
-                        input_mode = None;
-                    }
-                    KeyCode::Up if *step_sel > 0 => {
-                        *step_sel -= 1;
-                    }
-                    KeyCode::Down if *step_sel < PROVIDER_KINDS.len() - 1 => {
-                        *step_sel += 1;
-                    }
-                    KeyCode::Enter => {
-                        if let Some(kind) = parse_provider_kind_by_index(*step_sel) {
-                            selected = *step_sel;
-                            input_mode = Some(provider_setup_mode(kind));
-                        }
-                    }
-                    _ => {}
-                },
-                PanelInputMode::AddProvider(buf) => match key_event.code {
-                    KeyCode::Esc => {
-                        input_mode = None;
-                    }
-                    KeyCode::Enter => {
-                        let input_str = buf.clone();
-                        input_mode = None;
-                        let lines = super::provider::add_provider(&mut self.config, &input_str);
-                        for line in lines {
-                            self.output_lines.push(line);
-                        }
-                        self.save_config_and_rebuild_client();
-                    }
-                    KeyCode::Backspace => {
-                        buf.pop();
-                    }
-                    KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
-                        buf.push(c);
-                    }
-                    _ => {}
                 },
                 PanelInputMode::AddStepAuthType {
                     provider,
@@ -1176,17 +1133,6 @@ impl ReplApp {
                 };
                 Action::Continue
             }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                if let Some(kind) = parse_provider_kind_by_index(selected) {
-                    input_mode = Some(provider_setup_mode(kind));
-                }
-                self.panel = PanelState::ProviderManager {
-                    selected,
-                    input_mode,
-                    status_msg: None,
-                };
-                Action::Continue
-            }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 if parse_provider_kind_by_index(selected)
                     .and_then(|kind| configured_provider_index(&self.config, &kind))
@@ -1203,18 +1149,6 @@ impl ReplApp {
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 if let Some(kind) = parse_provider_kind_by_index(selected) {
                     new_status_msg = Some(self.test_provider_connection_config(&kind));
-                }
-                self.panel = PanelState::ProviderManager {
-                    selected,
-                    input_mode: None,
-                    status_msg: new_status_msg,
-                };
-                Action::Continue
-            }
-            KeyCode::Char('p') | KeyCode::Char('P') => {
-                if let Some(kind) = parse_provider_kind_by_index(selected) {
-                    new_status_msg = Some(self.set_provider_priority(&kind));
-                    self.save_config_and_rebuild_client();
                 }
                 self.panel = PanelState::ProviderManager {
                     selected,
@@ -1359,39 +1293,6 @@ impl ReplApp {
         }
         self.upsert_provider_connection(config);
         Ok(())
-    }
-
-    /// Marks a configured provider as the first provider in the fallback chain.
-    fn set_provider_priority(
-        &mut self,
-        kind: &crate::config::ProviderKind,
-    ) -> (String, OutputStyle) {
-        let Some(index) = configured_provider_index(&self.config, kind) else {
-            return (
-                format!("{} is not configured.", provider_kind_label(kind)),
-                OutputStyle::Dim,
-            );
-        };
-        let target = if configured_provider_index(&self.workspace_config, kind).is_some() {
-            &mut self.workspace_config
-        } else {
-            &mut self.user_config
-        };
-        for (i, provider) in target.providers.iter_mut().enumerate() {
-            provider.role = if i == index {
-                crate::config::ProviderRole::Primary
-            } else {
-                crate::config::ProviderRole::Fallback
-            };
-        }
-        self.refresh_effective_config();
-        (
-            format!(
-                "{} is now first in the fallback chain.",
-                provider_kind_label(kind)
-            ),
-            OutputStyle::Success,
-        )
     }
 
     /// Performs a local provider config check without making a network call.
@@ -2242,7 +2143,6 @@ impl ReplApp {
                 }
             }
             PanelState::ProviderManager { input_mode, .. } => Some(match input_mode {
-                Some(PanelInputMode::AddStep1Provider { .. }) => (PROVIDER_KINDS.len() as u16) + 4,
                 Some(PanelInputMode::AddStep2Model {
                     provider,
                     manual_input,
@@ -2261,7 +2161,6 @@ impl ReplApp {
                 Some(PanelInputMode::AddStep3Key { .. }) => 9,
                 _ => {
                     let provider_count = PROVIDER_KINDS.len().max(1);
-                    let input_line = if input_mode.is_some() { 1 } else { 0 };
                     let status_line = match (&self.panel, input_mode) {
                         (
                             PanelState::ProviderManager {
@@ -2272,7 +2171,7 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    (provider_count as u16) + 7 + input_line + status_line
+                    (provider_count as u16) + 8 + status_line
                 }
             }),
         }
@@ -3205,13 +3104,6 @@ impl ReplApp {
         }
 
         match input_mode {
-            Some(PanelInputMode::AddProvider(buf)) => {
-                lines.push(Line::from(vec![
-                    Span::styled("  Add: ", theme::out_help_cmd()),
-                    Span::styled(format!("{buf}\u{2588}"), theme::brand_word()),
-                    Span::styled("  (provider model api_key_env)", theme::out_dim()),
-                ]));
-            }
             Some(PanelInputMode::ConfirmDelete) => {
                 let provider_name = parse_provider_kind_by_index(selected)
                     .map(|kind| provider_kind_label(&kind))
@@ -3220,26 +3112,6 @@ impl ReplApp {
                     format!("  Delete {provider_name} connection? [y/N]"),
                     theme::out_error(),
                 )));
-            }
-            Some(PanelInputMode::AddStep1Provider { selected: step_sel }) => {
-                lines.clear();
-                lines.push(Line::from(vec![
-                    Span::styled("  Select Provider", theme::brand_word()),
-                    Span::raw(" ".repeat(inner_width.saturating_sub(45))),
-                    Span::styled("(Esc to cancel)", theme::out_dim()),
-                ]));
-                lines.push(Line::from(""));
-                for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
-                    let is_sel = i == *step_sel;
-                    let prefix = if is_sel { "  \u{25cf} " } else { "    " };
-                    let text = format!("{prefix}{}. {:<14} {}", i + 1, name, desc);
-                    let style = if is_sel {
-                        theme::slash_selected()
-                    } else {
-                        theme::out_dim()
-                    };
-                    lines.push(Line::from(Span::styled(text, style)));
-                }
             }
             Some(PanelInputMode::AddStepAuthType {
                 provider,
@@ -3373,8 +3245,9 @@ impl ReplApp {
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                     lines.push(Line::from(""));
                 }
+                lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "  [Enter] Configure  [A] Add  [D] Delete  [P] Priority  [T] Test",
+                    "  [Enter] Configure  [D] Delete  [T] Test",
                     theme::out_dim(),
                 )));
             }
@@ -4127,41 +4000,34 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_a_starts_setup_for_selected_provider() {
+    fn provider_panel_a_and_p_are_inactive() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 1,
             input_mode: None,
             status_msg: None,
         };
-        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        app.handle_key(key, &mut textarea);
-        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
-            assert!(matches!(
-                input_mode,
-                Some(PanelInputMode::AddStep2Model {
-                    provider: crate::config::ProviderKind::OpenAI,
-                    is_subscription: false,
-                    ..
-                })
-            ));
-        }
-    }
 
-    #[test]
-    fn provider_panel_add_provider_esc_cancels() {
-        let (mut app, mut textarea) = make_app();
-        app.panel = PanelState::ProviderManager {
-            selected: 0,
-            input_mode: Some(PanelInputMode::AddProvider("partial".to_string())),
-            status_msg: None,
-        };
-        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        app.handle_key(key, &mut textarea);
-        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        if let PanelState::ProviderManager {
+            selected,
+            input_mode,
+            status_msg,
+        } = &app.panel
+        {
+            assert_eq!(*selected, 1);
             assert!(input_mode.is_none());
+            assert!(status_msg.is_none());
         } else {
-            panic!("panel should still be ProviderManager after Esc in AddProvider mode");
+            panic!("panel should remain ProviderManager");
         }
     }
 
@@ -4514,13 +4380,27 @@ mod tests {
             status_msg: None,
         };
 
-        let (rendered, _) = render_app_to_string(&app, &textarea, 180, 40);
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 180, 40);
 
         assert!(rendered.contains("configured      user       api key"));
         assert!(rendered.contains("not configured  missing    api key"));
         assert!(!rendered.contains("priority"));
         assert!(!rendered.contains("fallback"));
         assert!(!rendered.contains("default MiniMax-M2.7"));
+        assert!(!rendered.contains("[A] Add"));
+        assert!(!rendered.contains("[P] Priority"));
+        assert!(rendered.contains("[Enter] Configure  [D] Delete  [T] Test"));
+        let footer_row = rows
+            .iter()
+            .position(|row| row.contains("[Enter] Configure  [D] Delete  [T] Test"))
+            .expect("footer should render");
+        assert!(footer_row > 0);
+        assert!(
+            rows[footer_row - 1]
+                .chars()
+                .all(|c| c.is_whitespace()
+                    || matches!(c, '\u{2502}' | '\u{2551}' | '\u{2503}' | '|'))
+        );
     }
 
     #[test]
