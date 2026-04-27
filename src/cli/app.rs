@@ -315,6 +315,13 @@ fn append_single_line_input(buf: &mut String, text: &str) {
     buf.extend(text.chars().filter(|c| !matches!(c, '\r' | '\n')));
 }
 
+fn validate_provider_key(key: &str) -> Result<(), &'static str> {
+    if key.trim().chars().count() < 8 {
+        return Err("API key looks too short.");
+    }
+    Ok(())
+}
+
 fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
     if char_count == 0 {
         return "\u{2588}".to_string();
@@ -915,11 +922,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter if !manual.is_empty() => {
                                 let model = manual.clone();
-                                input_mode = Some(PanelInputMode::AddStepCredentialSource {
+                                input_mode = Some(PanelInputMode::AddStep3Key {
                                     provider: provider.clone(),
                                     model,
+                                    key_buf: String::new(),
                                     is_subscription: *is_subscription,
-                                    selected: 0,
                                 });
                             }
                             _ => {}
@@ -942,11 +949,11 @@ impl ReplApp {
                             }
                             KeyCode::Enter => {
                                 if let Some((model_name, _)) = models.get(*model_sel) {
-                                    input_mode = Some(PanelInputMode::AddStepCredentialSource {
+                                    input_mode = Some(PanelInputMode::AddStep3Key {
                                         provider: provider.clone(),
                                         model: (*model_name).to_string(),
+                                        key_buf: String::new(),
                                         is_subscription: *is_subscription,
-                                        selected: 0,
                                     });
                                 }
                             }
@@ -954,49 +961,6 @@ impl ReplApp {
                         }
                     }
                 }
-                PanelInputMode::AddStepCredentialSource {
-                    provider,
-                    model,
-                    is_subscription,
-                    selected: source_sel,
-                } => match key_event.code {
-                    KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStep2Model {
-                            provider: provider.clone(),
-                            is_subscription: *is_subscription,
-                            selected: 0,
-                            manual_input: None,
-                        });
-                    }
-                    KeyCode::Up if *source_sel > 0 => {
-                        *source_sel -= 1;
-                    }
-                    KeyCode::Down if *source_sel < 1 => {
-                        *source_sel += 1;
-                    }
-                    KeyCode::Enter if *source_sel == 0 => {
-                        self.save_provider_with_env_credential(
-                            provider.clone(),
-                            model.clone(),
-                            *is_subscription,
-                        );
-                        self.save_config_and_rebuild_client();
-                        new_status_msg = Some((
-                            "Provider connection saved.".to_string(),
-                            OutputStyle::Success,
-                        ));
-                        input_mode = None;
-                    }
-                    KeyCode::Enter => {
-                        input_mode = Some(PanelInputMode::AddStep3Key {
-                            provider: provider.clone(),
-                            model: model.clone(),
-                            key_buf: String::new(),
-                            is_subscription: *is_subscription,
-                        });
-                    }
-                    _ => {}
-                },
                 PanelInputMode::AddStep3Key {
                     provider,
                     model,
@@ -1004,11 +968,11 @@ impl ReplApp {
                     is_subscription,
                 } => match key_event.code {
                     KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStepCredentialSource {
+                        input_mode = Some(PanelInputMode::AddStep2Model {
                             provider: provider.clone(),
-                            model: model.clone(),
                             is_subscription: *is_subscription,
                             selected: 0,
+                            manual_input: None,
                         });
                     }
                     KeyCode::Backspace => {
@@ -1070,29 +1034,28 @@ impl ReplApp {
                             }
                         }
                     }
-                    KeyCode::Enter if !key_buf.is_empty() => {
-                        match self.save_provider_with_file_credential(
-                            provider.clone(),
-                            model.clone(),
-                            key_buf.clone(),
-                            *is_subscription,
-                        ) {
-                            Ok(()) => {
-                                self.save_config_and_rebuild_client();
-                                new_status_msg = Some((
-                                    "Provider connection saved.".to_string(),
-                                    OutputStyle::Success,
-                                ));
-                                input_mode = None;
-                            }
-                            Err(e) => {
-                                new_status_msg = Some((
-                                    format!("Credential save failed: {e}"),
-                                    OutputStyle::Error,
-                                ));
+                    KeyCode::Enter if !key_buf.is_empty() => match validate_provider_key(key_buf) {
+                        Ok(()) => {
+                            match self.save_provider_with_file_credential(
+                                provider.clone(),
+                                model.clone(),
+                                key_buf.clone(),
+                                *is_subscription,
+                            ) {
+                                Ok(()) => {
+                                    self.save_config_and_rebuild_client();
+                                    input_mode = None;
+                                }
+                                Err(e) => {
+                                    new_status_msg = Some((
+                                        format!("Credential save failed: {e}"),
+                                        OutputStyle::Error,
+                                    ));
+                                }
                             }
                         }
-                    }
+                        Err(e) => new_status_msg = Some((e.to_string(), OutputStyle::Error)),
+                    },
                     KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                         key_buf.push(c);
                     }
@@ -1232,30 +1195,6 @@ impl ReplApp {
         Self::ensure_primary_provider(&mut self.user_config);
         self.refresh_effective_config();
         true
-    }
-
-    fn save_provider_with_env_credential(
-        &mut self,
-        provider: crate::config::ProviderKind,
-        model: String,
-        is_subscription: bool,
-    ) {
-        let api_key_env = default_api_key_env(&provider).to_string();
-        let token_env = if is_subscription {
-            Some(default_auth_token_env(&provider).to_string())
-        } else {
-            None
-        };
-        self.upsert_provider_connection(crate::config::ProviderConfig {
-            provider,
-            role: crate::config::ProviderRole::Primary,
-            model,
-            api_key_env,
-            base_url: None,
-            timeout_secs: None,
-            key_storage: None,
-            auth_token_env: token_env,
-        });
     }
 
     fn save_provider_with_file_credential(
@@ -2187,8 +2126,7 @@ impl ReplApp {
                 Some(PanelInputMode::AddStepAuthType { provider, .. }) => {
                     provider_auth_modes(provider).len() as u16 + 6
                 }
-                Some(PanelInputMode::AddStepCredentialSource { .. }) => 8,
-                Some(PanelInputMode::AddStep3Key { .. }) => 10,
+                Some(PanelInputMode::AddStep3Key { .. }) => 9,
                 _ => {
                     let provider_count = PROVIDER_KINDS.len().max(1);
                     let input_line = if input_mode.is_some() { 1 } else { 0 };
@@ -3134,12 +3072,6 @@ impl ReplApp {
             lines.push(Line::from(Span::styled(text, style)));
         }
 
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  Providers are saved to ~/.duumbi/config.toml",
-            theme::out_dim(),
-        )));
-
         match input_mode {
             Some(PanelInputMode::AddProvider(buf)) => {
                 lines.push(Line::from(vec![
@@ -3262,55 +3194,11 @@ impl ReplApp {
                     )));
                 }
             }
-            Some(PanelInputMode::AddStepCredentialSource {
-                provider,
-                model,
-                is_subscription,
-                selected: source_sel,
-            }) => {
-                let (env_name, label) = if *is_subscription {
-                    (default_auth_token_env(provider), "Subscription token")
-                } else {
-                    (default_api_key_env(provider), "API key")
-                };
-                lines.clear();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {label} source for {provider}"),
-                        theme::brand_word(),
-                    ),
-                    Span::raw(" ".repeat(inner_width.saturating_sub(58))),
-                    Span::styled("(Esc to go back)", theme::out_dim()),
-                ]));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    format!("  Model: {model}"),
-                    theme::out_dim(),
-                )));
-                lines.push(Line::from(""));
-                let options = [
-                    format!("Use environment variable: {env_name}"),
-                    format!("Enter {label}"),
-                ];
-                for (i, option) in options.iter().enumerate() {
-                    let prefix = if i == *source_sel {
-                        "  \u{25cf} "
-                    } else {
-                        "    "
-                    };
-                    let style = if i == *source_sel {
-                        theme::slash_selected()
-                    } else {
-                        theme::out_dim()
-                    };
-                    lines.push(Line::from(Span::styled(format!("{prefix}{option}"), style)));
-                }
-            }
             Some(PanelInputMode::AddStep3Key {
                 provider,
-                model,
                 key_buf,
                 is_subscription,
+                ..
             }) => {
                 let (env_name, label) = if *is_subscription {
                     (default_auth_token_env(provider), "Subscription token")
@@ -3325,10 +3213,6 @@ impl ReplApp {
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    format!("  Model: {model}"),
-                    theme::out_dim(),
-                )));
                 let hint = if *is_subscription {
                     "  Tip: generate a token with `claude setup-token`"
                 } else {
@@ -3359,6 +3243,14 @@ impl ReplApp {
                     Span::styled(field_label, theme::out_help_cmd()),
                     Span::styled(masked, theme::brand_word()),
                 ]));
+                if let Some((msg, style)) = status_msg {
+                    let s = match style {
+                        OutputStyle::Success => theme::out_success(),
+                        OutputStyle::Error => theme::out_error(),
+                        _ => theme::out_dim(),
+                    };
+                    lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
+                }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  [Enter] Save  [Esc] Back",
@@ -4217,6 +4109,38 @@ mod tests {
     }
 
     #[test]
+    fn provider_panel_model_enter_opens_api_key_input() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep2Model {
+                provider: crate::config::ProviderKind::MiniMax,
+                is_subscription: false,
+                selected: 0,
+                manual_input: None,
+            }),
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+
+        if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
+            assert!(matches!(
+                input_mode,
+                Some(PanelInputMode::AddStep3Key {
+                    provider: crate::config::ProviderKind::MiniMax,
+                    model,
+                    key_buf,
+                    is_subscription: false,
+                }) if model == "MiniMax-M2.7" && key_buf.is_empty()
+            ));
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+    }
+
+    #[test]
     fn provider_panel_upsert_without_workspace_targets_user_config() {
         let (mut app, _) = make_app();
         app.has_workspace = false;
@@ -4281,27 +4205,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_env_source_saves_config_without_key_input() {
-        let (mut app, _) = make_app();
-
-        app.save_provider_with_env_credential(
-            crate::config::ProviderKind::MiniMax,
-            "MiniMax-M2.7".to_string(),
-            false,
-        );
-
-        let provider = app
-            .config
-            .providers
-            .iter()
-            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
-            .expect("invariant: provider should be configured");
-        assert_eq!(provider.api_key_env, "MINIMAX_API_KEY");
-        assert!(provider.key_storage.is_none());
-        assert!(provider.auth_token_env.is_none());
-    }
-
-    #[test]
     fn provider_panel_api_key_enter_saves_file_and_returns_to_list() {
         let _guard = ENV_LOCK.lock().expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
@@ -4330,10 +4233,7 @@ mod tests {
         } = &app.panel
         {
             assert!(input_mode.is_none());
-            assert_eq!(
-                status_msg.as_ref().map(|(msg, _)| msg.as_str()),
-                Some("Provider connection saved.")
-            );
+            assert!(status_msg.is_none());
         } else {
             panic!("panel should remain ProviderManager");
         }
@@ -4348,6 +4248,43 @@ mod tests {
             .expect("invariant: credentials file should exist");
         assert!(credentials.contains("MINIMAX_API_KEY"));
         assert!(credentials.contains("sk-test-key"));
+    }
+
+    #[test]
+    fn provider_panel_invalid_api_key_stays_in_input_with_error() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: "123".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+
+        if let PanelState::ProviderManager {
+            input_mode,
+            status_msg,
+            ..
+        } = &app.panel
+        {
+            assert!(matches!(
+                input_mode,
+                Some(PanelInputMode::AddStep3Key { .. })
+            ));
+            assert_eq!(
+                status_msg.as_ref().map(|(msg, _)| msg.as_str()),
+                Some("API key looks too short.")
+            );
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+        assert!(app.config.providers.is_empty());
     }
 
     #[test]
