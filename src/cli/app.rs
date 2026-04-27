@@ -321,20 +321,17 @@ fn append_single_line_input(buf: &mut String, text: &str) {
     buf.extend(text.chars().filter(|c| !matches!(c, '\r' | '\n')));
 }
 
+fn is_submit_key(code: &KeyCode) -> bool {
+    matches!(code, KeyCode::Enter | KeyCode::Char('\n' | '\r'))
+}
+
 fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
     if char_count == 0 {
         return "\u{2588}".to_string();
     }
 
-    let suffix = format!(" ({char_count} chars)");
-    let suffix_width = suffix.chars().count() + 1; // plus cursor
-    if max_width > suffix_width {
-        let dot_count = char_count.min(max_width - suffix_width).max(1);
-        format!("{}{}{}", ".".repeat(dot_count), suffix, "\u{2588}")
-    } else {
-        let dot_count = char_count.min(max_width.saturating_sub(1)).max(1);
-        format!("{}{}", ".".repeat(dot_count), "\u{2588}")
-    }
+    let dot_count = char_count.min(max_width.saturating_sub(1)).max(1);
+    format!("{}{}", ".".repeat(dot_count), "\u{2588}")
 }
 
 pub(crate) async fn probe_provider_config_with_key(
@@ -973,7 +970,7 @@ impl ReplApp {
                             KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
                                 manual.push(c);
                             }
-                            KeyCode::Enter if !manual.is_empty() => {
+                            code if is_submit_key(&code) && !manual.is_empty() => {
                                 let model = manual.clone();
                                 input_mode = Some(PanelInputMode::AddStep3Key {
                                     provider: provider.clone(),
@@ -1000,7 +997,7 @@ impl ReplApp {
                             KeyCode::Char('m') | KeyCode::Char('M') => {
                                 *manual_input = Some(String::new());
                             }
-                            KeyCode::Enter => {
+                            code if is_submit_key(&code) => {
                                 if let Some((model_name, _)) = models.get(*model_sel) {
                                     input_mode = Some(PanelInputMode::AddStep3Key {
                                         provider: provider.clone(),
@@ -1087,7 +1084,7 @@ impl ReplApp {
                             }
                         }
                     }
-                    KeyCode::Enter if !key_buf.is_empty() => {
+                    code if is_submit_key(&code) && !key_buf.is_empty() => {
                         new_status_msg = Some((
                             "Testing provider connection...".to_string(),
                             OutputStyle::Dim,
@@ -3307,38 +3304,17 @@ impl ReplApp {
                 is_subscription,
                 ..
             }) => {
-                let (env_name, label) = if *is_subscription {
-                    (default_auth_token_env(provider), "Subscription token")
+                let label = if *is_subscription {
+                    "Subscription token"
                 } else {
-                    (default_api_key_env(provider), "API key")
+                    "API key"
                 };
-                let key_set = std::env::var(env_name).is_ok();
                 lines.clear();
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {label} for {provider}"), theme::brand_word()),
                     Span::raw(" ".repeat(inner_width.saturating_sub(50))),
                     Span::styled("(Esc to go back)", theme::out_dim()),
                 ]));
-                lines.push(Line::from(""));
-                let hint = if *is_subscription {
-                    "  Tip: generate a token with `claude setup-token`"
-                } else {
-                    ""
-                };
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  {label} env: {env_name}  ({})",
-                        if key_set {
-                            "\u{2713} already set \u{2014} will reuse"
-                        } else {
-                            "\u{2717} not set \u{2014} enter below"
-                        }
-                    ),
-                    theme::out_dim(),
-                )));
-                if !hint.is_empty() {
-                    lines.push(Line::from(Span::styled(hint, theme::label_caps())));
-                }
                 lines.push(Line::from(""));
                 let field_label = format!("  {label}: ");
                 let field_width = field_label.chars().count();
@@ -4581,10 +4557,63 @@ mod tests {
     #[test]
     fn masked_secret_preview_shows_paste_feedback_without_full_secret() {
         let preview = masked_secret_preview(64, 24);
-        assert!(preview.contains("(64 chars)"));
         assert!(preview.starts_with('.'));
         assert!(!preview.contains("sk-"));
         assert!(preview.chars().count() <= 24);
+        assert!(!preview.contains("chars"));
+    }
+
+    #[test]
+    fn provider_panel_api_key_render_has_only_input_field() {
+        let (mut app, textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: "sk-test".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("API key for minimax"));
+        assert!(rendered.contains("API key: ......."));
+        assert!(!rendered.contains("API key env"));
+        assert!(!rendered.contains("chars"));
+        assert!(!rendered.contains("MiniMax-M2.7"));
+    }
+
+    #[test]
+    fn provider_panel_api_key_newline_char_submits_probe_action() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                model: "MiniMax-M2.7".to_string(),
+                key_buf: "sk-test-key".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: None,
+        };
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::ProviderKeySubmitted {
+                provider: crate::config::ProviderKind::MiniMax,
+                model,
+                key,
+                is_subscription: false,
+            } if model == "MiniMax-M2.7" && key == "sk-test-key"
+        ));
     }
 
     #[test]
