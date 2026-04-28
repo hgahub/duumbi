@@ -3073,7 +3073,7 @@ impl ReplApp {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(
-                "     {:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
+                "    {:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
                 "#", "Provider ID", "Display name", "Connection", "Key source", "Required secret"
             ),
             theme::out_dim(),
