@@ -46,12 +46,13 @@ duumbi describe   # human-readable pseudo-code
 
 ## AI Mutation
 
-Configure your LLM provider in `.duumbi/config.toml`:
+Configure your LLM provider in `.duumbi/config.toml`. Duumbi selects concrete
+models internally per task and agent.
 
 ```toml
-[llm]
+[[providers]]
 provider = "anthropic"           # or "openai"
-model = "claude-sonnet-4-6"      # or "gpt-4o"
+role = "primary"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
@@ -65,7 +66,7 @@ duumbi add --yes "multiply instead of add"
 duumbi undo   # restore the previous graph
 ```
 
-Supported providers: **Anthropic** (`claude-sonnet-4-6`, `claude-opus-4-6`) and **OpenAI** (`gpt-4o`, `gpt-4o-mini`).
+Supported providers: **Anthropic**, **OpenAI**, **xAI Grok**, **OpenRouter**, and **MiniMax**.
 
 Full reference → [docs.duumbi.dev](https://docs.duumbi.dev/)
 

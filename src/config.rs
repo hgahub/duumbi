@@ -147,8 +147,12 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub role: ProviderRole,
 
-    /// Model name (e.g. `"claude-sonnet-4-6"`, `"gpt-4o"`, `"grok-3"`).
-    pub model: String,
+    /// Legacy model name from older configs.
+    ///
+    /// New configs omit this field. Runtime code resolves the concrete model
+    /// from Duumbi's versioned internal model catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 
     /// Name of the environment variable holding the API key.
     pub api_key_env: String,
@@ -174,15 +178,21 @@ pub struct ProviderConfig {
     pub auth_token_env: Option<String>,
 }
 
-impl ProviderConfig {
-    /// Resolves the API key by reading the configured environment variable.
-    #[must_use = "must use the resolved API key or handle the error"]
-    pub fn resolve_api_key(&self) -> Result<String, ConfigError> {
-        std::env::var(&self.api_key_env).map_err(|_| ConfigError::Invalid {
-            field: "api_key_env".to_string(),
-            reason: format!("Environment variable '{}' is not set", self.api_key_env),
-        })
-    }
+/// Runtime provider config with a concrete model selected by Duumbi.
+#[derive(Debug, Clone)]
+pub struct ResolvedProviderConfig {
+    /// Provider type.
+    pub provider: ProviderKind,
+    /// Concrete internal model identifier.
+    pub model: String,
+    /// API key environment variable name.
+    pub api_key_env: String,
+    /// Optional custom endpoint override.
+    pub base_url: Option<String>,
+    /// Optional timeout in seconds.
+    pub timeout_secs: Option<u64>,
+    /// Optional bearer-token environment variable name.
+    pub auth_token_env: Option<String>,
 }
 
 /// A dependency declared in the `[dependencies]` section of `config.toml`.
@@ -408,13 +418,11 @@ pub struct DuumbiConfig {
     /// [[providers]]
     /// provider = "anthropic"
     /// role = "primary"
-    /// model = "claude-sonnet-4-6"
     /// api_key_env = "ANTHROPIC_API_KEY"
     ///
     /// [[providers]]
     /// provider = "grok"
     /// role = "fallback"
-    /// model = "grok-3"
     /// api_key_env = "XAI_API_KEY"
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -472,7 +480,7 @@ impl DuumbiConfig {
             return vec![ProviderConfig {
                 provider: kind,
                 role: ProviderRole::Primary,
-                model: llm.model.clone(),
+                model: Some(llm.model.clone()),
                 api_key_env: llm.api_key_env.clone(),
                 base_url: None,
                 timeout_secs: None,
@@ -572,15 +580,7 @@ pub fn merge_config_layers(
     merge_non_provider_fields(&mut config, &user_config);
     merge_non_provider_fields(&mut config, &workspace_config);
 
-    let provider_source = if !workspace_config.providers.is_empty() {
-        config.providers = workspace_config.providers.clone();
-        config.llm = workspace_config.llm.clone();
-        ProviderConfigSource::Workspace
-    } else if workspace_config.llm.is_some() {
-        config.providers.clear();
-        config.llm = workspace_config.llm.clone();
-        ProviderConfigSource::LegacyWorkspace
-    } else if !user_config.providers.is_empty() {
+    let provider_source = if !user_config.providers.is_empty() {
         config.providers = user_config.providers.clone();
         config.llm = user_config.llm.clone();
         ProviderConfigSource::User
@@ -588,6 +588,14 @@ pub fn merge_config_layers(
         config.providers.clear();
         config.llm = user_config.llm.clone();
         ProviderConfigSource::LegacyUser
+    } else if !workspace_config.providers.is_empty() {
+        config.providers = workspace_config.providers.clone();
+        config.llm = workspace_config.llm.clone();
+        ProviderConfigSource::Workspace
+    } else if workspace_config.llm.is_some() {
+        config.providers.clear();
+        config.llm = workspace_config.llm.clone();
+        ProviderConfigSource::LegacyWorkspace
     } else if !system_config.providers.is_empty() {
         config.providers = system_config.providers.clone();
         config.llm = system_config.llm.clone();
@@ -739,7 +747,7 @@ api_key_env = "OPENAI_API_KEY"
         ProviderConfig {
             provider: kind,
             role: ProviderRole::Primary,
-            model: model.to_string(),
+            model: Some(model.to_string()),
             api_key_env: "TEST_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -757,11 +765,14 @@ api_key_env = "OPENAI_API_KEY"
         let effective = merge_config_layers(DuumbiConfig::default(), user, DuumbiConfig::default());
 
         assert_eq!(effective.provider_source, ProviderConfigSource::User);
-        assert_eq!(effective.config.providers[0].model, "user-model");
+        assert_eq!(
+            effective.config.providers[0].model.as_deref(),
+            Some("user-model")
+        );
     }
 
     #[test]
-    fn effective_config_workspace_provider_overrides_user_provider() {
+    fn effective_config_user_provider_overrides_workspace_provider() {
         let mut user = DuumbiConfig::default();
         user.providers
             .push(test_provider(ProviderKind::Anthropic, "user-model"));
@@ -772,12 +783,15 @@ api_key_env = "OPENAI_API_KEY"
 
         let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
 
-        assert_eq!(effective.provider_source, ProviderConfigSource::Workspace);
-        assert_eq!(effective.config.providers[0].model, "workspace-model");
+        assert_eq!(effective.provider_source, ProviderConfigSource::User);
+        assert_eq!(
+            effective.config.providers[0].model.as_deref(),
+            Some("user-model")
+        );
     }
 
     #[test]
-    fn effective_config_workspace_legacy_overrides_user_provider() {
+    fn effective_config_user_provider_overrides_workspace_legacy() {
         let mut user = DuumbiConfig::default();
         user.providers
             .push(test_provider(ProviderKind::Anthropic, "user-model"));
@@ -792,13 +806,10 @@ api_key_env = "OPENAI_API_KEY"
 
         let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
 
+        assert_eq!(effective.provider_source, ProviderConfigSource::User);
         assert_eq!(
-            effective.provider_source,
-            ProviderConfigSource::LegacyWorkspace
-        );
-        assert_eq!(
-            effective.config.effective_providers()[0].model,
-            "workspace-legacy-model"
+            effective.config.effective_providers()[0].model.as_deref(),
+            Some("user-model")
         );
     }
 
@@ -821,8 +832,8 @@ api_key_env = "OPENAI_API_KEY"
 
         assert_eq!(effective.provider_source, ProviderConfigSource::LegacyUser);
         assert_eq!(
-            effective.config.effective_providers()[0].model,
-            "user-legacy-model"
+            effective.config.effective_providers()[0].model.as_deref(),
+            Some("user-legacy-model")
         );
     }
 
@@ -841,8 +852,8 @@ api_key_env = "OPENAI_API_KEY"
 
         assert_eq!(effective.provider_source, ProviderConfigSource::LegacyUser);
         assert_eq!(
-            effective.config.effective_providers()[0].model,
-            "claude-test"
+            effective.config.effective_providers()[0].model.as_deref(),
+            Some("claude-test")
         );
     }
 

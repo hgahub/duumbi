@@ -169,8 +169,6 @@ pub enum Action {
     ProviderKeySubmitted {
         /// Provider kind being configured.
         provider: crate::config::ProviderKind,
-        /// Default model selected for this provider.
-        model: String,
         /// Raw API key or token to test.
         key: String,
         /// If true, the key is a subscription/Bearer token.
@@ -211,23 +209,10 @@ pub enum PanelInputMode {
         /// 0 = API Key, 1 = Subscription Token (Bearer).
         selected: usize,
     },
-    /// Step 3: Selecting a default model for the chosen provider.
-    AddStep2Model {
-        /// The provider kind chosen in step 1.
-        provider: crate::config::ProviderKind,
-        /// If true, the key is a subscription/Bearer token.
-        is_subscription: bool,
-        /// Index of highlighted model in the recommendations list.
-        selected: usize,
-        /// When `Some`, the user is typing a manual model name.
-        manual_input: Option<String>,
-    },
-    /// Step 4: Entering the API key or subscription token (characters are masked).
+    /// Step 3: Entering the API key or subscription token (characters are masked).
     AddStep3Key {
         /// The provider kind chosen in step 1.
         provider: crate::config::ProviderKind,
-        /// The model chosen in step 2.
-        model: String,
         /// Raw key text (shown masked in UI).
         key_buf: String,
         /// If true, the key is a subscription/Bearer token.

@@ -580,7 +580,8 @@ async fn api_create_intent(
     };
 
     let providers = config.effective_providers();
-    let client = match duumbi::agents::factory::create_provider_chain(&providers) {
+    let client = match duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
+    {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -592,7 +593,9 @@ async fn api_create_intent(
         }
     };
 
-    match duumbi::intent::create::run_create(&*client, &ws.root, &description, true).await {
+    let mut log = Vec::new();
+    match duumbi::intent::create::run_create(&*client, &ws.root, &description, true, &mut log).await
+    {
         Ok(slug) => {
             let spec_desc = duumbi::intent::load_intent(&ws.root, &slug)
                 .map(|s| s.intent)
@@ -728,7 +731,6 @@ async fn api_get_providers(
             serde_json::json!({
                 "provider": format!("{:?}", p.provider).to_lowercase(),
                 "role": format!("{:?}", p.role).to_lowercase(),
-                "model": p.model,
                 "api_key_env": p.api_key_env,
                 "auth_token_env": p.auth_token_env,
                 "base_url": p.base_url,
@@ -773,9 +775,6 @@ async fn api_save_providers(
         }
         if let Some(s) = p.get("role").and_then(|v| v.as_str()) {
             entry.insert("role".into(), toml::Value::String(s.to_string()));
-        }
-        if let Some(s) = p.get("model").and_then(|v| v.as_str()) {
-            entry.insert("model".into(), toml::Value::String(s.to_string()));
         }
         if let Some(s) = p.get("api_key_env").and_then(|v| v.as_str()) {
             entry.insert("api_key_env".into(), toml::Value::String(s.to_string()));

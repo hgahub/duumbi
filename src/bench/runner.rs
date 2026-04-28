@@ -315,5 +315,9 @@ fn filter_providers<'a>(
 /// Includes provider kind and model to distinguish multiple entries for the
 /// same provider (e.g. two Anthropic configs with different models).
 fn provider_name(config: &ProviderConfig) -> String {
-    format!("{}:{}", config.provider, config.model)
+    let resolved = crate::agents::model_catalog::resolve_provider_config(
+        config,
+        &crate::agents::model_catalog::ModelSelectionContext::default(),
+    );
+    format!("{}:{}", resolved.provider, resolved.model)
 }

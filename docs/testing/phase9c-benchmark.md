@@ -67,13 +67,11 @@ name = "benchmark-test"
 [[providers]]
 provider = "Anthropic"
 role = "Primary"
-model = "claude-sonnet-4-20250514"
 api_key_env = "ANTHROPIC_API_KEY"
 
 [[providers]]
 provider = "openai"
 role = "Fallback"
-model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 ```
 
