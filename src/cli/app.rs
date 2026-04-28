@@ -2143,6 +2143,7 @@ impl ReplApp {
                 }
             }
             PanelState::ProviderManager { input_mode, .. } => Some(match input_mode {
+                Some(PanelInputMode::ConfirmDelete) => (PROVIDER_KINDS.len() as u16) + 11,
                 Some(PanelInputMode::AddStep2Model {
                     provider,
                     manual_input,
@@ -2171,7 +2172,7 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    (provider_count as u16) + 8 + status_line
+                    (provider_count as u16) + 9 + status_line
                 }
             }),
         }
@@ -3070,6 +3071,13 @@ impl ReplApp {
             Span::styled("(Esc to close)", theme::out_dim()),
         ]));
         lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "     {:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
+                "#", "Provider ID", "Display name", "Connection", "Key source", "Required secret"
+            ),
+            theme::out_dim(),
+        )));
 
         for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
             let Some(kind) = parse_provider_kind_by_index(i) else {
@@ -3077,24 +3085,36 @@ impl ReplApp {
             };
             let is_sel = i == selected;
             let prefix = if is_sel { "  \u{25cf} " } else { "    " };
-            let status = if let Some(index) = configured_provider_index(&self.config, &kind) {
-                let provider = &self.config.providers[index];
-                let auth = if provider.auth_token_env.is_some() {
-                    "subscription"
+            let (connection, key_source, required_secret) =
+                if let Some(index) = configured_provider_index(&self.config, &kind) {
+                    let provider = &self.config.providers[index];
+                    let auth = if provider.auth_token_env.is_some() {
+                        "subscription"
+                    } else {
+                        "api key"
+                    };
+                    let config_source = self.provider_config_source_label(&kind);
+                    (
+                        "configured".to_string(),
+                        config_source.to_string(),
+                        auth.to_string(),
+                    )
                 } else {
-                    "api key"
+                    (
+                        "not configured".to_string(),
+                        "missing".to_string(),
+                        provider_auth_summary(&kind),
+                    )
                 };
-                let config_source = self.provider_config_source_label(&kind);
-                format!("{:<15} {:<10} {:<12}", "configured", config_source, auth)
-            } else {
-                format!(
-                    "{:<15} {:<10} {:<12}",
-                    "not configured",
-                    "missing",
-                    provider_auth_summary(&kind)
-                )
-            };
-            let text = format!("{prefix}{}. {:<11} {:<34} {}", i + 1, name, desc, status);
+            let text = format!(
+                "{prefix}{:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
+                format!("{}.", i + 1),
+                name,
+                desc,
+                connection,
+                key_source,
+                required_secret
+            );
             let style = if is_sel {
                 theme::slash_selected()
             } else {
@@ -3108,9 +3128,15 @@ impl ReplApp {
                 let provider_name = parse_provider_kind_by_index(selected)
                     .map(|kind| provider_kind_label(&kind))
                     .unwrap_or("provider");
+                lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  Delete {provider_name} connection? [y/N]"),
                     theme::out_error(),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  [Enter] Configure    [D] Delete key [T] Test connection",
+                    theme::out_dim(),
                 )));
             }
             Some(PanelInputMode::AddStepAuthType {
@@ -3242,12 +3268,14 @@ impl ReplApp {
                         OutputStyle::Error => theme::out_error(),
                         _ => theme::out_dim(),
                     };
+                    lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                     lines.push(Line::from(""));
+                } else {
+                    lines.push(Line::from(""));
                 }
-                lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "  [Enter] Configure  [D] Delete  [T] Test",
+                    "  [Enter] Configure    [D] Delete key [T] Test connection",
                     theme::out_dim(),
                 )));
             }
@@ -3402,6 +3430,11 @@ mod tests {
     fn render_to_string(width: u16, height: u16) -> (String, Vec<String>) {
         let (app, textarea) = make_app();
         render_app_to_string(&app, &textarea, width, height)
+    }
+
+    fn visually_empty_panel_row(row: &str) -> bool {
+        row.chars()
+            .all(|c| c.is_whitespace() || matches!(c, '\u{2502}' | '\u{2551}' | '\u{2503}' | '|'))
     }
 
     #[test]
@@ -4382,6 +4415,10 @@ mod tests {
 
         let (rendered, rows) = render_app_to_string(&app, &textarea, 180, 40);
 
+        assert!(rendered.contains("#   Provider ID  Display name"));
+        assert!(rendered.contains("Connection"));
+        assert!(rendered.contains("Key source"));
+        assert!(rendered.contains("Required secret"));
         assert!(rendered.contains("configured      user       api key"));
         assert!(rendered.contains("not configured  missing    api key"));
         assert!(!rendered.contains("priority"));
@@ -4389,18 +4426,63 @@ mod tests {
         assert!(!rendered.contains("default MiniMax-M2.7"));
         assert!(!rendered.contains("[A] Add"));
         assert!(!rendered.contains("[P] Priority"));
-        assert!(rendered.contains("[Enter] Configure  [D] Delete  [T] Test"));
+        assert!(rendered.contains("[Enter] Configure    [D] Delete key [T] Test connection"));
         let footer_row = rows
             .iter()
-            .position(|row| row.contains("[Enter] Configure  [D] Delete  [T] Test"))
+            .position(|row| row.contains("[Enter] Configure    [D] Delete key [T] Test connection"))
             .expect("footer should render");
         assert!(footer_row > 0);
-        assert!(
-            rows[footer_row - 1]
-                .chars()
-                .all(|c| c.is_whitespace()
-                    || matches!(c, '\u{2502}' | '\u{2551}' | '\u{2503}' | '|'))
-        );
+        assert!(visually_empty_panel_row(&rows[footer_row - 1]));
+    }
+
+    #[test]
+    fn provider_panel_test_message_has_single_separator_rows() {
+        let (mut app, textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: None,
+            status_msg: Some(("minimax is not configured.".to_string(), OutputStyle::Dim)),
+        };
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 180, 40);
+        let message_row = rows
+            .iter()
+            .position(|row| row.contains("minimax is not configured."))
+            .expect("test message should render");
+        let footer_row = rows
+            .iter()
+            .position(|row| row.contains("[Enter] Configure    [D] Delete key [T] Test connection"))
+            .expect("footer should render");
+
+        assert!(message_row > 0);
+        assert_eq!(footer_row, message_row + 2);
+        assert!(visually_empty_panel_row(&rows[message_row - 1]));
+        assert!(visually_empty_panel_row(&rows[message_row + 1]));
+    }
+
+    #[test]
+    fn provider_panel_delete_confirmation_has_single_separator_rows() {
+        let (mut app, textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::ConfirmDelete),
+            status_msg: None,
+        };
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 180, 40);
+        let message_row = rows
+            .iter()
+            .position(|row| row.contains("Delete minimax connection? [y/N]"))
+            .expect("delete confirmation should render");
+        let footer_row = rows
+            .iter()
+            .position(|row| row.contains("[Enter] Configure    [D] Delete key [T] Test connection"))
+            .expect("footer should render");
+
+        assert!(message_row > 0);
+        assert_eq!(footer_row, message_row + 2);
+        assert!(visually_empty_panel_row(&rows[message_row - 1]));
+        assert!(visually_empty_panel_row(&rows[message_row + 1]));
     }
 
     #[test]
