@@ -16,7 +16,7 @@ use crossterm::execute;
 use ratatui_textarea::TextArea;
 
 use crate::agents::{LlmClient, orchestrator};
-use crate::config::DuumbiConfig;
+use crate::config::{DuumbiConfig, EffectiveConfig};
 use crate::intent;
 use crate::session::SessionManager;
 use crate::snapshot;
@@ -36,7 +36,8 @@ const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b
 ///
 /// Initialises a ratatui terminal, creates [`ReplApp`] with all workspace
 /// state, and drives the event loop. On exit the session is archived.
-pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
+pub async fn run(workspace_root: PathBuf, effective_config: EffectiveConfig) -> Result<()> {
+    let config = effective_config.config.clone();
     let client = build_client(&config);
     let has_workspace = workspace_root.join(".duumbi").exists();
 
@@ -69,8 +70,12 @@ pub async fn run(workspace_root: PathBuf, config: DuumbiConfig) -> Result<()> {
         }
     };
 
-    let mut app = ReplApp::new(
+    let mut app = ReplApp::new_with_config_layers(
         config,
+        effective_config.system_config,
+        effective_config.user_config,
+        effective_config.workspace_config,
+        effective_config.provider_source,
         workspace_root,
         client,
         session_mgr,
@@ -151,9 +156,43 @@ async fn event_loop(
                         app.working = false;
                         should_redraw = true;
                     }
+                    super::mode::Action::ProviderKeySubmitted {
+                        provider,
+                        model,
+                        key,
+                        is_subscription,
+                    } => {
+                        terminal.draw(|frame| app.render(frame, textarea))?;
+                        last_draw = Instant::now();
+
+                        match app
+                            .probe_provider_key(
+                                provider.clone(),
+                                model.clone(),
+                                key.clone(),
+                                is_subscription,
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                if let Err(e) = app.save_tested_provider_key(
+                                    provider,
+                                    model,
+                                    key,
+                                    is_subscription,
+                                ) {
+                                    app.provider_key_test_failed(format!(
+                                        "Credential save failed: {e}"
+                                    ));
+                                }
+                            }
+                            Err(e) => app.provider_key_test_failed(e),
+                        }
+                        should_redraw = true;
+                    }
                 },
                 Event::Paste(text) => {
-                    textarea.insert_str(&text);
+                    app.handle_paste(&text, textarea);
                     should_redraw = true;
                 }
                 Event::Mouse(mouse) => {
@@ -320,17 +359,14 @@ async fn handle_slash(
         }
 
         "/model" => {
-            // Open the interactive model selector panel with the primary provider selected.
-            let primary_idx = app
-                .config
-                .effective_providers()
-                .iter()
-                .position(|p| p.role == crate::config::ProviderRole::Primary)
-                .unwrap_or(0);
-            app.panel = super::mode::PanelState::ModelSelector {
-                selected: primary_idx,
+            app.push_output("Use /provider to manage LLM connections.", OutputStyle::Dim);
+            app.panel = super::mode::PanelState::ProviderManager {
+                selected: 0,
                 input_mode: None,
-                status_msg: None,
+                status_msg: Some((
+                    "/model is a compatibility alias for /provider.".to_string(),
+                    OutputStyle::Dim,
+                )),
             };
             textarea.move_cursor(ratatui_textarea::CursorMove::Head);
             textarea.delete_line_by_end();
@@ -425,12 +461,26 @@ async fn handle_slash(
                 match init_result {
                     Ok(()) => {
                         app.has_workspace = true;
-                        app.config =
-                            crate::config::load_config(&app.workspace_root).unwrap_or_default();
-                        app.client = build_client(&app.config);
-                        app.session_mgr = SessionManager::load_or_create(&app.workspace_root).ok();
-                        app.show_tip = true;
-                        app.push_output("Workspace initialised.", OutputStyle::Success);
+                        match crate::config::load_effective_config(&app.workspace_root) {
+                            Ok(effective) => {
+                                app.config = effective.config;
+                                app.system_config = effective.system_config;
+                                app.user_config = effective.user_config;
+                                app.workspace_config = effective.workspace_config;
+                                app.provider_config_source = effective.provider_source;
+                                app.client = build_client(&app.config);
+                                app.session_mgr =
+                                    SessionManager::load_or_create(&app.workspace_root).ok();
+                                app.show_tip = true;
+                                app.push_output("Workspace initialised.", OutputStyle::Success);
+                            }
+                            Err(e) => {
+                                app.push_output(
+                                    format!("Workspace initialised, but config reload failed: {e}"),
+                                    OutputStyle::Error,
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
@@ -440,11 +490,13 @@ async fn handle_slash(
         }
 
         "/provider" => {
-            app.push_output("The /provider command has been removed.", OutputStyle::Dim);
-            app.push_output(
-                "Use /model for interactive provider management, or `duumbi provider` from the CLI.",
-                OutputStyle::Dim,
-            );
+            app.panel = super::mode::PanelState::ProviderManager {
+                selected: 0,
+                input_mode: None,
+                status_msg: None,
+            };
+            textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+            textarea.delete_line_by_end();
         }
 
         "/help" => {
@@ -1590,6 +1642,16 @@ fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
             // SAFETY: single-threaded CLI — no concurrent env access.
             unsafe {
                 std::env::set_var(&p.api_key_env, &key);
+            }
+        }
+        if let Some(token_env) = &p.auth_token_env
+            && matches!(p.key_storage, Some(crate::config::KeyStorage::File))
+            && std::env::var(token_env).is_err()
+            && let Some(token) = super::keystore::load_api_key(token_env)
+        {
+            // SAFETY: single-threaded CLI — no concurrent env access.
+            unsafe {
+                std::env::set_var(token_env, &token);
             }
         }
     }

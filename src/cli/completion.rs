@@ -248,8 +248,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         group: SlashGroup::WorkspaceConfig,
     },
     SlashCommand {
-        command: "/model",
-        description: "Manage LLM providers and models",
+        command: "/provider",
+        description: "Manage LLM provider connections",
         group: SlashGroup::WorkspaceConfig,
     },
     SlashCommand {
@@ -333,5 +333,15 @@ mod tests {
                 .iter()
                 .any(|entry| entry.command == "/intent unfocus")
         );
+    }
+
+    #[test]
+    fn provider_command_replaces_model_in_completion() {
+        assert!(
+            SLASH_COMMANDS
+                .iter()
+                .any(|entry| entry.command == "/provider")
+        );
+        assert!(!SLASH_COMMANDS.iter().any(|entry| entry.command == "/model"));
     }
 }
