@@ -226,7 +226,17 @@ fn configured_provider_index(
     config: &DuumbiConfig,
     kind: &crate::config::ProviderKind,
 ) -> Option<usize> {
-    config.providers.iter().position(|p| &p.provider == kind)
+    let mut first_match = None;
+    for (index, provider) in config.providers.iter().enumerate() {
+        if &provider.provider != kind {
+            continue;
+        }
+        first_match.get_or_insert(index);
+        if matches!(provider.role, crate::config::ProviderRole::Primary) {
+            return Some(index);
+        }
+    }
+    first_match
 }
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
@@ -283,6 +293,7 @@ struct ConversationTextSelection {
     dragged: bool,
 }
 
+#[cfg(target_os = "macos")]
 fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     let mut child = std::process::Command::new("pbcopy")
         .stdin(std::process::Stdio::piped())
@@ -303,6 +314,12 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn copy_text_to_clipboard(_text: &str) -> Result<(), String> {
+    Err("Clipboard shortcut integration is only available on macOS.".to_string())
+}
+
+#[cfg(target_os = "macos")]
 fn read_text_from_clipboard() -> Result<String, String> {
     let output = std::process::Command::new("pbpaste")
         .output()
@@ -311,6 +328,11 @@ fn read_text_from_clipboard() -> Result<String, String> {
         return Err(output.status.to_string());
     }
     String::from_utf8(output.stdout).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_text_from_clipboard() -> Result<String, String> {
+    Err("Clipboard shortcut integration is only available on macOS.".to_string())
 }
 
 fn is_clipboard_shortcut(modifiers: KeyModifiers) -> bool {
@@ -434,6 +456,8 @@ pub struct ReplApp {
     pub workspace_root: PathBuf,
     /// Parsed workspace configuration.
     pub config: DuumbiConfig,
+    /// System-level configuration from `/etc/duumbi/config.toml`.
+    pub system_config: DuumbiConfig,
     /// User-level configuration from `~/.duumbi/config.toml`.
     pub user_config: DuumbiConfig,
     /// Workspace-level configuration from `<workspace>/.duumbi/config.toml`.
@@ -514,6 +538,7 @@ impl ReplApp {
         Self::new_with_config_layers(
             config.clone(),
             DuumbiConfig::default(),
+            DuumbiConfig::default(),
             config,
             ProviderConfigSource::Workspace,
             workspace_root,
@@ -529,6 +554,7 @@ impl ReplApp {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_config_layers(
         config: DuumbiConfig,
+        system_config: DuumbiConfig,
         user_config: DuumbiConfig,
         workspace_config: DuumbiConfig,
         provider_config_source: ProviderConfigSource,
@@ -544,6 +570,7 @@ impl ReplApp {
             focused_intent: None,
             workspace_root,
             config,
+            system_config,
             user_config,
             workspace_config,
             provider_config_source,
@@ -1134,15 +1161,28 @@ impl ReplApp {
                 Action::Continue
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                if parse_provider_kind_by_index(selected)
-                    .and_then(|kind| configured_provider_index(&self.config, &kind))
-                    .is_some()
-                {
-                    self.panel = PanelState::ProviderManager {
-                        selected,
-                        input_mode: Some(PanelInputMode::ConfirmDelete),
-                        status_msg: None,
-                    };
+                if let Some(kind) = parse_provider_kind_by_index(selected) {
+                    if configured_provider_index(&self.workspace_config, &kind).is_some()
+                        || configured_provider_index(&self.user_config, &kind).is_some()
+                    {
+                        self.panel = PanelState::ProviderManager {
+                            selected,
+                            input_mode: Some(PanelInputMode::ConfirmDelete),
+                            status_msg: None,
+                        };
+                    } else if configured_provider_index(&self.config, &kind).is_some() {
+                        self.panel = PanelState::ProviderManager {
+                            selected,
+                            input_mode: None,
+                            status_msg: Some((
+                                format!(
+                                    "{} connection is not stored in user or workspace config.",
+                                    provider_kind_label(&kind)
+                                ),
+                                OutputStyle::Dim,
+                            )),
+                        };
+                    }
                 }
                 Action::Continue
             }
@@ -1179,8 +1219,6 @@ impl ReplApp {
             Some(self.workspace_config.providers.remove(index))
         } else if let Some(index) = configured_provider_index(&self.user_config, kind) {
             Some(self.user_config.providers.remove(index))
-        } else if let Some(index) = configured_provider_index(&self.config, kind) {
-            Some(self.config.providers.remove(index))
         } else {
             None
         };
@@ -1213,9 +1251,15 @@ impl ReplApp {
             .chain(self.user_config.providers.iter())
             .chain(self.config.providers.iter())
             .find(|candidate| candidate.provider == provider);
-        let api_key_env = default_api_key_env(&provider).to_string();
+        let api_key_env = existing
+            .map(|provider| provider.api_key_env.clone())
+            .unwrap_or_else(|| default_api_key_env(&provider).to_string());
         let token_env = if is_subscription {
-            Some(default_auth_token_env(&provider).to_string())
+            Some(
+                existing
+                    .and_then(|provider| provider.auth_token_env.clone())
+                    .unwrap_or_else(|| default_auth_token_env(&provider).to_string()),
+            )
         } else {
             None
         };
@@ -1364,7 +1408,7 @@ impl ReplApp {
 
     fn refresh_effective_config(&mut self) {
         let effective = crate::config::merge_config_layers(
-            DuumbiConfig::default(),
+            self.system_config.clone(),
             self.user_config.clone(),
             self.workspace_config.clone(),
         );
@@ -3073,7 +3117,7 @@ impl ReplApp {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(
-                "    {:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
+                "  {:<3} {:<12} {:<34} {:<15} {:<10} {:<12}",
                 "#", "Provider ID", "Display name", "Connection", "Key source", "Required secret"
             ),
             theme::out_dim(),
@@ -4172,6 +4216,37 @@ mod tests {
     }
 
     #[test]
+    fn configured_provider_index_prefers_primary_duplicate() {
+        let mut config = DuumbiConfig::default();
+        config.providers.push(crate::config::ProviderConfig {
+            provider: crate::config::ProviderKind::MiniMax,
+            role: crate::config::ProviderRole::Fallback,
+            model: "fallback-model".to_string(),
+            api_key_env: "MINIMAX_FALLBACK_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        });
+        config.providers.push(crate::config::ProviderConfig {
+            provider: crate::config::ProviderKind::MiniMax,
+            role: crate::config::ProviderRole::Primary,
+            model: "primary-model".to_string(),
+            api_key_env: "MINIMAX_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        });
+
+        let index = configured_provider_index(&config, &crate::config::ProviderKind::MiniMax)
+            .expect("provider should be found");
+
+        assert_eq!(index, 1);
+        assert_eq!(config.providers[index].model, "primary-model");
+    }
+
+    #[test]
     fn provider_panel_workspace_provider_overrides_user_provider() {
         let (mut app, _) = make_app();
         app.user_config
@@ -4207,6 +4282,28 @@ mod tests {
             app.provider_config_source_label(&crate::config::ProviderKind::OpenAI),
             "workspace"
         );
+    }
+
+    #[test]
+    fn provider_panel_system_provider_survives_effective_refresh() {
+        let (mut app, _) = make_app();
+        app.system_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "system-model".to_string(),
+                api_key_env: "MINIMAX_SYSTEM_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+
+        app.refresh_effective_config();
+
+        assert_eq!(app.provider_config_source, ProviderConfigSource::System);
+        assert_eq!(app.config.providers[0].model, "system-model");
     }
 
     #[test]
@@ -4319,6 +4416,48 @@ mod tests {
         let credentials = std::fs::read_to_string(home.path().join(".duumbi/credentials.toml"))
             .expect("invariant: credentials file should exist");
         assert!(credentials.contains("MINIMAX_API_KEY"));
+        assert!(credentials.contains("sk-test-key"));
+    }
+
+    #[test]
+    fn provider_panel_file_credential_preserves_custom_api_key_env() {
+        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp home");
+        let _home_guard = HomeEnvGuard::set(home.path());
+
+        let (mut app, _) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "MiniMax-M2.7".to_string(),
+                api_key_env: "CUSTOM_MINIMAX_API_KEY".to_string(),
+                base_url: Some("duumbi-test://ok".to_string()),
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+
+        app.save_provider_with_file_credential(
+            crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7".to_string(),
+            "sk-test-key".to_string(),
+            false,
+        )
+        .expect("save should succeed");
+
+        let provider = app
+            .user_config
+            .providers
+            .iter()
+            .find(|provider| provider.provider == crate::config::ProviderKind::MiniMax)
+            .expect("provider should be saved");
+        assert_eq!(provider.api_key_env, "CUSTOM_MINIMAX_API_KEY");
+        let credentials = std::fs::read_to_string(home.path().join(".duumbi/credentials.toml"))
+            .expect("credentials file should exist");
+        assert!(credentials.contains("CUSTOM_MINIMAX_API_KEY"));
         assert!(credentials.contains("sk-test-key"));
     }
 
@@ -4645,16 +4784,19 @@ mod tests {
     #[test]
     fn provider_panel_delete_removes_configured_connection() {
         let (mut app, mut textarea) = make_app();
-        app.config.providers.push(crate::config::ProviderConfig {
-            provider: crate::config::ProviderKind::Anthropic,
-            role: crate::config::ProviderRole::Primary,
-            model: "claude-sonnet-4-6".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            base_url: None,
-            timeout_secs: None,
-            key_storage: None,
-            auth_token_env: None,
-        });
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::Anthropic,
+                role: crate::config::ProviderRole::Primary,
+                model: "claude-sonnet-4-6".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
         app.panel = PanelState::ProviderManager {
             selected: 0,
             input_mode: Some(PanelInputMode::ConfirmDelete),
@@ -4663,6 +4805,50 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
         assert!(app.config.providers.is_empty());
+        assert!(app.user_config.providers.is_empty());
+    }
+
+    #[test]
+    fn provider_panel_delete_does_not_remove_system_provider() {
+        let (mut app, mut textarea) = make_app();
+        app.system_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: "MiniMax-M2.7".to_string(),
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: None,
+            status_msg: None,
+        };
+
+        let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(key, &mut textarea);
+
+        if let PanelState::ProviderManager {
+            input_mode,
+            status_msg,
+            ..
+        } = &app.panel
+        {
+            assert!(input_mode.is_none());
+            assert_eq!(
+                status_msg.as_ref().map(|(msg, _)| msg.as_str()),
+                Some("minimax connection is not stored in user or workspace config.")
+            );
+        } else {
+            panic!("panel should remain ProviderManager");
+        }
+        assert_eq!(app.config.providers.len(), 1);
+        assert_eq!(app.system_config.providers.len(), 1);
     }
 
     #[test]

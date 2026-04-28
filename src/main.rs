@@ -56,7 +56,13 @@ async fn main() {
     // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
         let workspace_root = PathBuf::from(".");
-        let config = config::load_effective_config(&workspace_root);
+        let config = match config::load_effective_config(&workspace_root) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        };
         if let Err(e) = cli::repl::run(workspace_root, config).await {
             eprintln!("error: {e:#}");
             process::exit(1);
@@ -552,7 +558,7 @@ async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> 
 /// Uses the `[[providers]]` config if available, falling back to the legacy
 /// `[llm]` section for backward compatibility.
 fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
-    let cfg = config::load_effective_config(workspace).config;
+    let cfg = config::load_effective_config(workspace)?.config;
 
     let providers = cfg.effective_providers();
     if providers.is_empty() {
@@ -610,7 +616,7 @@ async fn run_benchmark(
     baseline: Option<PathBuf>,
 ) -> Result<()> {
     let workspace = PathBuf::from(".");
-    let cfg = config::load_effective_config(&workspace).config;
+    let cfg = config::load_effective_config(&workspace)?.config;
 
     let providers = cfg.effective_providers();
     if providers.is_empty() {

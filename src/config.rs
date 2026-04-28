@@ -509,6 +509,8 @@ pub enum ProviderConfigSource {
 pub struct EffectiveConfig {
     /// Merged config used by runtime clients.
     pub config: DuumbiConfig,
+    /// System-level config loaded from `/etc/duumbi/config.toml`, or default.
+    pub system_config: DuumbiConfig,
     /// User-level config loaded from `~/.duumbi/config.toml`, or default.
     pub user_config: DuumbiConfig,
     /// Workspace config loaded from `<workspace>/.duumbi/config.toml`, or default.
@@ -536,12 +538,28 @@ pub fn save_user_config(config: &DuumbiConfig) -> Result<(), ConfigError> {
 }
 
 /// Loads system, user, and workspace config layers and returns the effective runtime config.
-pub fn load_effective_config(workspace_root: &Path) -> EffectiveConfig {
-    let system_config = load_config_file(Path::new("/etc/duumbi/config.toml")).unwrap_or_default();
-    let user_config = load_user_config().unwrap_or_default();
-    let workspace_config = load_config(workspace_root).unwrap_or_default();
+pub fn load_effective_config(workspace_root: &Path) -> Result<EffectiveConfig, ConfigError> {
+    let system_config = match load_config_file(Path::new("/etc/duumbi/config.toml")) {
+        Ok(config) => config,
+        Err(ConfigError::NotFound(_)) => DuumbiConfig::default(),
+        Err(err) => return Err(err),
+    };
+    let user_config = match load_user_config() {
+        Ok(config) => config,
+        Err(ConfigError::NotFound(_)) => DuumbiConfig::default(),
+        Err(err) => return Err(err),
+    };
+    let workspace_config = match load_config(workspace_root) {
+        Ok(config) => config,
+        Err(ConfigError::NotFound(_)) => DuumbiConfig::default(),
+        Err(err) => return Err(err),
+    };
 
-    merge_config_layers(system_config, user_config, workspace_config)
+    Ok(merge_config_layers(
+        system_config,
+        user_config,
+        workspace_config,
+    ))
 }
 
 /// Merges system, user, and workspace config layers into one runtime config.
@@ -558,22 +576,22 @@ pub fn merge_config_layers(
         config.providers = workspace_config.providers.clone();
         config.llm = workspace_config.llm.clone();
         ProviderConfigSource::Workspace
-    } else if !user_config.providers.is_empty() {
-        config.providers = user_config.providers.clone();
-        config.llm = user_config.llm.clone();
-        ProviderConfigSource::User
-    } else if !system_config.providers.is_empty() {
-        config.providers = system_config.providers.clone();
-        config.llm = system_config.llm.clone();
-        ProviderConfigSource::System
     } else if workspace_config.llm.is_some() {
         config.providers.clear();
         config.llm = workspace_config.llm.clone();
         ProviderConfigSource::LegacyWorkspace
+    } else if !user_config.providers.is_empty() {
+        config.providers = user_config.providers.clone();
+        config.llm = user_config.llm.clone();
+        ProviderConfigSource::User
     } else if user_config.llm.is_some() {
         config.providers.clear();
         config.llm = user_config.llm.clone();
         ProviderConfigSource::LegacyUser
+    } else if !system_config.providers.is_empty() {
+        config.providers = system_config.providers.clone();
+        config.llm = system_config.llm.clone();
+        ProviderConfigSource::System
     } else if system_config.llm.is_some() {
         config.providers.clear();
         config.llm = system_config.llm.clone();
@@ -586,6 +604,7 @@ pub fn merge_config_layers(
 
     EffectiveConfig {
         config,
+        system_config,
         user_config,
         workspace_config,
         provider_source,
@@ -755,6 +774,56 @@ api_key_env = "OPENAI_API_KEY"
 
         assert_eq!(effective.provider_source, ProviderConfigSource::Workspace);
         assert_eq!(effective.config.providers[0].model, "workspace-model");
+    }
+
+    #[test]
+    fn effective_config_workspace_legacy_overrides_user_provider() {
+        let mut user = DuumbiConfig::default();
+        user.providers
+            .push(test_provider(ProviderKind::Anthropic, "user-model"));
+        let workspace = DuumbiConfig {
+            llm: Some(LlmConfig {
+                provider: LlmProvider::Anthropic,
+                model: "workspace-legacy-model".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+
+        assert_eq!(
+            effective.provider_source,
+            ProviderConfigSource::LegacyWorkspace
+        );
+        assert_eq!(
+            effective.config.effective_providers()[0].model,
+            "workspace-legacy-model"
+        );
+    }
+
+    #[test]
+    fn effective_config_user_legacy_overrides_system_provider() {
+        let mut system = DuumbiConfig::default();
+        system
+            .providers
+            .push(test_provider(ProviderKind::Anthropic, "system-model"));
+        let user = DuumbiConfig {
+            llm: Some(LlmConfig {
+                provider: LlmProvider::Anthropic,
+                model: "user-legacy-model".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(system, user, DuumbiConfig::default());
+
+        assert_eq!(effective.provider_source, ProviderConfigSource::LegacyUser);
+        assert_eq!(
+            effective.config.effective_providers()[0].model,
+            "user-legacy-model"
+        );
     }
 
     #[test]

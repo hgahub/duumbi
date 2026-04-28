@@ -72,6 +72,7 @@ pub async fn run(workspace_root: PathBuf, effective_config: EffectiveConfig) -> 
 
     let mut app = ReplApp::new_with_config_layers(
         config,
+        effective_config.system_config,
         effective_config.user_config,
         effective_config.workspace_config,
         effective_config.provider_source,
@@ -460,15 +461,26 @@ async fn handle_slash(
                 match init_result {
                     Ok(()) => {
                         app.has_workspace = true;
-                        let effective = crate::config::load_effective_config(&app.workspace_root);
-                        app.config = effective.config;
-                        app.user_config = effective.user_config;
-                        app.workspace_config = effective.workspace_config;
-                        app.provider_config_source = effective.provider_source;
-                        app.client = build_client(&app.config);
-                        app.session_mgr = SessionManager::load_or_create(&app.workspace_root).ok();
-                        app.show_tip = true;
-                        app.push_output("Workspace initialised.", OutputStyle::Success);
+                        match crate::config::load_effective_config(&app.workspace_root) {
+                            Ok(effective) => {
+                                app.config = effective.config;
+                                app.system_config = effective.system_config;
+                                app.user_config = effective.user_config;
+                                app.workspace_config = effective.workspace_config;
+                                app.provider_config_source = effective.provider_source;
+                                app.client = build_client(&app.config);
+                                app.session_mgr =
+                                    SessionManager::load_or_create(&app.workspace_root).ok();
+                                app.show_tip = true;
+                                app.push_output("Workspace initialised.", OutputStyle::Success);
+                            }
+                            Err(e) => {
+                                app.push_output(
+                                    format!("Workspace initialised, but config reload failed: {e}"),
+                                    OutputStyle::Error,
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
