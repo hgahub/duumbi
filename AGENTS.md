@@ -76,6 +76,15 @@ cargo fmt --check                    # Format check
   lockfile v1 with integrity hashes, vendor layer for offline builds
 - Dependency resolution: workspace → vendor → cache → registry (E011 if not found)
 
+## Provider and model UX
+- Prefer provider setup flows that collect credentials and verify access; do not
+  ask users to choose or maintain a default model unless the task explicitly
+  concerns backward compatibility or low-level config editing.
+- Keep model choice internal to the model catalog, routing inputs, or performance
+  knowledge. When changing provider behavior, update CLI, REPL/TUI, Studio, config
+  examples, tests, and docs together so `/provider` remains the user-facing entry
+  point and `/model` stays compatibility-only.
+
 ## CLI commands (Phase 7 + 12)
 - `duumbi mcp` — start the MCP server (JSON-RPC over stdio, 10 tools)
 - `duumbi search <query>` — search modules in configured registries
