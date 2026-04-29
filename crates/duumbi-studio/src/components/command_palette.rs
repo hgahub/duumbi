@@ -66,7 +66,7 @@ pub fn CommandPalette() -> impl IntoView {
                             </svg>
                             <span>"Toggle Theme"</span>
                         </div>
-                        <div class="cmd-item" data-filter="provider settings llm model">
+                        <div class="cmd-item" data-filter="provider settings llm">
                             <svg viewBox="0 0 14 14">
                                 <circle cx="7" cy="7" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/>
                                 <path d="M7 1v2M7 11v2M1 7h2M11 7h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>

@@ -1039,8 +1039,6 @@ pub fn edge_label_pair(edge: &duumbi::graph::GraphEdge) -> (&'static str, &'stat
 pub struct ProviderInfo {
     /// Provider kind (e.g., "Anthropic", "OpenAI").
     pub kind: String,
-    /// Model name.
-    pub model: String,
     /// Role: "Primary" or "Fallback".
     pub role: String,
 }
@@ -1059,7 +1057,6 @@ pub async fn get_provider_list() -> Result<Vec<ProviderInfo>, ServerFnError> {
         .iter()
         .map(|p| ProviderInfo {
             kind: format!("{:?}", p.provider),
-            model: p.model.clone(),
             role: format!("{:?}", p.role),
         })
         .collect())
@@ -1103,7 +1100,7 @@ pub async fn execute_intent(slug: String) -> Result<String, ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
 
     let providers = config.effective_providers();
-    let client = duumbi::agents::factory::create_provider_chain(&providers)
+    let client = duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
     let mut log = Vec::new();
@@ -1132,7 +1129,7 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
 
     let providers = config.effective_providers();
-    let client = duumbi::agents::factory::create_provider_chain(&providers)
+    let client = duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
     // Studio always auto-confirms (no interactive prompt).
@@ -1190,10 +1187,7 @@ pub async fn get_agent_templates() -> Result<Vec<AgentTemplateInfo>, ServerFnErr
 
 /// Tests an LLM provider connection by sending a minimal prompt.
 #[server]
-pub async fn test_provider_connection(
-    kind: String,
-    model: String,
-) -> Result<String, ServerFnError> {
+pub async fn test_provider_connection(kind: String) -> Result<String, ServerFnError> {
     let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ctx.read().await;
 
@@ -1203,10 +1197,10 @@ pub async fn test_provider_connection(
     let providers = config.effective_providers();
     let provider = providers
         .iter()
-        .find(|p| p.provider.to_string() == kind && p.model == model)
-        .ok_or_else(|| ServerFnError::new(format!("Provider {kind}/{model} not found")))?;
+        .find(|p| p.provider.to_string() == kind)
+        .ok_or_else(|| ServerFnError::new(format!("Provider {kind} not found")))?;
 
-    let client = duumbi::agents::factory::create_provider(provider)
+    let client = duumbi::agents::factory::create_provider_for_global_access(provider)
         .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
 
     // Send a minimal test prompt using the tools API with empty tool list.

@@ -331,9 +331,9 @@ pub(crate) async fn call_plain_completion(
         .expect("invariant: mutex not poisoned");
     if text.is_empty() {
         anyhow::bail!(
-            "The model did not generate an intent spec.\n\
-             This usually means the model is too small or does not support structured output.\n\
-             Try a more capable model (e.g. claude-sonnet-4-6, gpt-4o) in .duumbi/config.toml."
+            "The selected model did not generate an intent spec.\n\
+             This usually means the active provider could not satisfy structured output for this task.\n\
+             Configure another supported provider or retry when provider health improves."
         );
     }
     Ok(text)

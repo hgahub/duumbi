@@ -121,7 +121,6 @@ Add hozza a fajl vegehez:
 [[providers]]
 provider = "Anthropic"
 role = "Primary"
-model = "MiniMax-M2.7"
 api_key_env = "MINIMAX_API_KEY"
 ```
 

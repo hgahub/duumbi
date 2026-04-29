@@ -96,11 +96,10 @@ fn provider_auth_mode_by_index(
 fn provider_setup_mode(kind: crate::config::ProviderKind) -> PanelInputMode {
     let modes = provider_auth_modes(&kind);
     if modes.len() == 1 {
-        PanelInputMode::AddStep2Model {
+        PanelInputMode::AddStep3Key {
             provider: kind,
+            key_buf: String::new(),
             is_subscription: modes[0].is_subscription(),
-            selected: 0,
-            manual_input: None,
         }
     } else {
         PanelInputMode::AddStepAuthType {
@@ -119,37 +118,6 @@ fn provider_kind_label(kind: &crate::config::ProviderKind) -> &'static str {
         ProviderKind::Grok => "grok",
         ProviderKind::OpenRouter => "openrouter",
         ProviderKind::MiniMax => "minimax",
-    }
-}
-
-/// Returns recommended models for a given provider kind.
-fn recommended_models(kind: &crate::config::ProviderKind) -> Vec<(&'static str, &'static str)> {
-    use crate::config::ProviderKind;
-    match kind {
-        ProviderKind::Anthropic => vec![
-            ("claude-sonnet-4-6", "Recommended — fast, capable"),
-            ("claude-opus-4-6", "Most capable, slower"),
-            ("claude-haiku-4-5", "Fastest, most affordable"),
-        ],
-        ProviderKind::OpenAI => vec![
-            ("gpt-4o", "Recommended — fast, capable"),
-            ("gpt-4o-mini", "Fastest, most affordable"),
-            ("o3", "Most capable reasoning model"),
-        ],
-        ProviderKind::Grok => vec![
-            ("grok-3", "Recommended — full capability"),
-            ("grok-3-mini", "Fast, lightweight"),
-        ],
-        ProviderKind::OpenRouter => vec![
-            ("anthropic/claude-sonnet-4-6", "Anthropic via OpenRouter"),
-            ("google/gemini-2.5-pro", "Google Gemini via OpenRouter"),
-            ("openai/gpt-4o", "OpenAI via OpenRouter"),
-        ],
-        ProviderKind::MiniMax => vec![
-            ("MiniMax-M2.7", "Latest flagship model"),
-            ("MiniMax-M2.5", "Best for coding (SWE-Bench 80.2%)"),
-            ("MiniMax-Text-01", "456B params, 4M context"),
-        ],
     }
 }
 
@@ -356,33 +324,116 @@ fn masked_secret_preview(char_count: usize, max_width: usize) -> String {
     format!("{}{}", ".".repeat(dot_count), "\u{2588}")
 }
 
+const PROVIDER_TESTING_STATUS_PREFIX: &str = "Testing provider connection";
+
+fn provider_status_needs_animation(msg: &str) -> bool {
+    msg.starts_with(PROVIDER_TESTING_STATUS_PREFIX)
+}
+
+fn animated_provider_status_message(msg: &str) -> String {
+    if !provider_status_needs_animation(msg) {
+        return msg.to_string();
+    }
+
+    let dots = (ReplApp::animation_now_ms() / 360 % 4) as usize;
+    format!("{PROVIDER_TESTING_STATUS_PREFIX}{:<3}", ".".repeat(dots))
+}
+
 pub(crate) async fn probe_provider_config_with_key(
     config: crate::config::ProviderConfig,
     key: String,
     is_subscription: bool,
-) -> Result<(), String> {
+) -> Result<crate::agents::model_access::ProviderProbeReport, String> {
     #[cfg(test)]
     if let Some(url) = config.base_url.as_deref() {
         match url {
-            "duumbi-test://ok" => return Ok(()),
+            "duumbi-test://ok" => {
+                return Ok(test_probe_report(
+                    config.provider,
+                    crate::agents::model_access::ModelAccessStatus::Accessible,
+                ));
+            }
             "duumbi-test://unauthorized" => {
                 return Err("Invalid API key.".to_string());
+            }
+            "duumbi-test://minimax-denied-highspeed" => {
+                return Ok(test_minimax_probe_report_with_denied_highspeed());
+            }
+            "duumbi-test://all-denied" => {
+                let report = test_probe_report(
+                    config.provider,
+                    crate::agents::model_access::ModelAccessStatus::Denied,
+                );
+                return Err(no_accessible_models_message(&report));
             }
             _ => {}
         }
     }
 
+    let mut results = Vec::new();
+    let models: Vec<_> = crate::agents::model_catalog::catalog()
+        .iter()
+        .filter(|entry| entry.provider == config.provider)
+        .collect();
+
+    for entry in models {
+        let resolved = crate::config::ResolvedProviderConfig {
+            provider: config.provider.clone(),
+            model: entry.model.to_string(),
+            api_key_env: config.api_key_env.clone(),
+            base_url: config.base_url.clone(),
+            timeout_secs: config.timeout_secs,
+            auth_token_env: config.auth_token_env.clone(),
+        };
+        let result = probe_single_model(&resolved, key.clone(), is_subscription).await;
+        if result.status == crate::agents::model_access::ModelAccessStatus::AuthFailed {
+            return Err("Invalid API key.".to_string());
+        }
+        results.push(result);
+    }
+
+    let report = crate::agents::model_access::ProviderProbeReport {
+        provider: config.provider,
+        results,
+    };
+    if report.accessible_count() == 0 {
+        return Err(no_accessible_models_message(&report));
+    }
+    Ok(report)
+}
+
+async fn probe_single_model(
+    config: &crate::config::ResolvedProviderConfig,
+    key: String,
+    is_subscription: bool,
+) -> crate::agents::model_access::ModelAccessProbeResult {
     let provider =
-        crate::agents::factory::create_provider_with_api_key(&config, key, is_subscription)
-            .map_err(|e| format_provider_probe_error(&e))?;
+        match crate::agents::factory::create_provider_with_api_key(config, key, is_subscription) {
+            Ok(provider) => provider,
+            Err(e) => return model_probe_result_from_error(&config.provider, &config.model, &e),
+        };
     let probe = provider.call_with_tools(
         "You are validating DUUMBI provider credentials. Return no graph changes.",
         "Reply with no tool calls. This request only validates the configured API key.",
     );
     match tokio::time::timeout(std::time::Duration::from_secs(15), probe).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(format_provider_probe_error(&e)),
-        Err(_) => Err("Provider connection test timed out.".to_string()),
+        Ok(Ok(_)) | Ok(Err(crate::agents::AgentError::NoToolCalls)) => {
+            crate::agents::model_access::ModelAccessProbeResult::new(
+                &config.provider,
+                &config.model,
+                crate::agents::model_access::ModelAccessStatus::Accessible,
+                None,
+                None,
+            )
+        }
+        Ok(Err(e)) => model_probe_result_from_error(&config.provider, &config.model, &e),
+        Err(_) => crate::agents::model_access::ModelAccessProbeResult::new(
+            &config.provider,
+            &config.model,
+            crate::agents::model_access::ModelAccessStatus::Unknown,
+            Some("timeout".to_string()),
+            Some("Provider connection test timed out.".to_string()),
+        ),
     }
 }
 
@@ -398,6 +449,162 @@ fn format_provider_probe_error(error: &crate::agents::AgentError) -> String {
         }
         other => format!("Provider connection test failed: {other}"),
     }
+}
+
+fn model_probe_result_from_error(
+    provider: &crate::config::ProviderKind,
+    model: &str,
+    error: &crate::agents::AgentError,
+) -> crate::agents::model_access::ModelAccessProbeResult {
+    use crate::agents::model_access::{ModelAccessProbeResult, ModelAccessStatus};
+
+    match error {
+        crate::agents::AgentError::ApiError { status, body } if matches!(*status, 401 | 403) => {
+            ModelAccessProbeResult::new(
+                provider,
+                model,
+                ModelAccessStatus::AuthFailed,
+                Some("auth_failed".to_string()),
+                Some(provider_api_error_message(body)),
+            )
+        }
+        crate::agents::AgentError::ApiError { status, body }
+            if model_denied_status(*status) && is_model_denied_error(body) =>
+        {
+            ModelAccessProbeResult::new(
+                provider,
+                model,
+                ModelAccessStatus::Denied,
+                Some("model_not_supported_by_plan".to_string()),
+                Some(provider_api_error_message(body)),
+            )
+        }
+        crate::agents::AgentError::ApiError { status, body }
+            if *status == 429 || *status >= 500 =>
+        {
+            ModelAccessProbeResult::new(
+                provider,
+                model,
+                ModelAccessStatus::Unknown,
+                Some("transient_provider_error".to_string()),
+                Some(provider_api_error_message(body)),
+            )
+        }
+        crate::agents::AgentError::Http(_)
+        | crate::agents::AgentError::Timeout(_)
+        | crate::agents::AgentError::RateLimited { .. } => ModelAccessProbeResult::new(
+            provider,
+            model,
+            ModelAccessStatus::Unknown,
+            Some("transient_provider_error".to_string()),
+            Some(format_provider_probe_error(error)),
+        ),
+        crate::agents::AgentError::Parse(_) => ModelAccessProbeResult::new(
+            provider,
+            model,
+            ModelAccessStatus::Unknown,
+            Some("parse_failure".to_string()),
+            Some(format_provider_probe_error(error)),
+        ),
+        crate::agents::AgentError::ApiError { body, .. } => ModelAccessProbeResult::new(
+            provider,
+            model,
+            ModelAccessStatus::Unknown,
+            Some("provider_error".to_string()),
+            Some(provider_api_error_message(body)),
+        ),
+        crate::agents::AgentError::NoToolCalls => {
+            ModelAccessProbeResult::new(provider, model, ModelAccessStatus::Accessible, None, None)
+        }
+        crate::agents::AgentError::ValidationFailed(_)
+        | crate::agents::AgentError::PatchFailed(_) => ModelAccessProbeResult::new(
+            provider,
+            model,
+            ModelAccessStatus::Unknown,
+            Some("duumbi_probe_failure".to_string()),
+            Some(format_provider_probe_error(error)),
+        ),
+    }
+}
+
+fn model_denied_status(status: u16) -> bool {
+    matches!(status, 400 | 404 | 422)
+}
+
+fn is_model_denied_error(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    lower.contains("2061")
+        || lower.contains("not support model")
+        || lower.contains("does not support model")
+        || lower.contains("model not supported")
+        || lower.contains("model_not_supported")
+        || lower.contains("not allowed")
+        || lower.contains("plan not support model")
+}
+
+fn no_accessible_models_message(
+    report: &crate::agents::model_access::ProviderProbeReport,
+) -> String {
+    if report
+        .results
+        .iter()
+        .any(|result| result.status == crate::agents::model_access::ModelAccessStatus::Unknown)
+    {
+        return format!(
+            "{} credential could not be fully verified; no Duumbi model was confirmed accessible.",
+            report.provider
+        );
+    }
+    format!(
+        "{} key is valid, but none of Duumbi's supported {} models are available for this subscription.",
+        report.provider, report.provider
+    )
+}
+
+#[cfg(test)]
+fn test_probe_report(
+    provider: crate::config::ProviderKind,
+    status: crate::agents::model_access::ModelAccessStatus,
+) -> crate::agents::model_access::ProviderProbeReport {
+    let results = crate::agents::model_catalog::catalog()
+        .iter()
+        .filter(|entry| entry.provider == provider)
+        .map(|entry| {
+            crate::agents::model_access::ModelAccessProbeResult::new(
+                &provider,
+                entry.model,
+                status,
+                None,
+                None,
+            )
+        })
+        .collect();
+    crate::agents::model_access::ProviderProbeReport { provider, results }
+}
+
+#[cfg(test)]
+fn test_minimax_probe_report_with_denied_highspeed()
+-> crate::agents::model_access::ProviderProbeReport {
+    let provider = crate::config::ProviderKind::MiniMax;
+    let results = crate::agents::model_catalog::catalog()
+        .iter()
+        .filter(|entry| entry.provider == provider)
+        .map(|entry| {
+            let denied = entry.model.ends_with("-highspeed");
+            crate::agents::model_access::ModelAccessProbeResult::new(
+                &provider,
+                entry.model,
+                if denied {
+                    crate::agents::model_access::ModelAccessStatus::Denied
+                } else {
+                    crate::agents::model_access::ModelAccessStatus::Accessible
+                },
+                denied.then(|| "model_not_supported_by_plan".to_string()),
+                denied.then(|| "plan does not support model".to_string()),
+            )
+        })
+        .collect();
+    crate::agents::model_access::ProviderProbeReport { provider, results }
 }
 
 fn provider_api_error_message(body: &str) -> String {
@@ -635,6 +842,22 @@ impl ReplApp {
         false
     }
 
+    /// Returns `true` when any currently visible widget needs timed redraws.
+    #[must_use]
+    pub fn needs_animation(&self) -> bool {
+        if self.working || self.mode_dot_animated() {
+            return true;
+        }
+        if let PanelState::ProviderManager {
+            status_msg: Some((msg, _)),
+            ..
+        } = &self.panel
+        {
+            return provider_status_needs_animation(msg);
+        }
+        false
+    }
+
     // -----------------------------------------------------------------------
     // Key handling
     // -----------------------------------------------------------------------
@@ -808,13 +1031,6 @@ impl ReplApp {
         };
 
         match input_mode {
-            Some(PanelInputMode::AddStep2Model {
-                manual_input: Some(manual),
-                ..
-            }) => {
-                append_single_line_input(manual, text);
-                true
-            }
             Some(PanelInputMode::AddStep3Key { key_buf, .. }) => {
                 append_single_line_input(key_buf, text);
                 true
@@ -954,88 +1170,22 @@ impl ReplApp {
                     }
                     KeyCode::Enter => {
                         if let Some(auth_mode) = provider_auth_mode_by_index(provider, *auth_sel) {
-                            input_mode = Some(PanelInputMode::AddStep2Model {
+                            input_mode = Some(PanelInputMode::AddStep3Key {
                                 provider: provider.clone(),
+                                key_buf: String::new(),
                                 is_subscription: auth_mode.is_subscription(),
-                                selected: 0,
-                                manual_input: None,
                             });
                         }
                     }
                     _ => {}
                 },
-                PanelInputMode::AddStep2Model {
-                    provider,
-                    is_subscription,
-                    selected: model_sel,
-                    manual_input,
-                } => {
-                    if let Some(manual) = manual_input {
-                        // Manual input mode
-                        match key_event.code {
-                            KeyCode::Esc => {
-                                *manual_input = None;
-                            }
-                            KeyCode::Backspace => {
-                                manual.pop();
-                            }
-                            KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
-                                manual.push(c);
-                            }
-                            code if is_submit_key(&code) && !manual.is_empty() => {
-                                let model = manual.clone();
-                                input_mode = Some(PanelInputMode::AddStep3Key {
-                                    provider: provider.clone(),
-                                    model,
-                                    key_buf: String::new(),
-                                    is_subscription: *is_subscription,
-                                });
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        // List selection mode
-                        let models = recommended_models(provider);
-                        match key_event.code {
-                            KeyCode::Esc => {
-                                input_mode = None;
-                            }
-                            KeyCode::Up if *model_sel > 0 => {
-                                *model_sel -= 1;
-                            }
-                            KeyCode::Down if *model_sel < models.len().saturating_sub(1) => {
-                                *model_sel += 1;
-                            }
-                            KeyCode::Char('m') | KeyCode::Char('M') => {
-                                *manual_input = Some(String::new());
-                            }
-                            code if is_submit_key(&code) => {
-                                if let Some((model_name, _)) = models.get(*model_sel) {
-                                    input_mode = Some(PanelInputMode::AddStep3Key {
-                                        provider: provider.clone(),
-                                        model: (*model_name).to_string(),
-                                        key_buf: String::new(),
-                                        is_subscription: *is_subscription,
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
                 PanelInputMode::AddStep3Key {
                     provider,
-                    model,
                     key_buf,
                     is_subscription,
                 } => match key_event.code {
                     KeyCode::Esc => {
-                        input_mode = Some(PanelInputMode::AddStep2Model {
-                            provider: provider.clone(),
-                            is_subscription: *is_subscription,
-                            selected: 0,
-                            manual_input: None,
-                        });
+                        input_mode = None;
                     }
                     KeyCode::Backspace => {
                         key_buf.pop();
@@ -1103,7 +1253,6 @@ impl ReplApp {
                         ));
                         action = Action::ProviderKeySubmitted {
                             provider: provider.clone(),
-                            model: model.clone(),
                             key: key_buf.clone(),
                             is_subscription: *is_subscription,
                         };
@@ -1203,28 +1352,23 @@ impl ReplApp {
 
     /// Inserts or replaces one provider-kind connection while preserving fallback priority.
     fn upsert_provider_connection(&mut self, provider: crate::config::ProviderConfig) {
-        let target =
-            if configured_provider_index(&self.workspace_config, &provider.provider).is_some() {
-                &mut self.workspace_config
-            } else {
-                &mut self.user_config
-            };
-        Self::upsert_provider_in_config(target, provider);
+        Self::upsert_provider_in_config(&mut self.user_config, provider);
         self.refresh_effective_config();
     }
 
     /// Removes a provider connection and its file-stored credential, when present.
     fn remove_provider_connection(&mut self, kind: &crate::config::ProviderKind) -> bool {
-        let removed = if let Some(index) = configured_provider_index(&self.workspace_config, kind) {
-            Some(self.workspace_config.providers.remove(index))
-        } else if let Some(index) = configured_provider_index(&self.user_config, kind) {
+        let removed = if let Some(index) = configured_provider_index(&self.user_config, kind) {
             Some(self.user_config.providers.remove(index))
+        } else if let Some(index) = configured_provider_index(&self.workspace_config, kind) {
+            Some(self.workspace_config.providers.remove(index))
         } else {
             None
         };
         let Some(removed) = removed else {
             return false;
         };
+        let _ = crate::agents::model_access::ModelAccessStore::remove_provider(&removed.provider);
         if matches!(removed.key_storage, Some(crate::config::KeyStorage::File)) {
             let _ = super::keystore::delete_api_key(&removed.api_key_env);
             if let Some(token_env) = removed.auth_token_env {
@@ -1240,16 +1384,15 @@ impl ReplApp {
     pub(crate) fn provider_config_for_key_submission(
         &self,
         provider: crate::config::ProviderKind,
-        model: String,
         is_subscription: bool,
         key_storage: Option<crate::config::KeyStorage>,
     ) -> crate::config::ProviderConfig {
         let existing = self
-            .workspace_config
+            .user_config
             .providers
             .iter()
-            .chain(self.user_config.providers.iter())
             .chain(self.config.providers.iter())
+            .chain(self.workspace_config.providers.iter())
             .find(|candidate| candidate.provider == provider);
         let api_key_env = existing
             .map(|provider| provider.api_key_env.clone())
@@ -1268,7 +1411,7 @@ impl ReplApp {
             role: existing
                 .map(|provider| provider.role.clone())
                 .unwrap_or(crate::config::ProviderRole::Primary),
-            model,
+            model: None,
             api_key_env,
             base_url: existing.and_then(|provider| provider.base_url.clone()),
             timeout_secs: existing.and_then(|provider| provider.timeout_secs),
@@ -1277,15 +1420,14 @@ impl ReplApp {
         }
     }
 
-    pub(crate) async fn probe_provider_key(
+    #[cfg(test)]
+    async fn probe_provider_key(
         &self,
         provider: crate::config::ProviderKind,
-        model: String,
         key: String,
         is_subscription: bool,
-    ) -> Result<(), String> {
-        let config =
-            self.provider_config_for_key_submission(provider, model, is_subscription, None);
+    ) -> Result<crate::agents::model_access::ProviderProbeReport, String> {
+        let config = self.provider_config_for_key_submission(provider, is_subscription, None);
         probe_provider_config_with_key(config, key, is_subscription).await
     }
 
@@ -1298,17 +1440,27 @@ impl ReplApp {
     pub(crate) fn save_tested_provider_key(
         &mut self,
         provider: crate::config::ProviderKind,
-        model: String,
         key: String,
         is_subscription: bool,
+        probe_report: crate::agents::model_access::ProviderProbeReport,
     ) -> Result<(), String> {
-        self.save_provider_with_file_credential(provider.clone(), model, key, is_subscription)?;
+        let credential_fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(
+            &provider,
+            &key,
+            is_subscription,
+        );
+        self.save_provider_with_file_credential(provider.clone(), key, is_subscription)?;
+        crate::agents::model_access::ModelAccessStore::record_report(
+            &credential_fingerprint,
+            &probe_report,
+        )
+        .map_err(|e| format!("Model access metadata save failed: {e}"))?;
         self.save_config_and_rebuild_client();
         let selected = provider_kind_index(&provider).unwrap_or(0);
         self.panel = PanelState::ProviderManager {
             selected,
             input_mode: None,
-            status_msg: None,
+            status_msg: Some((probe_report.success_message(), OutputStyle::Success)),
         };
         Ok(())
     }
@@ -1316,13 +1468,11 @@ impl ReplApp {
     pub(crate) fn save_provider_with_file_credential(
         &mut self,
         provider: crate::config::ProviderKind,
-        model: String,
         key: String,
         is_subscription: bool,
     ) -> Result<(), String> {
         let config = self.provider_config_for_key_submission(
             provider,
-            model,
             is_subscription,
             Some(crate::config::KeyStorage::File),
         );
@@ -1373,7 +1523,7 @@ impl ReplApp {
         self.client = if providers.is_empty() {
             None
         } else {
-            crate::agents::factory::create_provider_chain(&providers).ok()
+            crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
         };
         self.keychain_cache = Self::build_keychain_cache(&self.config);
     }
@@ -1417,14 +1567,14 @@ impl ReplApp {
     }
 
     fn provider_config_source_label(&self, kind: &crate::config::ProviderKind) -> &'static str {
-        if configured_provider_index(&self.workspace_config, kind).is_some() {
-            "workspace"
-        } else if configured_provider_index(&self.user_config, kind).is_some() {
+        if configured_provider_index(&self.user_config, kind).is_some() {
             "user"
+        } else if configured_provider_index(&self.workspace_config, kind).is_some() {
+            "workspace"
         } else {
             match self.provider_config_source {
-                ProviderConfigSource::LegacyWorkspace => "workspace",
                 ProviderConfigSource::LegacyUser => "user",
+                ProviderConfigSource::LegacyWorkspace => "workspace",
                 ProviderConfigSource::System | ProviderConfigSource::LegacySystem => "system",
                 _ => "missing",
             }
@@ -2188,18 +2338,6 @@ impl ReplApp {
             }
             PanelState::ProviderManager { input_mode, .. } => Some(match input_mode {
                 Some(PanelInputMode::ConfirmDelete) => (PROVIDER_KINDS.len() as u16) + 11,
-                Some(PanelInputMode::AddStep2Model {
-                    provider,
-                    manual_input,
-                    ..
-                }) => {
-                    if manual_input.is_some() {
-                        5
-                    } else {
-                        let models = recommended_models(provider);
-                        (models.len() as u16) + 6
-                    }
-                }
                 Some(PanelInputMode::AddStepAuthType { provider, .. }) => {
                     provider_auth_modes(provider).len() as u16 + 6
                 }
@@ -3216,58 +3354,6 @@ impl ReplApp {
                     theme::out_dim(),
                 )));
             }
-            Some(PanelInputMode::AddStep2Model {
-                provider,
-                is_subscription,
-                selected: model_sel,
-                manual_input,
-            }) => {
-                lines.clear();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  Default Model for {provider}"),
-                        theme::brand_word(),
-                    ),
-                    Span::raw(" ".repeat(inner_width.saturating_sub(56))),
-                    Span::styled("(Esc to go back)", theme::out_dim()),
-                ]));
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  Auth: {}",
-                        if *is_subscription {
-                            "subscription"
-                        } else {
-                            "api key"
-                        }
-                    ),
-                    theme::out_dim(),
-                )));
-                lines.push(Line::from(""));
-                if let Some(manual) = manual_input {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Model: ", theme::out_help_cmd()),
-                        Span::styled(format!("{manual}\u{2588}"), theme::brand_word()),
-                    ]));
-                } else {
-                    let models = recommended_models(provider);
-                    for (i, (name, desc)) in models.iter().enumerate() {
-                        let is_sel = i == *model_sel;
-                        let prefix = if is_sel { "  \u{25cf} " } else { "    " };
-                        let text = format!("{prefix}{}. {:<30} {}", i + 1, name, desc);
-                        let style = if is_sel {
-                            theme::slash_selected()
-                        } else {
-                            theme::out_dim()
-                        };
-                        lines.push(Line::from(Span::styled(text, style)));
-                    }
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "  [M] Enter model name manually",
-                        theme::out_dim(),
-                    )));
-                }
-            }
             Some(PanelInputMode::AddStep3Key {
                 provider,
                 key_buf,
@@ -3302,6 +3388,7 @@ impl ReplApp {
                         OutputStyle::Error => theme::out_error(),
                         _ => theme::out_dim(),
                     };
+                    let msg = animated_provider_status_message(msg);
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                 }
             }
@@ -3312,6 +3399,7 @@ impl ReplApp {
                         OutputStyle::Error => theme::out_error(),
                         _ => theme::out_dim(),
                     };
+                    let msg = animated_provider_status_message(msg);
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
                     lines.push(Line::from(""));
@@ -4121,11 +4209,11 @@ mod tests {
         if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
             assert!(matches!(
                 input_mode,
-                Some(PanelInputMode::AddStep2Model {
+                Some(PanelInputMode::AddStep3Key {
                     provider: crate::config::ProviderKind::OpenAI,
+                    key_buf,
                     is_subscription: false,
-                    ..
-                })
+                }) if key_buf.is_empty()
             ));
         } else {
             panic!("panel should remain ProviderManager");
@@ -4146,10 +4234,11 @@ mod tests {
             if let PanelState::ProviderManager { input_mode, .. } = &app.panel {
                 assert!(matches!(
                     input_mode,
-                    Some(PanelInputMode::AddStep2Model {
+                    Some(PanelInputMode::AddStep3Key {
+                        key_buf,
                         is_subscription: false,
                         ..
-                    })
+                    }) if key_buf.is_empty()
                 ));
             } else {
                 panic!("panel should remain ProviderManager");
@@ -4158,16 +4247,11 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_model_enter_opens_api_key_input() {
+    fn provider_panel_enter_opens_api_key_input() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 4,
-            input_mode: Some(PanelInputMode::AddStep2Model {
-                provider: crate::config::ProviderKind::MiniMax,
-                is_subscription: false,
-                selected: 0,
-                manual_input: None,
-            }),
+            input_mode: None,
             status_msg: None,
         };
 
@@ -4179,10 +4263,9 @@ mod tests {
                 input_mode,
                 Some(PanelInputMode::AddStep3Key {
                     provider: crate::config::ProviderKind::MiniMax,
-                    model,
                     key_buf,
                     is_subscription: false,
-                }) if model == "MiniMax-M2.7" && key_buf.is_empty()
+                }) if key_buf.is_empty()
             ));
         } else {
             panic!("panel should remain ProviderManager");
@@ -4197,7 +4280,7 @@ mod tests {
         app.upsert_provider_connection(crate::config::ProviderConfig {
             provider: crate::config::ProviderKind::MiniMax,
             role: crate::config::ProviderRole::Primary,
-            model: "MiniMax-M2.7".to_string(),
+            model: None,
             api_key_env: "MINIMAX_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -4221,7 +4304,7 @@ mod tests {
         config.providers.push(crate::config::ProviderConfig {
             provider: crate::config::ProviderKind::MiniMax,
             role: crate::config::ProviderRole::Fallback,
-            model: "fallback-model".to_string(),
+            model: Some("fallback-model".to_string()),
             api_key_env: "MINIMAX_FALLBACK_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -4231,7 +4314,7 @@ mod tests {
         config.providers.push(crate::config::ProviderConfig {
             provider: crate::config::ProviderKind::MiniMax,
             role: crate::config::ProviderRole::Primary,
-            model: "primary-model".to_string(),
+            model: Some("primary-model".to_string()),
             api_key_env: "MINIMAX_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -4243,18 +4326,21 @@ mod tests {
             .expect("provider should be found");
 
         assert_eq!(index, 1);
-        assert_eq!(config.providers[index].model, "primary-model");
+        assert_eq!(
+            config.providers[index].model.as_deref(),
+            Some("primary-model")
+        );
     }
 
     #[test]
-    fn provider_panel_workspace_provider_overrides_user_provider() {
+    fn provider_panel_user_provider_overrides_workspace_provider() {
         let (mut app, _) = make_app();
         app.user_config
             .providers
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::OpenAI,
                 role: crate::config::ProviderRole::Primary,
-                model: "gpt-4o-mini".to_string(),
+                model: None,
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4266,7 +4352,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::OpenAI,
                 role: crate::config::ProviderRole::Primary,
-                model: "gpt-4o".to_string(),
+                model: None,
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4276,11 +4362,11 @@ mod tests {
 
         app.refresh_effective_config();
 
-        assert_eq!(app.provider_config_source, ProviderConfigSource::Workspace);
-        assert_eq!(app.config.providers[0].model, "gpt-4o");
+        assert_eq!(app.provider_config_source, ProviderConfigSource::User);
+        assert!(app.config.providers[0].model.is_none());
         assert_eq!(
             app.provider_config_source_label(&crate::config::ProviderKind::OpenAI),
-            "workspace"
+            "user"
         );
     }
 
@@ -4292,7 +4378,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "system-model".to_string(),
+                model: None,
                 api_key_env: "MINIMAX_SYSTEM_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4303,7 +4389,7 @@ mod tests {
         app.refresh_effective_config();
 
         assert_eq!(app.provider_config_source, ProviderConfigSource::System);
-        assert_eq!(app.config.providers[0].model, "system-model");
+        assert!(app.config.providers[0].model.is_none());
     }
 
     #[test]
@@ -4318,7 +4404,6 @@ mod tests {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: "sk-test-key".to_string(),
                 is_subscription: false,
             }),
@@ -4332,10 +4417,9 @@ mod tests {
             action,
             Action::ProviderKeySubmitted {
                 provider: crate::config::ProviderKind::MiniMax,
-                model,
                 key,
                 is_subscription: false,
-            } if model == "MiniMax-M2.7" && key == "sk-test-key"
+            } if key == "sk-test-key"
         ));
 
         if let PanelState::ProviderManager {
@@ -4368,7 +4452,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "MiniMax-M2.7".to_string(),
+                model: None,
                 api_key_env: "MINIMAX_API_KEY".to_string(),
                 base_url: Some("duumbi-test://ok".to_string()),
                 timeout_secs: None,
@@ -4377,23 +4461,23 @@ mod tests {
             });
         app.refresh_effective_config();
 
-        app.probe_provider_key(
-            crate::config::ProviderKind::MiniMax,
-            "MiniMax-M2.7".to_string(),
-            "sk-test-key".to_string(),
-            false,
-        )
-        .await
-        .expect("probe should succeed");
+        let probe_report = app
+            .probe_provider_key(
+                crate::config::ProviderKind::MiniMax,
+                "sk-test-key".to_string(),
+                false,
+            )
+            .await
+            .expect("probe should succeed");
 
         let _guard = ENV_LOCK.lock().expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         app.save_tested_provider_key(
             crate::config::ProviderKind::MiniMax,
-            "MiniMax-M2.7".to_string(),
             "sk-test-key".to_string(),
             false,
+            probe_report,
         )
         .expect("save should succeed");
 
@@ -4401,7 +4485,7 @@ mod tests {
             app.panel,
             PanelState::ProviderManager {
                 input_mode: None,
-                status_msg: None,
+                status_msg: Some(_),
                 ..
             }
         ));
@@ -4417,6 +4501,81 @@ mod tests {
             .expect("invariant: credentials file should exist");
         assert!(credentials.contains("MINIMAX_API_KEY"));
         assert!(credentials.contains("sk-test-key"));
+        let fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(
+            &crate::config::ProviderKind::MiniMax,
+            "sk-test-key",
+            false,
+        );
+        let access = crate::agents::model_access::ModelAccessStore::accessible_models_from_home(
+            home.path(),
+            &crate::config::ProviderKind::MiniMax,
+            &fingerprint,
+        );
+        assert!(access.contains("MiniMax-M2.7"));
+        assert!(
+            !app.workspace_root
+                .join(".duumbi/knowledge/model-performance/model-access.json")
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_panel_probe_succeeds_when_some_models_are_denied() {
+        let (mut app, _) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: None,
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: Some("duumbi-test://minimax-denied-highspeed".to_string()),
+                timeout_secs: None,
+                key_storage: None,
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+
+        let probe_report = app
+            .probe_provider_key(
+                crate::config::ProviderKind::MiniMax,
+                "sk-test-key".to_string(),
+                false,
+            )
+            .await
+            .expect("probe should succeed when at least one model is accessible");
+        assert_eq!(probe_report.accessible_count(), 2);
+
+        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp home");
+        let _home_guard = HomeEnvGuard::set(home.path());
+        app.save_tested_provider_key(
+            crate::config::ProviderKind::MiniMax,
+            "sk-test-key".to_string(),
+            false,
+            probe_report,
+        )
+        .expect("save should succeed");
+
+        let fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(
+            &crate::config::ProviderKind::MiniMax,
+            "sk-test-key",
+            false,
+        );
+        let accessible = crate::agents::model_access::ModelAccessStore::accessible_models_from_home(
+            home.path(),
+            &crate::config::ProviderKind::MiniMax,
+            &fingerprint,
+        );
+        let denied = crate::agents::model_access::ModelAccessStore::denied_models_from_home(
+            home.path(),
+            &crate::config::ProviderKind::MiniMax,
+            &fingerprint,
+        );
+        assert!(accessible.contains("MiniMax-M2.7"));
+        assert!(accessible.contains("MiniMax-M2.5"));
+        assert!(denied.contains("MiniMax-M2.7-highspeed"));
+        assert!(denied.contains("MiniMax-M2.5-highspeed"));
     }
 
     #[test]
@@ -4431,7 +4590,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "MiniMax-M2.7".to_string(),
+                model: None,
                 api_key_env: "CUSTOM_MINIMAX_API_KEY".to_string(),
                 base_url: Some("duumbi-test://ok".to_string()),
                 timeout_secs: None,
@@ -4442,7 +4601,6 @@ mod tests {
 
         app.save_provider_with_file_credential(
             crate::config::ProviderKind::MiniMax,
-            "MiniMax-M2.7".to_string(),
             "sk-test-key".to_string(),
             false,
         )
@@ -4469,7 +4627,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "MiniMax-M2.7".to_string(),
+                model: None,
                 api_key_env: "MINIMAX_API_KEY".to_string(),
                 base_url: Some("duumbi-test://unauthorized".to_string()),
                 timeout_secs: None,
@@ -4481,7 +4639,6 @@ mod tests {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: "123".to_string(),
                 is_subscription: false,
             }),
@@ -4492,7 +4649,6 @@ mod tests {
         let action = app.handle_key(key, &mut textarea);
         let Action::ProviderKeySubmitted {
             provider,
-            model,
             key,
             is_subscription,
         } = action
@@ -4500,7 +4656,7 @@ mod tests {
             panic!("expected provider key action");
         };
         let error = app
-            .probe_provider_key(provider, model, key, is_subscription)
+            .probe_provider_key(provider, key, is_subscription)
             .await
             .expect_err("probe should fail");
         app.provider_key_test_failed(error);
@@ -4538,7 +4694,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "MiniMax-M2.7".to_string(),
+                model: None,
                 api_key_env: "MINIMAX_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4600,6 +4756,28 @@ mod tests {
     }
 
     #[test]
+    fn provider_panel_testing_status_drives_animation() {
+        let (mut app, textarea) = make_app();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::AddStep3Key {
+                provider: crate::config::ProviderKind::MiniMax,
+                key_buf: "sk-test-key".to_string(),
+                is_subscription: false,
+            }),
+            status_msg: Some((
+                "Testing provider connection...".to_string(),
+                OutputStyle::Dim,
+            )),
+        };
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(app.needs_animation());
+        assert!(rendered.contains("Testing provider connection"));
+    }
+
+    #[test]
     fn provider_panel_delete_confirmation_has_single_separator_rows() {
         let (mut app, textarea) = make_app();
         app.panel = PanelState::ProviderManager {
@@ -4631,7 +4809,6 @@ mod tests {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: String::new(),
                 is_subscription: false,
             }),
@@ -4694,7 +4871,6 @@ mod tests {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: "sk-test".to_string(),
                 is_subscription: false,
             }),
@@ -4724,13 +4900,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_probe_model_denial_requires_non_transient_status() {
+        let result = model_probe_result_from_error(
+            &crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7-highspeed",
+            &crate::agents::AgentError::ApiError {
+                status: 400,
+                body: "your current token plan not support model, MiniMax-M2.7-highspeed (2061)"
+                    .to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.status,
+            crate::agents::model_access::ModelAccessStatus::Denied
+        );
+    }
+
+    #[test]
+    fn provider_probe_transient_not_available_is_unknown() {
+        let result = model_probe_result_from_error(
+            &crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7",
+            &crate::agents::AgentError::ApiError {
+                status: 503,
+                body: "service not available".to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.status,
+            crate::agents::model_access::ModelAccessStatus::Unknown
+        );
+    }
+
+    #[test]
     fn provider_panel_api_key_newline_char_submits_probe_action() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: "sk-test-key".to_string(),
                 is_subscription: false,
             }),
@@ -4746,10 +4956,9 @@ mod tests {
             action,
             Action::ProviderKeySubmitted {
                 provider: crate::config::ProviderKind::MiniMax,
-                model,
                 key,
                 is_subscription: false,
-            } if model == "MiniMax-M2.7" && key == "sk-test-key"
+            } if key == "sk-test-key"
         ));
     }
 
@@ -4760,7 +4969,6 @@ mod tests {
             selected: 4,
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
-                model: "MiniMax-M2.7".to_string(),
                 key_buf: String::new(),
                 is_subscription: false,
             }),
@@ -4789,7 +4997,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::Anthropic,
                 role: crate::config::ProviderRole::Primary,
-                model: "claude-sonnet-4-6".to_string(),
+                model: None,
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4809,6 +5017,68 @@ mod tests {
     }
 
     #[test]
+    fn provider_panel_delete_removes_global_model_access_snapshot() {
+        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp home");
+        let _home_guard = HomeEnvGuard::set(home.path());
+        let fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(
+            &crate::config::ProviderKind::MiniMax,
+            "sk-test-key",
+            false,
+        );
+        let report = crate::agents::model_access::ProviderProbeReport {
+            provider: crate::config::ProviderKind::MiniMax,
+            results: vec![crate::agents::model_access::ModelAccessProbeResult::new(
+                &crate::config::ProviderKind::MiniMax,
+                "MiniMax-M2.7",
+                crate::agents::model_access::ModelAccessStatus::Accessible,
+                None,
+                None,
+            )],
+        };
+        crate::agents::model_access::ModelAccessStore::record_report(&fingerprint, &report)
+            .expect("model access must write");
+        let (mut app, mut textarea) = make_app();
+        app.user_config
+            .providers
+            .push(crate::config::ProviderConfig {
+                provider: crate::config::ProviderKind::MiniMax,
+                role: crate::config::ProviderRole::Primary,
+                model: None,
+                api_key_env: "MINIMAX_API_KEY".to_string(),
+                base_url: None,
+                timeout_secs: None,
+                key_storage: Some(crate::config::KeyStorage::File),
+                auth_token_env: None,
+            });
+        app.refresh_effective_config();
+        app.panel = PanelState::ProviderManager {
+            selected: 4,
+            input_mode: Some(PanelInputMode::ConfirmDelete),
+            status_msg: None,
+        };
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(
+            crate::agents::model_access::ModelAccessStore::accessible_models(
+                &crate::config::ProviderKind::MiniMax,
+                &fingerprint,
+            )
+            .is_empty()
+        );
+        let events = std::fs::read_to_string(
+            home.path()
+                .join(".duumbi/knowledge/model-access/events.jsonl"),
+        )
+        .expect("events must remain for audit");
+        assert_eq!(events.lines().count(), 1);
+    }
+
+    #[test]
     fn provider_panel_delete_does_not_remove_system_provider() {
         let (mut app, mut textarea) = make_app();
         app.system_config
@@ -4816,7 +5086,7 @@ mod tests {
             .push(crate::config::ProviderConfig {
                 provider: crate::config::ProviderKind::MiniMax,
                 role: crate::config::ProviderRole::Primary,
-                model: "MiniMax-M2.7".to_string(),
+                model: None,
                 api_key_env: "MINIMAX_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -4872,15 +5142,14 @@ mod tests {
     }
 
     #[test]
-    fn provider_panel_model_back_navigation_returns_to_main_list() {
+    fn provider_panel_key_back_navigation_returns_to_main_list() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
             selected: 0,
-            input_mode: Some(PanelInputMode::AddStep2Model {
+            input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::Anthropic,
+                key_buf: String::new(),
                 is_subscription: false,
-                selected: 0,
-                manual_input: None,
             }),
             status_msg: None,
         };

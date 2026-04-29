@@ -28,6 +28,15 @@ use super::mode::{OutputStyle, ReplMode};
 const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
+struct PendingProviderProbe {
+    provider: crate::config::ProviderKind,
+    key: String,
+    is_subscription: bool,
+    receiver: tokio::sync::oneshot::Receiver<
+        Result<crate::agents::model_access::ProviderProbeReport, String>,
+    >,
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -38,7 +47,7 @@ const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b
 /// state, and drives the event loop. On exit the session is archived.
 pub async fn run(workspace_root: PathBuf, effective_config: EffectiveConfig) -> Result<()> {
     let config = effective_config.config.clone();
-    let client = build_client(&config);
+    let client = build_client(&config, &workspace_root);
     let has_workspace = workspace_root.join(".duumbi").exists();
 
     // Initialise persistent session if workspace exists.
@@ -124,10 +133,47 @@ async fn event_loop(
     // Initial paint so the user sees the UI immediately.
     terminal.draw(|frame| app.render(frame, textarea))?;
     let mut last_draw = Instant::now();
+    let mut pending_provider_probe: Option<PendingProviderProbe> = None;
 
     loop {
-        let event_ready = event::poll(TICK)?;
         let mut should_redraw = false;
+        if let Some(pending) = pending_provider_probe.as_mut() {
+            match pending.receiver.try_recv() {
+                Ok(probe_result) => {
+                    let pending = pending_provider_probe
+                        .take()
+                        .expect("invariant: pending probe exists");
+                    app.working = false;
+                    match probe_result {
+                        Ok(probe_report) => {
+                            if let Err(e) = app.save_tested_provider_key(
+                                pending.provider,
+                                pending.key,
+                                pending.is_subscription,
+                                probe_report,
+                            ) {
+                                app.provider_key_test_failed(format!(
+                                    "Credential save failed: {e}"
+                                ));
+                            }
+                        }
+                        Err(e) => app.provider_key_test_failed(e),
+                    }
+                    should_redraw = true;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    pending_provider_probe = None;
+                    app.working = false;
+                    app.provider_key_test_failed(
+                        "Provider connection test was interrupted.".into(),
+                    );
+                    should_redraw = true;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
+
+        let event_ready = event::poll(TICK)?;
         if event_ready {
             match event::read()? {
                 Event::Key(key) => match app.handle_key(key, textarea) {
@@ -158,35 +204,35 @@ async fn event_loop(
                     }
                     super::mode::Action::ProviderKeySubmitted {
                         provider,
-                        model,
                         key,
                         is_subscription,
                     } => {
-                        terminal.draw(|frame| app.render(frame, textarea))?;
-                        last_draw = Instant::now();
-
-                        match app
-                            .probe_provider_key(
+                        if pending_provider_probe.is_none() {
+                            let config = app.provider_config_for_key_submission(
                                 provider.clone(),
-                                model.clone(),
-                                key.clone(),
                                 is_subscription,
-                            )
-                            .await
-                        {
-                            Ok(()) => {
-                                if let Err(e) = app.save_tested_provider_key(
-                                    provider,
-                                    model,
-                                    key,
+                                None,
+                            );
+                            let probe_key = key.clone();
+                            let (sender, receiver) = tokio::sync::oneshot::channel();
+                            tokio::spawn(async move {
+                                let result = super::app::probe_provider_config_with_key(
+                                    config,
+                                    probe_key,
                                     is_subscription,
-                                ) {
-                                    app.provider_key_test_failed(format!(
-                                        "Credential save failed: {e}"
-                                    ));
-                                }
-                            }
-                            Err(e) => app.provider_key_test_failed(e),
+                                )
+                                .await;
+                                let _ = sender.send(result);
+                            });
+                            pending_provider_probe = Some(PendingProviderProbe {
+                                provider,
+                                key,
+                                is_subscription,
+                                receiver,
+                            });
+                            app.working = true;
+                            terminal.draw(|frame| app.render(frame, textarea))?;
+                            last_draw = Instant::now();
                         }
                         should_redraw = true;
                     }
@@ -204,7 +250,7 @@ async fn event_loop(
             }
         }
 
-        let needs_anim = app.working || app.mode_dot_animated();
+        let needs_anim = app.needs_animation();
         if should_redraw || (needs_anim && last_draw.elapsed() >= TICK) {
             terminal.draw(|frame| app.render(frame, textarea))?;
             last_draw = Instant::now();
@@ -358,20 +404,6 @@ async fn handle_slash(
             print_status_to_buffer(app);
         }
 
-        "/model" => {
-            app.push_output("Use /provider to manage LLM connections.", OutputStyle::Dim);
-            app.panel = super::mode::PanelState::ProviderManager {
-                selected: 0,
-                input_mode: None,
-                status_msg: Some((
-                    "/model is a compatibility alias for /provider.".to_string(),
-                    OutputStyle::Dim,
-                )),
-            };
-            textarea.move_cursor(ratatui_textarea::CursorMove::Head);
-            textarea.delete_line_by_end();
-        }
-
         "/history" => {
             if app.history.is_empty() {
                 app.push_output("No session history yet.", OutputStyle::Dim);
@@ -468,7 +500,7 @@ async fn handle_slash(
                                 app.user_config = effective.user_config;
                                 app.workspace_config = effective.workspace_config;
                                 app.provider_config_source = effective.provider_source;
-                                app.client = build_client(&app.config);
+                                app.client = build_client(&app.config, &app.workspace_root);
                                 app.session_mgr =
                                     SessionManager::load_or_create(&app.workspace_root).ok();
                                 app.show_tip = true;
@@ -601,7 +633,6 @@ async fn handle_ai_request(
         app.push_output("  [[providers]]", OutputStyle::Dim);
         app.push_output("  provider = \"anthropic\"", OutputStyle::Dim);
         app.push_output("  role = \"primary\"", OutputStyle::Dim);
-        app.push_output("  model = \"claude-sonnet-4-6\"", OutputStyle::Dim);
         app.push_output("  api_key_env = \"ANTHROPIC_API_KEY\"", OutputStyle::Dim);
         app.push_output(
             "Then set ANTHROPIC_API_KEY and restart the REPL.",
@@ -1589,13 +1620,16 @@ fn print_status_to_buffer(app: &mut ReplApp) {
         format!("  Session turns: {session_turns}"),
         OutputStyle::Normal,
     );
-    if let Some(llm) = &app.config.llm {
-        app.push_output(
-            format!("  Model:        {} ({})", llm.model, llm.provider),
-            OutputStyle::Normal,
-        );
+    let providers = app.config.effective_providers();
+    if providers.is_empty() {
+        app.push_output("  Providers:    not configured", OutputStyle::Error);
     } else {
-        app.push_output("  Model:        not configured", OutputStyle::Error);
+        let labels = providers
+            .iter()
+            .map(|provider| provider.provider.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        app.push_output(format!("  Providers:    {labels}"), OutputStyle::Normal);
     }
 }
 
@@ -1627,7 +1661,7 @@ fn print_help_to_buffer(app: &mut ReplApp) {
 
 /// Builds an [`LlmClient`] from the workspace config, or returns `None` with
 /// a warning if the provider is not configured or the API key is missing.
-fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
+fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<LlmClient> {
     let providers = config.effective_providers();
     if providers.is_empty() {
         return None;
@@ -1656,7 +1690,7 @@ fn build_client(config: &DuumbiConfig) -> Option<LlmClient> {
         }
     }
 
-    match crate::agents::factory::create_provider_chain(&providers) {
+    match crate::agents::factory::create_provider_chain_for_global_access(&providers) {
         Ok(client) => Some(client),
         Err(e) => {
             eprintln!("Warning: LLM provider not available ({e}). AI mutations disabled.");

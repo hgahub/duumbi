@@ -489,13 +489,12 @@ fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) -> Resul
         cli::ProviderSubcommand::List => cli::provider::list_providers(&cfg),
         cli::ProviderSubcommand::Add {
             provider_type,
-            model,
             api_key_env,
             role,
             base_url,
             auth_token_env,
         } => {
-            let mut args = format!("{provider_type} {model} {api_key_env}");
+            let mut args = format!("{provider_type} {api_key_env}");
             if role != "primary" {
                 args.push_str(&format!(" --role {role}"));
             }
@@ -568,7 +567,7 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
         );
     }
 
-    agents::factory::create_provider_chain(&providers)
+    agents::factory::create_provider_chain_for_global_access(&providers)
         .map_err(|e| anyhow::anyhow!("Failed to create LLM provider: {e}"))
 }
 

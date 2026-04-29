@@ -1,8 +1,7 @@
 //! Chat panel — Phase 15 redesign.
 //!
 //! Textarea-based chat connected to WebSocket for streaming LLM responses.
-//! Model selector reads from configured providers. Streaming chunks
-//! append to the current assistant message in real-time via JS.
+//! Streaming chunks append to the current assistant message in real-time via JS.
 
 use leptos::prelude::*;
 
@@ -10,8 +9,7 @@ use crate::state::{ChatMessage, ChatRole, StudioState};
 
 /// Chat panel component for the Graph panel split view.
 ///
-/// Contains a scrollable message list, a model selector dropdown,
-/// and a textarea input. The actual WebSocket connection is managed
+/// Contains a scrollable message list and a textarea input. The actual WebSocket connection is managed
 /// by `studio.js` (StudioWS module) — this component provides the DOM
 /// structure that JS populates with streaming chunks.
 #[component]
@@ -58,7 +56,7 @@ pub fn ChatPanel() -> impl IntoView {
     };
 
     view! {
-        // Chat header with model selector
+        // Chat header
         <div class="chat-panel-header">
             <div class="chat-panel-title">
                 <svg viewBox="0 0 14 14">
@@ -83,24 +81,6 @@ pub fn ChatPanel() -> impl IntoView {
                     </div>
                 }
             }).collect_view()}
-        </div>
-
-        // Model selector area
-        <div class="chat-model-area">
-            <div class="chat-model" id="modelSelector">
-                <span id="chatModelLabel">
-                    {move || {
-                        let p = state.selected_provider.get();
-                        if p.is_empty() { "claude-sonnet-4-6".to_string() } else { p }
-                    }}
-                </span>
-                <svg class="cm-chevron" viewBox="0 0 8 8">
-                    <path d="M1 3L4 6L7 3" stroke="currentColor" stroke-width="1.3" fill="none"
-                        stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </div>
-            // Model dropdown populated by JS
-            <div class="model-dropdown" id="modelDropdown"></div>
         </div>
 
         // Input area

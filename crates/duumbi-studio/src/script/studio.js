@@ -483,11 +483,11 @@
   // ── Settings popup ──────────────────────────────────────────────────────────
 
   var PROVIDER_DEFAULTS = {
-    anthropic:  { model: 'claude-sonnet-4-6', env: 'ANTHROPIC_API_KEY',  hasSubscription: true  },
-    openai:     { model: 'gpt-4o',            env: 'OPENAI_API_KEY',     hasSubscription: false },
-    grok:       { model: 'grok-3',            env: 'XAI_API_KEY',        hasSubscription: false },
-    openrouter: { model: '',                   env: 'OPENROUTER_API_KEY', hasSubscription: false },
-    minimax:    { model: '',                   env: 'MINIMAX_API_KEY',    hasSubscription: false }
+    anthropic:  { env: 'ANTHROPIC_API_KEY',  hasSubscription: true  },
+    openai:     { env: 'OPENAI_API_KEY',     hasSubscription: false },
+    grok:       { env: 'XAI_API_KEY',        hasSubscription: false },
+    openrouter: { env: 'OPENROUTER_API_KEY', hasSubscription: false },
+    minimax:    { env: 'MINIMAX_API_KEY',    hasSubscription: false }
   };
   var PROVIDER_NAMES = ['anthropic', 'openai', 'grok', 'openrouter', 'minimax'];
 
@@ -542,10 +542,6 @@
     h += '<span class="pc-remove" onclick="window.__studio.removeProviderCard(' + idx + ')" title="Remove">\u00d7</span>';
     h += '</div>';
 
-    // Model
-    h += '<div class="pc-row"><span class="pc-label">Model</span>';
-    h += '<input class="pc-input" id="pcModel-' + idx + '" value="' + (p.model || def.model) + '" placeholder="model name"/></div>';
-
     // Auth mode (subscription only for anthropic)
     if (def.hasSubscription) {
       h += '<div class="pc-row"><span class="pc-label">Auth</span>';
@@ -579,7 +575,7 @@
     var addBtn = main.querySelector('.provider-add');
     var newCard = document.createElement('div');
     newCard.innerHTML = buildCardHtml({
-      provider: 'anthropic', role: 'fallback', model: 'claude-sonnet-4-6',
+      provider: 'anthropic', role: 'fallback',
       api_key_env: 'ANTHROPIC_API_KEY', auth_token_env: null
     }, idx);
     main.insertBefore(newCard.firstChild, addBtn);
@@ -596,15 +592,12 @@
 
   function onProviderChange(idx, kind) {
     var def = PROVIDER_DEFAULTS[kind] || PROVIDER_DEFAULTS.anthropic;
-    var modelEl = document.getElementById('pcModel-' + idx);
     var envEl = document.getElementById('pcEnv-' + idx);
-    if (modelEl) modelEl.value = def.model;
     if (envEl) envEl.value = def.env;
     // Re-render card to show/hide subscription option
     var cards = collectProviders();
     if (cards[idx]) {
       cards[idx].provider = kind;
-      cards[idx].model = def.model;
       cards[idx].api_key_env = def.env;
       cards[idx].auth_token_env = null;
     }
@@ -637,7 +630,6 @@
     var result = [];
     cards.forEach(function (card, i) {
       var selectEl = card.querySelector('.pc-select');
-      var modelEl = document.getElementById('pcModel-' + i);
       var envEl = document.getElementById('pcEnv-' + i);
       var roleEl = card.querySelector('.pc-role');
       var authRadio = card.querySelector('input[name="auth-' + i + '"]:checked');
@@ -646,7 +638,6 @@
       result.push({
         provider: kind,
         role: roleEl && roleEl.textContent === 'PRIMARY' ? 'primary' : 'fallback',
-        model: modelEl ? modelEl.value : '',
         api_key_env: authMode === 'apikey' ? (envEl ? envEl.value : '') : (PROVIDER_DEFAULTS[kind] || {}).env || '',
         auth_token_env: authMode === 'subscription' ? (envEl ? envEl.value : '') : null,
         base_url: null
@@ -752,25 +743,6 @@
         bd.classList.add('open');
       })
       .catch(function (e) { console.error('Agent templates error:', e); });
-  }
-
-  // ── Model selector ────────────────────────────────────────────────────────────
-
-  function toggleModelDropdown(e) {
-    if (e) e.stopPropagation();
-    var dd = document.getElementById('modelDropdown');
-    if (dd) dd.classList.toggle('open');
-  }
-
-  function selectModel(e, el) {
-    if (e) e.stopPropagation();
-    var name  = el.dataset.model;
-    var label = document.getElementById('chatModelLabel');
-    if (label) label.textContent = name;
-    qsa('.model-option').forEach(function (o) { o.classList.remove('selected'); });
-    el.classList.add('selected');
-    var dd = document.getElementById('modelDropdown');
-    if (dd) dd.classList.remove('open');
   }
 
   // ── Command palette ───────────────────────────────────────────────────────────
@@ -879,13 +851,6 @@
     var ab   = document.getElementById('avatarBtn');
     if (menu && ab && !menu.contains(e.target) && !ab.contains(e.target)) {
       closeUserMenu();
-    }
-
-    // Close model dropdown
-    var mb = document.getElementById('chatModelBtn');
-    var dd = document.getElementById('modelDropdown');
-    if (mb && dd && !mb.contains(e.target)) {
-      dd.classList.remove('open');
     }
 
     // Close filter popup when clicking outside
@@ -2562,9 +2527,7 @@
 
     // Use WebSocket if connected, otherwise fallback placeholder
     if (StudioWS.isConnected()) {
-      var modLabel = document.getElementById('chatModelLabel');
-      var module   = modLabel ? modLabel.textContent : '';
-      StudioWS.send(msg, module, currentLevel);
+      StudioWS.send(msg, '', currentLevel);
     } else {
       var aiDiv = document.createElement('div');
       aiDiv.className = 'chat-msg ai';
@@ -2792,8 +2755,6 @@
     openPopup:           openPopup,
     closeAllPopups:      closeAllPopups,
     toggleUserMenu:      toggleUserMenu,
-    toggleModelDropdown: toggleModelDropdown,
-    selectModel:         selectModel,
     sendChat:            sendChat,
     handleChatKey:       handleChatKey,
 

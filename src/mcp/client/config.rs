@@ -181,9 +181,9 @@ trusted = false
         write_config(
             &tmp,
             r#"
-[llm]
+[[providers]]
 provider = "anthropic"
-model = "claude-sonnet-4-6"
+role = "primary"
 api_key_env = "ANTHROPIC_API_KEY"
 "#,
         );

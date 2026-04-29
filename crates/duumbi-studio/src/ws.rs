@@ -76,7 +76,7 @@ struct ClarifyFrame {
 /// Called from `lib.rs` after WebSocket upgrade.
 #[cfg(feature = "ssr")]
 pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceContext>>) {
-    use duumbi::agents::factory::create_provider_chain;
+    use duumbi::agents::factory::create_provider_chain_for_global_access;
     use duumbi::agents::orchestrator::{self, MutationOutcome};
     use duumbi::config::load_config;
     use duumbi::context;
@@ -94,13 +94,14 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
         }
     };
     let providers = config.effective_providers();
-    let client: Arc<dyn duumbi::agents::LlmProvider> = match create_provider_chain(&providers) {
-        Ok(c) => Arc::from(c),
-        Err(e) => {
-            let _ = send_error(&mut socket, &format!("No LLM provider configured: {e}")).await;
-            return;
-        }
-    };
+    let client: Arc<dyn duumbi::agents::LlmProvider> =
+        match create_provider_chain_for_global_access(&providers) {
+            Ok(c) => Arc::from(c),
+            Err(e) => {
+                let _ = send_error(&mut socket, &format!("No LLM provider configured: {e}")).await;
+                return;
+            }
+        };
 
     while let Some(Ok(msg)) = socket.recv().await {
         let text = match msg {

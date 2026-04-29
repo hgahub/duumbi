@@ -58,7 +58,6 @@ cat >> .duumbi/config.toml << 'TOML'
 [[providers]]
 provider = "Anthropic"
 role = "Primary"
-model = "claude-sonnet-4-6"
 api_key_env = "ANTHROPIC_API_KEY"
 TOML
 

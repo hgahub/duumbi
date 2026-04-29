@@ -28,9 +28,7 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
 
     let mut table = comfy_table::Table::new();
     table
-        .set_header(vec![
-            "#", "Provider", "Model", "Role", "Auth", "Key Env", "Ready?",
-        ])
+        .set_header(vec!["#", "Provider", "Role", "Auth", "Key Env", "Ready?"])
         .load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
 
     for (i, p) in providers.iter().enumerate() {
@@ -45,7 +43,6 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
         table.add_row(vec![
             (i + 1).to_string(),
             p.provider.to_string(),
-            p.model.clone(),
             format!("{:?}", p.role).to_lowercase(),
             auth_type.to_string(),
             p.auth_token_env
@@ -69,15 +66,15 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
 
 /// Parses `args` and appends a new provider to `config.providers`.
 ///
-/// Expected syntax: `<type> <model> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]`
+/// Expected syntax: `<type> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]`
 ///
 /// `<type>` must be one of: `anthropic`, `openai`, `grok`, `openrouter`, `minimax`.
 #[must_use]
 pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     let tokens: Vec<&str> = args.split_whitespace().collect();
-    if tokens.len() < 3 {
+    if tokens.len() < 2 {
         return vec![OutputLine::new(
-            "Usage: /provider add <type> <model> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]",
+            "Usage: /provider add <type> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]",
             OutputStyle::Dim,
         )];
     }
@@ -87,14 +84,13 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
         Err(msg) => return vec![OutputLine::new(msg, OutputStyle::Error)],
     };
 
-    let model = tokens[1].to_string();
-    let api_key_env = tokens[2].to_string();
+    let api_key_env = tokens[1].to_string();
 
     // Parse optional flags from the remaining tokens.
     let mut role = ProviderRole::Primary;
     let mut base_url: Option<String> = None;
     let mut auth_token_env: Option<String> = None;
-    let mut i = 3usize;
+    let mut i = 2usize;
     while i < tokens.len() {
         match tokens[i] {
             "--role" => {
@@ -155,7 +151,7 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     config.providers.push(ProviderConfig {
         provider: kind,
         role,
-        model: model.clone(),
+        model: None,
         api_key_env: api_key_env.clone(),
         base_url,
         timeout_secs: None,
@@ -165,8 +161,8 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
 
     vec![OutputLine::new(
         format!(
-            "Provider added: {} {}{auth_info} (api_key_env: {api_key_env})",
-            tokens[0], model
+            "Provider added: {}{auth_info} (api_key_env: {api_key_env})",
+            tokens[0]
         ),
         OutputStyle::Success,
     )]
@@ -176,7 +172,7 @@ pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
 // remove_provider
 // ---------------------------------------------------------------------------
 
-/// Removes the provider identified by a 1-based index number or model name.
+/// Removes the provider identified by a 1-based index number or provider type.
 #[must_use]
 pub fn remove_provider(config: &mut DuumbiConfig, selector: &str) -> Vec<OutputLine> {
     if config.providers.is_empty() {
@@ -196,19 +192,20 @@ pub fn remove_provider(config: &mut DuumbiConfig, selector: &str) -> Vec<OutputL
         }
         let removed = config.providers.remove(n - 1);
         return vec![OutputLine::new(
-            format!(
-                "Removed provider #{n}: {} {}",
-                removed.provider, removed.model
-            ),
+            format!("Removed provider #{n}: {}", removed.provider),
             OutputStyle::Success,
         )];
     }
 
-    // Fall back to model-name match (first occurrence).
-    if let Some(pos) = config.providers.iter().position(|p| p.model == selector) {
+    // Fall back to provider-kind match (first occurrence).
+    if let Some(pos) = config
+        .providers
+        .iter()
+        .position(|p| p.provider.to_string() == selector)
+    {
         let removed = config.providers.remove(pos);
         return vec![OutputLine::new(
-            format!("Removed provider: {} {}", removed.provider, removed.model),
+            format!("Removed provider: {}", removed.provider),
             OutputStyle::Success,
         )];
     }
@@ -227,7 +224,7 @@ pub fn remove_provider(config: &mut DuumbiConfig, selector: &str) -> Vec<OutputL
 ///
 /// Syntax: `<index> <field> <value>`
 ///
-/// Valid fields: `model`, `api_key_env`, `role`, `base_url`.
+/// Valid fields: `api_key_env`, `role`, `base_url`, `auth_token_env`.
 #[must_use]
 pub fn set_provider_field(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     let mut parts = args.splitn(3, ' ');
@@ -262,13 +259,6 @@ pub fn set_provider_field(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLi
     let provider = &mut config.providers[idx - 1];
 
     match field {
-        "model" => {
-            provider.model = value.to_string();
-            vec![OutputLine::new(
-                format!("Provider #{idx}: model set to '{value}'"),
-                OutputStyle::Success,
-            )]
-        }
         "api_key_env" => {
             provider.api_key_env = value.to_string();
             vec![OutputLine::new(
@@ -322,7 +312,7 @@ pub fn set_provider_field(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLi
         }
         other => vec![OutputLine::new(
             format!(
-                "Unknown field '{other}'. Valid fields: model, api_key_env, role, base_url, auth_token_env"
+                "Unknown field '{other}'. Valid fields: api_key_env, role, base_url, auth_token_env"
             ),
             OutputStyle::Error,
         )],
@@ -386,7 +376,7 @@ mod tests {
         cfg.providers.push(ProviderConfig {
             provider: ProviderKind::Anthropic,
             role: ProviderRole::Primary,
-            model: "claude-sonnet-4-6".to_string(),
+            model: None,
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -407,9 +397,10 @@ mod tests {
     #[test]
     fn add_then_list_shows_entry() {
         let mut cfg = empty_config();
-        let add_lines = add_provider(&mut cfg, "anthropic claude-sonnet-4-6 ANTHROPIC_API_KEY");
+        let add_lines = add_provider(&mut cfg, "anthropic ANTHROPIC_API_KEY");
         assert_eq!(add_lines[0].style, OutputStyle::Success);
         assert_eq!(cfg.providers.len(), 1);
+        assert!(cfg.providers[0].model.is_none());
 
         let list_lines = list_providers(&cfg);
         let combined = list_lines
@@ -418,7 +409,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(combined.contains("anthropic"));
-        assert!(combined.contains("claude-sonnet-4-6"));
+        assert!(!combined.contains("Model"));
     }
 
     #[test]
@@ -430,9 +421,9 @@ mod tests {
     }
 
     #[test]
-    fn remove_by_model_name_removes_entry() {
+    fn remove_by_provider_type_removes_entry() {
         let mut cfg = config_with_one_provider();
-        let lines = remove_provider(&mut cfg, "claude-sonnet-4-6");
+        let lines = remove_provider(&mut cfg, "anthropic");
         assert_eq!(lines[0].style, OutputStyle::Success);
         assert!(cfg.providers.is_empty());
     }
@@ -446,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_unknown_model_returns_error() {
+    fn remove_unknown_provider_returns_error() {
         let mut cfg = config_with_one_provider();
         let lines = remove_provider(&mut cfg, "gpt-4o");
         assert_eq!(lines[0].style, OutputStyle::Error);
@@ -454,11 +445,11 @@ mod tests {
     }
 
     #[test]
-    fn set_model_field_updates_provider() {
+    fn set_model_field_returns_error() {
         let mut cfg = config_with_one_provider();
         let lines = set_provider_field(&mut cfg, "1 model claude-opus-4-5");
-        assert_eq!(lines[0].style, OutputStyle::Success);
-        assert_eq!(cfg.providers[0].model, "claude-opus-4-5");
+        assert_eq!(lines[0].style, OutputStyle::Error);
+        assert!(cfg.providers[0].model.is_none());
     }
 
     #[test]
@@ -495,7 +486,7 @@ mod tests {
     #[test]
     fn add_with_role_fallback_flag() {
         let mut cfg = empty_config();
-        let _ = add_provider(&mut cfg, "grok grok-3 XAI_API_KEY --role fallback");
+        let _ = add_provider(&mut cfg, "grok XAI_API_KEY --role fallback");
         assert_eq!(cfg.providers.len(), 1);
         assert_eq!(cfg.providers[0].role, ProviderRole::Fallback);
     }
@@ -505,7 +496,7 @@ mod tests {
         let mut cfg = empty_config();
         let _ = add_provider(
             &mut cfg,
-            "openai gpt-4o OPENAI_API_KEY --base-url https://api.openai.com",
+            "openai OPENAI_API_KEY --base-url https://api.openai.com",
         );
         assert_eq!(
             cfg.providers[0].base_url.as_deref(),

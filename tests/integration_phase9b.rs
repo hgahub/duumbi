@@ -111,7 +111,7 @@ api_key_env = "XAI_API_KEY"
     assert_eq!(cfg.providers.len(), 2);
     assert_eq!(cfg.providers[0].provider, ProviderKind::Anthropic);
     assert_eq!(cfg.providers[0].role, ProviderRole::Primary);
-    assert_eq!(cfg.providers[0].model, "claude-sonnet-4-6");
+    assert_eq!(cfg.providers[0].model.as_deref(), Some("claude-sonnet-4-6"));
     assert_eq!(cfg.providers[1].provider, ProviderKind::Grok);
     assert_eq!(cfg.providers[1].role, ProviderRole::Fallback);
 }
@@ -121,13 +121,13 @@ fn config_providers_openrouter() {
     let toml_str = r#"
 [[providers]]
 provider = "openrouter"
-model = "meta-llama/llama-3.1-405b-instruct"
 api_key_env = "OPENROUTER_API_KEY"
 "#;
 
     let cfg: DuumbiConfig = toml::from_str(toml_str).expect("must parse");
     assert_eq!(cfg.providers[0].provider, ProviderKind::OpenRouter);
     assert_eq!(cfg.providers[0].role, ProviderRole::Primary); // default
+    assert!(cfg.providers[0].model.is_none());
 }
 
 #[test]
@@ -135,7 +135,6 @@ fn config_providers_with_base_url_and_timeout() {
     let toml_str = r#"
 [[providers]]
 provider = "openai"
-model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 base_url = "https://custom.endpoint/v1/chat/completions"
 timeout_secs = 60
@@ -179,7 +178,7 @@ fn effective_providers_from_llm_section() {
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].provider, ProviderKind::Anthropic);
     assert_eq!(providers[0].role, ProviderRole::Primary);
-    assert_eq!(providers[0].model, "claude-sonnet-4-6");
+    assert_eq!(providers[0].model.as_deref(), Some("claude-sonnet-4-6"));
 }
 
 #[test]
@@ -193,7 +192,7 @@ fn effective_providers_prefers_providers_over_llm() {
         providers: vec![ProviderConfig {
             provider: ProviderKind::Grok,
             role: ProviderRole::Primary,
-            model: "grok-3".to_string(),
+            model: None,
             api_key_env: "XAI_API_KEY".to_string(),
             base_url: None,
             timeout_secs: None,
@@ -290,7 +289,7 @@ fn config_providers_roundtrip_toml() {
             ProviderConfig {
                 provider: ProviderKind::Anthropic,
                 role: ProviderRole::Primary,
-                model: "claude-sonnet-4-6".to_string(),
+                model: None,
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: None,
@@ -300,7 +299,7 @@ fn config_providers_roundtrip_toml() {
             ProviderConfig {
                 provider: ProviderKind::Grok,
                 role: ProviderRole::Fallback,
-                model: "grok-3".to_string(),
+                model: None,
                 api_key_env: "XAI_API_KEY".to_string(),
                 base_url: None,
                 timeout_secs: Some(30),
@@ -316,5 +315,6 @@ fn config_providers_roundtrip_toml() {
     assert_eq!(loaded.providers.len(), 2);
     assert_eq!(loaded.providers[0].provider, ProviderKind::Anthropic);
     assert_eq!(loaded.providers[1].provider, ProviderKind::Grok);
+    assert!(!toml_str.contains("model ="));
     assert_eq!(loaded.providers[1].timeout_secs, Some(30));
 }
