@@ -123,7 +123,7 @@ pub struct ModelAccessRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelAccessDb {
-    /// Records keyed by `provider|model`.
+    /// Records keyed by `credential_fingerprint|provider|model`.
     pub records: HashMap<String, ModelAccessRecord>,
 }
 

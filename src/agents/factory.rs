@@ -29,7 +29,12 @@ pub fn create_provider_for_context(
     config: &ProviderConfig,
     context: &ModelSelectionContext,
 ) -> Result<Box<dyn LlmProvider>, AgentError> {
-    let resolved = model_catalog::resolve_provider_config(config, context);
+    let resolved = model_catalog::resolve_provider_config(config, context).ok_or_else(|| {
+        AgentError::Parse(format!(
+            "Cannot create {} provider: no allowed Duumbi model is available for this credential",
+            config.provider
+        ))
+    })?;
     create_resolved_provider(&resolved)
 }
 
@@ -205,13 +210,7 @@ pub fn create_provider_chain_for_context(
         return create_provider_for_context(&configs[0], context);
     }
 
-    // Sort: primaries first, then fallbacks (stable order within each group)
-    let mut sorted: Vec<&ProviderConfig> = configs.iter().collect();
-    sorted.sort_by_key(|c| match c.role {
-        crate::config::ProviderRole::Primary => 0,
-        crate::config::ProviderRole::Fallback => 1,
-    });
-
+    let sorted = sorted_provider_configs(configs);
     let mut providers = Vec::with_capacity(sorted.len());
     for config in &sorted {
         providers.push(create_provider_for_context(config, context)?);
@@ -238,11 +237,21 @@ pub fn create_provider_chain_for_global_access(
         return create_provider_for_global_access(&configs[0]);
     }
 
-    let mut providers = Vec::new();
-    for config in configs {
+    let sorted = sorted_provider_configs(configs);
+    let mut providers = Vec::with_capacity(sorted.len());
+    for config in &sorted {
         providers.push(create_provider_for_global_access(config)?);
     }
     Ok(Box::new(super::fallback::ProviderChain::new(providers)))
+}
+
+fn sorted_provider_configs(configs: &[ProviderConfig]) -> Vec<&ProviderConfig> {
+    let mut sorted: Vec<&ProviderConfig> = configs.iter().collect();
+    sorted.sort_by_key(|config| match config.role {
+        crate::config::ProviderRole::Primary => 0,
+        crate::config::ProviderRole::Fallback => 1,
+    });
+    sorted
 }
 
 #[cfg(test)]
@@ -371,5 +380,28 @@ mod tests {
         // Chain's name is the primary's name
         assert_eq!(provider.name(), "anthropic");
         unsafe { std::env::remove_var("DUUMBI_TEST_CHAIN_MULTI_KEY") };
+    }
+
+    #[test]
+    fn create_global_access_chain_keeps_primary_before_fallback() {
+        unsafe { std::env::set_var("DUUMBI_TEST_GLOBAL_CHAIN_KEY", "sk-test") };
+        let make = |kind, role| ProviderConfig {
+            provider: kind,
+            role,
+            model: Some("test-model".to_string()),
+            api_key_env: "DUUMBI_TEST_GLOBAL_CHAIN_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        };
+        let configs = vec![
+            make(ProviderKind::Anthropic, ProviderRole::Fallback),
+            make(ProviderKind::Grok, ProviderRole::Primary),
+        ];
+        let provider = create_provider_chain_for_global_access(&configs).expect("must create");
+
+        assert_eq!(provider.name(), "grok");
+        unsafe { std::env::remove_var("DUUMBI_TEST_GLOBAL_CHAIN_KEY") };
     }
 }

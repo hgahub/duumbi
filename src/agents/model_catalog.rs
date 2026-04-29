@@ -204,18 +204,12 @@ pub fn catalog() -> &'static [ModelCatalogEntry] {
 pub fn select_model(
     provider: &ProviderKind,
     context: &ModelSelectionContext,
-) -> &'static ModelCatalogEntry {
+) -> Option<&'static ModelCatalogEntry> {
     catalog()
         .iter()
         .filter(|entry| &entry.provider == provider)
         .filter(|entry| model_is_allowed(entry, context))
         .max_by_key(|entry| score_entry(entry, context))
-        .unwrap_or_else(|| {
-            catalog()
-                .iter()
-                .find(|entry| &entry.provider == provider)
-                .expect("invariant: every ProviderKind has a catalog entry")
-        })
 }
 
 /// Resolves a user provider config into a concrete runtime provider config.
@@ -223,20 +217,20 @@ pub fn select_model(
 pub fn resolve_provider_config(
     config: &ProviderConfig,
     context: &ModelSelectionContext,
-) -> ResolvedProviderConfig {
+) -> Option<ResolvedProviderConfig> {
     let selected = config
         .model
         .clone()
-        .unwrap_or_else(|| select_model(&config.provider, context).model.to_string());
+        .or_else(|| select_model(&config.provider, context).map(|entry| entry.model.to_string()))?;
 
-    ResolvedProviderConfig {
+    Some(ResolvedProviderConfig {
         provider: config.provider.clone(),
         model: selected,
         api_key_env: config.api_key_env.clone(),
         base_url: config.base_url.clone(),
         timeout_secs: config.timeout_secs,
         auth_token_env: config.auth_token_env.clone(),
-    }
+    })
 }
 
 fn model_is_allowed(entry: &ModelCatalogEntry, context: &ModelSelectionContext) -> bool {
@@ -339,7 +333,7 @@ mod tests {
 
         let resolved = resolve_provider_config(&config, &ModelSelectionContext::default());
 
-        assert_eq!(resolved.model, "legacy-model");
+        assert_eq!(resolved.expect("model must resolve").model, "legacy-model");
     }
 
     #[test]
@@ -358,7 +352,10 @@ mod tests {
 
         let selected = select_model(&ProviderKind::Anthropic, &context);
 
-        assert_eq!(selected.model, "claude-opus-4-6");
+        assert_eq!(
+            selected.expect("model must resolve").model,
+            "claude-opus-4-6"
+        );
     }
 
     #[test]
@@ -370,7 +367,7 @@ mod tests {
 
         let selected = select_model(&ProviderKind::OpenAI, &context);
 
-        assert_eq!(selected.model, "gpt-5.4-mini");
+        assert_eq!(selected.expect("model must resolve").model, "gpt-5.4-mini");
     }
 
     #[test]
@@ -382,7 +379,10 @@ mod tests {
 
         let selected = select_model(&ProviderKind::MiniMax, &context);
 
-        assert_ne!(selected.model, "MiniMax-M2.7-highspeed");
+        assert_ne!(
+            selected.expect("model must resolve").model,
+            "MiniMax-M2.7-highspeed"
+        );
     }
 
     #[test]
@@ -394,6 +394,17 @@ mod tests {
 
         let selected = select_model(&ProviderKind::MiniMax, &context);
 
-        assert_eq!(selected.model, "MiniMax-M2.5");
+        assert_eq!(selected.expect("model must resolve").model, "MiniMax-M2.5");
+    }
+
+    #[test]
+    fn empty_allowed_set_after_access_filter_returns_none() {
+        let context = ModelSelectionContext {
+            accessible_models: vec!["unknown-model".to_string()],
+            denied_models: vec!["MiniMax-M2.7".to_string()],
+            ..ModelSelectionContext::default()
+        };
+
+        assert!(select_model(&ProviderKind::MiniMax, &context).is_none());
     }
 }

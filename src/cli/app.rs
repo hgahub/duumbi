@@ -459,21 +459,23 @@ fn model_probe_result_from_error(
     use crate::agents::model_access::{ModelAccessProbeResult, ModelAccessStatus};
 
     match error {
-        crate::agents::AgentError::ApiError { status, body } if is_model_denied_error(body) => {
-            ModelAccessProbeResult::new(
-                provider,
-                model,
-                ModelAccessStatus::Denied,
-                Some("model_not_supported_by_plan".to_string()),
-                Some(provider_api_error_message(body)),
-            )
-        }
         crate::agents::AgentError::ApiError { status, body } if matches!(*status, 401 | 403) => {
             ModelAccessProbeResult::new(
                 provider,
                 model,
                 ModelAccessStatus::AuthFailed,
                 Some("auth_failed".to_string()),
+                Some(provider_api_error_message(body)),
+            )
+        }
+        crate::agents::AgentError::ApiError { status, body }
+            if model_denied_status(*status) && is_model_denied_error(body) =>
+        {
+            ModelAccessProbeResult::new(
+                provider,
+                model,
+                ModelAccessStatus::Denied,
+                Some("model_not_supported_by_plan".to_string()),
                 Some(provider_api_error_message(body)),
             )
         }
@@ -525,6 +527,10 @@ fn model_probe_result_from_error(
     }
 }
 
+fn model_denied_status(status: u16) -> bool {
+    matches!(status, 400 | 404 | 422)
+}
+
 fn is_model_denied_error(body: &str) -> bool {
     let lower = body.to_lowercase();
     lower.contains("2061")
@@ -533,7 +539,6 @@ fn is_model_denied_error(body: &str) -> bool {
         || lower.contains("model not supported")
         || lower.contains("model_not_supported")
         || lower.contains("not allowed")
-        || lower.contains("not available")
         || lower.contains("plan not support model")
 }
 
@@ -4892,6 +4897,41 @@ mod tests {
         assert_eq!(message, "Incorrect API key provided.");
         assert!(!message.contains("auth_error"));
         assert!(!message.contains("status"));
+    }
+
+    #[test]
+    fn provider_probe_model_denial_requires_non_transient_status() {
+        let result = model_probe_result_from_error(
+            &crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7-highspeed",
+            &crate::agents::AgentError::ApiError {
+                status: 400,
+                body: "your current token plan not support model, MiniMax-M2.7-highspeed (2061)"
+                    .to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.status,
+            crate::agents::model_access::ModelAccessStatus::Denied
+        );
+    }
+
+    #[test]
+    fn provider_probe_transient_not_available_is_unknown() {
+        let result = model_probe_result_from_error(
+            &crate::config::ProviderKind::MiniMax,
+            "MiniMax-M2.7",
+            &crate::agents::AgentError::ApiError {
+                status: 503,
+                body: "service not available".to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.status,
+            crate::agents::model_access::ModelAccessStatus::Unknown
+        );
     }
 
     #[test]
