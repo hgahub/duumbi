@@ -2,5 +2,9 @@
   "css.lint.unknownAtRules": "ignore",
   "editor.quickSuggestions": {
     "strings": true
+  },
+  "terminal.integrated.env.linux": {
+    "CARGO_HOME": "/home/vscode/.cargo",
+    "CARGO_TARGET_DIR": "/home/vscode/.cache/duumbi-target"
   }
 }
