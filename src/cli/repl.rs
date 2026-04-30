@@ -9,14 +9,16 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Local, Utc};
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
 use ratatui_textarea::TextArea;
 
 use crate::agents::{LlmClient, orchestrator};
-use crate::config::{DuumbiConfig, EffectiveConfig};
+use crate::config::{DuumbiConfig, EffectiveConfig, ProviderConfigSource, ProviderRole};
 use crate::intent;
 use crate::session::SessionManager;
 use crate::snapshot;
@@ -1582,55 +1584,340 @@ fn print_status_to_buffer(app: &mut ReplApp) {
     let graph_path = app.workspace_root.join(".duumbi/graph/main.jsonld");
     let output_path = app.workspace_root.join(".duumbi/build/output");
     let history_count = snapshot::snapshot_count(&app.workspace_root).unwrap_or(0);
-    let session_turns = app.history.len();
+    let mut hints = Vec::new();
+
+    app.push_output("Workspace", OutputStyle::Normal);
+    app.push_output(
+        format!(
+            "  Root:         {}{}",
+            app.workspace_root.display(),
+            workspace_identity_suffix(&app.config)
+        ),
+        OutputStyle::Normal,
+    );
+    let graph_status = graph_status_line(&app.workspace_root, &graph_path);
+    if !graph_path.exists() {
+        hints.push("run /init to create a workspace graph".to_string());
+    } else if graph_status.is_invalid {
+        hints.push("fix the graph JSON or run /undo if a recent change broke it".to_string());
+    }
+    app.push_output(
+        format!("  Graph:        {}", graph_status.text),
+        graph_status.style,
+    );
+
+    let build_status = build_status_line(&output_path);
+    if !output_path.exists() || build_status.is_invalid {
+        hints.push("run /build to create the binary".to_string());
+    }
+    app.push_output(
+        format!("  Binary:       {}", build_status.text),
+        build_status.style,
+    );
 
     app.push_output(
-        format!("Workspace: {}", app.workspace_root.display()),
+        format!("  Undo:         {history_count} snapshot(s)"),
         OutputStyle::Normal,
     );
     app.push_output(
-        format!(
-            "  Graph:        {} {}",
-            graph_path.display(),
-            if graph_path.exists() {
-                "[ok]"
-            } else {
-                "[missing]"
-            }
-        ),
+        format!("  Dependencies: {}", dependency_status_line(app)),
         OutputStyle::Normal,
     );
+
+    app.push_output("Session / AI", OutputStyle::Normal);
     app.push_output(
-        format!(
-            "  Binary:       {} {}",
-            output_path.display(),
-            if output_path.exists() {
-                "[ok]"
-            } else {
-                "(not built)"
-            }
-        ),
+        format!("  Session:      {}", session_status_line(app)),
         OutputStyle::Normal,
     );
+
+    let providers_empty = app.config.effective_providers().is_empty();
     app.push_output(
-        format!("  Snapshots:    {history_count} (undo depth)"),
-        OutputStyle::Normal,
+        format!("  Providers:    {}", providers_status_line(app)),
+        if providers_empty {
+            OutputStyle::Error
+        } else {
+            OutputStyle::Normal
+        },
     );
-    app.push_output(
-        format!("  Session turns: {session_turns}"),
-        OutputStyle::Normal,
-    );
-    let providers = app.config.effective_providers();
-    if providers.is_empty() {
-        app.push_output("  Providers:    not configured", OutputStyle::Error);
-    } else {
-        let labels = providers
-            .iter()
-            .map(|provider| provider.provider.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        app.push_output(format!("  Providers:    {labels}"), OutputStyle::Normal);
+    if providers_empty {
+        hints.push("run /provider to configure AI access".to_string());
     }
+
+    if let Some(hint) = hints.first() {
+        app.push_output(format!("  Next:         {hint}"), OutputStyle::Dim);
+    }
+}
+
+struct StatusLine {
+    text: String,
+    style: OutputStyle,
+    is_invalid: bool,
+}
+
+fn workspace_identity_suffix(config: &DuumbiConfig) -> String {
+    let Some(workspace) = &config.workspace else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    if !workspace.name.is_empty() {
+        parts.push(format!("name: {}", workspace.name));
+    }
+    if !workspace.namespace.is_empty() {
+        parts.push(format!("namespace: {}", workspace.namespace));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+fn graph_status_line(workspace_root: &Path, graph_path: &Path) -> StatusLine {
+    if !graph_path.exists() {
+        return StatusLine {
+            text: format!("{} [missing]", graph_path.display()),
+            style: OutputStyle::Error,
+            is_invalid: false,
+        };
+    }
+
+    match graph_summary(workspace_root, graph_path) {
+        Ok((modules, functions, nodes)) => StatusLine {
+            text: format!(
+                "{} [ok] ({} module{}, {} function{}, {} node{})",
+                graph_path.display(),
+                modules,
+                plural(modules),
+                functions,
+                plural(functions),
+                nodes,
+                plural(nodes)
+            ),
+            style: OutputStyle::Success,
+            is_invalid: false,
+        },
+        Err(err) => StatusLine {
+            text: format!("{} [invalid: {err}]", graph_path.display()),
+            style: OutputStyle::Error,
+            is_invalid: true,
+        },
+    }
+}
+
+fn graph_summary(
+    workspace_root: &Path,
+    graph_path: &Path,
+) -> Result<(usize, usize, usize), String> {
+    let graph_dir = workspace_root.join(".duumbi").join("graph");
+    let mut paths = Vec::new();
+
+    if graph_dir.exists() {
+        let entries = fs::read_dir(&graph_dir).map_err(|e| e.to_string())?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", graph_dir.display()))?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonld") {
+                paths.push(path);
+            }
+        }
+    }
+
+    if paths.is_empty() {
+        paths.push(graph_path.to_path_buf());
+    }
+    paths.sort();
+
+    let mut modules = 0usize;
+    let mut functions = 0usize;
+    let mut nodes = 0usize;
+    for path in paths {
+        let source = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let module =
+            crate::parser::parse_jsonld(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+        modules += 1;
+        functions += module.functions.len();
+        nodes += module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .map(|block| block.ops.len())
+            .sum::<usize>();
+    }
+
+    Ok((modules, functions, nodes))
+}
+
+fn build_status_line(output_path: &Path) -> StatusLine {
+    if !output_path.exists() {
+        return StatusLine {
+            text: format!("{} (not built)", output_path.display()),
+            style: OutputStyle::Dim,
+            is_invalid: false,
+        };
+    }
+
+    let metadata = match output_path.metadata() {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            return StatusLine {
+                text: format!("{} [invalid: {e}]", output_path.display()),
+                style: OutputStyle::Error,
+                is_invalid: true,
+            };
+        }
+    };
+
+    if !metadata.is_file() {
+        return StatusLine {
+            text: format!("{} [invalid: not a file]", output_path.display()),
+            style: OutputStyle::Error,
+            is_invalid: true,
+        };
+    }
+
+    if metadata.len() == 0 {
+        return StatusLine {
+            text: format!("{} (not built: empty file)", output_path.display()),
+            style: OutputStyle::Dim,
+            is_invalid: true,
+        };
+    }
+
+    let modified = metadata
+        .modified()
+        .ok()
+        .map(format_system_time)
+        .map(|time| format!(", modified {time}"))
+        .unwrap_or_default();
+
+    StatusLine {
+        text: format!("{} [ok]{modified}", output_path.display()),
+        style: OutputStyle::Success,
+        is_invalid: false,
+    }
+}
+
+fn dependency_status_line(app: &ReplApp) -> String {
+    let declared = app.config.dependencies.len();
+    let lock = match crate::deps::load_lockfile(&app.workspace_root) {
+        Ok(lock) => lock,
+        Err(e) => return format!("{declared} declared, lockfile unreadable: {e}"),
+    };
+    let locked = lock.dependencies.len();
+    let mismatch = if declared != locked {
+        " (config/lock mismatch)"
+    } else {
+        ""
+    };
+    format!("{declared} declared, {locked} locked{mismatch}")
+}
+
+fn session_status_line(app: &ReplApp) -> String {
+    let context_turns = app.history.len();
+    match &app.session_mgr {
+        Some(mgr) => format!(
+            "{} (started {}, {} persisted turn{}, {} context turn{})",
+            short_session_id(mgr.session_id()),
+            format_started_at(mgr.started_at()),
+            mgr.turns().len(),
+            plural(mgr.turns().len()),
+            context_turns,
+            plural(context_turns)
+        ),
+        None => format!(
+            "unavailable ({} context turn{})",
+            context_turns,
+            plural(context_turns)
+        ),
+    }
+}
+
+fn providers_status_line(app: &ReplApp) -> String {
+    let providers = app.config.effective_providers();
+    let source = provider_source_label(app.provider_config_source);
+    if providers.is_empty() {
+        return format!("not configured (source: {source})");
+    }
+
+    let labels = providers
+        .iter()
+        .map(|provider| {
+            format!(
+                "{} {}",
+                provider.provider,
+                provider_role_label(&provider.role)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{labels} (source: {source})")
+}
+
+fn provider_role_label(role: &ProviderRole) -> &'static str {
+    match role {
+        ProviderRole::Primary => "primary",
+        ProviderRole::Fallback => "fallback",
+    }
+}
+
+fn provider_source_label(source: ProviderConfigSource) -> &'static str {
+    match source {
+        ProviderConfigSource::None => "none",
+        ProviderConfigSource::System => "system",
+        ProviderConfigSource::User => "user",
+        ProviderConfigSource::Workspace => "workspace",
+        ProviderConfigSource::LegacySystem => "legacy system",
+        ProviderConfigSource::LegacyUser => "legacy user",
+        ProviderConfigSource::LegacyWorkspace => "legacy workspace",
+    }
+}
+
+fn short_session_id(id: &str) -> String {
+    const MAX_LEN: usize = 18;
+    if id.chars().count() <= MAX_LEN {
+        id.to_string()
+    } else {
+        let tail = id
+            .chars()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<String>();
+        format!("session…{tail}")
+    }
+}
+
+fn format_started_at(started_at: DateTime<Utc>) -> String {
+    let local: DateTime<Local> = started_at.with_timezone(&Local);
+    format!(
+        "{} {}",
+        local.format("%Y-%m-%d %H:%M"),
+        format_age(started_at)
+    )
+}
+
+fn format_age(started_at: DateTime<Utc>) -> String {
+    let elapsed = Utc::now()
+        .signed_duration_since(started_at)
+        .max(chrono::Duration::zero());
+    if elapsed.num_hours() >= 1 {
+        format!("({}h ago)", elapsed.num_hours())
+    } else if elapsed.num_minutes() >= 1 {
+        format!("({}m ago)", elapsed.num_minutes())
+    } else {
+        "(<1m ago)".to_string()
+    }
+}
+
+fn format_system_time(time: SystemTime) -> String {
+    let local: DateTime<Local> = time.into();
+    local.format("%Y-%m-%d %H:%M").to_string()
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,6 +2073,81 @@ fn find_closest_command<'a>(input: &str, commands: &[&'a str]) -> Option<&'a str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ProviderConfig, ProviderKind, WorkspaceSection};
+    use tempfile::TempDir;
+
+    fn status_test_app(
+        dir: &TempDir,
+        config: DuumbiConfig,
+        source: ProviderConfigSource,
+        session_mgr: Option<SessionManager>,
+    ) -> ReplApp {
+        ReplApp::new_with_config_layers(
+            config.clone(),
+            DuumbiConfig::default(),
+            DuumbiConfig::default(),
+            config,
+            source,
+            dir.path().to_path_buf(),
+            None,
+            session_mgr,
+            true,
+            false,
+        )
+    }
+
+    fn status_output(app: &ReplApp) -> String {
+        app.output_lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn write_main_graph(dir: &TempDir, graph: &str) {
+        let graph_dir = dir.path().join(".duumbi").join("graph");
+        fs::create_dir_all(&graph_dir).expect("graph dir must be created");
+        fs::write(graph_dir.join("main.jsonld"), graph).expect("graph must be written");
+    }
+
+    fn minimal_graph() -> &'static str {
+        r#"{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:functions": [{
+    "@type": "duumbi:Function",
+    "@id": "duumbi:main/main",
+    "duumbi:name": "main",
+    "duumbi:returnType": "i64",
+    "duumbi:blocks": [{
+      "@type": "duumbi:Block",
+      "@id": "duumbi:main/main/entry",
+      "duumbi:label": "entry",
+      "duumbi:ops": [
+        {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0",
+         "duumbi:value": 1, "duumbi:resultType": "i64"},
+        {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/1",
+         "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}}
+      ]
+    }]
+  }]
+}"#
+    }
+
+    fn provider(kind: ProviderKind, role: ProviderRole) -> ProviderConfig {
+        ProviderConfig {
+            provider: kind,
+            role,
+            model: None,
+            api_key_env: "TEST_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        }
+    }
 
     #[test]
     fn find_closest_build() {
@@ -1864,5 +2226,167 @@ mod tests {
         let system = rendered.find("SYSTEM").expect("system group");
         assert!(build < intent);
         assert!(intent < system);
+    }
+
+    #[test]
+    fn status_shows_configured_workspace_graph_provider_and_session() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        let build_dir = dir.path().join(".duumbi").join("build");
+        fs::create_dir_all(&build_dir).expect("build dir must be created");
+        fs::write(build_dir.join("output"), b"binary").expect("binary must be written");
+
+        let mut config = DuumbiConfig {
+            workspace: Some(WorkspaceSection {
+                name: "status-test".to_string(),
+                namespace: "hgahub".to_string(),
+                default_registry: None,
+            }),
+            ..DuumbiConfig::default()
+        };
+        config
+            .providers
+            .push(provider(ProviderKind::MiniMax, ProviderRole::Primary));
+        config
+            .providers
+            .push(provider(ProviderKind::Grok, ProviderRole::Fallback));
+        let session_mgr = SessionManager::load_or_create(dir.path()).expect("session manager");
+        let mut app = status_test_app(&dir, config, ProviderConfigSource::User, Some(session_mgr));
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Workspace"));
+        assert!(rendered.contains("name: status-test"));
+        assert!(rendered.contains("namespace: hgahub"));
+        assert!(rendered.contains("[ok] (1 module, 1 function, 2 nodes)"));
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("[ok], modified"));
+        assert!(rendered.contains("Session / AI"));
+        assert!(rendered.contains("minimax primary, grok fallback (source: user)"));
+        assert!(rendered.contains("0 persisted turns, 0 context turns"));
+        assert!(!rendered.contains("LLM calls"));
+    }
+
+    #[test]
+    fn status_reports_unconfigured_provider_and_first_actionable_hint() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::None,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Graph:"));
+        assert!(rendered.contains("[missing]"));
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("(not built)"));
+        assert!(rendered.contains("Providers:    not configured (source: none)"));
+        assert!(rendered.contains("Session:      unavailable (0 context turns)"));
+        assert!(rendered.contains("Next:         run /init to create a workspace graph"));
+    }
+
+    #[test]
+    fn status_reports_invalid_graph() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, "{not json");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::Workspace,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("[invalid:"));
+        assert!(rendered.contains("Next:         fix the graph JSON or run /undo"));
+    }
+
+    #[test]
+    fn status_rejects_directory_build_output() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        fs::create_dir_all(dir.path().join(".duumbi/build/output"))
+            .expect("output directory must be created");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::None,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("[invalid: not a file]"));
+        assert!(rendered.contains("Next:         run /build to create the binary"));
+    }
+
+    #[test]
+    fn status_rejects_empty_build_output() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        let build_dir = dir.path().join(".duumbi").join("build");
+        fs::create_dir_all(&build_dir).expect("build dir must be created");
+        fs::write(build_dir.join("output"), b"").expect("empty output must be written");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::None,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("(not built: empty file)"));
+        assert!(rendered.contains("Next:         run /build to create the binary"));
+    }
+
+    #[test]
+    fn status_shows_legacy_workspace_provider_source() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        let config = DuumbiConfig {
+            llm: Some(crate::config::LlmConfig {
+                provider: crate::config::LlmProvider::Anthropic,
+                model: "legacy-model".to_string(),
+                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            }),
+            ..DuumbiConfig::default()
+        };
+        let mut app = status_test_app(&dir, config, ProviderConfigSource::LegacyWorkspace, None);
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("anthropic primary (source: legacy workspace)"));
+    }
+
+    #[test]
+    fn status_reports_dependency_lock_mismatch() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        let mut config = DuumbiConfig::default();
+        config.dependencies.insert(
+            "local-lib".to_string(),
+            crate::config::DependencyConfig::Path {
+                path: "../local-lib".to_string(),
+            },
+        );
+        let mut app = status_test_app(&dir, config, ProviderConfigSource::None, None);
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Dependencies: 1 declared, 0 locked (config/lock mismatch)"));
     }
 }
