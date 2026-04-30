@@ -1607,7 +1607,7 @@ fn print_status_to_buffer(app: &mut ReplApp) {
     );
 
     let build_status = build_status_line(&output_path);
-    if !output_path.exists() {
+    if !output_path.exists() || build_status.is_invalid {
         hints.push("run /build to create the binary".to_string());
     }
     app.push_output(
@@ -1713,7 +1713,8 @@ fn graph_summary(
 
     if graph_dir.exists() {
         let entries = fs::read_dir(&graph_dir).map_err(|e| e.to_string())?;
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", graph_dir.display()))?;
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("jsonld") {
                 paths.push(path);
@@ -1755,10 +1756,36 @@ fn build_status_line(output_path: &Path) -> StatusLine {
         };
     }
 
-    let modified = output_path
-        .metadata()
+    let metadata = match output_path.metadata() {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            return StatusLine {
+                text: format!("{} [invalid: {e}]", output_path.display()),
+                style: OutputStyle::Error,
+                is_invalid: true,
+            };
+        }
+    };
+
+    if !metadata.is_file() {
+        return StatusLine {
+            text: format!("{} [invalid: not a file]", output_path.display()),
+            style: OutputStyle::Error,
+            is_invalid: true,
+        };
+    }
+
+    if metadata.len() == 0 {
+        return StatusLine {
+            text: format!("{} (not built: empty file)", output_path.display()),
+            style: OutputStyle::Dim,
+            is_invalid: true,
+        };
+    }
+
+    let modified = metadata
+        .modified()
         .ok()
-        .and_then(|metadata| metadata.modified().ok())
         .map(format_system_time)
         .map(|time| format!(", modified {time}"))
         .unwrap_or_default();
@@ -2279,6 +2306,49 @@ mod tests {
 
         assert!(rendered.contains("[invalid:"));
         assert!(rendered.contains("Next:         fix the graph JSON or run /undo"));
+    }
+
+    #[test]
+    fn status_rejects_directory_build_output() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        fs::create_dir_all(dir.path().join(".duumbi/build/output"))
+            .expect("output directory must be created");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::None,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("[invalid: not a file]"));
+        assert!(rendered.contains("Next:         run /build to create the binary"));
+    }
+
+    #[test]
+    fn status_rejects_empty_build_output() {
+        let dir = TempDir::new().expect("tempdir");
+        write_main_graph(&dir, minimal_graph());
+        let build_dir = dir.path().join(".duumbi").join("build");
+        fs::create_dir_all(&build_dir).expect("build dir must be created");
+        fs::write(build_dir.join("output"), b"").expect("empty output must be written");
+        let mut app = status_test_app(
+            &dir,
+            DuumbiConfig::default(),
+            ProviderConfigSource::None,
+            None,
+        );
+
+        print_status_to_buffer(&mut app);
+        let rendered = status_output(&app);
+
+        assert!(rendered.contains("Binary:"));
+        assert!(rendered.contains("(not built: empty file)"));
+        assert!(rendered.contains("Next:         run /build to create the binary"));
     }
 
     #[test]
