@@ -8,6 +8,8 @@ use crate::agents::analyzer::{Complexity, Risk, TaskProfile, TaskType};
 use crate::agents::template::AgentRole;
 use crate::config::{ProviderConfig, ProviderKind, ResolvedProviderConfig};
 
+pub(crate) const RETIRED_GROK_CODE_FAST_1: &str = "grok-code-fast-1";
+
 /// Static metadata for a model that Duumbi may select.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCatalogEntry {
@@ -143,15 +145,6 @@ pub fn catalog() -> &'static [ModelCatalogEntry] {
             coding: true,
         },
         ModelCatalogEntry {
-            provider: ProviderKind::Grok,
-            model: "grok-code-fast-1",
-            quality: 86,
-            speed: 95,
-            cost_efficiency: 92,
-            reasoning: false,
-            coding: true,
-        },
-        ModelCatalogEntry {
             provider: ProviderKind::MiniMax,
             model: "MiniMax-M2.7",
             quality: 92,
@@ -199,6 +192,12 @@ pub fn catalog() -> &'static [ModelCatalogEntry] {
     ]
 }
 
+/// Returns true when a model identifier is intentionally retired by this release.
+#[must_use]
+pub(crate) fn is_retired_model(provider: &ProviderKind, model: &str) -> bool {
+    matches!(provider, &ProviderKind::Grok) && model == RETIRED_GROK_CODE_FAST_1
+}
+
 /// Selects the best model for the given provider and call context.
 #[must_use]
 pub fn select_model(
@@ -220,7 +219,9 @@ pub fn resolve_provider_config(
 ) -> Option<ResolvedProviderConfig> {
     let selected = config
         .model
-        .clone()
+        .as_deref()
+        .filter(|model| !is_retired_model(&config.provider, model))
+        .map(str::to_string)
         .or_else(|| select_model(&config.provider, context).map(|entry| entry.model.to_string()))?;
 
     Some(ResolvedProviderConfig {
@@ -334,6 +335,40 @@ mod tests {
         let resolved = resolve_provider_config(&config, &ModelSelectionContext::default());
 
         assert_eq!(resolved.expect("model must resolve").model, "legacy-model");
+    }
+
+    #[test]
+    fn grok_code_fast_is_not_in_catalog() {
+        assert!(
+            !catalog()
+                .iter()
+                .any(|entry| entry.provider == ProviderKind::Grok
+                    && entry.model == RETIRED_GROK_CODE_FAST_1)
+        );
+    }
+
+    #[test]
+    fn retired_grok_legacy_model_falls_back_to_catalog_selection() {
+        let config = ProviderConfig {
+            provider: ProviderKind::Grok,
+            role: crate::config::ProviderRole::Primary,
+            model: Some(RETIRED_GROK_CODE_FAST_1.to_string()),
+            api_key_env: "XAI_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        };
+
+        let resolved = resolve_provider_config(&config, &ModelSelectionContext::default())
+            .expect("model must resolve");
+
+        assert_ne!(resolved.model, RETIRED_GROK_CODE_FAST_1);
+        assert!(
+            catalog()
+                .iter()
+                .any(|entry| entry.provider == ProviderKind::Grok && entry.model == resolved.model)
+        );
     }
 
     #[test]
