@@ -63,6 +63,13 @@ async fn main() {
                 process::exit(1);
             }
         };
+        let config = match auto_configure_startup_providers(&workspace_root, config).await {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                process::exit(1);
+            }
+        };
         if let Err(e) = cli::repl::run(workspace_root, config).await {
             eprintln!("error: {e:#}");
             process::exit(1);
@@ -74,6 +81,72 @@ async fn main() {
     if let Err(e) = run(cli).await {
         eprintln!("error: {e:#}");
         process::exit(1);
+    }
+}
+
+async fn auto_configure_startup_providers(
+    workspace_root: &Path,
+    effective_config: config::EffectiveConfig,
+) -> Result<config::EffectiveConfig> {
+    let setups = cli::provider_startup::discover_env_provider_setups(&effective_config);
+    if setups.is_empty() {
+        return Ok(effective_config);
+    }
+
+    let report = run_provider_startup_spinner(effective_config.clone(), setups).await;
+    eprintln!();
+    for result in &report.results {
+        if result.success {
+            eprintln!(
+                "Provider configured from {}: {}",
+                result.env_var, result.message
+            );
+        } else {
+            eprintln!(
+                "Provider setup skipped for {} ({}): {}",
+                result.provider, result.env_var, result.message
+            );
+        }
+    }
+
+    if report.any_success() {
+        config::load_effective_config(workspace_root)
+            .map_err(|e| anyhow::anyhow!("Failed to reload provider config: {e}"))
+    } else {
+        Ok(effective_config)
+    }
+}
+
+async fn run_provider_startup_spinner(
+    effective_config: config::EffectiveConfig,
+    setups: Vec<cli::provider_startup::EnvProviderSetup>,
+) -> cli::provider_startup::EnvProviderSetupReport {
+    use tokio::time::{Duration, interval};
+
+    let handle = tokio::spawn(async move {
+        cli::provider_startup::configure_env_providers(&effective_config, setups).await
+    });
+    let mut frames = interval(Duration::from_millis(250));
+    let mut dots = 0usize;
+
+    loop {
+        if handle.is_finished() {
+            return match handle.await {
+                Ok(report) => report,
+                Err(e) => {
+                    eprint!("\r{: <40}\r", "");
+                    io::stderr().flush().ok();
+                    eprintln!("Provider setup task failed: {e}");
+                    cli::provider_startup::EnvProviderSetupReport { results: vec![] }
+                }
+            };
+        }
+
+        let suffix = ".".repeat(dots);
+        eprint!("\rSetting up providers{suffix:<3}");
+        io::stderr().flush().ok();
+        dots = (dots + 1) % 4;
+        frames.tick().await;
     }
 }
 

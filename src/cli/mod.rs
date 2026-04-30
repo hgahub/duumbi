@@ -12,6 +12,7 @@ pub mod keystore;
 pub mod mode;
 pub mod progress;
 pub mod provider;
+pub mod provider_startup;
 pub mod publish;
 pub mod registry;
 pub mod repl;
