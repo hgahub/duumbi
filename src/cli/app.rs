@@ -3426,9 +3426,6 @@ mod tests {
     use super::*;
     use crate::session::SessionManager;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct HomeEnvGuard(Option<OsString>);
 
@@ -4394,7 +4391,9 @@ mod tests {
 
     #[test]
     fn provider_panel_api_key_enter_submits_probe_action_without_saving() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
 
@@ -4470,7 +4469,9 @@ mod tests {
             .await
             .expect("probe should succeed");
 
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         app.save_tested_provider_key(
@@ -4546,7 +4547,9 @@ mod tests {
             .expect("probe should succeed when at least one model is accessible");
         assert_eq!(probe_report.accessible_count(), 2);
 
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         app.save_tested_provider_key(
@@ -4580,7 +4583,9 @@ mod tests {
 
     #[test]
     fn provider_panel_file_credential_preserves_custom_api_key_env() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
 
@@ -5018,7 +5023,9 @@ mod tests {
 
     #[test]
     fn provider_panel_delete_removes_global_model_access_snapshot() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         let fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(

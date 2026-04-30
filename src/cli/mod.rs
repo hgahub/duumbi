@@ -24,6 +24,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Duumbi — AI-first semantic graph compiler.
 #[derive(Parser, Debug)]
 #[command(name = "duumbi", version, about)]

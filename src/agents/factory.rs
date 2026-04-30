@@ -64,15 +64,26 @@ pub fn create_provider_for_global_access_context(
     let mut context = context.clone();
     if let Some(fingerprint) = crate::agents::model_access::credential_fingerprint_from_env(config)
     {
-        context.accessible_models =
-            ModelAccessStore::accessible_models(&config.provider, &fingerprint)
-                .into_iter()
-                .collect();
-        context.denied_models = ModelAccessStore::denied_models(&config.provider, &fingerprint)
-            .into_iter()
-            .collect();
+        context.accessible_models = active_model_access_models(
+            &config.provider,
+            ModelAccessStore::accessible_models(&config.provider, &fingerprint),
+        );
+        context.denied_models = active_model_access_models(
+            &config.provider,
+            ModelAccessStore::denied_models(&config.provider, &fingerprint),
+        );
     }
     create_provider_for_context(config, &context)
+}
+
+fn active_model_access_models(
+    provider: &ProviderKind,
+    models: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    models
+        .into_iter()
+        .filter(|model| !model_catalog::is_retired_model(provider, model))
+        .collect()
 }
 
 fn create_resolved_provider(
@@ -403,5 +414,36 @@ mod tests {
 
         assert_eq!(provider.name(), "grok");
         unsafe { std::env::remove_var("DUUMBI_TEST_GLOBAL_CHAIN_KEY") };
+    }
+
+    #[test]
+    fn retired_grok_access_metadata_is_ignored() {
+        let active = active_model_access_models(
+            &ProviderKind::Grok,
+            vec![model_catalog::RETIRED_GROK_CODE_FAST_1.to_string()],
+        );
+
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn retired_grok_denial_metadata_is_ignored_without_affecting_active_models() {
+        let active = active_model_access_models(
+            &ProviderKind::Grok,
+            vec![
+                model_catalog::RETIRED_GROK_CODE_FAST_1.to_string(),
+                "grok-4-1-fast-non-reasoning".to_string(),
+            ],
+        );
+
+        assert_eq!(active, vec!["grok-4-1-fast-non-reasoning"]);
+    }
+
+    #[test]
+    fn active_model_access_filter_keeps_non_retired_models() {
+        let active =
+            active_model_access_models(&ProviderKind::MiniMax, vec!["MiniMax-M2.5".to_string()]);
+
+        assert_eq!(active, vec!["MiniMax-M2.5"]);
     }
 }
