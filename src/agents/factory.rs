@@ -418,8 +418,10 @@ mod tests {
 
     #[test]
     fn retired_grok_access_metadata_is_ignored() {
-        let active =
-            active_model_access_models(&ProviderKind::Grok, vec!["grok-code-fast-1".to_string()]);
+        let active = active_model_access_models(
+            &ProviderKind::Grok,
+            vec![model_catalog::RETIRED_GROK_CODE_FAST_1.to_string()],
+        );
 
         assert!(active.is_empty());
     }
@@ -429,7 +431,7 @@ mod tests {
         let active = active_model_access_models(
             &ProviderKind::Grok,
             vec![
-                "grok-code-fast-1".to_string(),
+                model_catalog::RETIRED_GROK_CODE_FAST_1.to_string(),
                 "grok-4-1-fast-non-reasoning".to_string(),
             ],
         );

@@ -8,7 +8,7 @@ use crate::agents::analyzer::{Complexity, Risk, TaskProfile, TaskType};
 use crate::agents::template::AgentRole;
 use crate::config::{ProviderConfig, ProviderKind, ResolvedProviderConfig};
 
-const RETIRED_GROK_CODE_FAST_1: &str = "grok-code-fast-1";
+pub(crate) const RETIRED_GROK_CODE_FAST_1: &str = "grok-code-fast-1";
 
 /// Static metadata for a model that Duumbi may select.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,7 +195,7 @@ pub fn catalog() -> &'static [ModelCatalogEntry] {
 /// Returns true when a model identifier is intentionally retired by this release.
 #[must_use]
 pub(crate) fn is_retired_model(provider: &ProviderKind, model: &str) -> bool {
-    matches!(provider, ProviderKind::Grok) && model == RETIRED_GROK_CODE_FAST_1
+    matches!(provider, &ProviderKind::Grok) && model == RETIRED_GROK_CODE_FAST_1
 }
 
 /// Selects the best model for the given provider and call context.
