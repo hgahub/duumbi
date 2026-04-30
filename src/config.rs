@@ -86,7 +86,7 @@ pub struct LlmConfig {
 // ---------------------------------------------------------------------------
 
 /// Provider kind for the `[[providers]]` config section.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// Anthropic Claude API.
