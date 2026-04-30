@@ -13,7 +13,12 @@ rustup component add rustfmt clippy
 
 # Install pre-commit hooks if pre-commit is available
 if command -v pre-commit >/dev/null 2>&1; then
-    pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
+    pre-commit install --hook-type pre-commit --hook-type commit-msg
+    if command -v python3.12 >/dev/null 2>&1; then
+        pre-commit install-hooks
+    else
+        echo "warning: python3.12 not found; skipping pre-commit hook environment install"
+    fi
 fi
 
 # Install mdbook if not already available

@@ -4,6 +4,9 @@ default_install_hook_types:
 
 default_stages: [pre-commit]
 
+default_language_version:
+  python: python3.12
+
 repos:
   # BASIC CONF FOR ALL PRE-COMMITS REPO TYPE
   - repo: https://github.com/pre-commit/pre-commit-hooks
