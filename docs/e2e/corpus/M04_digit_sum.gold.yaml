@@ -1,0 +1,31 @@
+intent: "Sum the digits of a three-digit number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "digit_sum(123) returns 6 (1+2+3)"
+  - "digit_sum(999) returns 27 (9+9+9)"
+  - "digit_sum(100) returns 1 (trailing zeros contribute 0)"
+  - "digit_sum(0) returns 0 (zero edge case)"
+modules:
+  create:
+    - "math/digits"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "digit_sum_basic"
+    function: "digit_sum"
+    args: [123]
+    expected_return: 6
+  - name: "digit_sum_all_nines"
+    function: "digit_sum"
+    args: [999]
+    expected_return: 27
+  - name: "digit_sum_trailing_zeros"
+    function: "digit_sum"
+    args: [100]
+    expected_return: 1
+  - name: "digit_sum_zero"
+    function: "digit_sum"
+    args: [0]
+    expected_return: 0
+dependencies: []

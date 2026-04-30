@@ -1,0 +1,31 @@
+intent: "Write a fibonacci function"
+version: 1
+status: pending
+acceptance_criteria:
+  - "fib(0) returns 0 (base case)"
+  - "fib(1) returns 1 (base case)"
+  - "fib(2) returns 1 (first computed term)"
+  - "fib(10) returns 55 (larger input)"
+modules:
+  create:
+    - "math/fib"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "fib_zero"
+    function: "fib"
+    args: [0]
+    expected_return: 0
+  - name: "fib_one"
+    function: "fib"
+    args: [1]
+    expected_return: 1
+  - name: "fib_two"
+    function: "fib"
+    args: [2]
+    expected_return: 1
+  - name: "fib_ten"
+    function: "fib"
+    args: [10]
+    expected_return: 55
+dependencies: []

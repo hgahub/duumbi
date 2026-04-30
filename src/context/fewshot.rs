@@ -48,7 +48,7 @@ pub fn select_examples(
         .collect();
 
     // Sort by score descending
-    scored_records.sort_by(|a, b| b.0.cmp(&a.0));
+    scored_records.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     // Take top 3 within token budget
     scored_records

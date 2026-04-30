@@ -1,0 +1,1 @@
+How many steps does the Collatz sequence take to reach 1?

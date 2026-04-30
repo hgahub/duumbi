@@ -11,6 +11,8 @@ mod bench;
 mod cli;
 mod compiler;
 mod config;
+#[allow(dead_code)] // Used indirectly via intent::execute context enrichment
+mod context;
 mod deps;
 mod errors;
 mod examples;
@@ -54,7 +56,13 @@ async fn main() {
     // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
         let workspace_root = PathBuf::from(".");
-        let config = config::load_config(&workspace_root).unwrap_or_default();
+        let config = match config::load_effective_config(&workspace_root) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+        };
         if let Err(e) = cli::repl::run(workspace_root, config).await {
             eprintln!("error: {e:#}");
             process::exit(1);
@@ -363,10 +371,16 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
         cli::IntentSubcommand::Execute { name } => {
             let client = require_llm_client(&workspace)?;
             let mut log = Vec::new();
-            let ok = intent::execute::run_execute(&client, &workspace, &name, &mut log).await?;
-            for line in &log {
-                eprintln!("{line}");
-            }
+            let ok = intent::execute::run_execute_with_progress(
+                &client,
+                &workspace,
+                &name,
+                &mut log,
+                &|line| {
+                    eprintln!("{line}");
+                },
+            )
+            .await?;
             if !ok {
                 process::exit(1);
             }
@@ -468,24 +482,27 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
 }
 
 /// Dispatches `duumbi provider` subcommands.
-fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result<()> {
-    let mut cfg = config::load_config(workspace).unwrap_or_default();
+fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) -> Result<()> {
+    let mut cfg = config::load_user_config().unwrap_or_default();
 
     let lines = match subcommand {
         cli::ProviderSubcommand::List => cli::provider::list_providers(&cfg),
         cli::ProviderSubcommand::Add {
             provider_type,
-            model,
             api_key_env,
             role,
             base_url,
+            auth_token_env,
         } => {
-            let mut args = format!("{provider_type} {model} {api_key_env}");
+            let mut args = format!("{provider_type} {api_key_env}");
             if role != "primary" {
                 args.push_str(&format!(" --role {role}"));
             }
             if let Some(ref url) = base_url {
                 args.push_str(&format!(" --base-url {url}"));
+            }
+            if let Some(ref token_env) = auth_token_env {
+                args.push_str(&format!(" --auth-token-env {token_env}"));
             }
             cli::provider::add_provider(&mut cfg, &args)
         }
@@ -506,7 +523,7 @@ fn run_provider(subcommand: cli::ProviderSubcommand, workspace: &Path) -> Result
         .iter()
         .any(|l| l.style == cli::mode::OutputStyle::Success)
     {
-        config::save_config(workspace, &cfg)
+        config::save_user_config(&cfg)
             .map_err(|e| anyhow::anyhow!("Failed to save config: {e}"))?;
     }
 
@@ -540,20 +557,17 @@ async fn run_registry(subcommand: cli::RegistrySubcommand, workspace: &Path) -> 
 /// Uses the `[[providers]]` config if available, falling back to the legacy
 /// `[llm]` section for backward compatibility.
 fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
-    let cfg = config::load_config(workspace).context(
-        "Cannot run AI commands: no .duumbi/config.toml found.\n\
-         Run `duumbi init` and add a [[providers]] section to .duumbi/config.toml.",
-    )?;
+    let cfg = config::load_effective_config(workspace)?.config;
 
     let providers = cfg.effective_providers();
     if providers.is_empty() {
         anyhow::bail!(
-            "No LLM provider configured in .duumbi/config.toml.\n\
-             Add a [[providers]] section or a legacy [llm] section."
+            "No LLM provider configured.\n\
+             Use `/provider` in the REPL or `duumbi provider add ...` to save a user-level provider."
         );
     }
 
-    agents::factory::create_provider_chain(&providers)
+    agents::factory::create_provider_chain_for_global_access(&providers)
         .map_err(|e| anyhow::anyhow!("Failed to create LLM provider: {e}"))
 }
 
@@ -601,15 +615,12 @@ async fn run_benchmark(
     baseline: Option<PathBuf>,
 ) -> Result<()> {
     let workspace = PathBuf::from(".");
-    let cfg = config::load_config(&workspace).context(
-        "Cannot run benchmarks: no .duumbi/config.toml found.\n\
-         Run `duumbi init` and add a [[providers]] section to .duumbi/config.toml.",
-    )?;
+    let cfg = config::load_effective_config(&workspace)?.config;
 
     let providers = cfg.effective_providers();
     if providers.is_empty() {
         anyhow::bail!(
-            "No LLM providers configured. Add [[providers]] sections to .duumbi/config.toml."
+            "No LLM providers configured. Use `duumbi provider add ...` to save a user-level provider."
         );
     }
 

@@ -1,0 +1,41 @@
+intent: Convert Celsius to Fahrenheit
+version: 1
+status: pending
+acceptance_criteria:
+- celsius_to_fahrenheit(n) returns the Fahrenheit equivalent of n degrees Celsius
+- celsius_to_fahrenheit(0) returns 32 (freezing point)
+- celsius_to_fahrenheit(100) returns 212 (boiling point)
+- celsius_to_fahrenheit handles negative temperatures correctly
+modules:
+  create:
+  - convert/temp
+  modify:
+  - app/main
+test_cases:
+- name: freezing_point
+  function: celsius_to_fahrenheit
+  args:
+  - 0
+  expected_return: 32
+- name: boiling_point
+  function: celsius_to_fahrenheit
+  args:
+  - 100
+  expected_return: 212
+- name: negative_temperature
+  function: celsius_to_fahrenheit
+  args:
+  - -10
+  expected_return: 14
+- name: body_temperature
+  function: celsius_to_fahrenheit
+  args:
+  - 37
+  expected_return: 98
+- name: equal_point
+  function: celsius_to_fahrenheit
+  args:
+  - -40
+  expected_return: -40
+dependencies: []
+created_at: 2026-01-01T21:18:32Z

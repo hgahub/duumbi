@@ -362,13 +362,12 @@ pub enum ProviderSubcommand {
 
     /// Add a new LLM provider.
     ///
-    /// Example: `duumbi provider add anthropic claude-sonnet-4-6 ANTHROPIC_API_KEY`
+    /// Example: `duumbi provider add anthropic ANTHROPIC_API_KEY`
+    /// Subscription: `duumbi provider add anthropic ANTHROPIC_API_KEY --auth-token-env ANTHROPIC_AUTH_TOKEN`
     Add {
-        /// Provider type: anthropic, openai, grok, openrouter.
+        /// Provider type: anthropic, openai, grok, openrouter, minimax.
         #[arg(value_name = "TYPE")]
         provider_type: String,
-        /// Model identifier (e.g. claude-sonnet-4-6).
-        model: String,
         /// Environment variable name for the API key.
         api_key_env: String,
         /// Provider role: primary (default) or fallback.
@@ -377,21 +376,28 @@ pub enum ProviderSubcommand {
         /// Custom base URL for the API endpoint.
         #[arg(long)]
         base_url: Option<String>,
+        /// Environment variable name for a subscription/OAuth Bearer token.
+        ///
+        /// When set, the token is preferred over the API key and sent as
+        /// `Authorization: Bearer`. Use with Claude Pro/Max subscriptions
+        /// (generate a token via `claude setup-token`).
+        #[arg(long)]
+        auth_token_env: Option<String>,
     },
 
-    /// Remove a provider by 1-based index or model name.
+    /// Remove a provider by 1-based index or provider type.
     Remove {
-        /// 1-based index number or model name.
+        /// 1-based index number or provider type.
         selector: String,
     },
 
     /// Update a field on an existing provider.
     ///
-    /// Example: `duumbi provider set 1 model claude-opus-4-6`
+    /// Example: `duumbi provider set 1 role fallback`
     Set {
         /// 1-based provider index.
         index: usize,
-        /// Field to update: model, api_key_env, role, base_url.
+        /// Field to update: api_key_env, role, base_url, auth_token_env.
         field: String,
         /// New value for the field.
         value: String,

@@ -1,0 +1,41 @@
+intent: Negate a given number
+version: 1
+status: pending
+acceptance_criteria:
+- negate(n) returns the additive inverse of n
+- negate(0) returns 0
+- negate correctly handles positive numbers
+- negate correctly handles negative numbers
+modules:
+  create:
+  - math/ops
+  modify:
+  - app/main
+test_cases:
+- name: negate_positive
+  function: negate
+  args:
+  - 5
+  expected_return: -5
+- name: negate_negative
+  function: negate
+  args:
+  - -8
+  expected_return: 8
+- name: negate_zero
+  function: negate
+  args:
+  - 0
+  expected_return: 0
+- name: negate_large_positive
+  function: negate
+  args:
+  - 1000000
+  expected_return: -1000000
+- name: negate_large_negative
+  function: negate
+  args:
+  - -999999
+  expected_return: 999999
+dependencies: []
+created_at: 2026-01-01T21:01:50Z

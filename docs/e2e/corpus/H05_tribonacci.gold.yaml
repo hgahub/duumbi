@@ -1,0 +1,41 @@
+intent: "Compute the nth tribonacci number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "tribonacci(0) returns 0 (first base case)"
+  - "tribonacci(1) returns 0 (second base case)"
+  - "tribonacci(2) returns 1 (third base case)"
+  - "tribonacci(4) returns 2 (t(4) = t(3)+t(2)+t(1) = 1+1+0 = 2)"
+  - "tribonacci(8) returns 24 (t(8) = 4+7+13 = 24)"
+  - "tribonacci(10) returns 81 (t(10) = 13+24+44 = 81)"
+modules:
+  create:
+    - "math/trib"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "trib_zero"
+    function: "tribonacci"
+    args: [0]
+    expected_return: 0
+  - name: "trib_one"
+    function: "tribonacci"
+    args: [1]
+    expected_return: 0
+  - name: "trib_two"
+    function: "tribonacci"
+    args: [2]
+    expected_return: 1
+  - name: "trib_four"
+    function: "tribonacci"
+    args: [4]
+    expected_return: 2
+  - name: "trib_eight"
+    function: "tribonacci"
+    args: [8]
+    expected_return: 24
+  - name: "trib_ten"
+    function: "tribonacci"
+    args: [10]
+    expected_return: 81
+dependencies: []

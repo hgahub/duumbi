@@ -1,0 +1,60 @@
+intent: Build a math library with double, square, and cube functions
+version: 1
+status: pending
+acceptance_criteria:
+- double(n) returns 2*n for any integer
+- square(n) returns n*n for any integer
+- cube(n) returns n*n*n for any integer
+modules:
+  create:
+  - math/ops
+  modify:
+  - app/main
+test_cases:
+- name: double_basic
+  function: double
+  args:
+  - 5
+  expected_return: 10
+- name: double_zero
+  function: double
+  args:
+  - 0
+  expected_return: 0
+- name: double_negative
+  function: double
+  args:
+  - -4
+  expected_return: -8
+- name: square_basic
+  function: square
+  args:
+  - 6
+  expected_return: 36
+- name: square_zero
+  function: square
+  args:
+  - 0
+  expected_return: 0
+- name: square_negative
+  function: square
+  args:
+  - -3
+  expected_return: 9
+- name: cube_basic
+  function: cube
+  args:
+  - 3
+  expected_return: 27
+- name: cube_zero
+  function: cube
+  args:
+  - 0
+  expected_return: 0
+- name: cube_negative
+  function: cube
+  args:
+  - -2
+  expected_return: -8
+dependencies: []
+created_at: 2026-01-01T21:10:00Z

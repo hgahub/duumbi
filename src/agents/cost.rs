@@ -334,9 +334,9 @@ alert-threshold-pct = 70
     fn duumbi_config_without_cost_section_parses() {
         use crate::config::DuumbiConfig;
         let toml = r#"
-[llm]
+[[providers]]
 provider = "anthropic"
-model = "claude-sonnet-4-6"
+role = "primary"
 api_key_env = "ANTHROPIC_API_KEY"
 "#;
         let cfg: DuumbiConfig = toml::from_str(toml).expect("config without [cost] must parse");

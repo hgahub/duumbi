@@ -74,6 +74,85 @@ impl OpenAiClient {
         self
     }
 
+    /// Sends a request WITH tools, capturing text content via `on_text` as fallback.
+    ///
+    /// This handles both use cases in a single non-streaming request:
+    /// - **Graph mutations** (`intent execute`, `duumbi add`): model returns tool
+    ///   calls → parsed as `PatchOp` values.
+    /// - **Plain text** (`intent create`): model returns text instead of tool
+    ///   calls → text is passed through `on_text`, returns `NoToolCalls`.
+    async fn do_call_with_text_fallback(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        on_text: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<Vec<PatchOp>, AgentError> {
+        let tools = openai_tools();
+        let tools_json = serde_json::to_value(&tools)
+            .map_err(|e| AgentError::Parse(format!("Failed to serialize tools: {e}")))?;
+
+        let body = json!({
+            "model": self.model,
+            "tools": tools_json,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_message }
+            ]
+        });
+
+        let mut req = self
+            .http
+            .post(&self.base_url)
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json");
+
+        for (key, value) in &self.extra_headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        let resp = req.json(&body).send().await?;
+
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+
+        // Priority 1: tool calls (graph mutations).
+        if let Some(calls) = response
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+        {
+            let mut ops = Vec::new();
+            for item in calls {
+                let call: OpenAiToolCall = serde_json::from_value(item.clone())
+                    .map_err(|e| AgentError::Parse(format!("Failed to parse tool call: {e}")))?;
+                let op = patch_op_from_openai(&call).map_err(AgentError::Parse)?;
+                ops.push(op);
+            }
+            return Ok(ops);
+        }
+
+        // Priority 2: text content (plain completion for intent create).
+        if let Some(content) = response
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            on_text(content);
+            return Err(AgentError::NoToolCalls);
+        }
+
+        // Neither tool calls nor text.
+        Err(AgentError::NoToolCalls)
+    }
+
     /// Sends a message to the OpenAI-compatible API (internal).
     async fn do_call_with_tools(
         &self,
@@ -136,11 +215,11 @@ impl LlmProvider for OpenAiClient {
         &'a self,
         system_prompt: &'a str,
         user_message: &'a str,
-        _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
-        // OpenAI streaming for tool calls requires complex delta reconstruction;
-        // fall back to non-streaming.
-        Box::pin(self.do_call_with_tools(system_prompt, user_message))
+        // Dual-path: if the model returns tool calls, parse them as PatchOps.
+        // If it returns plain text (e.g. intent create), pass it through on_text.
+        Box::pin(self.do_call_with_text_fallback(system_prompt, user_message, on_text))
     }
 }
 

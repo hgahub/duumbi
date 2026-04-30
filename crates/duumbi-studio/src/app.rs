@@ -183,26 +183,6 @@ pub fn App() -> impl IntoView {
                             </button>
                         </div>
                     </div>
-                    <div class="chat-model-area">
-                        <div class="chat-model" id="chatModelBtn" onclick="window.__studio.toggleModelDropdown(event)">
-                            <span id="chatModelLabel">"claude-sonnet-4"</span>
-                            <svg class="cm-chevron" viewBox="0 0 8 8"><path d="M1.5 3L4 5.5L6.5 3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            <div class="model-dropdown" id="modelDropdown">
-                                <div class="model-option selected" data-model="claude-sonnet-4" onclick="window.__studio.selectModel(event,this)">
-                                    <svg class="mo-check" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="#e07830" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                    "claude-sonnet-4"
-                                </div>
-                                <div class="model-option" data-model="claude-opus-4" onclick="window.__studio.selectModel(event,this)">
-                                    <svg class="mo-check" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="#e07830" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                    "claude-opus-4"
-                                </div>
-                                <div class="model-option" data-model="claude-haiku-4" onclick="window.__studio.selectModel(event,this)">
-                                    <svg class="mo-check" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="#e07830" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                    "claude-haiku-4"
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -271,7 +251,7 @@ pub fn App() -> impl IntoView {
                 </div>
                 <div class="settings-body">
                     <div class="settings-sidebar">
-                        <div class="settings-nav-item active" data-section="models">"Models"</div>
+                        <div class="settings-nav-item active" data-section="providers">"Providers"</div>
                     </div>
                     <div class="settings-main" id="settingsMain">
                         // Populated by JS openSettings()

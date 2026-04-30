@@ -294,9 +294,6 @@ pub struct StudioState {
     /// Active main panel (Phase 15: 3-panel layout).
     pub active_panel: RwSignal<ActivePanel>,
 
-    /// Selected LLM provider/model name for chat.
-    pub selected_provider: RwSignal<String>,
-
     /// Whether WebSocket chat is connected.
     pub ws_connected: RwSignal<bool>,
 
@@ -342,7 +339,6 @@ impl StudioState {
             search_visible: RwSignal::new(false),
             sidebar_tab: RwSignal::new(SidebarTab::Explorer),
             active_panel: RwSignal::new(ActivePanel::Intents),
-            selected_provider: RwSignal::new(String::new()),
             ws_connected: RwSignal::new(false),
             registry_results: RwSignal::new(Vec::new()),
             registry_loading: RwSignal::new(false),
@@ -374,7 +370,6 @@ impl StudioState {
             search_visible: RwSignal::new(false),
             sidebar_tab: RwSignal::new(SidebarTab::Explorer),
             active_panel: RwSignal::new(ActivePanel::Intents),
-            selected_provider: RwSignal::new(String::new()),
             ws_connected: RwSignal::new(false),
             registry_results: RwSignal::new(Vec::new()),
             registry_loading: RwSignal::new(false),

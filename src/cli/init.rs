@@ -86,19 +86,17 @@ duumbi = "https://registry.duumbi.dev"
 "@duumbi/stdlib-string" = "1.0.0"
 
 # Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
-# Supports: anthropic, openai, grok, openrouter.
+# Supports: anthropic, openai, grok, openrouter, minimax.
 # Add multiple [[providers]] sections for fallback chains.
 #
 # [[providers]]
 # provider = "anthropic"
 # role = "primary"
-# model = "claude-sonnet-4-6"
 # api_key_env = "ANTHROPIC_API_KEY"
 #
 # [[providers]]
 # provider = "grok"
 # role = "fallback"
-# model = "grok-3"
 # api_key_env = "XAI_API_KEY"
 "#;
 

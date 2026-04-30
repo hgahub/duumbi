@@ -22,6 +22,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Monotonic counter for unique session IDs and archive filenames.
+// AI-AGENT: AtomicU64 with Relaxed ordering is intentional — we only need
+// globally unique IDs, not cross-thread happens-before guarantees. A
+// Mutex<u64> would be correct too, but adds unnecessary synchronization cost.
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Errors from session operations.

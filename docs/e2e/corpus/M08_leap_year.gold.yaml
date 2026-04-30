@@ -1,0 +1,31 @@
+intent: "Is a given year a leap year?"
+version: 1
+status: pending
+acceptance_criteria:
+  - "is_leap_year(2000) returns 1 (divisible by 400)"
+  - "is_leap_year(1900) returns 0 (divisible by 100 but not 400)"
+  - "is_leap_year(2024) returns 1 (divisible by 4, not by 100)"
+  - "is_leap_year(2023) returns 0 (not divisible by 4)"
+modules:
+  create:
+    - "calendar/ops"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "leap_year_div400"
+    function: "is_leap_year"
+    args: [2000]
+    expected_return: 1
+  - name: "leap_year_div100_not_400"
+    function: "is_leap_year"
+    args: [1900]
+    expected_return: 0
+  - name: "leap_year_div4_not_100"
+    function: "is_leap_year"
+    args: [2024]
+    expected_return: 1
+  - name: "leap_year_common"
+    function: "is_leap_year"
+    args: [2023]
+    expected_return: 0
+dependencies: []

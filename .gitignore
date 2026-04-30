@@ -3,9 +3,7 @@ target/
 # Cargo.lock is intentionally tracked (binary/application crate)
 
 # ── DUUMBI workspace ────────────────────────────────────────────────────────
-.duumbi/build/
-.duumbi/telemetry/
-# Keep: .duumbi/config.toml, .duumbi/schema/, .duumbi/graph/ (user files)
+.duumbi/
 
 # ── Compiled runtime shim ────────────────────────────────────────────────────
 duumbi_runtime.o
@@ -45,7 +43,10 @@ cache/
 
 # ── Claude Code worktrees ────────────────────────────────────────────────────
 .claude/worktrees/
-.claude/settings.local.json
+.claude/*.lock
+
+# ── Codex ────────────────────────────────────────────────────────────────────
+.codex/
 
 # ── Temporary ────────────────────────────────────────────────────────────────
 *.tmp

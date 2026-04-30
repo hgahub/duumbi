@@ -1,0 +1,79 @@
+intent: Clamp a number between a minimum and maximum
+version: 1
+status: pending
+acceptance_criteria:
+- clamp(value, min, max) returns value when min <= value <= max
+- clamp(value, min, max) returns min when value < min
+- clamp(value, min, max) returns max when value > max
+- clamp handles negative numbers correctly for all parameters
+modules:
+  create:
+  - math/clamp
+  modify:
+  - app/main
+test_cases:
+- name: value_in_range
+  function: clamp
+  args:
+  - 5
+  - 0
+  - 10
+  expected_return: 5
+- name: value_below_min
+  function: clamp
+  args:
+  - -3
+  - 0
+  - 10
+  expected_return: 0
+- name: value_above_max
+  function: clamp
+  args:
+  - 15
+  - 0
+  - 10
+  expected_return: 10
+- name: value_equals_min
+  function: clamp
+  args:
+  - 0
+  - 0
+  - 10
+  expected_return: 0
+- name: value_equals_max
+  function: clamp
+  args:
+  - 10
+  - 0
+  - 10
+  expected_return: 10
+- name: negative_values_in_range
+  function: clamp
+  args:
+  - -5
+  - -10
+  - 10
+  expected_return: -5
+- name: all_negative_bounds
+  function: clamp
+  args:
+  - -15
+  - -20
+  - -10
+  expected_return: -15
+- name: negative_below_min
+  function: clamp
+  args:
+  - -25
+  - -20
+  - -10
+  expected_return: -20
+- name: negative_above_max
+  function: clamp
+  args:
+  - -5
+  - -20
+  - -10
+  expected_return: -10
+dependencies: []
+created_at: 2026-01-01T21:17:15Z

@@ -1,0 +1,42 @@
+intent: "Calculate the integer square root of a number"
+version: 1
+status: pending
+acceptance_criteria:
+  - "isqrt(n) returns the largest integer r such that r*r <= n"
+  - "isqrt(0) returns 0 (zero edge case)"
+  - "isqrt(1) returns 1 (smallest non-zero perfect square)"
+  - "isqrt(4) returns 2 (perfect square)"
+  - "isqrt(9) returns 3 (perfect square)"
+  - "isqrt(10) returns 3 (non-perfect square, floor)"
+  - "isqrt(100) returns 10 (larger perfect square)"
+modules:
+  create:
+    - "math/sqrt"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "isqrt_zero"
+    function: "isqrt"
+    args: [0]
+    expected_return: 0
+  - name: "isqrt_one"
+    function: "isqrt"
+    args: [1]
+    expected_return: 1
+  - name: "isqrt_four"
+    function: "isqrt"
+    args: [4]
+    expected_return: 2
+  - name: "isqrt_nine"
+    function: "isqrt"
+    args: [9]
+    expected_return: 3
+  - name: "isqrt_non_perfect"
+    function: "isqrt"
+    args: [10]
+    expected_return: 3
+  - name: "isqrt_hundred"
+    function: "isqrt"
+    args: [100]
+    expected_return: 10
+dependencies: []

@@ -312,8 +312,84 @@ fn filter_providers<'a>(
 
 /// Builds a stable, unique provider identifier from config.
 ///
-/// Includes provider kind and model to distinguish multiple entries for the
-/// same provider (e.g. two Anthropic configs with different models).
+/// Legacy configs with an explicit model keep the historical `provider:model`
+/// identifier. Provider-only configs include role, credential env, and base URL
+/// so multiple entries for the same provider remain filterable.
 fn provider_name(config: &ProviderConfig) -> String {
-    format!("{}:{}", config.provider, config.model)
+    if let Some(model) = config.model.as_deref() {
+        return format!("{}:{model}", config.provider);
+    }
+
+    let role = match config.role {
+        crate::config::ProviderRole::Primary => "primary",
+        crate::config::ProviderRole::Fallback => "fallback",
+    };
+    let mut name = format!("{}:auto:{role}:{}", config.provider, config.api_key_env);
+    if let Some(base_url) = config.base_url.as_deref() {
+        name.push(':');
+        name.push_str(base_url);
+    }
+    name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ProviderKind, ProviderRole};
+
+    fn provider_config(
+        provider: ProviderKind,
+        role: ProviderRole,
+        api_key_env: &str,
+        model: Option<&str>,
+    ) -> ProviderConfig {
+        ProviderConfig {
+            provider,
+            role,
+            model: model.map(ToString::to_string),
+            api_key_env: api_key_env.to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: None,
+            auth_token_env: None,
+        }
+    }
+
+    #[test]
+    fn provider_name_preserves_legacy_model_identifier() {
+        let config = provider_config(
+            ProviderKind::Anthropic,
+            ProviderRole::Primary,
+            "ANTHROPIC_API_KEY",
+            Some("claude-sonnet-4-6"),
+        );
+
+        assert_eq!(provider_name(&config), "anthropic:claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn provider_name_distinguishes_provider_only_configs() {
+        let first = provider_config(
+            ProviderKind::Anthropic,
+            ProviderRole::Primary,
+            "ANTHROPIC_API_KEY",
+            None,
+        );
+        let second = provider_config(
+            ProviderKind::Anthropic,
+            ProviderRole::Fallback,
+            "ANTHROPIC_FALLBACK_API_KEY",
+            None,
+        );
+
+        assert_ne!(provider_name(&first), provider_name(&second));
+        assert_eq!(
+            provider_name(&first),
+            "anthropic:auto:primary:ANTHROPIC_API_KEY"
+        );
+        assert_eq!(
+            provider_name(&second),
+            "anthropic:auto:fallback:ANTHROPIC_FALLBACK_API_KEY"
+        );
+    }
 }

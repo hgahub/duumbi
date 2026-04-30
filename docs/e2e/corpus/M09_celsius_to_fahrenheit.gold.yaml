@@ -1,0 +1,26 @@
+intent: "Convert Celsius to Fahrenheit"
+version: 1
+status: pending
+acceptance_criteria:
+  - "celsius_to_fahrenheit(0) returns 32 (freezing point)"
+  - "celsius_to_fahrenheit(100) returns 212 (boiling point)"
+  - "celsius_to_fahrenheit(-40) returns -40 (scale crossover point)"
+modules:
+  create:
+    - "convert/temp"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "celsius_freezing"
+    function: "celsius_to_fahrenheit"
+    args: [0]
+    expected_return: 32
+  - name: "celsius_boiling"
+    function: "celsius_to_fahrenheit"
+    args: [100]
+    expected_return: 212
+  - name: "celsius_crossover"
+    function: "celsius_to_fahrenheit"
+    args: [-40]
+    expected_return: -40
+dependencies: []

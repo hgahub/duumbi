@@ -15,6 +15,9 @@ pub mod fallback;
 pub mod grok;
 pub mod merger;
 pub mod minimax;
+pub mod model_access;
+pub mod model_catalog;
+pub mod model_performance;
 pub mod openai;
 pub mod openrouter;
 pub mod orchestrator;
@@ -101,6 +104,10 @@ impl AgentError {
 ///
 /// The `on_text` parameter in [`call_with_tools_streaming`] uses `&dyn Fn(&str)`
 /// instead of a generic `F: Fn(&str)` for object safety.
+// AI-AGENT: The Pin<Box<dyn Future<...>>> return type is required for object safety.
+// Rust does not allow async fn in object-safe traits (as of current edition).
+// Do NOT refactor methods to `async fn` — that would break dyn LlmProvider,
+// ProviderChain, and all factory functions that return Box<dyn LlmProvider>.
 pub trait LlmProvider: Send + Sync {
     /// Returns the provider's display name (e.g. `"anthropic"`, `"grok"`).
     fn name(&self) -> &str;

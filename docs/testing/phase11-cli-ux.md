@@ -55,7 +55,6 @@ name = "p11-test"
 [[providers]]
 provider = "Anthropic"
 role = "Primary"
-model = "claude-sonnet-4-20250514"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
