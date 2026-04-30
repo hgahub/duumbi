@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure Cargo and target cache directories are writable for the vscode user.
-mkdir -p /home/vscode/.cargo/registry /home/vscode/.cargo/git /home/vscode/.cache/duumbi-target
+# Ensure Cargo and workspace target directories are writable for the vscode user.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+mkdir -p /home/vscode/.cargo/registry /home/vscode/.cargo/git "$WORKSPACE_DIR/target"
 if command -v sudo >/dev/null 2>&1; then
-    sudo chown -R vscode:rustlang /home/vscode/.cargo /home/vscode/.cache/duumbi-target || true
-    sudo chmod -R u+rwX,g+rwX /home/vscode/.cargo /home/vscode/.cache/duumbi-target || true
+    VSCODE_GROUP="$(id -gn vscode)"
+    if ! sudo chown -R "vscode:${VSCODE_GROUP}" /home/vscode/.cargo "$WORKSPACE_DIR/target"; then
+        echo "warning: failed to set ownership for Cargo cache or target directory" >&2
+    fi
+    sudo chmod -R u+rwX,g+rwX /home/vscode/.cargo "$WORKSPACE_DIR/target"
 fi
 
 # Install required Rust components

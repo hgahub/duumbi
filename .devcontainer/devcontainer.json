@@ -18,13 +18,12 @@
     "containerEnv": {
         "CARGO_TERM_COLOR": "always",
         "RUST_BACKTRACE": "1",
-        "CARGO_HOME": "/home/vscode/.cargo",
-        "CARGO_TARGET_DIR": "/home/vscode/.cache/duumbi-target"
+        "CARGO_HOME": "/home/vscode/.cargo"
     },
     "mounts": [
         "source=duumbi-cargo-registry,target=/home/vscode/.cargo/registry,type=volume",
         "source=duumbi-cargo-git,target=/home/vscode/.cargo/git,type=volume",
-        "source=duumbi-target,target=/home/vscode/.cache/duumbi-target,type=volume"
+        "source=duumbi-target,target=${containerWorkspaceFolder}/target,type=volume"
     ],
     "forwardPorts": [
         8421
