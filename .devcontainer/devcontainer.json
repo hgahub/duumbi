@@ -9,6 +9,10 @@
             "version": "24.15.0"
         },
         "ghcr.io/devcontainers-extra/features/claude-code:2": {},
+        "ghcr.io/dirien/devcontainer-feature-codex/codex:0": {},
+        "ghcr.io/devcontainers-extra/features/npm-package:1": {
+            "package": "@augmentcode/auggie"
+        },
         "ghcr.io/stu-bell/devcontainer-features/open-code:0": {},
         "ghcr.io/gvatsal60/dev-container-features/pre-commit:1": {},
         "ghcr.io/devcontainers/features/python:1": {
