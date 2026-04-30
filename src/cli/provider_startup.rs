@@ -8,7 +8,8 @@ use std::collections::HashSet;
 
 use crate::agents::model_access::{ModelAccessStore, credential_fingerprint_for_secret};
 use crate::config::{
-    DuumbiConfig, EffectiveConfig, KeyStorage, ProviderConfig, ProviderKind, ProviderRole,
+    DuumbiConfig, EffectiveConfig, KeyStorage, ProviderConfig, ProviderConfigSource, ProviderKind,
+    ProviderRole,
 };
 
 /// A provider credential discovered in the process environment.
@@ -68,7 +69,8 @@ fn discover_env_provider_setups_from(
         .filter(|candidate| !configured.contains(&candidate.provider))
         .filter_map(|candidate| {
             let key = std::env::var(candidate.env_var).ok()?;
-            if key.trim().is_empty() {
+            let key = key.trim().to_string();
+            if key.is_empty() {
                 return None;
             }
             Some(EnvProviderSetup {
@@ -95,12 +97,26 @@ pub async fn configure_env_providers(
     }
 
     let mut user_config = effective.user_config.clone();
-    if user_config.providers.is_empty() {
-        user_config.providers = effective.config.effective_providers();
+    if !can_write_user_provider_config(effective) {
+        return EnvProviderSetupReport {
+            results: setups
+                .into_iter()
+                .map(|setup| EnvProviderSetupResult {
+                    provider: setup.provider,
+                    env_var: setup.env_var,
+                    success: false,
+                    message: format!(
+                        "Provider auto-configuration skipped because active providers come from {} config.",
+                        provider_source_label(effective.provider_source)
+                    ),
+                })
+                .collect(),
+        };
     }
 
     let mut report = EnvProviderSetupReport::default();
     let mut changed = false;
+    let mut pending_metadata = Vec::new();
 
     for setup in setups {
         let provider_config = provider_config_for_setup(&setup, &user_config);
@@ -114,26 +130,19 @@ pub async fn configure_env_providers(
             Ok(probe_report) => {
                 let fingerprint =
                     credential_fingerprint_for_secret(&setup.provider, &setup.key, false);
-                match ModelAccessStore::record_report(&fingerprint, &probe_report) {
-                    Ok(()) => {
-                        upsert_provider(&mut user_config, provider_config);
-                        changed = true;
-                        report.results.push(EnvProviderSetupResult {
-                            provider: setup.provider,
-                            env_var: setup.env_var,
-                            success: true,
-                            message: probe_report.success_message(),
-                        });
-                    }
-                    Err(e) => {
-                        report.results.push(EnvProviderSetupResult {
-                            provider: setup.provider,
-                            env_var: setup.env_var,
-                            success: false,
-                            message: format!("Model access metadata save failed: {e}"),
-                        });
-                    }
-                }
+                upsert_provider(&mut user_config, provider_config);
+                changed = true;
+                pending_metadata.push(PendingModelAccessMetadata {
+                    result_index: report.results.len(),
+                    fingerprint,
+                    probe_report: probe_report.clone(),
+                });
+                report.results.push(EnvProviderSetupResult {
+                    provider: setup.provider,
+                    env_var: setup.env_var,
+                    success: true,
+                    message: probe_report.success_message(),
+                });
             }
             Err(message) => {
                 report.results.push(EnvProviderSetupResult {
@@ -153,9 +162,25 @@ pub async fn configure_env_providers(
                 result.message = format!("Provider config save failed: {e}");
             }
         }
+        return report;
+    }
+
+    for pending in pending_metadata {
+        if let Err(e) = ModelAccessStore::record_report(&pending.fingerprint, &pending.probe_report)
+            && let Some(result) = report.results.get_mut(pending.result_index)
+        {
+            result.message = format!("{} Model access metadata save failed: {e}", result.message);
+        }
     }
 
     report
+}
+
+#[derive(Debug, Clone)]
+struct PendingModelAccessMetadata {
+    result_index: usize,
+    fingerprint: String,
+    probe_report: crate::agents::model_access::ProviderProbeReport,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +232,20 @@ fn configured_provider_kinds(config: &DuumbiConfig) -> HashSet<ProviderKind> {
         .into_iter()
         .map(|provider| provider.provider)
         .collect()
+}
+
+fn can_write_user_provider_config(effective: &EffectiveConfig) -> bool {
+    !effective.user_config.providers.is_empty()
+        || matches!(effective.provider_source, ProviderConfigSource::None)
+}
+
+fn provider_source_label(source: ProviderConfigSource) -> &'static str {
+    match source {
+        ProviderConfigSource::None => "empty",
+        ProviderConfigSource::System | ProviderConfigSource::LegacySystem => "system",
+        ProviderConfigSource::User | ProviderConfigSource::LegacyUser => "user",
+        ProviderConfigSource::Workspace | ProviderConfigSource::LegacyWorkspace => "workspace",
+    }
 }
 
 fn provider_config_for_setup(
@@ -330,7 +369,7 @@ mod tests {
         let _lock = lock_env();
         let guards = [
             EnvGuard::set("ANTHROPIC_API_KEY", "anthropic-key"),
-            EnvGuard::set("OPENAI_API_KEY", "openai-key"),
+            EnvGuard::set("OPENAI_API_KEY", " openai-key \n"),
             EnvGuard::set("XAI_API_KEY", "xai-key"),
             EnvGuard::set("OPENROUTER_API_KEY", "openrouter-key"),
             EnvGuard::set("MINIMAX_API_KEY", "minimax-key"),
@@ -351,6 +390,11 @@ mod tests {
                 .iter()
                 .any(|setup| setup.provider == ProviderKind::OpenAI)
         );
+        let openai = setups
+            .iter()
+            .find(|setup| setup.provider == ProviderKind::OpenAI)
+            .expect("openai setup must be discovered");
+        assert_eq!(openai.key, "openai-key");
         assert!(
             setups
                 .iter()
@@ -442,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn configure_preserves_lower_layer_providers_when_user_config_is_empty() {
+    fn configure_skips_when_lower_layer_providers_are_active() {
         let _lock = lock_env();
         let temp = TempDir::new().expect("invariant: temp dir");
         let _home = EnvGuard::set("HOME", temp.path().to_str().expect("utf8 temp path"));
@@ -461,21 +505,10 @@ mod tests {
 
         let report = run_async_test(configure_env_providers(&effective, vec![setup]));
 
-        assert!(report.any_success());
-        let saved = crate::config::load_user_config().expect("user config must be saved");
-        assert_eq!(saved.providers.len(), 2);
-        assert!(
-            saved
-                .providers
-                .iter()
-                .any(|p| p.provider == ProviderKind::Anthropic)
-        );
-        let minimax = saved
-            .providers
-            .iter()
-            .find(|p| p.provider == ProviderKind::MiniMax)
-            .expect("minimax provider saved");
-        assert_eq!(minimax.role, ProviderRole::Fallback);
+        assert!(!report.any_success());
+        assert_eq!(report.results.len(), 1);
+        assert!(report.results[0].message.contains("workspace config"));
+        assert!(!crate::config::user_config_path().exists());
     }
 
     fn run_async_test<F: std::future::Future>(future: F) -> F::Output {

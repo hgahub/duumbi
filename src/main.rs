@@ -131,16 +131,15 @@ async fn run_provider_startup_spinner(
 
     loop {
         if handle.is_finished() {
-            return handle.await.unwrap_or_else(|e| {
-                cli::provider_startup::EnvProviderSetupReport {
-                    results: vec![cli::provider_startup::EnvProviderSetupResult {
-                        provider: config::ProviderKind::Anthropic,
-                        env_var: "startup",
-                        success: false,
-                        message: format!("Provider setup task failed: {e}"),
-                    }],
+            return match handle.await {
+                Ok(report) => report,
+                Err(e) => {
+                    eprint!("\r{: <40}\r", "");
+                    io::stderr().flush().ok();
+                    eprintln!("Provider setup task failed: {e}");
+                    cli::provider_startup::EnvProviderSetupReport { results: vec![] }
                 }
-            });
+            };
         }
 
         let suffix = ".".repeat(dots);
