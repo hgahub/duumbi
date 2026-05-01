@@ -3403,7 +3403,7 @@ impl ReplApp {
         if *existing_non_empty {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  Existing non-empty .duumbi directory detected.",
+                "  This workspace has already been initialized.",
                 theme::out_error(),
             )));
         }
@@ -3808,7 +3808,7 @@ mod tests {
 
         let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
 
-        assert!(rendered.contains("Existing non-empty .duumbi directory detected."));
+        assert!(rendered.contains("This workspace has already been initialized."));
         assert!(rendered.contains("Delete .duumbi and initialize again? [y/N]"));
         assert!(!rendered.contains("Default:"));
     }
