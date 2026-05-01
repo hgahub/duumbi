@@ -238,6 +238,13 @@ async fn event_loop(
                         }
                         should_redraw = true;
                     }
+                    super::mode::Action::InitWorkspaceSubmitted {
+                        workspace_name,
+                        overwrite_existing,
+                    } => {
+                        complete_tui_init(app, workspace_name, overwrite_existing);
+                        should_redraw = true;
+                    }
                 },
                 Event::Paste(text) => {
                     app.handle_paste(&text, textarea);
@@ -485,40 +492,15 @@ async fn handle_slash(
         }
 
         "/init" => {
-            if app.has_workspace {
-                app.push_output("Workspace already initialised.", OutputStyle::Dim);
-            } else {
-                let workspace_root = app.workspace_root.clone();
-                let init_result = run_with_terminal_restore(terminal, app, textarea, || {
-                    super::init::run_init(&workspace_root)
-                });
-                match init_result {
-                    Ok(()) => {
-                        app.has_workspace = true;
-                        match crate::config::load_effective_config(&app.workspace_root) {
-                            Ok(effective) => {
-                                app.config = effective.config;
-                                app.system_config = effective.system_config;
-                                app.user_config = effective.user_config;
-                                app.workspace_config = effective.workspace_config;
-                                app.provider_config_source = effective.provider_source;
-                                app.client = build_client(&app.config, &app.workspace_root);
-                                app.session_mgr =
-                                    SessionManager::load_or_create(&app.workspace_root).ok();
-                                app.show_tip = true;
-                                app.push_output("Workspace initialised.", OutputStyle::Success);
-                            }
-                            Err(e) => {
-                                app.push_output(
-                                    format!("Workspace initialised, but config reload failed: {e}"),
-                                    OutputStyle::Error,
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
-                    }
+            let default_name = super::init::default_workspace_name(&app.workspace_root);
+            match super::init::duumbi_dir_is_non_empty(&app.workspace_root) {
+                Ok(existing_non_empty) => {
+                    app.open_init_panel(default_name, existing_non_empty);
+                    textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+                    textarea.delete_line_by_end();
+                }
+                Err(e) => {
+                    app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
                 }
             }
         }
@@ -559,6 +541,50 @@ async fn handle_slash(
     }
 
     false
+}
+
+fn complete_tui_init(app: &mut ReplApp, workspace_name: String, overwrite_existing: bool) {
+    let options =
+        match super::init::InitOptions::from_workspace_name(&workspace_name, overwrite_existing) {
+            Ok(options) => options,
+            Err(e) => {
+                app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
+                return;
+            }
+        };
+
+    match super::init::run_init_with_options(&app.workspace_root, &options) {
+        Ok(summary) => {
+            app.has_workspace = true;
+            match crate::config::load_effective_config(&app.workspace_root) {
+                Ok(effective) => {
+                    app.config = effective.config;
+                    app.system_config = effective.system_config;
+                    app.user_config = effective.user_config;
+                    app.workspace_config = effective.workspace_config;
+                    app.provider_config_source = effective.provider_source;
+                    app.session_mgr = SessionManager::load_or_create(&app.workspace_root).ok();
+                    app.show_tip = true;
+                    app.push_output(
+                        format!(
+                            "Workspace initialised: {} ({})",
+                            summary.workspace_name, summary.namespace
+                        ),
+                        OutputStyle::Success,
+                    );
+                }
+                Err(e) => {
+                    app.push_output(
+                        format!("Workspace initialised, but config reload failed: {e}"),
+                        OutputStyle::Error,
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            app.push_output(format!("Init failed: {e:#}"), OutputStyle::Error);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2134,6 +2160,36 @@ mod tests {
     }]
   }]
 }"#
+    }
+
+    #[test]
+    fn complete_tui_init_overwrites_only_duumbi_directory() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir_all(dir.path().join(".duumbi")).expect("duumbi dir");
+        fs::write(dir.path().join(".duumbi/old-marker"), "delete").expect("old marker");
+        fs::write(dir.path().join("root-marker"), "keep").expect("root marker");
+        let mut app = ReplApp::new(
+            DuumbiConfig::default(),
+            dir.path().to_path_buf(),
+            None,
+            None,
+            true,
+            false,
+        );
+
+        complete_tui_init(&mut app, "New App".to_string(), true);
+
+        assert!(app.has_workspace);
+        assert!(!dir.path().join(".duumbi/old-marker").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("root-marker")).expect("root marker"),
+            "keep"
+        );
+        let config = crate::config::load_config(dir.path()).expect("config");
+        let workspace = config.workspace.expect("workspace");
+        assert_eq!(workspace.name, "New App");
+        assert_eq!(workspace.namespace, "new-app");
+        assert!(status_output(&app).contains("Workspace initialised: New App (new-app)"));
     }
 
     fn provider(kind: ProviderKind, role: ProviderRole) -> ProviderConfig {

@@ -174,6 +174,13 @@ pub enum Action {
         /// If true, the key is a subscription/Bearer token.
         is_subscription: bool,
     },
+    /// Initialize a workspace from the interactive init panel.
+    InitWorkspaceSubmitted {
+        /// Validated workspace display name.
+        workspace_name: String,
+        /// Whether an existing `.duumbi/` directory may be deleted first.
+        overwrite_existing: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +201,19 @@ pub enum PanelState {
         /// Sub-mode for inline input within the panel.
         input_mode: Option<PanelInputMode>,
         /// Optional status message shown in the panel footer. Cleared on next key press.
+        status_msg: Option<(String, OutputStyle)>,
+    },
+    /// Workspace initialization panel.
+    InitWorkspace {
+        /// Editable workspace name buffer.
+        name_buf: String,
+        /// Default name offered from the current directory.
+        default_name: String,
+        /// Whether the current `.duumbi/` directory exists and contains entries.
+        existing_non_empty: bool,
+        /// Whether the panel is currently waiting for destructive re-init confirmation.
+        confirm_overwrite: bool,
+        /// Optional status message shown in the panel.
         status_msg: Option<(String, OutputStyle)>,
     },
 }
