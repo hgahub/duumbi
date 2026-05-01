@@ -123,6 +123,26 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         group: SlashGroup::Intent,
     },
     SlashCommand {
+        command: "/query",
+        description: "Ask a read-only question about the workspace",
+        group: SlashGroup::Session,
+    },
+    SlashCommand {
+        command: "/ask",
+        description: "Alias for /query",
+        group: SlashGroup::Session,
+    },
+    SlashCommand {
+        command: "/agent",
+        description: "Run one explicit graph mutation request",
+        group: SlashGroup::Session,
+    },
+    SlashCommand {
+        command: "/mode",
+        description: "Switch interaction mode",
+        group: SlashGroup::Session,
+    },
+    SlashCommand {
         command: "/knowledge",
         description: "Show knowledge statistics",
         group: SlashGroup::Knowledge,

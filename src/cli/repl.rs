@@ -17,9 +17,14 @@ use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event}
 use crossterm::execute;
 use ratatui_textarea::TextArea;
 
+use crate::agents::analyzer::{Complexity, Risk, Scope, TaskProfile, TaskType};
+use crate::agents::model_catalog::ModelSelectionContext;
+use crate::agents::template::AgentRole;
 use crate::agents::{LlmClient, orchestrator};
 use crate::config::{DuumbiConfig, EffectiveConfig, ProviderConfigSource, ProviderRole};
 use crate::intent;
+use crate::interaction::router;
+use crate::query::{ModeHandoff, QueryAnswer, QueryEngine, QueryRequest, split_thinking_blocks};
 use crate::session::SessionManager;
 use crate::snapshot;
 
@@ -298,7 +303,20 @@ async fn process_input(
         should_exit
     } else {
         match app.mode {
+            ReplMode::Query => {
+                handle_query_input(terminal, app, textarea, input).await;
+                if show_elapsed {
+                    app.finish_current_output_elapsed(started.elapsed());
+                }
+                false
+            }
             ReplMode::Agent => {
+                if router::is_question_like(input) {
+                    app.push_output(
+                        "This looks like a question. Agent mode is write-capable; use /query to keep it read-only.",
+                        OutputStyle::Dim,
+                    );
+                }
                 handle_ai_request(terminal, app, textarea, input).await;
                 if show_elapsed {
                     app.finish_current_output_elapsed(started.elapsed());
@@ -445,6 +463,40 @@ async fn handle_slash(
 
         "/intent" => {
             handle_intent_slash(app, arg).await;
+        }
+
+        "/mode" => {
+            if arg.is_empty() {
+                app.push_output(
+                    format!("Current mode: {}", app.mode.label()),
+                    OutputStyle::Normal,
+                );
+                app.push_output("Usage: /mode <query|agent|intent>", OutputStyle::Dim);
+            } else {
+                match arg.parse::<ReplMode>() {
+                    Ok(mode) => {
+                        app.mode = mode;
+                        app.push_output(format!("Mode: {}", mode.label()), OutputStyle::Success);
+                    }
+                    Err(e) => app.push_output(e.to_string(), OutputStyle::Error),
+                }
+            }
+        }
+
+        "/query" | "/ask" => {
+            if arg.is_empty() {
+                app.push_output("Usage: /query <question>", OutputStyle::Dim);
+            } else {
+                handle_query_input(terminal, app, textarea, arg).await;
+            }
+        }
+
+        "/agent" => {
+            if arg.is_empty() {
+                app.push_output("Usage: /agent <mutation request>", OutputStyle::Dim);
+            } else {
+                handle_ai_request(terminal, app, textarea, arg).await;
+            }
         }
 
         "/search" => {
@@ -644,6 +696,152 @@ fn write_terminal_sequence(sequence: &str) -> io::Result<()> {
 // AI mutation handler
 // ---------------------------------------------------------------------------
 
+/// Handles a read-only natural-language query.
+async fn handle_query_input(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    input: &str,
+) {
+    if router::is_mutation_like(input) {
+        let mode = match router::classify_request(input).preferred_mode() {
+            Some(ReplMode::Intent) => "intent",
+            Some(ReplMode::Agent) | Some(ReplMode::Query) | None => "agent",
+        };
+        app.push_output(
+            "Query mode is read-only. This looks like a change request.",
+            OutputStyle::Dim,
+        );
+        app.push_output(
+            format!("Suggested {mode} request: {input}"),
+            OutputStyle::Ai,
+        );
+        if let Some(ref mut mgr) = app.session_mgr {
+            mgr.add_turn(input, "Suggested write-capable handoff", "Query");
+            let _ = mgr.save();
+        }
+        return;
+    }
+
+    let context = query_model_context(input);
+    let Some(client) = select_client_for_context(app, &context) else {
+        app.push_output(
+            "Query mode needs an available LLM provider. Use /provider to configure or test one.",
+            OutputStyle::Error,
+        );
+        return;
+    };
+
+    let session_turns = app
+        .session_mgr
+        .as_ref()
+        .map(|mgr| mgr.turns().to_vec())
+        .unwrap_or_default();
+    let mut request = QueryRequest::new(&app.workspace_root, input);
+    request.session_turns = session_turns;
+
+    let pending_label = format!("Reviewer agent ({}) is answering", client.model_label());
+    app.push_output(pending_status_text(&pending_label, 0), OutputStyle::Dim);
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+
+    let streamed = std::sync::Mutex::new(String::new());
+    let engine = QueryEngine::new();
+    let on_text = |text: &str| {
+        streamed
+            .lock()
+            .expect("invariant: query stream mutex not poisoned")
+            .push_str(text);
+    };
+    let result = {
+        let query = engine.answer_streaming(client.as_ref(), request, &on_text);
+        tokio::pin!(query);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(280));
+        let mut frame = 1usize;
+        loop {
+            tokio::select! {
+                result = &mut query => break result,
+                _ = tick.tick() => {
+                    app.replace_last_output_line(pending_status_text(&pending_label, frame), OutputStyle::Dim);
+                    let _ = terminal.draw(|frame| app.render(frame, textarea));
+                    frame = frame.wrapping_add(1);
+                }
+            }
+        }
+    };
+    app.pop_last_output_line();
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+
+    match result {
+        Ok(answer) => {
+            let streamed = streamed
+                .into_inner()
+                .expect("invariant: query stream mutex not poisoned");
+            let text = if streamed.trim().is_empty() {
+                answer.text.as_str()
+            } else {
+                streamed.trim()
+            };
+            push_query_answer(app, &answer, text);
+            if let Some(handoff) = answer.suggested_handoff {
+                push_handoff(app, &handoff);
+            }
+            if let Some(ref mut mgr) = app.session_mgr {
+                mgr.add_turn(input, text, "Query");
+                let _ = mgr.save();
+            }
+        }
+        Err(e) => {
+            app.push_output(format!("Query failed: {e:#}"), OutputStyle::Error);
+        }
+    }
+}
+
+fn pending_status_text(label: &str, frame: usize) -> String {
+    let dots = ".".repeat(frame % 4);
+    format!("{label}{dots}")
+}
+
+fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
+    let display = split_thinking_blocks(text);
+    if let Some(thinking) = display.thinking.as_deref() {
+        app.push_output("", OutputStyle::Normal);
+        push_thinking_block(app, thinking);
+        app.push_output("", OutputStyle::Normal);
+    }
+    if !display.answer.is_empty() {
+        app.push_output(display.answer, OutputStyle::Normal);
+        app.push_output("", OutputStyle::Normal);
+    }
+    app.push_output(
+        format!(
+            "Sources: {} | Confidence: {:?} | Model: {}",
+            answer.sources.len(),
+            answer.confidence,
+            answer.model
+        ),
+        OutputStyle::Dim,
+    );
+}
+
+fn push_thinking_block(app: &mut ReplApp, thinking: &str) {
+    app.push_output("│ Thinking:", OutputStyle::Thinking);
+    for line in thinking.lines() {
+        app.push_output(format!("│ {}", line.trim_end()), OutputStyle::Thinking);
+    }
+}
+
+fn push_handoff(app: &mut ReplApp, handoff: &ModeHandoff) {
+    let prefix = match handoff.mode {
+        ReplMode::Query => "/query",
+        ReplMode::Agent => "/agent",
+        ReplMode::Intent => "/intent create",
+    };
+    app.push_output(
+        format!("{prefix} {}", handoff.suggested_request),
+        OutputStyle::Dim,
+    );
+}
+
 /// Handles a natural language AI mutation request in Agent mode.
 ///
 /// Prepends session history for context, calls the LLM via
@@ -654,22 +852,6 @@ async fn handle_ai_request(
     textarea: &mut TextArea<'_>,
     request: &str,
 ) {
-    if app.client.is_none() {
-        app.push_output(
-            "AI mutations are not available. Add a provider to .duumbi/config.toml:",
-            OutputStyle::Error,
-        );
-        app.push_output("  [[providers]]", OutputStyle::Dim);
-        app.push_output("  provider = \"anthropic\"", OutputStyle::Dim);
-        app.push_output("  role = \"primary\"", OutputStyle::Dim);
-        app.push_output("  api_key_env = \"ANTHROPIC_API_KEY\"", OutputStyle::Dim);
-        app.push_output(
-            "Then set ANTHROPIC_API_KEY and restart the REPL.",
-            OutputStyle::Dim,
-        );
-        return;
-    }
-
     let graph_path = app.workspace_root.join(".duumbi/graph/main.jsonld");
 
     // Read the current graph.
@@ -726,21 +908,22 @@ async fn handle_ai_request(
                 > 0
         })
         .unwrap_or(false);
+    let model_context = agent_model_context(request, ctx_chars / 4, is_multi_module);
+    let Some(client) = select_client_for_context(app, &model_context) else {
+        app.push_output(
+            "AI mutations need an available LLM provider. Use /provider to configure or test one.",
+            OutputStyle::Error,
+        );
+        return;
+    };
 
     // Collect streamed text into a local String. We cannot update the TUI
     // mid-stream, so we accumulate and push the result after completion.
-    // The client reference is scoped to this block so the `&mut app` borrow
-    // used afterwards does not overlap.
     let workspace = app.workspace_root.clone();
     let (outcome, streamed) = {
-        let client_ref: &dyn crate::agents::LlmProvider = app
-            .client
-            .as_ref()
-            .map(|c| c.as_ref())
-            .expect("invariant: client is_some checked above");
         let buf = std::sync::Mutex::new(String::new());
         let res = orchestrator::mutate_streaming(
-            client_ref,
+            client.as_ref(),
             &source,
             &prompt,
             3,
@@ -755,6 +938,7 @@ async fn handle_ai_request(
         let streamed = buf.into_inner().expect("invariant: mutex not poisoned");
         (res, streamed)
     };
+    app.client = Some(client);
 
     // Push streamed AI text to the output buffer.
     if !streamed.trim().is_empty() {
@@ -1973,18 +2157,149 @@ fn print_help_to_buffer(app: &mut ReplApp) {
 // Client construction
 // ---------------------------------------------------------------------------
 
+fn select_client_for_context(
+    app: &mut ReplApp,
+    context: &ModelSelectionContext,
+) -> Option<LlmClient> {
+    refresh_effective_config_from_disk(app);
+    build_client_for_context(&app.config, &app.workspace_root, context)
+}
+
+fn refresh_effective_config_from_disk(app: &mut ReplApp) {
+    if let Ok(effective) = crate::config::load_effective_config(&app.workspace_root) {
+        app.config = effective.config;
+        app.system_config = effective.system_config;
+        app.user_config = effective.user_config;
+        app.workspace_config = effective.workspace_config;
+        app.provider_config_source = effective.provider_source;
+    }
+}
+
+fn query_model_context(question: &str) -> ModelSelectionContext {
+    ModelSelectionContext {
+        agent_role: Some(AgentRole::Reviewer),
+        prompt_tokens: Some(estimate_tokens(question)),
+        requires_tools: false,
+        ..ModelSelectionContext::default()
+    }
+}
+
+fn agent_model_context(
+    request: &str,
+    prompt_tokens: usize,
+    is_multi_module: bool,
+) -> ModelSelectionContext {
+    let profile = task_profile_from_request(request, is_multi_module);
+    let agent_role = match profile.task_type {
+        TaskType::Fix | TaskType::Refactor => AgentRole::Repair,
+        _ => AgentRole::Coder,
+    };
+    ModelSelectionContext {
+        agent_role: Some(agent_role),
+        task_profile: Some(profile),
+        prompt_tokens: Some(prompt_tokens),
+        requires_tools: true,
+        ..ModelSelectionContext::default()
+    }
+}
+
+fn task_profile_from_request(request: &str, is_multi_module: bool) -> TaskProfile {
+    let lower = request.to_lowercase();
+    let task_type = match router::classify_request(request) {
+        router::RequestShape::Intent => TaskType::Create,
+        router::RequestShape::Mutation => {
+            if ["fix", "bug", "error"]
+                .iter()
+                .any(|word| lower.contains(word))
+            {
+                TaskType::Fix
+            } else if ["refactor", "rename", "reorganize", "reorganise"]
+                .iter()
+                .any(|word| lower.contains(word))
+            {
+                TaskType::Refactor
+            } else if ["test", "verify"].iter().any(|word| lower.contains(word)) {
+                TaskType::Test
+            } else if ["add", "create", "implement"]
+                .iter()
+                .any(|word| lower.contains(word))
+            {
+                TaskType::Create
+            } else {
+                TaskType::Modify
+            }
+        }
+        _ => TaskType::Modify,
+    };
+    let complexity = if request.len() > 900 || lower.contains("complex") {
+        Complexity::Complex
+    } else if request.len() > 240 || lower.contains("several") || lower.contains("multiple") {
+        Complexity::Moderate
+    } else {
+        Complexity::Simple
+    };
+    let scope = if is_multi_module || lower.contains("module") || lower.contains("modules") {
+        Scope::MultiModule
+    } else {
+        Scope::SingleModule
+    };
+    let touches_main = lower.contains("main");
+    let risk = if matches!(scope, Scope::MultiModule) && touches_main {
+        Risk::High
+    } else if touches_main
+        || matches!(scope, Scope::MultiModule)
+        || matches!(task_type, TaskType::Fix | TaskType::Refactor)
+    {
+        Risk::Medium
+    } else {
+        Risk::Low
+    };
+
+    TaskProfile {
+        complexity,
+        task_type,
+        scope,
+        risk,
+    }
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    (text.len() / 4).max(1)
+}
+
 /// Builds an [`LlmClient`] from the workspace config, or returns `None` with
 /// a warning if the provider is not configured or the API key is missing.
-fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<LlmClient> {
+fn build_client(config: &DuumbiConfig, workspace: &std::path::Path) -> Option<LlmClient> {
+    build_client_for_context(config, workspace, &ModelSelectionContext::default())
+}
+
+fn build_client_for_context(
+    config: &DuumbiConfig,
+    _workspace: &std::path::Path,
+    context: &ModelSelectionContext,
+) -> Option<LlmClient> {
     let providers = config.effective_providers();
     if providers.is_empty() {
         return None;
     }
 
-    // Load API keys from keychain for providers that use it.
-    for p in &providers {
+    load_file_credentials_for_providers(&providers);
+
+    match crate::agents::factory::create_available_provider_chain_for_global_access_context(
+        &providers, context,
+    ) {
+        Ok(client) => Some(client),
+        Err(e) => {
+            eprintln!("Warning: LLM provider not available ({e}). AI mutations disabled.");
+            None
+        }
+    }
+}
+
+fn load_file_credentials_for_providers(providers: &[crate::config::ProviderConfig]) {
+    for p in providers {
         if std::env::var(&p.api_key_env).is_err()
-            && let Some(key) = super::keystore::load_api_key(&p.api_key_env)
+            && let Some(key) = crate::credentials::load_api_key(&p.api_key_env)
         {
             // SAFETY: single-threaded CLI — no concurrent env access.
             unsafe {
@@ -1993,7 +2308,7 @@ fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<L
         }
         if let Some(token_env) = &p.auth_token_env
             && std::env::var(token_env).is_err()
-            && let Some(token) = super::keystore::load_api_key(token_env)
+            && let Some(token) = crate::credentials::load_api_key(token_env)
         {
             // SAFETY: single-threaded CLI — no concurrent env access.
             unsafe {
@@ -2001,8 +2316,6 @@ fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<L
             }
         }
     }
-
-    crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -2302,6 +2615,67 @@ mod tests {
         assert!(prompt.contains("Context from this session"));
         assert!(prompt.contains("add add function"));
         assert!(prompt.ends_with("add multiply"));
+    }
+
+    #[test]
+    fn query_answer_formats_thinking_answer_and_model_metadata() {
+        let mut app = ReplApp::new(
+            crate::config::DuumbiConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+            None,
+            true,
+            false,
+        );
+        let answer = QueryAnswer {
+            text: "<think>inspect workspace</think>Hello.".to_string(),
+            model: "minimax/MiniMax-M2.7".to_string(),
+            sources: Vec::new(),
+            confidence: crate::query::AnswerConfidence::Low,
+            suggested_handoff: None,
+        };
+
+        push_query_answer(&mut app, &answer, &answer.text);
+
+        assert_eq!(app.output_lines[0].text, "");
+        assert_eq!(app.output_lines[1].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[1].text, "│ Thinking:");
+        assert_eq!(app.output_lines[2].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[2].text, "│ inspect workspace");
+        assert_eq!(app.output_lines[3].text, "");
+        assert_eq!(app.output_lines[4].style, OutputStyle::Normal);
+        assert_eq!(app.output_lines[4].text, "Hello.");
+        assert_eq!(app.output_lines[5].text, "");
+        assert!(app.output_lines[6].text.contains("Confidence: Low"));
+        assert!(
+            app.output_lines[6]
+                .text
+                .contains("Model: minimax/MiniMax-M2.7")
+        );
+    }
+
+    #[test]
+    fn query_pending_status_animates_three_dots() {
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 0),
+            "Reviewer agent is answering"
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 1),
+            "Reviewer agent is answering."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 2),
+            "Reviewer agent is answering.."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 3),
+            "Reviewer agent is answering..."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 4),
+            "Reviewer agent is answering"
+        );
     }
 
     #[test]

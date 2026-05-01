@@ -25,6 +25,9 @@ struct ChatRequest {
     msg_type: String,
     /// User's natural language message.
     message: String,
+    /// Interaction mode: query, agent, or intent. Defaults to query.
+    #[serde(default)]
+    mode: duumbi::interaction::InteractionMode,
     /// Currently selected module (e.g., "app/main").
     #[serde(default)]
     module: Option<String>,
@@ -53,6 +56,18 @@ struct ResultFrame {
     refresh: bool,
 }
 
+/// Read-only query answer metadata sent after streaming text.
+#[cfg(feature = "ssr")]
+#[derive(Serialize)]
+struct AnswerFrame {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    sources: Vec<duumbi::query::SourceRef>,
+    confidence: duumbi::query::AnswerConfidence,
+    model: String,
+    suggested_handoff: Option<duumbi::query::ModeHandoff>,
+}
+
 /// Error frame sent to the client.
 #[cfg(feature = "ssr")]
 #[derive(Serialize)]
@@ -76,32 +91,26 @@ struct ClarifyFrame {
 /// Called from `lib.rs` after WebSocket upgrade.
 #[cfg(feature = "ssr")]
 pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceContext>>) {
-    use duumbi::agents::factory::create_provider_chain_for_global_access;
+    use duumbi::agents::factory::create_available_provider_chain_for_global_access_context;
     use duumbi::agents::orchestrator::{self, MutationOutcome};
-    use duumbi::config::load_config;
+    use duumbi::config::load_effective_config;
     use duumbi::context;
+    use duumbi::interaction::InteractionMode;
+    use duumbi::query::{QueryEngine, QueryRequest};
     use duumbi::session::PersistentTurn;
 
     let mut session_history: Vec<PersistentTurn> = Vec::new();
 
     // Cache config and provider chain per connection (not per message).
     let workspace = ctx.read().await.root.clone();
-    let config = match load_config(&workspace) {
+    let effective_config = match load_effective_config(&workspace) {
         Ok(c) => c,
         Err(e) => {
             let _ = send_error(&mut socket, &format!("Config error: {e}")).await;
             return;
         }
     };
-    let providers = config.effective_providers();
-    let client: Arc<dyn duumbi::agents::LlmProvider> =
-        match create_provider_chain_for_global_access(&providers) {
-            Ok(c) => Arc::from(c),
-            Err(e) => {
-                let _ = send_error(&mut socket, &format!("No LLM provider configured: {e}")).await;
-                return;
-            }
-        };
+    let providers = effective_config.config.effective_providers();
 
     while let Some(Ok(msg)) = socket.recv().await {
         let text = match msg {
@@ -123,6 +132,83 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
         }
 
         let module = req.module.as_deref().unwrap_or("app/main");
+
+        if req.mode == InteractionMode::Query {
+            let client: Arc<dyn duumbi::agents::LlmProvider> =
+                match create_available_provider_chain_for_global_access_context(
+                    &providers,
+                    &query_model_context(&req.message),
+                ) {
+                    Ok(c) => Arc::from(c),
+                    Err(e) => {
+                        let _ = send_error(&mut socket, &format!("No LLM provider available: {e}"))
+                            .await;
+                        continue;
+                    }
+                };
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
+            let mut query_request = QueryRequest::new(&workspace, &req.message);
+            query_request.visible_module = Some(module.to_string());
+            query_request.c4_level = req.c4_level.clone();
+            query_request.session_turns = session_history.clone();
+            let client_clone = Arc::clone(&client);
+            let query_handle = tokio::spawn(async move {
+                QueryEngine::new()
+                    .answer_streaming(client_clone.as_ref(), query_request, &move |chunk| {
+                        let _ = tx.try_send(chunk.to_string());
+                    })
+                    .await
+            });
+
+            while let Some(text) = rx.recv().await {
+                let frame = ChunkFrame {
+                    msg_type: "chunk",
+                    text,
+                };
+                if let Ok(json) = serde_json::to_string(&frame)
+                    && socket.send(Message::Text(json.into())).await.is_err()
+                {
+                    return;
+                }
+            }
+
+            match query_handle.await {
+                Ok(Ok(answer)) => {
+                    session_history.push(PersistentTurn {
+                        request: req.message.clone(),
+                        summary: answer.text.clone(),
+                        timestamp: chrono::Utc::now(),
+                        task_type: "studio_query".to_string(),
+                    });
+                    let frame = AnswerFrame {
+                        msg_type: "answer",
+                        sources: answer.sources,
+                        confidence: answer.confidence,
+                        model: answer.model,
+                        suggested_handoff: answer.suggested_handoff,
+                    };
+                    if let Ok(json) = serde_json::to_string(&frame) {
+                        let _ = socket.send(Message::Text(json.into())).await;
+                    }
+                }
+                Ok(Err(e)) => {
+                    let _ = send_error(&mut socket, &format!("Query failed: {e}")).await;
+                }
+                Err(e) => {
+                    let _ = send_error(&mut socket, &format!("Task error: {e}")).await;
+                }
+            }
+            continue;
+        }
+
+        if req.mode == InteractionMode::Intent {
+            let _ = send_error(
+                &mut socket,
+                "Intent mode in Studio chat is planned; use the Intents panel for intent creation and execution.",
+            )
+            .await;
+            continue;
+        }
 
         // Enrich prompt with workspace context, filtered by C4 depth.
         let enriched_message =
@@ -153,6 +239,20 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
 
         // Detect library mode: modules other than app/main skip Call validation.
         let library_mode = module != "app/main";
+        let mutation_context =
+            mutation_model_context(&req.message, enriched_message.len() / 4 + source.len() / 4);
+        let client: Arc<dyn duumbi::agents::LlmProvider> =
+            match create_available_provider_chain_for_global_access_context(
+                &providers,
+                &mutation_context,
+            ) {
+                Ok(c) => Arc::from(c),
+                Err(e) => {
+                    let _ =
+                        send_error(&mut socket, &format!("No LLM provider available: {e}")).await;
+                    continue;
+                }
+            };
 
         // Stream mutation with text callback.
         // Bounded channel with backpressure (256 chunks buffer).
@@ -302,6 +402,38 @@ async fn send_error(socket: &mut WebSocket, message: &str) -> Result<(), axum::E
     }
 }
 
+#[cfg(feature = "ssr")]
+fn query_model_context(question: &str) -> duumbi::agents::model_catalog::ModelSelectionContext {
+    duumbi::agents::model_catalog::ModelSelectionContext {
+        agent_role: Some(duumbi::agents::template::AgentRole::Reviewer),
+        prompt_tokens: Some((question.len() / 4).max(1)),
+        requires_tools: false,
+        ..duumbi::agents::model_catalog::ModelSelectionContext::default()
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn mutation_model_context(
+    request: &str,
+    prompt_tokens: usize,
+) -> duumbi::agents::model_catalog::ModelSelectionContext {
+    let lower = request.to_lowercase();
+    let agent_role = if ["fix", "bug", "error", "refactor", "rename"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        duumbi::agents::template::AgentRole::Repair
+    } else {
+        duumbi::agents::template::AgentRole::Coder
+    };
+    duumbi::agents::model_catalog::ModelSelectionContext {
+        agent_role: Some(agent_role),
+        prompt_tokens: Some(prompt_tokens.max(1)),
+        requires_tools: true,
+        ..duumbi::agents::model_catalog::ModelSelectionContext::default()
+    }
+}
+
 /// Filters the enriched context prompt based on the C4 drill-down level.
 ///
 /// Uses known section headers from `assemble_context()` to extract the right
@@ -428,5 +560,27 @@ fn resolve_module_path(root: &std::path::Path, module_name: &str) -> std::path::
         } else {
             root.join(format!(".duumbi/graph/{module_name}.jsonld"))
         }
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answer_frame_serializes_model_metadata() {
+        let frame = AnswerFrame {
+            msg_type: "answer",
+            sources: Vec::new(),
+            confidence: duumbi::query::AnswerConfidence::Low,
+            model: "minimax/MiniMax-M2.7".to_string(),
+            suggested_handoff: None,
+        };
+
+        let json = serde_json::to_value(frame).expect("frame serializes");
+
+        assert_eq!(json["type"], "answer");
+        assert_eq!(json["model"], "minimax/MiniMax-M2.7");
+        assert_eq!(json["confidence"], "low");
     }
 }

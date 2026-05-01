@@ -13,18 +13,23 @@ mod compiler;
 mod config;
 #[allow(dead_code)] // Used indirectly via intent::execute context enrichment
 mod context;
+mod credentials;
 mod deps;
 mod errors;
 mod examples;
 mod graph;
 mod hash;
 mod intent;
+mod interaction;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
 mod manifest;
 mod mcp;
 mod parser;
 mod patch;
+#[allow(dead_code, unused_imports)]
+// Binary uses query engine through CLI; library exports full API
+mod query;
 mod registry;
 #[allow(dead_code)] // Binary uses a subset; full API used via lib crate
 mod session;

@@ -383,6 +383,12 @@ pub mod tui {
         Style::default().fg(col(BLUE_INK))
     }
 
+    /// Style for model-emitted thinking blocks in Query mode.
+    #[must_use]
+    pub fn out_thinking() -> Style {
+        Style::default().fg(col(BLUE_INK))
+    }
+
     /// Style for the command column of `/help` output.
     #[must_use]
     pub fn out_help_cmd() -> Style {

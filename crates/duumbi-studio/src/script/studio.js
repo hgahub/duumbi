@@ -2510,6 +2510,24 @@
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
 
+  var chatMode = 'query';
+
+  function setChatMode(mode) {
+    if (['query', 'agent', 'intent'].indexOf(mode) === -1) mode = 'query';
+    chatMode = mode;
+    qsa('.chat-mode-tab').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+    });
+    var input = qs('.chat-input') || document.getElementById('chatInput');
+    if (input) {
+      input.placeholder = mode === 'query'
+        ? 'Ask about this graph...'
+        : mode === 'agent'
+          ? 'Describe a graph change...'
+          : 'Describe an intent...';
+    }
+  }
+
   function sendChat() {
     var chatInput    = qs('.chat-input') || document.getElementById('chatInput');
     var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
@@ -2527,7 +2545,10 @@
 
     // Use WebSocket if connected, otherwise fallback placeholder
     if (StudioWS.isConnected()) {
-      StudioWS.send(msg, '', currentLevel);
+      if (chatMode === 'query') {
+        StudioWS.beginPending('Reviewer agent is answering');
+      }
+      StudioWS.send(msg, '', currentLevel, chatMode);
     } else {
       var aiDiv = document.createElement('div');
       aiDiv.className = 'chat-msg ai';
@@ -2605,10 +2626,12 @@
         }
 
         if (data.type === 'chunk') {
-          _fire(_onChunkCbs, data.content || '');
+          _fire(_onChunkCbs, data.text || data.content || '');
         } else if (data.type === 'result' || data.type === 'done') {
           _fire(_onResultCbs, data);
           _appendChatResult(data);
+        } else if (data.type === 'answer') {
+          _appendChatAnswer(data);
         } else if (data.type === 'error') {
           _fire(_onErrorCbs, data.message || 'Unknown error');
           _appendChatError(data.message || 'Unknown error');
@@ -2631,13 +2654,14 @@
     }
 
     // Send a chat frame to the server
-    function send(message, module, c4Level) {
+    function send(message, module, c4Level, mode) {
       if (!_ws || _ws.readyState !== WebSocket.OPEN) {
         console.warn('StudioWS: not connected — message dropped');
         return;
       }
       var frame = {
         type:     'chat',
+        mode:     mode || 'query',
         message:  message,
         module:   module  || '',
         c4_level: c4Level || 'context'
@@ -2658,21 +2682,69 @@
     // Track partial streaming chunk into the last AI bubble
     var _streamingDiv = null;
 
-    function _ensureStreamingBubble() {
+    function splitThinkingBlocks(text) {
+      var remainder = text || '';
+      var answer = '';
+      var thinking = [];
+      while (true) {
+        var start = remainder.indexOf('<think>');
+        if (start === -1) {
+          answer += remainder;
+          break;
+        }
+        var contentStart = start + '<think>'.length;
+        var end = remainder.indexOf('</think>', contentStart);
+        if (end === -1) {
+          return { thinking: '', answer: (text || '').trim() };
+        }
+        answer += remainder.slice(0, start);
+        var thought = remainder.slice(contentStart, end).trim();
+        if (thought) thinking.push(thought);
+        remainder = remainder.slice(end + '</think>'.length);
+      }
+      return {
+        thinking: thinking.join('\n\n'),
+        answer: answer.trim()
+      };
+    }
+
+    function formatConfidence(value) {
+      var text = String(value || 'unknown').toLowerCase();
+      return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+
+    function _ensureStreamingBubble(pendingText) {
       var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
       if (!chatMessages) return null;
       if (!_streamingDiv) {
         _streamingDiv = document.createElement('div');
         _streamingDiv.className = 'chat-msg ai streaming';
+        if (pendingText) {
+          var pending = document.createElement('div');
+          pending.className = 'answer-pending';
+          pending.textContent = pendingText;
+          var dots = document.createElement('span');
+          dots.className = 'pending-dots';
+          pending.appendChild(dots);
+          _streamingDiv.appendChild(pending);
+        }
         chatMessages.appendChild(_streamingDiv);
       }
       return _streamingDiv;
+    }
+
+    function beginPending(text) {
+      var bubble = _ensureStreamingBubble(text);
+      var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
+      if (bubble && chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     // Register default chunk handler: append to streaming bubble
     onChunk(function (text) {
       var bubble = _ensureStreamingBubble();
       if (!bubble) return;
+      var pending = bubble.querySelector('.answer-pending');
+      if (pending) pending.remove();
       bubble.textContent += text;
       var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
       if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -2693,6 +2765,49 @@
       }
     }
 
+    function _appendChatAnswer(data) {
+      if (_streamingDiv) {
+        _streamingDiv.classList.remove('streaming');
+        var pending = _streamingDiv.querySelector('.answer-pending');
+        if (pending) pending.remove();
+        var rawText = _streamingDiv.textContent || '';
+        var parsed = splitThinkingBlocks(rawText);
+        _streamingDiv.textContent = '';
+        if (parsed.thinking) {
+          var thinking = document.createElement('div');
+          thinking.className = 'thinking-block';
+          var label = document.createElement('span');
+          label.className = 'thinking-label';
+          label.textContent = 'Thinking: ';
+          var body = document.createElement('span');
+          body.textContent = parsed.thinking;
+          thinking.appendChild(label);
+          thinking.appendChild(body);
+          _streamingDiv.appendChild(thinking);
+        }
+        if (parsed.answer) {
+          var answerBody = document.createElement('div');
+          answerBody.className = 'answer-body';
+          answerBody.textContent = parsed.answer;
+          _streamingDiv.appendChild(answerBody);
+        }
+        var meta = document.createElement('div');
+        meta.className = 'msg-meta';
+        var sourceCount = (data.sources || []).length;
+        meta.textContent = 'Sources: ' + sourceCount
+          + ' \u00B7 Confidence: ' + formatConfidence(data.confidence)
+          + ' \u00B7 Model: ' + (data.model || 'unknown');
+        _streamingDiv.appendChild(meta);
+        if (data.suggested_handoff && data.suggested_handoff.mode) {
+          var handoff = document.createElement('div');
+          handoff.className = 'msg-meta';
+          handoff.textContent = 'Suggested mode: ' + data.suggested_handoff.mode;
+          _streamingDiv.appendChild(handoff);
+        }
+        _streamingDiv = null;
+      }
+    }
+
     function _appendChatError(message) {
       var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
       if (!chatMessages) return;
@@ -2708,6 +2823,7 @@
     return {
       connect:     connect,
       send:        send,
+      beginPending: beginPending,
       isConnected: isConnected,
       onChunk:     onChunk,
       onResult:    onResult,
@@ -2757,6 +2873,7 @@
     toggleUserMenu:      toggleUserMenu,
     sendChat:            sendChat,
     handleChatKey:       handleChatKey,
+    setChatMode:         setChatMode,
 
     // Settings
     openSettings:        openSettings,

@@ -168,6 +168,11 @@ pub fn App() -> impl IntoView {
                             <svg viewBox="0 0 14 14"><path d="M7 1a6 6 0 100 12 6 6 0 000-12z"/><circle cx="5" cy="6" r="1" fill="#c25a1a"/><circle cx="9" cy="6" r="1" fill="#c25a1a"/><path d="M5 9c.5.8 1.2 1 2 1s1.5-.2 2-1" stroke="#c25a1a"/></svg>
                             "AI Chat"
                         </div>
+                        <div class="chat-mode-tabs" role="tablist" aria-label="Chat mode">
+                            <button class="chat-mode-tab active" data-mode="query" onclick="window.__studio.setChatMode('query')" title="Read-only answers">"Query"</button>
+                            <button class="chat-mode-tab" data-mode="agent" onclick="window.__studio.setChatMode('agent')" title="Apply graph changes">"Agent"</button>
+                            <button class="chat-mode-tab" data-mode="intent" onclick="window.__studio.setChatMode('intent')" title="Use the intent workflow">"Intent"</button>
+                        </div>
                     </div>
                     <div class="chat-messages" id="chatMessages">
                         <div class="chat-msg ai">
@@ -177,7 +182,7 @@ pub fn App() -> impl IntoView {
                     </div>
                     <div class="chat-input-area">
                         <div class="chat-input-wrap">
-                            <textarea class="chat-input" id="chatInput" rows="1" placeholder="Ask about this intent..." onkeydown="window.__studio.handleChatKey(event)"></textarea>
+                            <textarea class="chat-input" id="chatInput" rows="1" placeholder="Ask about this graph..." onkeydown="window.__studio.handleChatKey(event)"></textarea>
                             <button class="chat-send" onclick="window.__studio.sendChat()">
                                 <svg viewBox="0 0 14 14"><path d="M1 7h12M8 2l5 5-5 5"/></svg>
                             </button>

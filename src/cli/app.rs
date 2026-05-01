@@ -882,12 +882,9 @@ impl ReplApp {
         match key.code {
             KeyCode::Esc if self.conversation_text_selection.take().is_some() => Action::Continue,
 
-            // Shift+Tab: toggle Agent ↔ Intent mode
+            // Shift+Tab: cycle Query -> Agent -> Intent.
             KeyCode::BackTab => {
-                self.mode = match self.mode {
-                    ReplMode::Agent => ReplMode::Intent,
-                    ReplMode::Intent => ReplMode::Agent,
-                };
+                self.mode = self.mode.next();
                 Action::Continue
             }
 
@@ -1647,12 +1644,39 @@ impl ReplApp {
     /// (e.g. after interactive workspace init).
     pub(super) fn rebuild_client_and_keychain_cache(&mut self) {
         let providers = self.config.effective_providers();
+        Self::load_file_credentials_for_providers(&providers);
         self.client = if providers.is_empty() {
             None
         } else {
-            crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
+            crate::agents::factory::create_available_provider_chain_for_global_access_context(
+                &providers,
+                &crate::agents::model_catalog::ModelSelectionContext::default(),
+            )
+            .ok()
         };
         self.keychain_cache = Self::build_keychain_cache(&self.config);
+    }
+
+    fn load_file_credentials_for_providers(providers: &[crate::config::ProviderConfig]) {
+        for provider in providers {
+            if std::env::var(&provider.api_key_env).is_err()
+                && let Some(key) = crate::credentials::load_api_key(&provider.api_key_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(&provider.api_key_env, &key);
+                }
+            }
+            if let Some(token_env) = &provider.auth_token_env
+                && std::env::var(token_env).is_err()
+                && let Some(token) = crate::credentials::load_api_key(token_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(token_env, &token);
+                }
+            }
+        }
     }
 
     fn upsert_provider_in_config(
@@ -1715,14 +1739,13 @@ impl ReplApp {
         config
             .effective_providers()
             .iter()
-            .filter(|p| matches!(p.key_storage, Some(crate::config::KeyStorage::File)))
             .flat_map(|p| {
                 let mut names = Vec::new();
-                if super::keystore::load_api_key(&p.api_key_env).is_some() {
+                if crate::credentials::load_api_key(&p.api_key_env).is_some() {
                     names.push(p.api_key_env.clone());
                 }
                 if let Some(token_env) = &p.auth_token_env
-                    && super::keystore::load_api_key(token_env).is_some()
+                    && crate::credentials::load_api_key(token_env).is_some()
                 {
                     names.push(token_env.clone());
                 }
@@ -1907,6 +1930,37 @@ impl ReplApp {
             self.output_lines.drain(..excess);
         }
         // Reset scroll to bottom when new output arrives.
+        self.output_scroll_offset = 0;
+    }
+
+    /// Replaces the most recent output line in both legacy and block buffers.
+    pub fn replace_last_output_line(&mut self, text: impl Into<String>, style: OutputStyle) {
+        let text = text.into();
+        let output_line = OutputLine::new(text, style);
+        if let Some(line) = self.output_lines.last_mut() {
+            *line = output_line.clone();
+        }
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+            && let Some(line) = block.lines.last_mut()
+        {
+            *line = output_line;
+        }
+        self.output_scroll_offset = 0;
+    }
+
+    /// Removes the most recent output line from both legacy and block buffers.
+    pub fn pop_last_output_line(&mut self) {
+        let _ = self.output_lines.pop();
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+        {
+            let _ = block.lines.pop();
+        }
         self.output_scroll_offset = 0;
     }
 
@@ -2303,7 +2357,7 @@ impl ReplApp {
     fn selected_conversation_text(&self, area: Rect) -> Option<String> {
         let selection = self.conversation_text_selection?;
         let rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2682,7 +2736,7 @@ impl ReplApp {
     fn visible_conversation_layout(&self, area: Rect) -> VisibleConversationLayout {
         let max_lines = area.height as usize;
         let all_rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2809,16 +2863,10 @@ impl ReplApp {
         Some((Rect::new(x, y, width, height), actions))
     }
 
-    fn legacy_output_rows(&self) -> Vec<ConversationVisualRow> {
+    fn legacy_output_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
         self.output_lines
             .iter()
-            .map(|ol| ConversationVisualRow {
-                line: Self::line_from_output(ol),
-                plain_text: ol.text.clone(),
-                block_index: None,
-                menu_button_block: None,
-                menu_button_range: None,
-            })
+            .flat_map(|ol| Self::output_line_visual_rows(ol, None, None, None, width))
             .collect()
     }
 
@@ -2840,13 +2888,13 @@ impl ReplApp {
                 }
                 ConversationBlockKind::Output => {
                     for ol in &block.lines {
-                        rows.push(ConversationVisualRow {
-                            line: Self::line_from_output(ol),
-                            plain_text: ol.text.clone(),
-                            block_index: Some(idx),
-                            menu_button_block: None,
-                            menu_button_range: None,
-                        });
+                        rows.extend(Self::output_line_visual_rows(
+                            ol,
+                            Some(idx),
+                            None,
+                            None,
+                            width,
+                        ));
                     }
                     if let Some(elapsed) = &block.elapsed {
                         rows.push(ConversationVisualRow {
@@ -2898,6 +2946,133 @@ impl ReplApp {
                 menu_button_range: None,
             },
         ]
+    }
+
+    fn output_line_visual_rows(
+        ol: &OutputLine,
+        block_index: Option<usize>,
+        menu_button_block: Option<usize>,
+        menu_button_range: Option<(u16, u16)>,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let max_width = usize::from(width.max(1));
+        let wrapped = if width == 0 {
+            vec![ol.text.clone()]
+        } else if ol.style == OutputStyle::Thinking {
+            Self::wrap_thinking_output(&ol.text, max_width)
+        } else {
+            Self::wrap_output_text(&ol.text, max_width)
+        };
+
+        wrapped
+            .into_iter()
+            .map(|text| {
+                let output_line = OutputLine::new(text.clone(), ol.style);
+                ConversationVisualRow {
+                    line: Self::line_from_output(&output_line),
+                    plain_text: text,
+                    block_index,
+                    menu_button_block,
+                    menu_button_range,
+                }
+            })
+            .collect()
+    }
+
+    fn wrap_thinking_output(text: &str, width: usize) -> Vec<String> {
+        let Some(body) = text.strip_prefix("│ ") else {
+            return Self::wrap_output_text(text, width);
+        };
+        let body_width = width.saturating_sub(2).max(1);
+        Self::wrap_output_text(body, body_width)
+            .into_iter()
+            .map(|line| format!("│ {line}"))
+            .collect()
+    }
+
+    fn wrap_output_text(text: &str, width: usize) -> Vec<String> {
+        if text.is_empty() {
+            return vec![String::new()];
+        }
+        let width = width.max(1);
+        let mut rows = Vec::new();
+
+        for line in text.split('\n') {
+            if line.is_empty() {
+                rows.push(String::new());
+                continue;
+            }
+
+            let mut current = String::new();
+            let mut token = String::new();
+            let mut token_is_whitespace: Option<bool> = None;
+
+            for ch in line.chars() {
+                let is_whitespace = ch.is_whitespace();
+                match token_is_whitespace {
+                    Some(kind) if kind == is_whitespace => token.push(ch),
+                    Some(_) => {
+                        Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+                        token.clear();
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
+                    None => {
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
+                }
+            }
+
+            if !token.is_empty() {
+                Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+            }
+            if !current.is_empty() {
+                rows.push(current);
+            }
+        }
+
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+
+        rows
+    }
+
+    fn push_wrapped_token(rows: &mut Vec<String>, current: &mut String, token: &str, width: usize) {
+        if token.is_empty() {
+            return;
+        }
+
+        let token_len = token.chars().count();
+        let current_len = current.chars().count();
+        if current_len + token_len <= width {
+            current.push_str(token);
+            return;
+        }
+
+        if !current.is_empty() {
+            rows.push(std::mem::take(current));
+        }
+
+        let mut chunk = String::new();
+        let mut chunk_len = 0usize;
+        for ch in token.chars() {
+            if chunk_len == width {
+                rows.push(std::mem::take(&mut chunk));
+                chunk_len = 0;
+            }
+            chunk.push(ch);
+            chunk_len += 1;
+        }
+
+        if !chunk.is_empty() {
+            if chunk_len == width {
+                rows.push(chunk);
+            } else {
+                current.push_str(&chunk);
+            }
+        }
     }
 
     fn user_panel_line(
@@ -2996,6 +3171,7 @@ impl ReplApp {
                     OutputStyle::Success => theme::out_success(),
                     OutputStyle::Dim => theme::out_dim(),
                     OutputStyle::Ai => theme::out_ai(),
+                    OutputStyle::Thinking => theme::out_thinking(),
                     OutputStyle::Help => unreachable!(),
                 };
                 Line::from(Span::styled(ol.text.clone(), style))
@@ -3050,6 +3226,7 @@ impl ReplApp {
 
         let is_empty = textarea.lines().iter().all(|line| line.is_empty());
         let placeholder = match self.mode {
+            ReplMode::Query => "e.g. \"what modules exist?\" or /help",
             ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
             ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
         };
@@ -3912,9 +4089,9 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_in_agent_mode() {
+    fn new_starts_in_query_mode() {
         let (app, _) = make_app();
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]
@@ -4026,6 +4203,43 @@ mod tests {
         assert!(rendered.contains("/status"));
         assert!(!rendered.contains("copy"));
         assert!(rendered.contains("Workspace: /tmp/example"));
+    }
+
+    #[test]
+    fn conversation_render_wraps_long_query_output() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("Hello");
+        app.push_output("", OutputStyle::Normal);
+        app.push_output(
+            "│ Thinking: this answer should wrap cleanly so the final word remains visible",
+            OutputStyle::Thinking,
+        );
+        app.push_output(
+            "│ The user asked for a greeting and the response should not be clipped at the right edge",
+            OutputStyle::Thinking,
+        );
+        app.push_output("", OutputStyle::Normal);
+        app.push_output(
+            "Hello! I'm ready to help you explore your DUUMBI workspace. If you have any questions about your project, code, or architecture, feel free to ask.",
+            OutputStyle::Normal,
+        );
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 80, 35);
+
+        assert!(rows.iter().any(|row| row.contains("│ Thinking:")));
+        assert!(!rendered.contains('▌'));
+        assert!(rendered.contains("visible"));
+        assert!(rendered.contains("edge"));
+        assert!(rendered.contains("free to ask."));
+    }
+
+    #[test]
+    fn output_wrapping_preserves_original_spacing() {
+        let rows = ReplApp::wrap_output_text("  Provider ID    Display name", 20);
+
+        assert_eq!(rows[0], "  Provider ID    ");
+        assert_eq!(rows[1], "Display name");
+        assert_eq!(rows.join(""), "  Provider ID    Display name");
     }
 
     #[test]
@@ -4379,11 +4593,15 @@ mod tests {
         let (mut app, mut textarea) = make_app();
         let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Intent);
+        assert_eq!(app.mode, ReplMode::Agent);
 
         let key2 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key2, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Intent);
+
+        let key3 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(key3, &mut textarea);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]

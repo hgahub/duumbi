@@ -1193,6 +1193,42 @@ header {
   stroke-linejoin: round;
 }
 
+.chat-mode-tabs {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  background: #17191a;
+  border: 1px solid #2e3135;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chat-mode-tab {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-right: 1px solid #2e3135;
+  background: transparent;
+  color: #908c82;
+  font-size: 9px;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+}
+
+.chat-mode-tab:last-child {
+  border-right: none;
+}
+
+.chat-mode-tab:hover {
+  color: #d5d1c7;
+  background: #1f2224;
+}
+
+.chat-mode-tab.active {
+  color: #fff;
+  background: #c25a1a;
+}
+
 .chat-model {
   font-size: 9px;
   font-family: 'JetBrains Mono', monospace;
@@ -1316,6 +1352,51 @@ header {
   align-self: flex-start;
   border: 1px solid #1f2224;
   border-bottom-left-radius: 3px;
+}
+
+.chat-msg.ai .thinking-block {
+  color: #7ba8e0;
+  border-left: 3px solid #5f9df7;
+  padding: 8px 0 8px 12px;
+  margin: 12px 0;
+  white-space: pre-wrap;
+  background: rgba(95, 157, 247, .06);
+}
+
+.chat-msg.ai .thinking-label {
+  color: #c79b52;
+  font-style: italic;
+}
+
+.chat-msg.ai .answer-body {
+  color: #f5f2ea;
+  white-space: pre-wrap;
+}
+
+.chat-msg.ai .answer-pending {
+  color: #908c82;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.chat-msg.ai .pending-dots::after {
+  content: "...";
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+  vertical-align: bottom;
+  animation: pendingDots 1.1s steps(4, end) infinite;
+}
+
+.chat-msg.ai .answer-body + .msg-meta,
+.chat-msg.ai .thinking-block + .msg-meta {
+  margin-top: 14px;
+}
+
+@keyframes pendingDots {
+  0% { width: 0; }
+  25% { width: .35em; }
+  50% { width: .7em; }
+  75%, 100% { width: 1.05em; }
 }
 
 .chat-msg.user {

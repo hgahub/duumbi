@@ -39,6 +39,13 @@ impl KnowledgeStore {
         Ok(Self { root })
     }
 
+    /// Opens the knowledge store without creating any directories.
+    #[must_use]
+    pub fn open_existing(workspace: &Path) -> Self {
+        let root = workspace.join(".duumbi").join("knowledge");
+        Self { root }
+    }
+
     /// Saves a knowledge node to disk. Overwrites if the same `@id` exists.
     ///
     /// # Errors
