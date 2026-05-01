@@ -563,6 +563,7 @@ fn complete_tui_init(app: &mut ReplApp, workspace_name: String, overwrite_existi
                     app.user_config = effective.user_config;
                     app.workspace_config = effective.workspace_config;
                     app.provider_config_source = effective.provider_source;
+                    app.rebuild_client_and_keychain_cache();
                     app.session_mgr = SessionManager::load_or_create(&app.workspace_root).ok();
                     app.show_tip = true;
                     app.push_output(
@@ -2195,6 +2196,14 @@ mod tests {
 
     #[test]
     fn complete_tui_init_overwrites_only_duumbi_directory() {
+        // `complete_tui_init` calls `load_effective_config`, which reads
+        // `$HOME/.duumbi/config.toml` (and may read `/etc/duumbi/config.toml`).
+        // Pin HOME to a fresh tempdir so the test stays hermetic regardless
+        // of the developer/CI machine's global config.
+        let _lock = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
+        let home = TempDir::new().expect("home tempdir");
+        let _home = EnvGuard::set("HOME", home.path().to_str().expect("utf8 home"));
+
         let dir = TempDir::new().expect("tempdir");
         fs::create_dir_all(dir.path().join(".duumbi")).expect("duumbi dir");
         fs::write(dir.path().join(".duumbi/old-marker"), "delete").expect("old marker");

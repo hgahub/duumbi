@@ -1639,6 +1639,13 @@ impl ReplApp {
             let _ = crate::config::save_config(&self.workspace_root, &self.workspace_config);
         }
         self.refresh_effective_config();
+        self.rebuild_client_and_keychain_cache();
+    }
+
+    /// Rebuilds the LLM client and keychain cache from the current effective
+    /// config. Used after the config layers have been refreshed externally
+    /// (e.g. after interactive workspace init).
+    pub(super) fn rebuild_client_and_keychain_cache(&mut self) {
         let providers = self.config.effective_providers();
         self.client = if providers.is_empty() {
             None

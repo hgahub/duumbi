@@ -54,8 +54,8 @@ pub fn bold(text: &str) -> String {
 }
 
 /// Renders a slash command name in bold cyan.
+#[cfg(test)]
 #[must_use]
-#[allow(dead_code)]
 pub fn command(text: &str) -> String {
     format!("{}", text.cyan().bold())
 }

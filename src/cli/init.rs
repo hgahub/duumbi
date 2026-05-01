@@ -72,10 +72,11 @@ const SKELETON_MAIN: &str = r#"{
 pub const MAX_WORKSPACE_NAME_CHARS: usize = 30;
 
 /// Default `config.toml` template (M7 format with registries and scope-based deps).
-const DEFAULT_CONFIG_TEMPLATE: &str = r#"[workspace]
-name = {name}
-namespace = {namespace}
-default-registry = "duumbi"
+/// Static remainder of `config.toml` after the `[workspace]` section.
+///
+/// The `[workspace]` block is rendered separately so user-supplied workspace
+/// names cannot collide with placeholder text via global string replacement.
+const DEFAULT_CONFIG_REST: &str = r#"default-registry = "duumbi"
 
 [registries]
 duumbi = "https://registry.duumbi.dev"
@@ -352,16 +353,21 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
     )
     .context("Failed to write stdlib string module")?;
 
-    // Write config (includes stdlib deps by default)
+    // Write config (includes stdlib deps by default).
+    //
+    // The `[workspace]` block is built via formatting (not chained string
+    // replacement) so user-supplied names containing placeholder-like text
+    // cannot corrupt later substitutions.
     let workspace_name_toml = toml::Value::String(workspace_name.clone()).to_string();
     let namespace_toml = toml::Value::String(options.namespace.clone()).to_string();
-    fs::write(
-        duumbi_dir.join("config.toml"),
-        DEFAULT_CONFIG_TEMPLATE
-            .replace("{name}", workspace_name_toml.trim())
-            .replace("{namespace}", namespace_toml.trim()),
-    )
-    .context("Failed to write config.toml")?;
+    let config_content = format!(
+        "[workspace]\nname = {}\nnamespace = {}\n{}",
+        workspace_name_toml.trim(),
+        namespace_toml.trim(),
+        DEFAULT_CONFIG_REST,
+    );
+    fs::write(duumbi_dir.join("config.toml"), config_content)
+        .context("Failed to write config.toml")?;
 
     // Write skeleton main.jsonld
     fs::write(duumbi_dir.join("graph").join("main.jsonld"), SKELETON_MAIN)
@@ -553,6 +559,23 @@ mod tests {
         let ws = config.workspace.expect("workspace section must exist");
         assert_eq!(ws.name, "Human Project");
         assert_eq!(ws.namespace, "human-project");
+    }
+
+    #[test]
+    fn init_config_handles_placeholder_like_workspace_name() {
+        // Regression: chained .replace("{name}", ..).replace("{namespace}", ..)
+        // would corrupt the name field when it contained the literal text
+        // `{namespace}` (or `{name}`). The config writer must not collapse
+        // user-supplied content into placeholder substitutions.
+        let tmp = TempDir::new().expect("tempdir");
+        let options =
+            InitOptions::from_workspace_name("{namespace}", false).expect("valid options");
+        run_init_with_options(tmp.path(), &options).expect("init must succeed");
+
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        let ws = config.workspace.expect("workspace section must exist");
+        assert_eq!(ws.name, "{namespace}");
+        assert_eq!(ws.namespace, "namespace");
     }
 
     #[test]
