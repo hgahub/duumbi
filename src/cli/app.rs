@@ -3425,7 +3425,7 @@ impl ReplApp {
             )));
         } else {
             lines.push(Line::from(Span::styled(
-                "  [Enter] Initialize    [Esc] Cancel",
+                "  [Enter] Initialize",
                 theme::out_dim(),
             )));
         }
