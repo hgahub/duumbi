@@ -2488,7 +2488,7 @@ impl ReplApp {
             }),
             PanelState::InitWorkspace {
                 confirm_overwrite, ..
-            } => Some(if *confirm_overwrite { 10 } else { 9 }),
+            } => Some(if *confirm_overwrite { 16 } else { 12 }),
         }
     }
 
@@ -3361,7 +3361,7 @@ impl ReplApp {
 
         let PanelState::InitWorkspace {
             name_buf,
-            default_name,
+            default_name: _,
             existing_non_empty,
             confirm_overwrite,
             status_msg,
@@ -3396,10 +3396,6 @@ impl ReplApp {
                 "  Namespace:      {}",
                 crate::cli::init::namespace_slug(name_buf)
             ),
-            theme::out_dim(),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("  Default:        {default_name}"),
             theme::out_dim(),
         )));
 
@@ -3784,6 +3780,22 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn init_panel_existing_workspace_renders_confirmation() {
+        let (mut app, textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut TextArea::default(),
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("Existing non-empty .duumbi directory detected."));
+        assert!(rendered.contains("Delete .duumbi and initialize again? [y/N]"));
+        assert!(!rendered.contains("Default:"));
     }
 
     #[test]

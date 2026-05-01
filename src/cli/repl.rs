@@ -1982,8 +1982,7 @@ fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<L
 
     // Load API keys from keychain for providers that use it.
     for p in &providers {
-        if matches!(p.key_storage, Some(crate::config::KeyStorage::File))
-            && std::env::var(&p.api_key_env).is_err()
+        if std::env::var(&p.api_key_env).is_err()
             && let Some(key) = super::keystore::load_api_key(&p.api_key_env)
         {
             // SAFETY: single-threaded CLI — no concurrent env access.
@@ -1992,7 +1991,6 @@ fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<L
             }
         }
         if let Some(token_env) = &p.auth_token_env
-            && matches!(p.key_storage, Some(crate::config::KeyStorage::File))
             && std::env::var(token_env).is_err()
             && let Some(token) = super::keystore::load_api_key(token_env)
         {
@@ -2003,13 +2001,7 @@ fn build_client(config: &DuumbiConfig, _workspace: &std::path::Path) -> Option<L
         }
     }
 
-    match crate::agents::factory::create_provider_chain_for_global_access(&providers) {
-        Ok(client) => Some(client),
-        Err(e) => {
-            eprintln!("Warning: LLM provider not available ({e}). AI mutations disabled.");
-            None
-        }
-    }
+    crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -2099,8 +2091,47 @@ fn find_closest_command<'a>(input: &str, commands: &[&'a str]) -> Option<&'a str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ProviderConfig, ProviderKind, WorkspaceSection};
+    use crate::config::{KeyStorage, ProviderConfig, ProviderKind, ProviderRole, WorkspaceSection};
+    use std::ffi::OsString;
     use tempfile::TempDir;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: guarded test-only environment mutation.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: guarded test-only environment mutation.
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: guarded test-only environment mutation.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     fn status_test_app(
         dir: &TempDir,
@@ -2190,6 +2221,35 @@ mod tests {
         assert_eq!(workspace.name, "New App");
         assert_eq!(workspace.namespace, "new-app");
         assert!(status_output(&app).contains("Workspace initialised: New App (new-app)"));
+    }
+
+    #[test]
+    fn build_client_loads_credentials_file_without_file_key_storage() {
+        let _lock = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
+        let home = TempDir::new().expect("home tempdir");
+        let _home = EnvGuard::set("HOME", home.path().to_str().expect("utf8 home"));
+        let _api_key = EnvGuard::remove("DUUMBI_TEST_REPL_KEYSTORE_API_KEY");
+        crate::cli::keystore::store_api_key("DUUMBI_TEST_REPL_KEYSTORE_API_KEY", "secret")
+            .expect("credential must store");
+        let mut config = DuumbiConfig::default();
+        config.providers.push(ProviderConfig {
+            provider: ProviderKind::MiniMax,
+            role: ProviderRole::Primary,
+            model: None,
+            api_key_env: "DUUMBI_TEST_REPL_KEYSTORE_API_KEY".to_string(),
+            base_url: None,
+            timeout_secs: None,
+            key_storage: Some(KeyStorage::Env),
+            auth_token_env: None,
+        });
+
+        let client = build_client(&config, Path::new("."));
+
+        assert!(client.is_some());
+        assert_eq!(
+            std::env::var("DUUMBI_TEST_REPL_KEYSTORE_API_KEY").as_deref(),
+            Ok("secret")
+        );
     }
 
     fn provider(kind: ProviderKind, role: ProviderRole) -> ProviderConfig {
