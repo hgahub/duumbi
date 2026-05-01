@@ -1806,6 +1806,37 @@ impl ReplApp {
         self.output_scroll_offset = 0;
     }
 
+    /// Replaces the most recent output line in both legacy and block buffers.
+    pub fn replace_last_output_line(&mut self, text: impl Into<String>, style: OutputStyle) {
+        let text = text.into();
+        let output_line = OutputLine::new(text, style);
+        if let Some(line) = self.output_lines.last_mut() {
+            *line = output_line.clone();
+        }
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+            && let Some(line) = block.lines.last_mut()
+        {
+            *line = output_line;
+        }
+        self.output_scroll_offset = 0;
+    }
+
+    /// Removes the most recent output line from both legacy and block buffers.
+    pub fn pop_last_output_line(&mut self) {
+        let _ = self.output_lines.pop();
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+        {
+            let _ = block.lines.pop();
+        }
+        self.output_scroll_offset = 0;
+    }
+
     fn push_feedback(&mut self, text: impl Into<String>, style: OutputStyle) {
         self.current_output_block = None;
         self.push_output(text, style);

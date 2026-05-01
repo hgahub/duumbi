@@ -297,7 +297,7 @@ async fn process_input(
     } else {
         match app.mode {
             ReplMode::Query => {
-                handle_query_input(app, input).await;
+                handle_query_input(terminal, app, textarea, input).await;
                 if show_elapsed {
                     app.finish_current_output_elapsed(started.elapsed());
                 }
@@ -481,7 +481,7 @@ async fn handle_slash(
             if arg.is_empty() {
                 app.push_output("Usage: /query <question>", OutputStyle::Dim);
             } else {
-                handle_query_input(app, arg).await;
+                handle_query_input(terminal, app, textarea, arg).await;
             }
         }
 
@@ -671,7 +671,12 @@ fn write_terminal_sequence(sequence: &str) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Handles a read-only natural-language query.
-async fn handle_query_input(app: &mut ReplApp, input: &str) {
+async fn handle_query_input(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    input: &str,
+) {
     if router::is_mutation_like(input) {
         let mode = match router::classify_request(input).preferred_mode() {
             Some(ReplMode::Intent) => "intent",
@@ -709,18 +714,36 @@ async fn handle_query_input(app: &mut ReplApp, input: &str) {
     let mut request = QueryRequest::new(&app.workspace_root, input);
     request.session_turns = session_turns;
 
-    app.push_output("Answering from workspace context...", OutputStyle::Dim);
+    let pending_label = format!("Reviewer agent ({}) is answering", client.model_label());
+    app.push_output(pending_status_text(&pending_label, 0), OutputStyle::Dim);
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
 
     let streamed = std::sync::Mutex::new(String::new());
     let engine = QueryEngine::new();
-    let result = engine
-        .answer_streaming(client.as_ref(), request, &|text| {
-            streamed
-                .lock()
-                .expect("invariant: query stream mutex not poisoned")
-                .push_str(text);
-        })
-        .await;
+    let on_text = |text: &str| {
+        streamed
+            .lock()
+            .expect("invariant: query stream mutex not poisoned")
+            .push_str(text);
+    };
+    let result = {
+        let query = engine.answer_streaming(client.as_ref(), request, &on_text);
+        tokio::pin!(query);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(280));
+        let mut frame = 1usize;
+        loop {
+            tokio::select! {
+                result = &mut query => break result,
+                _ = tick.tick() => {
+                    app.replace_last_output_line(pending_status_text(&pending_label, frame), OutputStyle::Dim);
+                    let _ = terminal.draw(|frame| app.render(frame, textarea));
+                    frame = frame.wrapping_add(1);
+                }
+            }
+        }
+    };
+    app.pop_last_output_line();
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
     app.client = Some(client);
 
     match result {
@@ -748,13 +771,21 @@ async fn handle_query_input(app: &mut ReplApp, input: &str) {
     }
 }
 
+fn pending_status_text(label: &str, frame: usize) -> String {
+    let dots = ".".repeat(frame % 4);
+    format!("{label}{dots}")
+}
+
 fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
     let display = split_thinking_blocks(text);
     if let Some(thinking) = display.thinking.as_deref() {
+        app.push_output("", OutputStyle::Normal);
         push_thinking_block(app, thinking);
+        app.push_output("", OutputStyle::Normal);
     }
     if !display.answer.is_empty() {
         app.push_output(display.answer, OutputStyle::Normal);
+        app.push_output("", OutputStyle::Normal);
     }
     app.push_output(
         format!(
@@ -768,9 +799,9 @@ fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
 }
 
 fn push_thinking_block(app: &mut ReplApp, thinking: &str) {
-    app.push_output("| Thinking:", OutputStyle::Thinking);
+    app.push_output("▌ Thinking:", OutputStyle::Thinking);
     for line in thinking.lines() {
-        app.push_output(format!("| {}", line.trim_end()), OutputStyle::Thinking);
+        app.push_output(format!("▌ {}", line.trim_end()), OutputStyle::Thinking);
     }
 }
 
@@ -2475,15 +2506,42 @@ mod tests {
 
         push_query_answer(&mut app, &answer, &answer.text);
 
-        assert_eq!(app.output_lines[0].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[0].text, "");
         assert_eq!(app.output_lines[1].style, OutputStyle::Thinking);
-        assert_eq!(app.output_lines[2].style, OutputStyle::Normal);
-        assert_eq!(app.output_lines[2].text, "Hello.");
-        assert!(app.output_lines[3].text.contains("Confidence: Low"));
+        assert_eq!(app.output_lines[2].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[3].text, "");
+        assert_eq!(app.output_lines[4].style, OutputStyle::Normal);
+        assert_eq!(app.output_lines[4].text, "Hello.");
+        assert_eq!(app.output_lines[5].text, "");
+        assert!(app.output_lines[6].text.contains("Confidence: Low"));
         assert!(
-            app.output_lines[3]
+            app.output_lines[6]
                 .text
                 .contains("Model: minimax/MiniMax-M2.7")
+        );
+    }
+
+    #[test]
+    fn query_pending_status_animates_three_dots() {
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 0),
+            "Reviewer agent is answering"
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 1),
+            "Reviewer agent is answering."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 2),
+            "Reviewer agent is answering.."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 3),
+            "Reviewer agent is answering..."
+        );
+        assert_eq!(
+            pending_status_text("Reviewer agent is answering", 4),
+            "Reviewer agent is answering"
         );
     }
 

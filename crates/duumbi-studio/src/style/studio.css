@@ -1358,7 +1358,7 @@ header {
   color: #7ba8e0;
   border-left: 3px solid #5f9df7;
   padding: 8px 0 8px 12px;
-  margin-bottom: 12px;
+  margin: 12px 0;
   white-space: pre-wrap;
   background: rgba(95, 157, 247, .06);
 }
@@ -1371,6 +1371,28 @@ header {
 .chat-msg.ai .answer-body {
   color: #f5f2ea;
   white-space: pre-wrap;
+}
+
+.chat-msg.ai .answer-pending {
+  color: #908c82;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.chat-msg.ai .pending-dots::after {
+  content: "";
+  animation: pendingDots 1.1s steps(4, end) infinite;
+}
+
+.chat-msg.ai .answer-body + .msg-meta,
+.chat-msg.ai .thinking-block + .msg-meta {
+  margin-top: 14px;
+}
+
+@keyframes pendingDots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75%, 100% { content: "..."; }
 }
 
 .chat-msg.user {

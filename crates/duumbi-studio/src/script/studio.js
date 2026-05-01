@@ -2545,6 +2545,9 @@
 
     // Use WebSocket if connected, otherwise fallback placeholder
     if (StudioWS.isConnected()) {
+      if (chatMode === 'query') {
+        StudioWS.beginPending('Reviewer agent is answering');
+      }
       StudioWS.send(msg, '', currentLevel, chatMode);
     } else {
       var aiDiv = document.createElement('div');
@@ -2710,21 +2713,38 @@
       return text.charAt(0).toUpperCase() + text.slice(1);
     }
 
-    function _ensureStreamingBubble() {
+    function _ensureStreamingBubble(pendingText) {
       var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
       if (!chatMessages) return null;
       if (!_streamingDiv) {
         _streamingDiv = document.createElement('div');
         _streamingDiv.className = 'chat-msg ai streaming';
+        if (pendingText) {
+          var pending = document.createElement('div');
+          pending.className = 'answer-pending';
+          pending.textContent = pendingText;
+          var dots = document.createElement('span');
+          dots.className = 'pending-dots';
+          pending.appendChild(dots);
+          _streamingDiv.appendChild(pending);
+        }
         chatMessages.appendChild(_streamingDiv);
       }
       return _streamingDiv;
+    }
+
+    function beginPending(text) {
+      var bubble = _ensureStreamingBubble(text);
+      var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
+      if (bubble && chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     // Register default chunk handler: append to streaming bubble
     onChunk(function (text) {
       var bubble = _ensureStreamingBubble();
       if (!bubble) return;
+      var pending = bubble.querySelector('.answer-pending');
+      if (pending) pending.remove();
       bubble.textContent += text;
       var chatMessages = qs('.chat-messages') || document.getElementById('chatMessages');
       if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -2748,6 +2768,8 @@
     function _appendChatAnswer(data) {
       if (_streamingDiv) {
         _streamingDiv.classList.remove('streaming');
+        var pending = _streamingDiv.querySelector('.answer-pending');
+        if (pending) pending.remove();
         var rawText = _streamingDiv.textContent || '';
         var parsed = splitThinkingBlocks(rawText);
         _streamingDiv.textContent = '';
@@ -2801,6 +2823,7 @@
     return {
       connect:     connect,
       send:        send,
+      beginPending: beginPending,
       isConnected: isConnected,
       onChunk:     onChunk,
       onResult:    onResult,
