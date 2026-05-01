@@ -63,6 +63,7 @@ pub fn create_provider_for_global_access_context(
 ) -> Result<Box<dyn LlmProvider>, AgentError> {
     let mut context = context.clone();
     if let Some(fingerprint) = crate::agents::model_access::credential_fingerprint_from_env(config)
+        .or_else(|| credential_fingerprint_from_credential_file(config))
     {
         context.accessible_models = active_model_access_models(
             &config.provider,
@@ -74,6 +75,27 @@ pub fn create_provider_for_global_access_context(
         );
     }
     create_provider_for_context(config, &context)
+}
+
+fn credential_fingerprint_from_credential_file(config: &ProviderConfig) -> Option<String> {
+    if let Some(token_env) = &config.auth_token_env
+        && let Some(token) = crate::credentials::load_api_key(token_env)
+    {
+        return Some(
+            crate::agents::model_access::credential_fingerprint_for_secret(
+                &config.provider,
+                &token,
+                true,
+            ),
+        );
+    }
+    crate::credentials::load_api_key(&config.api_key_env).map(|key| {
+        crate::agents::model_access::credential_fingerprint_for_secret(
+            &config.provider,
+            &key,
+            false,
+        )
+    })
 }
 
 fn active_model_access_models(
@@ -91,7 +113,7 @@ fn create_resolved_provider(
 ) -> Result<Box<dyn LlmProvider>, AgentError> {
     // Resolve credential: prefer auth_token_env (subscription) over api_key_env.
     let (api_key, use_auth_token) = if let Some(ref token_env) = config.auth_token_env {
-        if let Ok(token) = std::env::var(token_env) {
+        if let Some(token) = resolve_secret(token_env) {
             (token, true)
         } else {
             let key = resolve_api_key(config)?;
@@ -106,12 +128,18 @@ fn create_resolved_provider(
 }
 
 fn resolve_api_key(config: &ResolvedProviderConfig) -> Result<String, AgentError> {
-    std::env::var(&config.api_key_env).map_err(|_| {
+    resolve_secret(&config.api_key_env).ok_or_else(|| {
         AgentError::Parse(format!(
             "Cannot create {} provider: Config field 'api_key_env' is invalid: Environment variable '{}' is not set",
             config.provider, config.api_key_env
         ))
     })
+}
+
+fn resolve_secret(env_var_name: &str) -> Option<String> {
+    std::env::var(env_var_name)
+        .ok()
+        .or_else(|| crate::credentials::load_api_key(env_var_name))
 }
 
 /// Creates a single [`LlmProvider`] from explicit credential material.
@@ -238,6 +266,18 @@ pub fn create_provider_chain_for_context(
 pub fn create_provider_chain_for_global_access(
     configs: &[ProviderConfig],
 ) -> Result<Box<dyn LlmProvider>, AgentError> {
+    create_provider_chain_for_global_access_context(configs, &ModelSelectionContext::default())
+}
+
+/// Creates a provider chain using global model-access metadata and call context.
+///
+/// # Errors
+///
+/// Returns an error if no providers are configured or provider construction fails.
+pub fn create_provider_chain_for_global_access_context(
+    configs: &[ProviderConfig],
+    context: &ModelSelectionContext,
+) -> Result<Box<dyn LlmProvider>, AgentError> {
     if configs.is_empty() {
         return Err(AgentError::Parse(
             "No LLM providers configured. Run `duumbi provider add`.".to_string(),
@@ -245,15 +285,54 @@ pub fn create_provider_chain_for_global_access(
     }
 
     if configs.len() == 1 {
-        return create_provider_for_global_access(&configs[0]);
+        return create_provider_for_global_access_context(&configs[0], context);
     }
 
     let sorted = sorted_provider_configs(configs);
     let mut providers = Vec::with_capacity(sorted.len());
     for config in &sorted {
-        providers.push(create_provider_for_global_access(config)?);
+        providers.push(create_provider_for_global_access_context(config, context)?);
     }
     Ok(Box::new(super::fallback::ProviderChain::new(providers)))
+}
+
+/// Creates a provider chain from the providers that are available for this credential set.
+///
+/// This skips providers whose credentials or accessible model set are
+/// unavailable. It lets a configured fallback provider work even if another
+/// configured provider is missing a key.
+///
+/// # Errors
+///
+/// Returns an error if no configured provider can be constructed.
+pub fn create_available_provider_chain_for_global_access_context(
+    configs: &[ProviderConfig],
+    context: &ModelSelectionContext,
+) -> Result<Box<dyn LlmProvider>, AgentError> {
+    if configs.is_empty() {
+        return Err(AgentError::Parse(
+            "No LLM providers configured. Run `duumbi provider add`.".to_string(),
+        ));
+    }
+
+    let sorted = sorted_provider_configs(configs);
+    let mut providers = Vec::with_capacity(sorted.len());
+    let mut errors = Vec::new();
+    for config in &sorted {
+        match create_provider_for_global_access_context(config, context) {
+            Ok(provider) => providers.push(provider),
+            Err(error) => errors.push(format!("{}: {error}", config.provider)),
+        }
+    }
+
+    match providers.len() {
+        0 => Err(AgentError::Parse(format!(
+            "No configured LLM provider is available ({})",
+            errors.join("; ")
+        ))),
+        1 => Ok(providers.remove(0)),
+        _ => Ok(Box::new(ProviderChain::new(providers))),
+    }
 }
 
 fn sorted_provider_configs(configs: &[ProviderConfig]) -> Vec<&ProviderConfig> {

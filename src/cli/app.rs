@@ -879,12 +879,9 @@ impl ReplApp {
         match key.code {
             KeyCode::Esc if self.conversation_text_selection.take().is_some() => Action::Continue,
 
-            // Shift+Tab: toggle Agent ↔ Intent mode
+            // Shift+Tab: cycle Query -> Agent -> Intent.
             KeyCode::BackTab => {
-                self.mode = match self.mode {
-                    ReplMode::Agent => ReplMode::Intent,
-                    ReplMode::Intent => ReplMode::Agent,
-                };
+                self.mode = self.mode.next();
                 Action::Continue
             }
 
@@ -1520,12 +1517,39 @@ impl ReplApp {
         }
         self.refresh_effective_config();
         let providers = self.config.effective_providers();
+        Self::load_file_credentials_for_providers(&providers);
         self.client = if providers.is_empty() {
             None
         } else {
-            crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
+            crate::agents::factory::create_available_provider_chain_for_global_access_context(
+                &providers,
+                &crate::agents::model_catalog::ModelSelectionContext::default(),
+            )
+            .ok()
         };
         self.keychain_cache = Self::build_keychain_cache(&self.config);
+    }
+
+    fn load_file_credentials_for_providers(providers: &[crate::config::ProviderConfig]) {
+        for provider in providers {
+            if std::env::var(&provider.api_key_env).is_err()
+                && let Some(key) = crate::credentials::load_api_key(&provider.api_key_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(&provider.api_key_env, &key);
+                }
+            }
+            if let Some(token_env) = &provider.auth_token_env
+                && std::env::var(token_env).is_err()
+                && let Some(token) = crate::credentials::load_api_key(token_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(token_env, &token);
+                }
+            }
+        }
     }
 
     fn upsert_provider_in_config(
@@ -1588,14 +1612,13 @@ impl ReplApp {
         config
             .effective_providers()
             .iter()
-            .filter(|p| matches!(p.key_storage, Some(crate::config::KeyStorage::File)))
             .flat_map(|p| {
                 let mut names = Vec::new();
-                if super::keystore::load_api_key(&p.api_key_env).is_some() {
+                if crate::credentials::load_api_key(&p.api_key_env).is_some() {
                     names.push(p.api_key_env.clone());
                 }
                 if let Some(token_env) = &p.auth_token_env
-                    && super::keystore::load_api_key(token_env).is_some()
+                    && crate::credentials::load_api_key(token_env).is_some()
                 {
                     names.push(token_env.clone());
                 }
@@ -2858,6 +2881,7 @@ impl ReplApp {
                     OutputStyle::Success => theme::out_success(),
                     OutputStyle::Dim => theme::out_dim(),
                     OutputStyle::Ai => theme::out_ai(),
+                    OutputStyle::Thinking => theme::out_thinking(),
                     OutputStyle::Help => unreachable!(),
                 };
                 Line::from(Span::styled(ol.text.clone(), style))
@@ -2912,6 +2936,7 @@ impl ReplApp {
 
         let is_empty = textarea.lines().iter().all(|line| line.is_empty());
         let placeholder = match self.mode {
+            ReplMode::Query => "e.g. \"what modules exist?\" or /help",
             ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
             ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
         };
@@ -3492,9 +3517,9 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_in_agent_mode() {
+    fn new_starts_in_query_mode() {
         let (app, _) = make_app();
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]
@@ -3959,11 +3984,15 @@ mod tests {
         let (mut app, mut textarea) = make_app();
         let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Intent);
+        assert_eq!(app.mode, ReplMode::Agent);
 
         let key2 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key2, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Intent);
+
+        let key3 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(key3, &mut textarea);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]

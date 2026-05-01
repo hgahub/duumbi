@@ -1,31 +1,14 @@
-//! REPL mode system for Agent / Intent dual-mode interaction.
+//! REPL mode system for Query / Agent / Intent interaction.
 //!
-//! The REPL supports two modes toggled by Shift+Tab:
-//! - **Agent** — free-form AI mutation (default)
+//! The REPL supports three modes toggled by Shift+Tab:
+//! - **Query** — read-only explanation and inspection (default)
+//! - **Agent** — free-form AI mutation
 //! - **Intent** — intent-focused planning and modification
 
 use std::path::PathBuf;
 
-/// The two REPL interaction modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReplMode {
-    /// Free-form AI mutation mode (default).
-    #[default]
-    Agent,
-    /// Intent-focused mode: input is interpreted in context of a focused intent.
-    Intent,
-}
-
-impl ReplMode {
-    /// Human-readable label for the current mode.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Intent => "intent",
-        }
-    }
-}
+/// REPL interaction mode.
+pub use crate::interaction::InteractionMode as ReplMode;
 
 /// Output line style for the scrollable output buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +23,8 @@ pub enum OutputStyle {
     Dim,
     /// AI streaming text (cyan).
     Ai,
+    /// Model-emitted thinking text.
+    Thinking,
     /// Help command entry: command name (magenta) + description (white).
     Help,
 }
@@ -227,12 +212,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_default_is_agent() {
-        assert_eq!(ReplMode::default(), ReplMode::Agent);
+    fn mode_default_is_query() {
+        assert_eq!(ReplMode::default(), ReplMode::Query);
     }
 
     #[test]
     fn mode_labels() {
+        assert_eq!(ReplMode::Query.label(), "query");
         assert_eq!(ReplMode::Agent.label(), "agent");
         assert_eq!(ReplMode::Intent.label(), "intent");
     }
