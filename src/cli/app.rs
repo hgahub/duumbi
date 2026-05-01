@@ -1093,6 +1093,7 @@ impl ReplApp {
         match key_event.code {
             KeyCode::Esc => {
                 self.panel = PanelState::None;
+                return Action::Continue;
             }
             KeyCode::Backspace => {
                 name_buf.pop();
@@ -3739,6 +3740,20 @@ mod tests {
     }
 
     #[test]
+    fn init_panel_esc_closes_name_entry() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
     fn init_panel_rejects_names_over_thirty_chars() {
         let (mut app, mut textarea) = make_app();
         app.open_init_panel(
@@ -3819,6 +3834,24 @@ mod tests {
                 overwrite_existing: true
             } if workspace_name == "myproject"
         ));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_esc_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
         assert!(matches!(app.panel, PanelState::None));
     }
 
