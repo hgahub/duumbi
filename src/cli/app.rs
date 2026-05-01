@@ -3261,6 +3261,11 @@ impl ReplApp {
                     Tag::BlockQuote => {
                         Self::finish_markdown_row(&mut rows, &mut current);
                         style_state.quote_depth += 1;
+                        Self::append_markdown_prefix(
+                            &mut current,
+                            style_state.quote_depth,
+                            list_stack.len(),
+                        );
                     }
                     Tag::CodeBlock(_) => {
                         Self::finish_markdown_row(&mut rows, &mut current);
@@ -3416,7 +3421,7 @@ impl ReplApp {
     }
 
     fn finish_markdown_row(rows: &mut Vec<StyledRow>, current: &mut StyledRow) {
-        if !current.plain_text.is_empty() || !rows.is_empty() {
+        if !current.plain_text.is_empty() {
             rows.push(std::mem::take(current));
         }
     }
@@ -3442,27 +3447,41 @@ impl ReplApp {
 
     fn wrap_styled_row(row: StyledRow, width: usize) -> Vec<StyledRow> {
         let width = width.max(1);
+        let was_empty = row.plain_text.is_empty();
         let mut rows = Vec::new();
         let mut current = StyledRow::default();
         let mut current_len = 0usize;
 
         for chunk in row.chunks {
-            for ch in chunk.text.chars() {
+            let StyledChunk { text, style } = chunk;
+            let mut remaining: &str = text.as_str();
+            while !remaining.is_empty() {
                 if current_len == width {
                     rows.push(std::mem::take(&mut current));
                     current_len = 0;
                 }
-                let text = ch.to_string();
-                current.plain_text.push(ch);
+                let space = width - current_len;
+                let mut taken = 0;
+                let mut end_byte = 0;
+                for (byte, ch) in remaining.char_indices() {
+                    if taken == space {
+                        break;
+                    }
+                    end_byte = byte + ch.len_utf8();
+                    taken += 1;
+                }
+                let (slice, rest) = remaining.split_at(end_byte);
+                current.plain_text.push_str(slice);
                 current.chunks.push(StyledChunk {
-                    text,
-                    style: chunk.style,
+                    text: slice.to_string(),
+                    style,
                 });
-                current_len += 1;
+                current_len += taken;
+                remaining = rest;
             }
         }
 
-        if !current.plain_text.is_empty() || row.plain_text.is_empty() {
+        if !current.plain_text.is_empty() || was_empty {
             rows.push(current);
         }
         rows
@@ -4749,6 +4768,54 @@ mod tests {
         assert!(!rendered.contains("_helpers_"));
         assert!(!rendered.contains("`add(x)`"));
         assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn markdown_list_items_have_no_blank_separator() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("- first\n- second\n- third\n");
+
+        let rows = app.conversation_visual_rows(120);
+        let first = rows
+            .iter()
+            .position(|r| r.plain_text.contains("first"))
+            .expect("first item should render");
+        let second = rows
+            .iter()
+            .position(|r| r.plain_text.contains("second"))
+            .expect("second item should render");
+        let third = rows
+            .iter()
+            .position(|r| r.plain_text.contains("third"))
+            .expect("third item should render");
+
+        assert_eq!(
+            second,
+            first + 1,
+            "list items should not have blank rows between them"
+        );
+        assert_eq!(
+            third,
+            second + 1,
+            "list items should not have blank rows between them"
+        );
+    }
+
+    #[test]
+    fn markdown_blockquote_renders_prefix_on_first_line() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("> quoted text");
+
+        let rows = app.conversation_visual_rows(120);
+        let quoted = rows
+            .iter()
+            .find(|r| r.plain_text.contains("quoted text"))
+            .expect("quoted line should render");
+        assert!(
+            quoted.plain_text.starts_with('\u{2502}'),
+            "blockquote first line should start with quote prefix, got: {:?}",
+            quoted.plain_text
+        );
     }
 
     #[test]
