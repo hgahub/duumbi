@@ -58,6 +58,20 @@ pub enum ConversationBlockKind {
     Output,
 }
 
+/// Rendering mode for assistant or command output blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputRenderMode {
+    /// Plain line-by-line terminal output.
+    Plain,
+    /// Markdown answer text rendered into terminal styles.
+    Markdown,
+    /// Model-emitted thinking text, collapsed by default.
+    Thinking {
+        /// Whether the hidden thinking body is currently visible.
+        expanded: bool,
+    },
+}
+
 /// Action shown in a conversation block header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationAction {
@@ -72,6 +86,8 @@ pub enum ConversationAction {
 pub struct ConversationBlock {
     /// Block type.
     pub kind: ConversationBlockKind,
+    /// Output rendering behavior.
+    pub render_mode: OutputRenderMode,
     /// Lines rendered inside the block.
     pub lines: Vec<OutputLine>,
     /// Time the user submitted the block, formatted for display.
@@ -90,6 +106,7 @@ impl ConversationBlock {
     pub fn user(input: impl Into<String>, submitted_at: impl Into<String>) -> Self {
         Self {
             kind: ConversationBlockKind::User,
+            render_mode: OutputRenderMode::Plain,
             lines: vec![OutputLine::new(input, OutputStyle::Normal)],
             submitted_at: Some(submitted_at.into()),
             elapsed: None,
@@ -103,6 +120,7 @@ impl ConversationBlock {
     pub fn output() -> Self {
         Self {
             kind: ConversationBlockKind::Output,
+            render_mode: OutputRenderMode::Plain,
             lines: Vec::new(),
             submitted_at: None,
             elapsed: None,
