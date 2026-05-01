@@ -10,6 +10,10 @@ use std::path::PathBuf;
 
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
+use pulldown_cmark::{
+    Event as MarkdownEvent, HeadingLevel, Options as MarkdownOptions, Parser as MarkdownParser,
+    Tag, TagEnd,
+};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
@@ -209,8 +213,8 @@ fn configured_provider_index(
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
-    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine, OutputStyle,
-    PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
+    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine,
+    OutputRenderMode, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
 use super::theme::tui as theme;
 
@@ -234,6 +238,7 @@ struct ConversationVisualRow {
     block_index: Option<usize>,
     menu_button_block: Option<usize>,
     menu_button_range: Option<(u16, u16)>,
+    thinking_toggle_block: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +264,38 @@ struct ConversationTextSelection {
     anchor: ConversationSelectionPoint,
     focus: ConversationSelectionPoint,
     dragged: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StyledChunk {
+    text: String,
+    style: Style,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StyledRow {
+    chunks: Vec<StyledChunk>,
+    plain_text: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MarkdownStyleState {
+    strong: usize,
+    emphasis: usize,
+    link: usize,
+    quote_depth: usize,
+    heading: Option<HeadingLevel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationRowAnchor {
+    block_index: usize,
+    block_row_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MarkdownListState {
+    next_number: Option<u64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1933,6 +1970,38 @@ impl ReplApp {
         self.output_scroll_offset = 0;
     }
 
+    /// Appends one Markdown-rendered answer block to the conversation pane.
+    pub fn push_markdown_output(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let output_idx = self.start_output_block(OutputRenderMode::Markdown);
+        for line in text.split('\n') {
+            let output_line = OutputLine::new(line.to_string(), OutputStyle::Normal);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
+        }
+        self.trim_output_buffer();
+        self.current_output_block = None;
+        self.output_scroll_offset = 0;
+    }
+
+    /// Appends one collapsed model-thinking block to the conversation pane.
+    pub fn push_thinking_output(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let output_idx = self.start_output_block(OutputRenderMode::Thinking { expanded: false });
+        for line in text.split('\n') {
+            let output_line = OutputLine::new(line.to_string(), OutputStyle::Thinking);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
+        }
+        self.trim_output_buffer();
+        self.current_output_block = None;
+        self.output_scroll_offset = 0;
+    }
+
     /// Replaces the most recent output line in both legacy and block buffers.
     pub fn replace_last_output_line(&mut self, text: impl Into<String>, style: OutputStyle) {
         let text = text.into();
@@ -2172,18 +2241,31 @@ impl ReplApp {
 
     fn ensure_output_block(&mut self) -> usize {
         if let Some(idx) = self.current_output_block
-            && self
-                .conversation_blocks
-                .get(idx)
-                .is_some_and(|block| block.kind == ConversationBlockKind::Output)
+            && self.conversation_blocks.get(idx).is_some_and(|block| {
+                block.kind == ConversationBlockKind::Output
+                    && block.render_mode == OutputRenderMode::Plain
+            })
         {
             return idx;
         }
 
-        self.conversation_blocks.push(ConversationBlock::output());
+        self.start_output_block(OutputRenderMode::Plain)
+    }
+
+    fn start_output_block(&mut self, render_mode: OutputRenderMode) -> usize {
+        let mut block = ConversationBlock::output();
+        block.render_mode = render_mode;
+        self.conversation_blocks.push(block);
         let idx = self.conversation_blocks.len() - 1;
         self.current_output_block = Some(idx);
         idx
+    }
+
+    fn trim_output_buffer(&mut self) {
+        if self.output_lines.len() > Self::OUTPUT_BUFFER_MAX {
+            let excess = self.output_lines.len() - Self::OUTPUT_BUFFER_MAX;
+            self.output_lines.drain(..excess);
+        }
     }
 
     fn handle_conversation_mouse_down(&mut self, column: u16, row: u16) -> bool {
@@ -2306,6 +2388,18 @@ impl ReplApp {
             return true;
         }
 
+        if let Some(block_index) = visual_row.thinking_toggle_block {
+            let relative_y = row.saturating_sub(area.y) as usize;
+            let visible_row = relative_y.saturating_sub(layout.padding);
+            let anchor = self.anchor_for_visible_row(&layout, visible_row, area.width);
+            let was_scrolled = self.output_scroll_offset > 0;
+            self.toggle_thinking_block(block_index);
+            if was_scrolled && let Some(anchor) = anchor {
+                self.restore_conversation_anchor(area, anchor, relative_y);
+            }
+            return true;
+        }
+
         let Some(block_index) = visual_row.block_index else {
             return false;
         };
@@ -2325,6 +2419,77 @@ impl ReplApp {
             self.conversation_action_menu = None;
         }
         true
+    }
+
+    fn toggle_thinking_block(&mut self, block_index: usize) {
+        let Some(block) = self.conversation_blocks.get_mut(block_index) else {
+            return;
+        };
+        if let OutputRenderMode::Thinking { expanded } = &mut block.render_mode {
+            *expanded = !*expanded;
+        }
+    }
+
+    fn anchor_for_visible_row(
+        &self,
+        layout: &VisibleConversationLayout,
+        visible_row: usize,
+        width: u16,
+    ) -> Option<ConversationRowAnchor> {
+        let row = layout.rows.get(visible_row)?;
+        let block_index = row.block_index?;
+        let absolute_row = layout.start_index + visible_row;
+        let block_row_offset = self
+            .conversation_visual_rows(width)
+            .iter()
+            .take(absolute_row)
+            .filter(|candidate| candidate.block_index == Some(block_index))
+            .count();
+        Some(ConversationRowAnchor {
+            block_index,
+            block_row_offset,
+        })
+    }
+
+    fn restore_conversation_anchor(
+        &mut self,
+        area: Rect,
+        anchor: ConversationRowAnchor,
+        target_visible_row: usize,
+    ) {
+        let rows = self.conversation_visual_rows(area.width);
+        let Some(anchor_row) = Self::find_anchor_row(&rows, anchor) else {
+            return;
+        };
+        let max_visible = area.height as usize;
+        let total = rows.len();
+        let bottom = if anchor_row < target_visible_row {
+            max_visible
+                .saturating_sub(target_visible_row - anchor_row)
+                .min(total)
+        } else {
+            let desired_start = anchor_row - target_visible_row;
+            let max_start = total.saturating_sub(max_visible);
+            let start = desired_start.min(max_start);
+            (start + max_visible).min(total)
+        };
+        self.output_scroll_offset = total.saturating_sub(bottom);
+    }
+
+    fn find_anchor_row(
+        rows: &[ConversationVisualRow],
+        anchor: ConversationRowAnchor,
+    ) -> Option<usize> {
+        let mut seen = 0usize;
+        for (idx, row) in rows.iter().enumerate() {
+            if row.block_index == Some(anchor.block_index) {
+                if seen == anchor.block_row_offset {
+                    return Some(idx);
+                }
+                seen += 1;
+            }
+        }
+        None
     }
 
     fn conversation_point_at(
@@ -2873,13 +3038,20 @@ impl ReplApp {
     fn conversation_visual_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
         let mut rows = Vec::new();
         for (idx, block) in self.conversation_blocks.iter().enumerate() {
-            if !rows.is_empty() {
+            let previous = idx
+                .checked_sub(1)
+                .and_then(|previous_idx| self.conversation_blocks.get(previous_idx));
+            let user_block_boundary = previous
+                .is_some_and(|previous_block| previous_block.kind == ConversationBlockKind::User)
+                || block.kind == ConversationBlockKind::User;
+            if !rows.is_empty() && !user_block_boundary {
                 rows.push(ConversationVisualRow {
                     line: Line::from(""),
                     plain_text: String::new(),
                     block_index: None,
                     menu_button_block: None,
                     menu_button_range: None,
+                    thinking_toggle_block: None,
                 });
             }
             match block.kind {
@@ -2887,14 +3059,24 @@ impl ReplApp {
                     rows.extend(self.user_block_rows(idx, block, width));
                 }
                 ConversationBlockKind::Output => {
-                    for ol in &block.lines {
-                        rows.extend(Self::output_line_visual_rows(
-                            ol,
-                            Some(idx),
-                            None,
-                            None,
-                            width,
-                        ));
+                    match block.render_mode {
+                        OutputRenderMode::Plain => {
+                            for ol in &block.lines {
+                                rows.extend(Self::output_line_visual_rows(
+                                    ol,
+                                    Some(idx),
+                                    None,
+                                    None,
+                                    width,
+                                ));
+                            }
+                        }
+                        OutputRenderMode::Markdown => {
+                            rows.extend(Self::markdown_visual_rows(block, idx, width));
+                        }
+                        OutputRenderMode::Thinking { expanded } => {
+                            rows.extend(Self::thinking_visual_rows(block, idx, width, expanded));
+                        }
                     }
                     if let Some(elapsed) = &block.elapsed {
                         rows.push(ConversationVisualRow {
@@ -2903,6 +3085,7 @@ impl ReplApp {
                             block_index: Some(idx),
                             menu_button_block: None,
                             menu_button_range: None,
+                            thinking_toggle_block: None,
                         });
                     }
                 }
@@ -2926,17 +3109,29 @@ impl ReplApp {
         let submitted_at = block.submitted_at.as_deref().unwrap_or("");
         let selected = self.selected_conversation_block == Some(block_index);
         let action_trigger = if selected { "..." } else { "" };
+        let (top_padding, _, top_plain_text) = self.user_panel_line("", "", width, false, selected);
         let (line, range, plain_text) =
             self.user_panel_line(input, action_trigger, width, true, selected);
         let (meta_line, _, meta_plain_text) =
             self.user_panel_line(submitted_at, "", width, false, selected);
+        let (bottom_padding, _, bottom_plain_text) =
+            self.user_panel_line("", "", width, false, selected);
         vec![
+            ConversationVisualRow {
+                line: top_padding,
+                plain_text: top_plain_text,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+                thinking_toggle_block: None,
+            },
             ConversationVisualRow {
                 line,
                 plain_text,
                 block_index: Some(block_index),
                 menu_button_block: selected.then_some(block_index),
                 menu_button_range: range,
+                thinking_toggle_block: None,
             },
             ConversationVisualRow {
                 line: meta_line,
@@ -2944,6 +3139,15 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
+                thinking_toggle_block: None,
+            },
+            ConversationVisualRow {
+                line: bottom_padding,
+                plain_text: bottom_plain_text,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+                thinking_toggle_block: None,
             },
         ]
     }
@@ -2974,9 +3178,333 @@ impl ReplApp {
                     block_index,
                     menu_button_block,
                     menu_button_range,
+                    thinking_toggle_block: None,
                 }
             })
             .collect()
+    }
+
+    fn markdown_visual_rows(
+        block: &ConversationBlock,
+        block_index: usize,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let text = block
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let styled_rows = Self::markdown_styled_rows(&text);
+        let max_width = usize::from(width.max(1));
+        styled_rows
+            .into_iter()
+            .flat_map(|row| Self::wrap_styled_row(row, max_width))
+            .map(|row| Self::styled_row_to_visual(row, Some(block_index), None))
+            .collect()
+    }
+
+    fn thinking_visual_rows(
+        block: &ConversationBlock,
+        block_index: usize,
+        width: u16,
+        expanded: bool,
+    ) -> Vec<ConversationVisualRow> {
+        let marker = if expanded { "\u{25BE}" } else { "\u{25B8}" };
+        let header = format!("{marker} Thinking");
+        let mut rows = vec![ConversationVisualRow {
+            line: Line::from(Span::styled(header.clone(), theme::out_thinking())),
+            plain_text: header,
+            block_index: Some(block_index),
+            menu_button_block: None,
+            menu_button_range: None,
+            thinking_toggle_block: Some(block_index),
+        }];
+
+        if expanded {
+            for line in &block.lines {
+                let text = format!("\u{2502} {}", line.text.trim_end());
+                let output_line = OutputLine::new(text, OutputStyle::Thinking);
+                rows.extend(Self::output_line_visual_rows(
+                    &output_line,
+                    Some(block_index),
+                    None,
+                    None,
+                    width,
+                ));
+            }
+        }
+
+        rows
+    }
+
+    fn markdown_styled_rows(text: &str) -> Vec<StyledRow> {
+        let options = MarkdownOptions::ENABLE_STRIKETHROUGH
+            | MarkdownOptions::ENABLE_TABLES
+            | MarkdownOptions::ENABLE_TASKLISTS;
+        let parser = MarkdownParser::new_ext(text, options);
+        let mut rows = Vec::new();
+        let mut current = StyledRow::default();
+        let mut style_state = MarkdownStyleState::default();
+        let mut list_stack: Vec<MarkdownListState> = Vec::new();
+        let mut link_stack: Vec<String> = Vec::new();
+        let mut in_code_block = false;
+
+        for event in parser {
+            match event {
+                MarkdownEvent::Start(tag) => match tag {
+                    Tag::Paragraph => {}
+                    Tag::Heading { level, .. } => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.heading = Some(level);
+                    }
+                    Tag::BlockQuote => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.quote_depth += 1;
+                        Self::append_markdown_prefix(
+                            &mut current,
+                            style_state.quote_depth,
+                            list_stack.len(),
+                        );
+                    }
+                    Tag::CodeBlock(_) => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        in_code_block = true;
+                    }
+                    Tag::List(start) => {
+                        list_stack.push(MarkdownListState { next_number: start });
+                    }
+                    Tag::Item => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        let depth = list_stack.len().saturating_sub(1);
+                        Self::append_markdown_prefix(&mut current, style_state.quote_depth, depth);
+                        if let Some(list) = list_stack.last_mut() {
+                            match list.next_number {
+                                Some(n) => {
+                                    Self::append_styled(
+                                        &mut current,
+                                        format!("{n}. "),
+                                        theme::out_dim(),
+                                    );
+                                    list.next_number = Some(n + 1);
+                                }
+                                None => Self::append_styled(
+                                    &mut current,
+                                    "- ".to_string(),
+                                    theme::out_dim(),
+                                ),
+                            }
+                        }
+                    }
+                    Tag::Emphasis => style_state.emphasis += 1,
+                    Tag::Strong => style_state.strong += 1,
+                    Tag::Link { dest_url, .. } => {
+                        style_state.link += 1;
+                        link_stack.push(dest_url.to_string());
+                    }
+                    _ => {}
+                },
+                MarkdownEvent::End(tag) => match tag {
+                    TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        if matches!(tag, TagEnd::Heading(_)) {
+                            style_state.heading = None;
+                        }
+                    }
+                    TagEnd::BlockQuote => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.quote_depth = style_state.quote_depth.saturating_sub(1);
+                    }
+                    TagEnd::CodeBlock => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        in_code_block = false;
+                    }
+                    TagEnd::List(_) => {
+                        list_stack.pop();
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                    }
+                    TagEnd::Emphasis => {
+                        style_state.emphasis = style_state.emphasis.saturating_sub(1);
+                    }
+                    TagEnd::Strong => {
+                        style_state.strong = style_state.strong.saturating_sub(1);
+                    }
+                    TagEnd::Link => {
+                        if let Some(url) = link_stack.pop()
+                            && !url.is_empty()
+                        {
+                            Self::append_styled(
+                                &mut current,
+                                format!(" ({url})"),
+                                theme::out_dim(),
+                            );
+                        }
+                        style_state.link = style_state.link.saturating_sub(1);
+                    }
+                    _ => {}
+                },
+                MarkdownEvent::Text(text) => {
+                    if in_code_block {
+                        for (idx, line) in text.split('\n').enumerate() {
+                            if idx > 0 {
+                                Self::finish_markdown_row(&mut rows, &mut current);
+                            }
+                            if current.plain_text.is_empty() {
+                                Self::append_styled(
+                                    &mut current,
+                                    "  ".to_string(),
+                                    theme::out_dim(),
+                                );
+                            }
+                            Self::append_styled(
+                                &mut current,
+                                line.to_string(),
+                                Self::markdown_code_style(),
+                            );
+                        }
+                    } else {
+                        Self::append_styled(
+                            &mut current,
+                            text.to_string(),
+                            Self::markdown_inline_style(style_state),
+                        );
+                    }
+                }
+                MarkdownEvent::Code(text) => {
+                    Self::append_styled(
+                        &mut current,
+                        text.to_string(),
+                        Self::markdown_code_style(),
+                    );
+                }
+                MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                    Self::append_markdown_prefix(
+                        &mut current,
+                        style_state.quote_depth,
+                        list_stack.len(),
+                    );
+                }
+                MarkdownEvent::Rule => {
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                    Self::append_styled(&mut current, "\u{2500}".repeat(20), theme::out_dim());
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                }
+                _ => {}
+            }
+        }
+        Self::finish_markdown_row(&mut rows, &mut current);
+        while rows.last().is_some_and(|row| row.plain_text.is_empty()) {
+            rows.pop();
+        }
+        if rows.is_empty() {
+            rows.push(StyledRow::default());
+        }
+        rows
+    }
+
+    fn append_markdown_prefix(row: &mut StyledRow, quote_depth: usize, list_depth: usize) {
+        for _ in 0..quote_depth {
+            Self::append_styled(row, "\u{2502} ".to_string(), theme::out_dim());
+        }
+        if list_depth > 0 {
+            Self::append_styled(row, "  ".repeat(list_depth), theme::out_dim());
+        }
+    }
+
+    fn append_styled(row: &mut StyledRow, text: String, style: Style) {
+        if text.is_empty() {
+            return;
+        }
+        row.plain_text.push_str(&text);
+        row.chunks.push(StyledChunk { text, style });
+    }
+
+    fn finish_markdown_row(rows: &mut Vec<StyledRow>, current: &mut StyledRow) {
+        if !current.plain_text.is_empty() {
+            rows.push(std::mem::take(current));
+        }
+    }
+
+    fn markdown_inline_style(state: MarkdownStyleState) -> Style {
+        let mut style = if state.link > 0 {
+            theme::out_ai().add_modifier(Modifier::UNDERLINED)
+        } else {
+            theme::out_normal()
+        };
+        if state.heading.is_some() || state.strong > 0 {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if state.emphasis > 0 {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        style
+    }
+
+    fn markdown_code_style() -> Style {
+        theme::out_normal().add_modifier(Modifier::BOLD)
+    }
+
+    fn wrap_styled_row(row: StyledRow, width: usize) -> Vec<StyledRow> {
+        let width = width.max(1);
+        let was_empty = row.plain_text.is_empty();
+        let mut rows = Vec::new();
+        let mut current = StyledRow::default();
+        let mut current_len = 0usize;
+
+        for chunk in row.chunks {
+            let StyledChunk { text, style } = chunk;
+            let mut remaining: &str = text.as_str();
+            while !remaining.is_empty() {
+                if current_len == width {
+                    rows.push(std::mem::take(&mut current));
+                    current_len = 0;
+                }
+                let space = width - current_len;
+                let mut taken = 0;
+                let mut end_byte = 0;
+                for (byte, ch) in remaining.char_indices() {
+                    if taken == space {
+                        break;
+                    }
+                    end_byte = byte + ch.len_utf8();
+                    taken += 1;
+                }
+                let (slice, rest) = remaining.split_at(end_byte);
+                current.plain_text.push_str(slice);
+                current.chunks.push(StyledChunk {
+                    text: slice.to_string(),
+                    style,
+                });
+                current_len += taken;
+                remaining = rest;
+            }
+        }
+
+        if !current.plain_text.is_empty() || was_empty {
+            rows.push(current);
+        }
+        rows
+    }
+
+    fn styled_row_to_visual(
+        row: StyledRow,
+        block_index: Option<usize>,
+        thinking_toggle_block: Option<usize>,
+    ) -> ConversationVisualRow {
+        ConversationVisualRow {
+            line: Line::from(
+                row.chunks
+                    .into_iter()
+                    .map(|chunk| Span::styled(chunk.text, chunk.style))
+                    .collect::<Vec<_>>(),
+            ),
+            plain_text: row.plain_text,
+            block_index,
+            menu_button_block: None,
+            menu_button_range: None,
+            thinking_toggle_block,
+        }
     }
 
     fn wrap_thinking_output(text: &str, width: usize) -> Vec<String> {
@@ -4209,28 +4737,271 @@ mod tests {
     fn conversation_render_wraps_long_query_output() {
         let (mut app, textarea) = make_app();
         app.begin_user_block("Hello");
-        app.push_output("", OutputStyle::Normal);
-        app.push_output(
-            "│ Thinking: this answer should wrap cleanly so the final word remains visible",
-            OutputStyle::Thinking,
-        );
-        app.push_output(
-            "│ The user asked for a greeting and the response should not be clipped at the right edge",
-            OutputStyle::Thinking,
-        );
-        app.push_output("", OutputStyle::Normal);
-        app.push_output(
+        app.push_markdown_output(
             "Hello! I'm ready to help you explore your DUUMBI workspace. If you have any questions about your project, code, or architecture, feel free to ask.",
-            OutputStyle::Normal,
         );
 
-        let (rendered, rows) = render_app_to_string(&app, &textarea, 80, 35);
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 80, 35);
 
-        assert!(rows.iter().any(|row| row.contains("│ Thinking:")));
         assert!(!rendered.contains('▌'));
-        assert!(rendered.contains("visible"));
-        assert!(rendered.contains("edge"));
         assert!(rendered.contains("free to ask."));
+    }
+
+    #[test]
+    fn conversation_renders_common_markdown_without_raw_markers() {
+        let (mut app, textarea) = make_app();
+        app.push_markdown_output(
+            "### `main`\nThe workspace contains **5 modules** and _helpers_.\n\n- `add(x)`\n1. first\n\n> quoted note\n\n```duumbi\nfn main() -> i64\n```",
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 35);
+
+        assert!(rendered.contains("main"));
+        assert!(rendered.contains("5 modules"));
+        assert!(rendered.contains("helpers"));
+        assert!(rendered.contains("- add(x)"));
+        assert!(rendered.contains("1. first"));
+        assert!(rendered.contains("quoted note"));
+        assert!(rendered.contains("fn main() -> i64"));
+        assert!(!rendered.contains("###"));
+        assert!(!rendered.contains("**"));
+        assert!(!rendered.contains("_helpers_"));
+        assert!(!rendered.contains("`add(x)`"));
+        assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn markdown_list_items_have_no_blank_separator() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("- first\n- second\n- third\n");
+
+        let rows = app.conversation_visual_rows(120);
+        let first = rows
+            .iter()
+            .position(|r| r.plain_text.contains("first"))
+            .expect("first item should render");
+        let second = rows
+            .iter()
+            .position(|r| r.plain_text.contains("second"))
+            .expect("second item should render");
+        let third = rows
+            .iter()
+            .position(|r| r.plain_text.contains("third"))
+            .expect("third item should render");
+
+        assert_eq!(
+            second,
+            first + 1,
+            "list items should not have blank rows between them"
+        );
+        assert_eq!(
+            third,
+            second + 1,
+            "list items should not have blank rows between them"
+        );
+    }
+
+    #[test]
+    fn markdown_blockquote_renders_prefix_on_first_line() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("> quoted text");
+
+        let rows = app.conversation_visual_rows(120);
+        let quoted = rows
+            .iter()
+            .find(|r| r.plain_text.contains("quoted text"))
+            .expect("quoted line should render");
+        assert!(
+            quoted.plain_text.starts_with('\u{2502}'),
+            "blockquote first line should start with quote prefix, got: {:?}",
+            quoted.plain_text
+        );
+    }
+
+    #[test]
+    fn markdown_answer_has_single_separator_before_sources() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("- `length(s: string) -> i64`\n");
+        app.push_output(
+            "Sources: 6 | Confidence: Medium | Model: minimax/MiniMax-M2.7",
+            OutputStyle::Dim,
+        );
+
+        let rows = app.conversation_visual_rows(120);
+        let sources_idx = rows
+            .iter()
+            .position(|row| row.plain_text.starts_with("Sources:"))
+            .expect("sources metadata should render");
+
+        assert!(
+            rows.get(sources_idx.saturating_sub(1))
+                .is_some_and(|row| row.plain_text.is_empty()),
+            "one separator row should precede sources metadata"
+        );
+        assert!(
+            rows.get(sources_idx.saturating_sub(2))
+                .is_some_and(|row| !row.plain_text.is_empty()),
+            "markdown answer should not leave an extra blank row before the block separator"
+        );
+    }
+
+    #[test]
+    fn user_block_padding_and_thinking_spacing_are_single_rows() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("Where should a power function live?");
+        app.push_thinking_output("inspect workspace");
+        app.push_markdown_output("The function belongs in `math`.");
+
+        let rows = app.conversation_visual_rows(120);
+        let input_idx = rows
+            .iter()
+            .position(|row| {
+                row.plain_text
+                    .contains("Where should a power function live?")
+            })
+            .expect("user input should render");
+        let timestamp_idx = input_idx + 1;
+        let thinking_idx = rows
+            .iter()
+            .position(|row| row.plain_text.contains("Thinking"))
+            .expect("thinking header should render");
+        let answer_idx = rows
+            .iter()
+            .position(|row| row.plain_text.contains("The function belongs"))
+            .expect("answer should render");
+
+        let is_user_padding = |row: &ConversationVisualRow| {
+            row.plain_text
+                .chars()
+                .all(|ch| ch.is_whitespace() || ch == '\u{258f}')
+        };
+
+        assert!(input_idx > 0);
+        assert!(is_user_padding(&rows[input_idx - 1]));
+        assert!(is_user_padding(&rows[timestamp_idx + 1]));
+        assert_eq!(
+            thinking_idx,
+            timestamp_idx + 2,
+            "exactly one user padding row should separate the user timestamp and Thinking"
+        );
+        assert_eq!(
+            answer_idx,
+            thinking_idx + 2,
+            "exactly one separator row should separate Thinking and the answer"
+        );
+    }
+
+    #[test]
+    fn thinking_block_is_collapsed_by_default_and_click_toggles() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("inspect workspace\nbuild answer");
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Thinking"));
+        assert!(!rendered.contains("inspect workspace"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▸ Thinking"))
+            .expect("collapsed thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▸ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▾ Thinking"));
+        assert!(rendered.contains("│ inspect workspace"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▾ Thinking"))
+            .expect("expanded thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▾ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Thinking"));
+        assert!(!rendered.contains("inspect workspace"));
+    }
+
+    #[test]
+    fn thinking_block_row_count_tracks_collapsed_state() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("one\ntwo\nthree");
+
+        let collapsed = app.conversation_line_count(100);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▸ Thinking"))
+            .expect("collapsed thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▸ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let expanded = app.conversation_line_count(100);
+        assert!(expanded > collapsed);
+    }
+
+    #[test]
+    fn thinking_toggle_preserves_header_screen_position_when_scrolled() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("one\ntwo\nthree");
+        for i in 0..30 {
+            app.push_output(format!("tail {i}"), OutputStyle::Normal);
+        }
+
+        let mut header: Option<(u16, u16)> = None;
+        let total = app.conversation_line_count(100);
+        for offset in 0..total {
+            app.output_scroll_offset = offset;
+            let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 20);
+            if let Some(row) = rows.iter().position(|line| line.contains("▸ Thinking")) {
+                if row <= 2 {
+                    continue;
+                }
+                let col = rows[row]
+                    .find("▸ Thinking")
+                    .expect("thinking header column should be findable")
+                    as u16;
+                header = Some((row as u16, col));
+                break;
+            }
+        }
+        let (row, col) = header.expect("thinking header should be reachable by scrolling");
+
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 20);
+        assert!(
+            rows.get(row as usize)
+                .is_some_and(|line| line.contains("▾ Thinking")),
+            "expanded thinking header should remain on the clicked row"
+        );
     }
 
     #[test]

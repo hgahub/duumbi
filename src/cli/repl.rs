@@ -804,13 +804,10 @@ fn pending_status_text(label: &str, frame: usize) -> String {
 fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
     let display = split_thinking_blocks(text);
     if let Some(thinking) = display.thinking.as_deref() {
-        app.push_output("", OutputStyle::Normal);
-        push_thinking_block(app, thinking);
-        app.push_output("", OutputStyle::Normal);
+        app.push_thinking_output(thinking);
     }
     if !display.answer.is_empty() {
-        app.push_output(display.answer, OutputStyle::Normal);
-        app.push_output("", OutputStyle::Normal);
+        app.push_markdown_output(display.answer);
     }
     app.push_output(
         format!(
@@ -821,13 +818,6 @@ fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
         ),
         OutputStyle::Dim,
     );
-}
-
-fn push_thinking_block(app: &mut ReplApp, thinking: &str) {
-    app.push_output("│ Thinking:", OutputStyle::Thinking);
-    for line in thinking.lines() {
-        app.push_output(format!("│ {}", line.trim_end()), OutputStyle::Thinking);
-    }
 }
 
 fn push_handoff(app: &mut ReplApp, handoff: &ModeHandoff) {
@@ -2637,18 +2627,13 @@ mod tests {
 
         push_query_answer(&mut app, &answer, &answer.text);
 
-        assert_eq!(app.output_lines[0].text, "");
-        assert_eq!(app.output_lines[1].style, OutputStyle::Thinking);
-        assert_eq!(app.output_lines[1].text, "│ Thinking:");
-        assert_eq!(app.output_lines[2].style, OutputStyle::Thinking);
-        assert_eq!(app.output_lines[2].text, "│ inspect workspace");
-        assert_eq!(app.output_lines[3].text, "");
-        assert_eq!(app.output_lines[4].style, OutputStyle::Normal);
-        assert_eq!(app.output_lines[4].text, "Hello.");
-        assert_eq!(app.output_lines[5].text, "");
-        assert!(app.output_lines[6].text.contains("Confidence: Low"));
+        assert_eq!(app.output_lines[0].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[0].text, "inspect workspace");
+        assert_eq!(app.output_lines[1].style, OutputStyle::Normal);
+        assert_eq!(app.output_lines[1].text, "Hello.");
+        assert!(app.output_lines[2].text.contains("Confidence: Low"));
         assert!(
-            app.output_lines[6]
+            app.output_lines[2]
                 .text
                 .contains("Model: minimax/MiniMax-M2.7")
         );
