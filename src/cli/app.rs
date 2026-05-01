@@ -1059,7 +1059,10 @@ impl ReplApp {
         let mut status_msg: Option<(String, OutputStyle)> = None;
         if confirm_overwrite {
             match key_event.code {
-                KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                KeyCode::Esc => {
+                    confirm_overwrite = false;
+                }
+                KeyCode::Enter | KeyCode::Char('n' | 'N') => {
                     self.panel = PanelState::None;
                     return Action::Continue;
                 }
@@ -1102,11 +1105,6 @@ impl ReplApp {
                 Ok(workspace_name) if existing_non_empty => {
                     name_buf = workspace_name;
                     confirm_overwrite = true;
-                    status_msg = Some((
-                        ".duumbi already exists and will be deleted before initialization."
-                            .to_string(),
-                        OutputStyle::Error,
-                    ));
                 }
                 Ok(workspace_name) => {
                     self.panel = PanelState::None;
@@ -3388,10 +3386,17 @@ impl ReplApp {
             Span::styled("(Esc to cancel)", theme::out_dim()),
         ]));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  Workspace name: {name_buf}\u{2588}"),
-            theme::out_help_cmd(),
-        )));
+        let workspace_value = if *confirm_overwrite {
+            format!("  Workspace name: {name_buf}")
+        } else {
+            format!("  Workspace name: {name_buf}\u{2588}")
+        };
+        let workspace_style = if *confirm_overwrite {
+            theme::out_dim()
+        } else {
+            theme::out_help_cmd()
+        };
+        lines.push(Line::from(Span::styled(workspace_value, workspace_style)));
         lines.push(Line::from(Span::styled(
             format!(
                 "  Namespace:      {}",
@@ -3400,7 +3405,7 @@ impl ReplApp {
             theme::out_dim(),
         )));
 
-        if *existing_non_empty {
+        if *existing_non_empty && !*confirm_overwrite {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  This workspace has already been initialized.",
@@ -3421,7 +3426,7 @@ impl ReplApp {
         lines.push(Line::from(""));
         if *confirm_overwrite {
             lines.push(Line::from(Span::styled(
-                "  Delete .duumbi and initialize again? [y/N]",
+                "  May I delete and reinitialize this workspace? [y/N]",
                 theme::out_error(),
             )));
         } else {
@@ -3791,7 +3796,7 @@ mod tests {
             app.panel,
             PanelState::InitWorkspace {
                 confirm_overwrite: true,
-                status_msg: Some((_, OutputStyle::Error)),
+                status_msg: None,
                 ..
             }
         ));
@@ -3808,8 +3813,10 @@ mod tests {
 
         let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
 
-        assert!(rendered.contains("This workspace has already been initialized."));
-        assert!(rendered.contains("Delete .duumbi and initialize again? [y/N]"));
+        assert!(!rendered.contains("This workspace has already been initialized."));
+        assert!(rendered.contains("May I delete and reinitialize this workspace? [y/N]"));
+        assert!(rendered.contains("Workspace name: myproject"));
+        assert!(!rendered.contains("Workspace name: myproject█"));
         assert!(!rendered.contains("Default:"));
     }
 
@@ -3838,7 +3845,7 @@ mod tests {
     }
 
     #[test]
-    fn init_panel_esc_closes_overwrite_confirmation() {
+    fn init_panel_esc_returns_to_name_entry_from_overwrite_confirmation() {
         let (mut app, mut textarea) = make_app();
         app.open_init_panel("myproject".to_string(), true);
         let _ = app.handle_key(
@@ -3848,6 +3855,48 @@ mod tests {
 
         let action = app.handle_key(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                confirm_overwrite: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_enter_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_n_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
             &mut textarea,
         );
 
