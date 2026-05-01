@@ -313,12 +313,11 @@ async fn process_input(
             ReplMode::Agent => {
                 if router::is_question_like(input) {
                     app.push_output(
-                        "This looks like a question. Use /query to keep it read-only, or /agent to force a mutation request.",
+                        "This looks like a question. Agent mode is write-capable; use /query to keep it read-only.",
                         OutputStyle::Dim,
                     );
-                } else {
-                    handle_ai_request(terminal, app, textarea, input).await;
                 }
+                handle_ai_request(terminal, app, textarea, input).await;
                 if show_elapsed {
                     app.finish_current_output_elapsed(started.elapsed());
                 }
@@ -771,7 +770,6 @@ async fn handle_query_input(
     };
     app.pop_last_output_line();
     let _ = terminal.draw(|frame| app.render(frame, textarea));
-    app.client = Some(client);
 
     match result {
         Ok(answer) => {

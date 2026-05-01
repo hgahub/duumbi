@@ -1,5 +1,6 @@
 //! Read-only context assembly for Query mode.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -51,6 +52,7 @@ pub fn assemble_query_context(
 
     let project_map = analyzer::analyze_workspace(workspace)
         .map_err(crate::query::engine::QueryError::Context)?;
+    let module_files = collect_module_file_index(workspace);
     if !project_map.modules.is_empty() {
         parts.push(format!(
             "Workspace modules:\n{}",
@@ -61,27 +63,40 @@ pub fn assemble_query_context(
         for module in &project_map.modules {
             sources.push(SourceRef::GraphModule {
                 module: module.name.clone(),
-                path: module_path(workspace, &module.name),
+                path: module_files
+                    .get(&module.name)
+                    .cloned()
+                    .or_else(|| module_path(workspace, &module.name))
+                    .unwrap_or_else(|| workspace.join(".duumbi/graph/__invalid__")),
             });
         }
     }
 
     if let Some(module) = options.visible_module.as_deref().filter(|m| !m.is_empty()) {
         parts.push(format!("Visible module: {module}"));
-        let path = module_path(workspace, module);
-        if let Ok(source) = fs::read_to_string(&path) {
-            if let Ok(parsed) = crate::parser::parse_jsonld(&source)
-                && let Ok(graph) = crate::graph::builder::build_graph_no_call_check(&parsed)
+        if !is_safe_module_name(module) {
+            parts.push("Visible module was ignored because its name is invalid.".to_string());
+        } else {
+            let path = module_files
+                .get(module)
+                .cloned()
+                .or_else(|| module_path(workspace, module));
+            if let Some(path) = path
+                && let Ok(source) = fs::read_to_string(&path)
             {
+                if let Ok(parsed) = crate::parser::parse_jsonld(&source)
+                    && let Ok(graph) = crate::graph::builder::build_graph_no_call_check(&parsed)
+                {
+                    parts.push(format!(
+                        "Visible module graph description:\n{}",
+                        crate::graph::describe::describe_to_string(&graph)
+                    ));
+                }
                 parts.push(format!(
-                    "Visible module graph description:\n{}",
-                    crate::graph::describe::describe_to_string(&graph)
+                    "Visible module JSON-LD excerpt:\n{}",
+                    truncate_chars(&source, 6000)
                 ));
             }
-            parts.push(format!(
-                "Visible module JSON-LD excerpt:\n{}",
-                truncate_chars(&source, 6000)
-            ));
         }
     }
 
@@ -104,7 +119,8 @@ pub fn assemble_query_context(
             .into_iter()
             .rev()
             .enumerate()
-            .map(|(index, turn)| {
+            .map(|(offset, turn)| {
+                let index = options.session_turns.len().saturating_sub(5) + offset;
                 sources.push(SourceRef::SessionTurn { index });
                 format!(
                     "{}. [{}] {} -> {}",
@@ -177,12 +193,74 @@ fn collect_intent_summaries(workspace: &Path, sources: &mut Vec<SourceRef>) -> V
         .collect()
 }
 
-fn module_path(workspace: &Path, module: &str) -> PathBuf {
-    if module == "main" || module == "app/main" {
-        workspace.join(".duumbi/graph/main.jsonld")
-    } else {
-        workspace.join(format!(".duumbi/graph/{module}.jsonld"))
+fn module_path(workspace: &Path, module: &str) -> Option<PathBuf> {
+    if !is_safe_module_name(module) {
+        return None;
     }
+    if module == "main" || module == "app/main" {
+        Some(workspace.join(".duumbi/graph/main.jsonld"))
+    } else {
+        Some(
+            workspace
+                .join(".duumbi/graph")
+                .join(format!("{module}.jsonld")),
+        )
+    }
+}
+
+fn is_safe_module_name(module: &str) -> bool {
+    !module.is_empty()
+        && !module.contains("..")
+        && !module.contains('\\')
+        && !module.starts_with('/')
+        && !module.ends_with('/')
+        && !module.split('/').any(str::is_empty)
+        && module
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '-' || c == '_')
+}
+
+fn collect_module_file_index(workspace: &Path) -> HashMap<String, PathBuf> {
+    let mut modules = HashMap::new();
+    collect_modules_from_dir(&workspace.join(".duumbi/graph"), &mut modules, 0, true);
+    collect_modules_from_dir(&workspace.join(".duumbi/vendor"), &mut modules, 0, false);
+    collect_modules_from_dir(&workspace.join(".duumbi/cache"), &mut modules, 0, false);
+    modules
+}
+
+fn collect_modules_from_dir(
+    dir: &Path,
+    modules: &mut HashMap<String, PathBuf>,
+    depth: u32,
+    direct_graph_dir: bool,
+) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if !direct_graph_dir && path.file_name().is_some_and(|name| name == "graph") {
+                collect_modules_from_dir(&path, modules, depth + 1, true);
+            }
+            collect_modules_from_dir(&path, modules, depth + 1, direct_graph_dir);
+        } else if direct_graph_dir
+            && path.extension().is_some_and(|ext| ext == "jsonld")
+            && let Some(module) = module_name_from_jsonld(&path)
+        {
+            modules.entry(module).or_insert(path);
+        }
+    }
+}
+
+fn module_name_from_jsonld(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    (value.get("@type")?.as_str()? == "duumbi:Module")
+        .then(|| value.get("duumbi:name")?.as_str().map(str::to_string))?
 }
 
 fn format_knowledge_node(node: &KnowledgeNode) -> String {
@@ -217,6 +295,29 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::SourceRef;
+    use chrono::Utc;
+    use serde_json::json;
+
+    fn write_module(path: &Path, module: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("module parent");
+        }
+        let value = json!({
+            "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+            "@type": "duumbi:Module",
+            "@id": format!("duumbi:{module}"),
+            "duumbi:name": module,
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": format!("duumbi:{module}/main"),
+                "duumbi:name": "main",
+                "duumbi:returnType": "i64",
+                "duumbi:blocks": []
+            }]
+        });
+        fs::write(path, serde_json::to_string_pretty(&value).expect("json")).expect("write module");
+    }
 
     #[test]
     fn query_context_does_not_create_knowledge_directories() {
@@ -231,5 +332,75 @@ mod tests {
     #[test]
     fn truncate_chars_adds_marker_when_over_budget() {
         assert_eq!(truncate_chars("abcdef", 3), "abc\n[truncated]");
+    }
+
+    #[test]
+    fn visible_module_rejects_path_traversal_names() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        fs::create_dir_all(temp.path().join(".duumbi")).expect("duumbi dir");
+        fs::write(temp.path().join(".duumbi/secret.jsonld"), "secret").expect("secret");
+        let options = QueryContextOptions {
+            visible_module: Some("../secret".to_string()),
+            c4_level: None,
+            session_turns: Vec::new(),
+        };
+
+        let context =
+            assemble_query_context(temp.path(), &options).expect("query context should assemble");
+
+        assert!(context.text.contains("Visible module: ../secret"));
+        assert!(context.text.contains("ignored because its name is invalid"));
+        assert!(!context.text.contains("Visible module JSON-LD excerpt"));
+    }
+
+    #[test]
+    fn graph_module_sources_use_dependency_file_paths() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let dep_path = temp
+            .path()
+            .join(".duumbi/vendor/@scope/pkg/graph/dep.jsonld");
+        write_module(&dep_path, "dep");
+
+        let context = assemble_query_context(temp.path(), &QueryContextOptions::empty())
+            .expect("query context should assemble");
+
+        assert!(context.sources.iter().any(|source| {
+            matches!(
+                source,
+                SourceRef::GraphModule { module, path }
+                    if module == "dep" && path == &dep_path
+            )
+        }));
+    }
+
+    #[test]
+    fn session_turn_sources_keep_original_indices() {
+        let temp = tempfile::tempdir().expect("test tempdir");
+        let session_turns = (0..7)
+            .map(|index| crate::session::PersistentTurn {
+                request: format!("request {index}"),
+                summary: format!("summary {index}"),
+                timestamp: Utc::now(),
+                task_type: "Query".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let options = QueryContextOptions {
+            visible_module: None,
+            c4_level: None,
+            session_turns,
+        };
+
+        let context =
+            assemble_query_context(temp.path(), &options).expect("query context should assemble");
+        let indices = context
+            .sources
+            .iter()
+            .filter_map(|source| match source {
+                SourceRef::SessionTurn { index } => Some(*index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(indices, vec![2, 3, 4, 5, 6]);
     }
 }

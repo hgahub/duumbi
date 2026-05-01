@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-fn credentials_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".duumbi").join("credentials.toml")
+fn credentials_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".duumbi").join("credentials.toml"))
 }
 
 fn load_all() -> HashMap<String, String> {
-    let path = credentials_path();
+    let Some(path) = credentials_path() else {
+        return HashMap::new();
+    };
     let Ok(content) = fs::read_to_string(&path) else {
         return HashMap::new();
     };

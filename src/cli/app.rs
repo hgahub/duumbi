@@ -2996,53 +2996,83 @@ impl ReplApp {
         }
         let width = width.max(1);
         let mut rows = Vec::new();
-        let mut current = String::new();
 
-        for word in text.split_whitespace() {
-            let word_len = word.chars().count();
-            if current.is_empty() {
-                if word_len <= width {
-                    current.push_str(word);
-                } else {
-                    rows.extend(Self::split_long_word(word, width));
-                }
+        for line in text.split('\n') {
+            if line.is_empty() {
+                rows.push(String::new());
                 continue;
             }
 
-            let current_len = current.chars().count();
-            if current_len + 1 + word_len <= width {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                rows.push(std::mem::take(&mut current));
-                if word_len <= width {
-                    current.push_str(word);
-                } else {
-                    rows.extend(Self::split_long_word(word, width));
+            let mut current = String::new();
+            let mut token = String::new();
+            let mut token_is_whitespace: Option<bool> = None;
+
+            for ch in line.chars() {
+                let is_whitespace = ch.is_whitespace();
+                match token_is_whitespace {
+                    Some(kind) if kind == is_whitespace => token.push(ch),
+                    Some(_) => {
+                        Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+                        token.clear();
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
+                    None => {
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
                 }
             }
-        }
 
-        if !current.is_empty() {
-            rows.push(current);
+            if !token.is_empty() {
+                Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+            }
+            if !current.is_empty() {
+                rows.push(current);
+            }
         }
 
         if rows.is_empty() {
             rows.push(String::new());
         }
+
         rows
     }
 
-    fn split_long_word(word: &str, width: usize) -> Vec<String> {
-        let chars = word.chars().collect::<Vec<_>>();
-        let mut rows = Vec::new();
-        let mut start = 0;
-        while start < chars.len() {
-            let end = (start + width).min(chars.len());
-            rows.push(chars[start..end].iter().collect::<String>());
-            start = end;
+    fn push_wrapped_token(rows: &mut Vec<String>, current: &mut String, token: &str, width: usize) {
+        if token.is_empty() {
+            return;
         }
-        rows
+
+        let token_len = token.chars().count();
+        let current_len = current.chars().count();
+        if current_len + token_len <= width {
+            current.push_str(token);
+            return;
+        }
+
+        if !current.is_empty() {
+            rows.push(std::mem::take(current));
+        }
+
+        let mut chunk = String::new();
+        let mut chunk_len = 0usize;
+        for ch in token.chars() {
+            if chunk_len == width {
+                rows.push(std::mem::take(&mut chunk));
+                chunk_len = 0;
+            }
+            chunk.push(ch);
+            chunk_len += 1;
+        }
+
+        if !chunk.is_empty() {
+            if chunk_len == width {
+                rows.push(chunk);
+            } else {
+                current.push_str(&chunk);
+            }
+        }
     }
 
     fn user_panel_line(
@@ -4201,6 +4231,15 @@ mod tests {
         assert!(rendered.contains("visible"));
         assert!(rendered.contains("edge"));
         assert!(rendered.contains("free to ask."));
+    }
+
+    #[test]
+    fn output_wrapping_preserves_original_spacing() {
+        let rows = ReplApp::wrap_output_text("  Provider ID    Display name", 20);
+
+        assert_eq!(rows[0], "  Provider ID    ");
+        assert_eq!(rows[1], "Display name");
+        assert_eq!(rows.join(""), "  Provider ID    Display name");
     }
 
     #[test]
