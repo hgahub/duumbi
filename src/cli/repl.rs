@@ -799,9 +799,9 @@ fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
 }
 
 fn push_thinking_block(app: &mut ReplApp, thinking: &str) {
-    app.push_output("▌ Thinking:", OutputStyle::Thinking);
+    app.push_output("│ Thinking:", OutputStyle::Thinking);
     for line in thinking.lines() {
-        app.push_output(format!("▌ {}", line.trim_end()), OutputStyle::Thinking);
+        app.push_output(format!("│ {}", line.trim_end()), OutputStyle::Thinking);
     }
 }
 
@@ -2508,7 +2508,9 @@ mod tests {
 
         assert_eq!(app.output_lines[0].text, "");
         assert_eq!(app.output_lines[1].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[1].text, "│ Thinking:");
         assert_eq!(app.output_lines[2].style, OutputStyle::Thinking);
+        assert_eq!(app.output_lines[2].text, "│ inspect workspace");
         assert_eq!(app.output_lines[3].text, "");
         assert_eq!(app.output_lines[4].style, OutputStyle::Normal);
         assert_eq!(app.output_lines[4].text, "Hello.");

@@ -2230,7 +2230,7 @@ impl ReplApp {
     fn selected_conversation_text(&self, area: Rect) -> Option<String> {
         let selection = self.conversation_text_selection?;
         let rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2598,7 +2598,7 @@ impl ReplApp {
     fn visible_conversation_layout(&self, area: Rect) -> VisibleConversationLayout {
         let max_lines = area.height as usize;
         let all_rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2725,16 +2725,10 @@ impl ReplApp {
         Some((Rect::new(x, y, width, height), actions))
     }
 
-    fn legacy_output_rows(&self) -> Vec<ConversationVisualRow> {
+    fn legacy_output_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
         self.output_lines
             .iter()
-            .map(|ol| ConversationVisualRow {
-                line: Self::line_from_output(ol),
-                plain_text: ol.text.clone(),
-                block_index: None,
-                menu_button_block: None,
-                menu_button_range: None,
-            })
+            .flat_map(|ol| Self::output_line_visual_rows(ol, None, None, None, width))
             .collect()
     }
 
@@ -2756,13 +2750,13 @@ impl ReplApp {
                 }
                 ConversationBlockKind::Output => {
                     for ol in &block.lines {
-                        rows.push(ConversationVisualRow {
-                            line: Self::line_from_output(ol),
-                            plain_text: ol.text.clone(),
-                            block_index: Some(idx),
-                            menu_button_block: None,
-                            menu_button_range: None,
-                        });
+                        rows.extend(Self::output_line_visual_rows(
+                            ol,
+                            Some(idx),
+                            None,
+                            None,
+                            width,
+                        ));
                     }
                     if let Some(elapsed) = &block.elapsed {
                         rows.push(ConversationVisualRow {
@@ -2814,6 +2808,103 @@ impl ReplApp {
                 menu_button_range: None,
             },
         ]
+    }
+
+    fn output_line_visual_rows(
+        ol: &OutputLine,
+        block_index: Option<usize>,
+        menu_button_block: Option<usize>,
+        menu_button_range: Option<(u16, u16)>,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let max_width = usize::from(width.max(1));
+        let wrapped = if width == 0 {
+            vec![ol.text.clone()]
+        } else if ol.style == OutputStyle::Thinking {
+            Self::wrap_thinking_output(&ol.text, max_width)
+        } else {
+            Self::wrap_output_text(&ol.text, max_width)
+        };
+
+        wrapped
+            .into_iter()
+            .map(|text| {
+                let output_line = OutputLine::new(text.clone(), ol.style);
+                ConversationVisualRow {
+                    line: Self::line_from_output(&output_line),
+                    plain_text: text,
+                    block_index,
+                    menu_button_block,
+                    menu_button_range,
+                }
+            })
+            .collect()
+    }
+
+    fn wrap_thinking_output(text: &str, width: usize) -> Vec<String> {
+        let Some(body) = text.strip_prefix("│ ") else {
+            return Self::wrap_output_text(text, width);
+        };
+        let body_width = width.saturating_sub(2).max(1);
+        Self::wrap_output_text(body, body_width)
+            .into_iter()
+            .map(|line| format!("│ {line}"))
+            .collect()
+    }
+
+    fn wrap_output_text(text: &str, width: usize) -> Vec<String> {
+        if text.is_empty() {
+            return vec![String::new()];
+        }
+        let width = width.max(1);
+        let mut rows = Vec::new();
+        let mut current = String::new();
+
+        for word in text.split_whitespace() {
+            let word_len = word.chars().count();
+            if current.is_empty() {
+                if word_len <= width {
+                    current.push_str(word);
+                } else {
+                    rows.extend(Self::split_long_word(word, width));
+                }
+                continue;
+            }
+
+            let current_len = current.chars().count();
+            if current_len + 1 + word_len <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                rows.push(std::mem::take(&mut current));
+                if word_len <= width {
+                    current.push_str(word);
+                } else {
+                    rows.extend(Self::split_long_word(word, width));
+                }
+            }
+        }
+
+        if !current.is_empty() {
+            rows.push(current);
+        }
+
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+        rows
+    }
+
+    fn split_long_word(word: &str, width: usize) -> Vec<String> {
+        let chars = word.chars().collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        let mut start = 0;
+        while start < chars.len() {
+            let end = (start + width).min(chars.len());
+            rows.push(chars[start..end].iter().collect::<String>());
+            start = end;
+        }
+        rows
     }
 
     fn user_panel_line(
@@ -3662,6 +3753,34 @@ mod tests {
         assert!(rendered.contains("/status"));
         assert!(!rendered.contains("copy"));
         assert!(rendered.contains("Workspace: /tmp/example"));
+    }
+
+    #[test]
+    fn conversation_render_wraps_long_query_output() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("Hello");
+        app.push_output("", OutputStyle::Normal);
+        app.push_output(
+            "│ Thinking: this answer should wrap cleanly so the final word remains visible",
+            OutputStyle::Thinking,
+        );
+        app.push_output(
+            "│ The user asked for a greeting and the response should not be clipped at the right edge",
+            OutputStyle::Thinking,
+        );
+        app.push_output("", OutputStyle::Normal);
+        app.push_output(
+            "Hello! I'm ready to help you explore your DUUMBI workspace. If you have any questions about your project, code, or architecture, feel free to ask.",
+            OutputStyle::Normal,
+        );
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 80, 35);
+
+        assert!(rows.iter().any(|row| row.contains("│ Thinking:")));
+        assert!(!rendered.contains('▌'));
+        assert!(rendered.contains("visible"));
+        assert!(rendered.contains("edge"));
+        assert!(rendered.contains("free to ask."));
     }
 
     #[test]
