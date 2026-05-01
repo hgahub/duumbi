@@ -5,7 +5,7 @@
 //! in the M5 cache layout (`.duumbi/cache/@duumbi/<name>@<version>/`).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -68,11 +68,15 @@ const SKELETON_MAIN: &str = r#"{
 }
 "#;
 
+/// Maximum user-facing workspace name length accepted by init.
+pub const MAX_WORKSPACE_NAME_CHARS: usize = 30;
+
 /// Default `config.toml` template (M7 format with registries and scope-based deps).
-const DEFAULT_CONFIG: &str = r#"[workspace]
-name = "myapp"
-namespace = "myapp"
-default-registry = "duumbi"
+/// Static remainder of `config.toml` after the `[workspace]` section.
+///
+/// The `[workspace]` block is rendered separately so user-supplied workspace
+/// names cannot collide with placeholder text via global string replacement.
+const DEFAULT_CONFIG_REST: &str = r#"default-registry = "duumbi"
 
 [registries]
 duumbi = "https://registry.duumbi.dev"
@@ -84,20 +88,6 @@ duumbi = "https://registry.duumbi.dev"
 "@duumbi/stdlib-io" = "1.0.0"
 "@duumbi/stdlib-lang" = "1.0.0"
 "@duumbi/stdlib-string" = "1.0.0"
-
-# Uncomment and configure to enable AI commands (duumbi add, duumbi undo).
-# Supports: anthropic, openai, grok, openrouter, minimax.
-# Add multiple [[providers]] sections for fallback chains.
-#
-# [[providers]]
-# provider = "anthropic"
-# role = "primary"
-# api_key_env = "ANTHROPIC_API_KEY"
-#
-# [[providers]]
-# provider = "grok"
-# role = "fallback"
-# api_key_env = "XAI_API_KEY"
 "#;
 
 /// `.gitignore` template — excludes the auto-generated cache and build dirs.
@@ -109,17 +99,151 @@ const GITIGNORE: &str = "\
 .duumbi/telemetry/
 ";
 
+/// Result metadata for an initialized workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitSummary {
+    /// Workspace root where `.duumbi/` was created.
+    pub workspace_root: PathBuf,
+    /// Validated display name written into config.
+    pub workspace_name: String,
+    /// Namespace slug written into config.
+    pub namespace: String,
+}
+
+/// Options controlling workspace initialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitOptions {
+    /// User-facing workspace name.
+    pub workspace_name: String,
+    /// Namespace slug used by config and resolvers.
+    pub namespace: String,
+    /// Whether an existing `.duumbi/` directory may be deleted first.
+    pub overwrite_existing: bool,
+}
+
+impl InitOptions {
+    /// Builds validated init options from a workspace name.
+    pub fn from_workspace_name(workspace_name: &str, overwrite_existing: bool) -> Result<Self> {
+        let workspace_name = validate_workspace_name(workspace_name)?;
+        let namespace = namespace_slug(&workspace_name);
+        Ok(Self {
+            workspace_name,
+            namespace,
+            overwrite_existing,
+        })
+    }
+}
+
+/// Returns the default workspace name for a path.
+#[must_use]
+pub fn default_workspace_name(base: &Path) -> String {
+    let name = path_file_name(base).or_else(|| {
+        base.canonicalize()
+            .ok()
+            .and_then(|canonical| path_file_name(&canonical))
+    });
+    name.unwrap_or_else(|| "workspace".to_string())
+        .chars()
+        .take(MAX_WORKSPACE_NAME_CHARS)
+        .collect()
+}
+
+fn path_file_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Validates and normalizes a workspace display name.
+pub fn validate_workspace_name(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Workspace name cannot be empty");
+    }
+    if trimmed.chars().count() > MAX_WORKSPACE_NAME_CHARS {
+        anyhow::bail!(
+            "Workspace name must be at most {} characters",
+            MAX_WORKSPACE_NAME_CHARS
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Generates a portable namespace slug from a workspace name.
+#[must_use]
+pub fn namespace_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_separator = false;
+
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(c.to_ascii_lowercase());
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+
+    if slug.is_empty() {
+        slug.push_str("workspace");
+    }
+
+    if !slug
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+    {
+        slug.insert_str(0, "w-");
+    }
+
+    slug
+}
+
+/// Returns whether an existing `.duumbi/` directory contains any entries.
+pub fn duumbi_dir_is_non_empty(base: &Path) -> Result<bool> {
+    let duumbi_dir = base.join(".duumbi");
+    if !duumbi_dir.exists() {
+        return Ok(false);
+    }
+    Ok(fs::read_dir(&duumbi_dir)
+        .with_context(|| format!("Failed to read '{}'", duumbi_dir.display()))?
+        .next()
+        .is_some())
+}
+
 /// Initializes a new duumbi workspace at the given base path.
 ///
 /// Creates `.duumbi/` with subdirectories for config, graph, schema, build,
 /// telemetry, and intents. Stdlib modules are written to the M5 cache layout:
 /// `.duumbi/cache/@duumbi/stdlib-{math,io,lang,string}@1.0.0/`.
-/// Fails if `.duumbi/` already exists.
-pub fn run_init(base: &Path) -> Result<()> {
+/// Fails if `.duumbi/` already exists and is non-empty.
+pub fn run_init(base: &Path) -> Result<InitSummary> {
+    let workspace_name = default_workspace_name(base);
+    let options = InitOptions::from_workspace_name(&workspace_name, false)?;
+    run_init_with_options(base, &options)
+}
+
+/// Initializes a new duumbi workspace using explicit options.
+pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitSummary> {
+    let workspace_name = validate_workspace_name(&options.workspace_name)?;
+    if options.namespace.trim().is_empty() {
+        anyhow::bail!("Workspace namespace cannot be empty");
+    }
+
     let duumbi_dir = base.join(".duumbi");
 
     if duumbi_dir.exists() {
-        anyhow::bail!("Workspace already exists at '{}'", duumbi_dir.display());
+        if options.overwrite_existing {
+            fs::remove_dir_all(&duumbi_dir)
+                .with_context(|| format!("Failed to remove '{}'", duumbi_dir.display()))?;
+        } else if duumbi_dir_is_non_empty(base)? {
+            anyhow::bail!("Workspace already exists at '{}'", duumbi_dir.display());
+        }
     }
 
     // Core directory structure
@@ -229,8 +353,20 @@ pub fn run_init(base: &Path) -> Result<()> {
     )
     .context("Failed to write stdlib string module")?;
 
-    // Write config (includes stdlib deps by default)
-    fs::write(duumbi_dir.join("config.toml"), DEFAULT_CONFIG)
+    // Write config (includes stdlib deps by default).
+    //
+    // The `[workspace]` block is built via formatting (not chained string
+    // replacement) so user-supplied names containing placeholder-like text
+    // cannot corrupt later substitutions.
+    let workspace_name_toml = toml::Value::String(workspace_name.clone()).to_string();
+    let namespace_toml = toml::Value::String(options.namespace.clone()).to_string();
+    let config_content = format!(
+        "[workspace]\nname = {}\nnamespace = {}\n{}",
+        workspace_name_toml.trim(),
+        namespace_toml.trim(),
+        DEFAULT_CONFIG_REST,
+    );
+    fs::write(duumbi_dir.join("config.toml"), config_content)
         .context("Failed to write config.toml")?;
 
     // Write skeleton main.jsonld
@@ -243,43 +379,11 @@ pub fn run_init(base: &Path) -> Result<()> {
         fs::write(&gitignore, GITIGNORE).context("Failed to write .gitignore")?;
     }
 
-    eprintln!(
-        "{} Project initialized at {}",
-        super::theme::check_mark(),
-        duumbi_dir.display()
-    );
-    eprintln!();
-
-    // Post-init guidance: check for common API key env vars
-    let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok()
-        || std::env::var("OPENAI_API_KEY").is_ok()
-        || std::env::var("XAI_API_KEY").is_ok();
-
-    if has_api_key {
-        eprintln!("{}", super::theme::bold("Next steps:"));
-        eprintln!("  1. Uncomment a [[providers]] section in .duumbi/config.toml");
-        eprintln!(
-            "  2. Run {} to start the REPL",
-            super::theme::command("duumbi")
-        );
-        eprintln!(
-            "  3. Try: {}",
-            super::theme::info("\"Add a function that adds two numbers\""),
-        );
-    } else {
-        eprintln!("{}", super::theme::bold("Next steps:"));
-        eprintln!(
-            "  1. Set an API key: {}",
-            super::theme::dim("export ANTHROPIC_API_KEY=sk-..."),
-        );
-        eprintln!("  2. Uncomment a [[providers]] section in .duumbi/config.toml");
-        eprintln!(
-            "  3. Run {} to start the REPL",
-            super::theme::command("duumbi")
-        );
-    }
-
-    Ok(())
+    Ok(InitSummary {
+        workspace_root: base.to_path_buf(),
+        workspace_name,
+        namespace: options.namespace.clone(),
+    })
 }
 
 /// Writes a single stdlib module into the cache layer.
@@ -403,6 +507,78 @@ mod tests {
     }
 
     #[test]
+    fn workspace_name_validation_trims_and_limits_length() {
+        assert_eq!(
+            validate_workspace_name("  My App  ").expect("valid"),
+            "My App"
+        );
+        assert!(validate_workspace_name("").is_err());
+        assert!(validate_workspace_name("   ").is_err());
+        assert!(
+            validate_workspace_name("a".repeat(MAX_WORKSPACE_NAME_CHARS + 1).as_str()).is_err()
+        );
+    }
+
+    #[test]
+    fn namespace_slug_is_portable() {
+        assert_eq!(namespace_slug("My App"), "my-app");
+        assert_eq!(namespace_slug("  My---App__v2  "), "my-app-v2");
+        assert_eq!(namespace_slug("123 App"), "w-123-app");
+        assert_eq!(namespace_slug("###"), "workspace");
+    }
+
+    #[test]
+    fn default_workspace_name_for_dot_uses_current_directory_name() {
+        let _lock = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
+        let tmp = TempDir::new().expect("tempdir");
+        let previous = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(tmp.path()).expect("set current dir");
+
+        let name = default_workspace_name(Path::new("."));
+
+        std::env::set_current_dir(previous).expect("restore current dir");
+        assert_eq!(
+            name,
+            tmp.path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("temp basename")
+        );
+    }
+
+    #[test]
+    fn init_config_writes_workspace_identity() {
+        let tmp = TempDir::new().expect("tempdir");
+        let options =
+            InitOptions::from_workspace_name("Human Project", false).expect("valid options");
+        let summary = run_init_with_options(tmp.path(), &options).expect("init must succeed");
+
+        assert_eq!(summary.workspace_name, "Human Project");
+        assert_eq!(summary.namespace, "human-project");
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        let ws = config.workspace.expect("workspace section must exist");
+        assert_eq!(ws.name, "Human Project");
+        assert_eq!(ws.namespace, "human-project");
+    }
+
+    #[test]
+    fn init_config_handles_placeholder_like_workspace_name() {
+        // Regression: chained .replace("{name}", ..).replace("{namespace}", ..)
+        // would corrupt the name field when it contained the literal text
+        // `{namespace}` (or `{name}`). The config writer must not collapse
+        // user-supplied content into placeholder substitutions.
+        let tmp = TempDir::new().expect("tempdir");
+        let options =
+            InitOptions::from_workspace_name("{namespace}", false).expect("valid options");
+        run_init_with_options(tmp.path(), &options).expect("init must succeed");
+
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        let ws = config.workspace.expect("workspace section must exist");
+        assert_eq!(ws.name, "{namespace}");
+        assert_eq!(ws.namespace, "namespace");
+    }
+
+    #[test]
     fn init_config_uses_scope_based_deps() {
         let tmp = TempDir::new().expect("tempdir");
         run_init(tmp.path()).expect("init must succeed");
@@ -443,5 +619,24 @@ mod tests {
         run_init(tmp.path()).expect("invariant: first init should succeed");
         let result = run_init(tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_overwrite_replaces_only_duumbi_directory() {
+        let tmp = TempDir::new().expect("invariant: temp dir must be created");
+        run_init(tmp.path()).expect("invariant: first init should succeed");
+        fs::write(tmp.path().join(".duumbi").join("old-marker"), "delete me").expect("write");
+        fs::write(tmp.path().join("root-marker"), "keep me").expect("write");
+
+        let options = InitOptions::from_workspace_name("Second App", true).expect("valid options");
+        run_init_with_options(tmp.path(), &options).expect("overwrite init must succeed");
+
+        assert!(!tmp.path().join(".duumbi").join("old-marker").exists());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("root-marker")).expect("read root marker"),
+            "keep me"
+        );
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        assert_eq!(config.workspace.expect("workspace").namespace, "second-app");
     }
 }
