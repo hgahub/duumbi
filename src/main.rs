@@ -162,7 +162,13 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 None => PathBuf::from("."),
             };
-            cli::init::run_init(&base)
+            let summary = cli::init::run_init(&base)?;
+            eprintln!(
+                "{} Project initialized at {}",
+                cli::theme::check_mark(),
+                summary.workspace_root.join(".duumbi").display()
+            );
+            Ok(())
         }
         Commands::Build {
             input,
@@ -709,9 +715,10 @@ async fn run_benchmark(
 
     let started_at = iso8601_now();
 
-    let results = bench::runner::run_benchmark(&config, cli::init::run_init)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let results =
+        bench::runner::run_benchmark(&config, |path| cli::init::run_init(path).map(|_| ()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let finished_at = iso8601_now();
 

@@ -871,6 +871,9 @@ impl ReplApp {
         if matches!(self.panel, PanelState::ProviderManager { .. }) {
             return self.handle_provider_panel_key(key, textarea);
         }
+        if matches!(self.panel, PanelState::InitWorkspace { .. }) {
+            return self.handle_init_panel_key(key);
+        }
 
         if self.conversation_action_menu.is_some() {
             return self.handle_conversation_action_menu_key(key);
@@ -1019,10 +1022,127 @@ impl ReplApp {
             let _ = self.insert_text_into_active_panel_field(text);
             return;
         }
+        if matches!(self.panel, PanelState::InitWorkspace { .. }) {
+            self.insert_text_into_init_panel(text);
+            return;
+        }
 
         textarea.insert_str(text);
         let current = textarea.lines().join("\n");
         self.update_slash_matches(&current);
+    }
+
+    /// Opens the workspace initialization panel with a prefilled name.
+    pub(crate) fn open_init_panel(&mut self, default_name: String, existing_non_empty: bool) {
+        self.clear_slash_menu();
+        self.panel = PanelState::InitWorkspace {
+            name_buf: default_name.clone(),
+            default_name,
+            existing_non_empty,
+            confirm_overwrite: false,
+            status_msg: None,
+        };
+    }
+
+    fn handle_init_panel_key(&mut self, key_event: KeyEvent) -> Action {
+        let PanelState::InitWorkspace {
+            mut name_buf,
+            default_name,
+            existing_non_empty,
+            mut confirm_overwrite,
+            ..
+        } = self.panel.clone()
+        else {
+            return Action::Continue;
+        };
+
+        let mut status_msg: Option<(String, OutputStyle)> = None;
+        if confirm_overwrite {
+            match key_event.code {
+                KeyCode::Esc => {
+                    confirm_overwrite = false;
+                }
+                KeyCode::Enter | KeyCode::Char('n' | 'N') => {
+                    self.panel = PanelState::None;
+                    return Action::Continue;
+                }
+                KeyCode::Char('y' | 'Y') => {
+                    match crate::cli::init::validate_workspace_name(&name_buf) {
+                        Ok(workspace_name) => {
+                            self.panel = PanelState::None;
+                            return Action::InitWorkspaceSubmitted {
+                                workspace_name,
+                                overwrite_existing: true,
+                            };
+                        }
+                        Err(e) => {
+                            confirm_overwrite = false;
+                            status_msg = Some((e.to_string(), OutputStyle::Error));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            self.panel = PanelState::InitWorkspace {
+                name_buf,
+                default_name,
+                existing_non_empty,
+                confirm_overwrite,
+                status_msg,
+            };
+            return Action::Continue;
+        }
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.panel = PanelState::None;
+                return Action::Continue;
+            }
+            KeyCode::Backspace => {
+                name_buf.pop();
+            }
+            KeyCode::Enter => match crate::cli::init::validate_workspace_name(&name_buf) {
+                Ok(workspace_name) if existing_non_empty => {
+                    name_buf = workspace_name;
+                    confirm_overwrite = true;
+                }
+                Ok(workspace_name) => {
+                    self.panel = PanelState::None;
+                    return Action::InitWorkspaceSubmitted {
+                        workspace_name,
+                        overwrite_existing: false,
+                    };
+                }
+                Err(e) => {
+                    status_msg = Some((e.to_string(), OutputStyle::Error));
+                }
+            },
+            KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
+                name_buf.push(c);
+            }
+            _ => {}
+        }
+
+        self.panel = PanelState::InitWorkspace {
+            name_buf,
+            default_name,
+            existing_non_empty,
+            confirm_overwrite,
+            status_msg,
+        };
+        Action::Continue
+    }
+
+    fn insert_text_into_init_panel(&mut self, text: &str) {
+        if let PanelState::InitWorkspace {
+            name_buf,
+            confirm_overwrite,
+            ..
+        } = &mut self.panel
+            && !*confirm_overwrite
+        {
+            append_single_line_input(name_buf, text);
+        }
     }
 
     fn insert_text_into_active_panel_field(&mut self, text: &str) -> bool {
@@ -1114,7 +1234,7 @@ impl ReplApp {
                 input_mode,
                 ..
             } => (*selected, input_mode.clone()),
-            PanelState::None => return Action::Continue,
+            PanelState::None | PanelState::InitWorkspace { .. } => return Action::Continue,
         };
         let mut new_status_msg: Option<(String, OutputStyle)> = None;
         let mut action = Action::Continue;
@@ -1519,6 +1639,13 @@ impl ReplApp {
             let _ = crate::config::save_config(&self.workspace_root, &self.workspace_config);
         }
         self.refresh_effective_config();
+        self.rebuild_client_and_keychain_cache();
+    }
+
+    /// Rebuilds the LLM client and keychain cache from the current effective
+    /// config. Used after the config layers have been refreshed externally
+    /// (e.g. after interactive workspace init).
+    pub(super) fn rebuild_client_and_keychain_cache(&mut self) {
         let providers = self.config.effective_providers();
         self.client = if providers.is_empty() {
             None
@@ -2303,6 +2430,14 @@ impl ReplApp {
                     )
                 }
             }
+            PanelState::InitWorkspace { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 96);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_init_panel(frame, overlay_area, &self.panel);
+                }
+            }
         }
     }
 
@@ -2357,6 +2492,9 @@ impl ReplApp {
                     (provider_count as u16) + 9 + status_line
                 }
             }),
+            PanelState::InitWorkspace {
+                confirm_overwrite, ..
+            } => Some(if *confirm_overwrite { 16 } else { 12 }),
         }
     }
 
@@ -3223,6 +3361,91 @@ impl ReplApp {
         ])
     }
 
+    /// Renders the workspace initialization panel.
+    fn render_init_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::InitWorkspace {
+            name_buf,
+            default_name: _,
+            existing_non_empty,
+            confirm_overwrite,
+            status_msg,
+        } = panel
+        else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let inner_width = inner.width as usize;
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled("  Initialize Workspace", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(50))),
+            Span::styled("(Esc to cancel)", theme::out_dim()),
+        ]));
+        lines.push(Line::from(""));
+        let workspace_value = if *confirm_overwrite {
+            format!("  Workspace name: {name_buf}")
+        } else {
+            format!("  Workspace name: {name_buf}\u{2588}")
+        };
+        let workspace_style = if *confirm_overwrite {
+            theme::out_dim()
+        } else {
+            theme::out_help_cmd()
+        };
+        lines.push(Line::from(Span::styled(workspace_value, workspace_style)));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  Namespace:      {}",
+                crate::cli::init::namespace_slug(name_buf)
+            ),
+            theme::out_dim(),
+        )));
+
+        if *existing_non_empty && !*confirm_overwrite {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  This workspace has already been initialized.",
+                theme::out_error(),
+            )));
+        }
+
+        if let Some((msg, style)) = status_msg {
+            let s = match style {
+                OutputStyle::Success => theme::out_success(),
+                OutputStyle::Error => theme::out_error(),
+                _ => theme::out_dim(),
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
+        }
+
+        lines.push(Line::from(""));
+        if *confirm_overwrite {
+            lines.push(Line::from(Span::styled(
+                "  May I delete and reinitialize this workspace? [y/N]",
+                theme::out_error(),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  [Enter] Initialize",
+                theme::out_dim(),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
     /// Renders the interactive provider connection manager panel.
     fn render_provider_panel(
         &self,
@@ -3489,6 +3712,203 @@ mod tests {
         );
         let textarea = TextArea::default();
         (app, textarea)
+    }
+
+    #[test]
+    fn init_panel_prefills_default_workspace_name() {
+        let (mut app, _textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                ref name_buf,
+                ref default_name,
+                existing_non_empty: false,
+                confirm_overwrite: false,
+                ..
+            } if name_buf == "myproject" && default_name == "myproject"
+        ));
+    }
+
+    #[test]
+    fn init_panel_enter_accepts_default_name() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::InitWorkspaceSubmitted {
+                workspace_name,
+                overwrite_existing: false
+            } if workspace_name == "myproject"
+        ));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_esc_closes_name_entry() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_rejects_names_over_thirty_chars() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel(
+            "a".repeat(crate::cli::init::MAX_WORKSPACE_NAME_CHARS + 1),
+            false,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                status_msg: Some((_, OutputStyle::Error)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_existing_workspace_requires_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                confirm_overwrite: true,
+                status_msg: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_existing_workspace_renders_confirmation() {
+        let (mut app, textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut TextArea::default(),
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(!rendered.contains("This workspace has already been initialized."));
+        assert!(rendered.contains("May I delete and reinitialize this workspace? [y/N]"));
+        assert!(rendered.contains("Workspace name: myproject"));
+        assert!(!rendered.contains("Workspace name: myproject█"));
+        assert!(!rendered.contains("Default:"));
+    }
+
+    #[test]
+    fn init_panel_confirmation_submits_overwrite() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::InitWorkspaceSubmitted {
+                workspace_name,
+                overwrite_existing: true
+            } if workspace_name == "myproject"
+        ));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_esc_returns_to_name_entry_from_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                confirm_overwrite: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_enter_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_n_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
     }
 
     #[test]

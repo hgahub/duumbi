@@ -68,16 +68,16 @@ unset DUUMBI
 
 ---
 
-## T1 — Post-Init Guidance (Track E)
+## T1 — Init Output (Track E)
 
 > Futtatasi hely: **ures temp konyvtar** (NEM a mar init-elt workspace)
 
 | # | Lepes | Elvart eredmeny | ✓/✗ | Megjegyzes |
 |---|-------|-----------------|-----|------------|
 | 1.1 | `mkdir /tmp/p11-init-test && cd /tmp/p11-init-test && $DUUMBI init .` | "✓ Project initialized at ..." megjelenik | ✓ | |
-| 1.2 | Az init kimenet tartalmaz "Next steps:" szekciót | Lepesek listaja: API key, config.toml, REPL | ✓ | |
-| 1.3 | Ha `ANTHROPIC_API_KEY` be van allitva: "Uncomment a [[providers]] section" az elso lepes | Felismeri a meglévo API key-t | | |
-| 1.4 | Ha `ANTHROPIC_API_KEY` NINCS beallitva: "Set an API key: export ANTHROPIC_API_KEY=sk-..." az elso lepes | Utmutatast ad az API key beallitasahoz | ✓ | |
+| 1.2 | Az init kimenet nem tartalmaz "Next steps:" szekciót | Csak rovid sikeruzenetet ir ki | | |
+| 1.3 | Az init kimenet nem tartalmaz provider warningot | Nem validal LLM providert init kozben | | |
+| 1.4 | `.duumbi/config.toml` tartalmazza a workspace nevet es namespace slugot | A directory nev alapjan generalja | | |
 | 1.5 | Takaritas: `cd ~ && rm -rf /tmp/p11-init-test` |  | | |
 
 ---
