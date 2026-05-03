@@ -54,10 +54,8 @@
 
   var fnTitles = {
     intents:  'Intents',
-    plans:    'Plans',
-    build:    'Build',
-    agents:   'Agents',
-    registry: 'Registry'
+    graph:    'Graph',
+    build:    'Build'
   };
 
   // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -480,6 +478,53 @@
     section.appendChild(childrenEl);
   }
 
+  function executeIntent(slug) {
+    if (!slug) return;
+    var mdContent = document.getElementById('mdContent');
+    if (mdContent) mdContent.innerHTML = '<p style="color:#908c82">Executing intent...</p>';
+    fetch('/api/intent/' + encodeURIComponent(slug) + '/execute', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (mdContent) {
+          mdContent.innerHTML = '<h1>Intent Execution</h1><p>' + (data.message || '') + '</p><pre>' + ((data.log || []).join('\n')) + '</pre>';
+        }
+        reloadCurrentGraph([]);
+      })
+      .catch(function (err) {
+        if (mdContent) mdContent.innerHTML = '<p style="color:#f09090">Execute failed: ' + err.message + '</p>';
+      });
+  }
+
+  function runBuild() {
+    var mdContent = document.getElementById('mdContent');
+    if (mdContent) mdContent.innerHTML = '<p style="color:#908c82">Building...</p>';
+    fetch('/api/build', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (mdContent) {
+          mdContent.innerHTML = '<h1>Build</h1><p>' + (data.message || '') + '</p><p><code>' + (data.output_path || '') + '</code></p>';
+        }
+      })
+      .catch(function (err) {
+        if (mdContent) mdContent.innerHTML = '<p style="color:#f09090">Build failed: ' + err.message + '</p>';
+      });
+  }
+
+  function runBinary() {
+    var mdContent = document.getElementById('mdContent');
+    if (mdContent) mdContent.innerHTML = '<p style="color:#908c82">Running...</p>';
+    fetch('/api/run', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (mdContent) {
+          mdContent.innerHTML = '<h1>Run</h1><p>Exit code: ' + data.exit_code + '</p><h2>stdout</h2><pre>' + (data.stdout || '') + '</pre><h2>stderr</h2><pre>' + (data.stderr || '') + '</pre>';
+        }
+      })
+      .catch(function (err) {
+        if (mdContent) mdContent.innerHTML = '<p style="color:#f09090">Run failed: ' + err.message + '</p>';
+      });
+  }
+
   // ── Settings popup ──────────────────────────────────────────────────────────
 
   var PROVIDER_DEFAULTS = {
@@ -794,10 +839,10 @@
     var filter = item.dataset.filter || '';
     closeSearch();
     if (filter.indexOf('new intent') !== -1) { openCreateIntent(); }
-    else if (filter.indexOf('build') !== -1) { toggleFunction('Build'); }
+    else if (filter.indexOf('build') !== -1) { toggleFunction('build'); }
     else if (filter.indexOf('theme') !== -1 && window.__studio) { /* theme toggle handled elsewhere */ }
     else if (filter.indexOf('provider') !== -1) { openSettings(); }
-    else if (filter.indexOf('registry') !== -1) { toggleFunction('Intents'); }
+    else if (filter.indexOf('registry') !== -1) { toggleFunction('intents'); }
     else if (filter.indexOf('agent template') !== -1) { openAgentTemplates(); }
   });
 
@@ -2864,6 +2909,9 @@
     closeCreateIntent:   closeCreateIntent,
     validateCip:         validateCip,
     createNewIntent:     createNewIntent,
+    executeIntent:       executeIntent,
+    runBuild:            runBuild,
+    runBinary:           runBinary,
     openSearch:          openSearch,
     closeSearch:         closeSearch,
     closeCmdIfOutside:   closeCmdIfOutside,

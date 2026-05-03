@@ -238,7 +238,7 @@ struct ConversationVisualRow {
     block_index: Option<usize>,
     menu_button_block: Option<usize>,
     menu_button_range: Option<(u16, u16)>,
-    thinking_toggle_block: Option<usize>,
+    collapsible_toggle_block: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -678,6 +678,63 @@ fn find_json_message(value: &serde_json::Value) -> Option<String> {
         }
         serde_json::Value::Array(items) => items.iter().find_map(find_json_message),
         _ => None,
+    }
+}
+
+fn format_focused_intent_value(slug: &str, max_width: usize) -> String {
+    let full = format!("[{slug}]");
+    if full.chars().count() <= max_width {
+        return full;
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let inner_width = max_width.saturating_sub(2);
+    if inner_width <= 3 {
+        return format!("[{}]", ".".repeat(inner_width));
+    }
+
+    let available = inner_width - 3;
+    let prefix_len = if available >= 12 {
+        (available / 3).clamp(4, 8)
+    } else {
+        0
+    };
+    let suffix_len = available.saturating_sub(prefix_len);
+    let prefix: String = slug.chars().take(prefix_len).collect();
+    let mut suffix: Vec<char> = slug.chars().rev().take(suffix_len).collect();
+    suffix.reverse();
+    let suffix: String = suffix.into_iter().collect();
+
+    format!("[{prefix}...{suffix}]")
+}
+
+fn mode_strip_left_width(mode_label: &str, dot_glyph: &str) -> usize {
+    [
+        " Shift ".chars().count(),
+        " + ".chars().count(),
+        " Tab ".chars().count(),
+        " switch mode  ".chars().count(),
+        format!(" {dot_glyph} {mode_label} ").chars().count(),
+        "  ".chars().count(),
+    ]
+    .into_iter()
+    .sum()
+}
+
+fn style_for_output(style: OutputStyle) -> Style {
+    match style {
+        OutputStyle::Normal => theme::out_normal(),
+        OutputStyle::Error => theme::out_error(),
+        OutputStyle::Success => theme::out_success(),
+        OutputStyle::Dim => theme::out_dim(),
+        OutputStyle::Ai => theme::out_ai(),
+        OutputStyle::Thinking => theme::out_thinking(),
+        OutputStyle::Help => theme::out_help_desc(),
     }
 }
 
@@ -1988,10 +2045,26 @@ impl ReplApp {
 
     /// Appends one collapsed model-thinking block to the conversation pane.
     pub fn push_thinking_output(&mut self, text: impl Into<String>) {
+        self.push_collapsible_output("Thinking", text, OutputStyle::Thinking, false);
+    }
+
+    /// Appends one headered collapsible output block to the conversation pane.
+    pub fn push_collapsible_output(
+        &mut self,
+        header: impl Into<String>,
+        text: impl Into<String>,
+        style: OutputStyle,
+        expanded: bool,
+    ) {
+        let header = header.into();
         let text = text.into();
-        let output_idx = self.start_output_block(OutputRenderMode::Thinking { expanded: false });
+        let output_idx = self.start_output_block(OutputRenderMode::Collapsible {
+            header,
+            expanded,
+            style,
+        });
         for line in text.split('\n') {
-            let output_line = OutputLine::new(line.to_string(), OutputStyle::Thinking);
+            let output_line = OutputLine::new(line.to_string(), style);
             self.output_lines.push(output_line.clone());
             if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
                 block.lines.push(output_line);
@@ -2388,12 +2461,12 @@ impl ReplApp {
             return true;
         }
 
-        if let Some(block_index) = visual_row.thinking_toggle_block {
+        if let Some(block_index) = visual_row.collapsible_toggle_block {
             let relative_y = row.saturating_sub(area.y) as usize;
             let visible_row = relative_y.saturating_sub(layout.padding);
             let anchor = self.anchor_for_visible_row(&layout, visible_row, area.width);
             let was_scrolled = self.output_scroll_offset > 0;
-            self.toggle_thinking_block(block_index);
+            self.toggle_collapsible_block(block_index);
             if was_scrolled && let Some(anchor) = anchor {
                 self.restore_conversation_anchor(area, anchor, relative_y);
             }
@@ -2421,11 +2494,11 @@ impl ReplApp {
         true
     }
 
-    fn toggle_thinking_block(&mut self, block_index: usize) {
+    fn toggle_collapsible_block(&mut self, block_index: usize) {
         let Some(block) = self.conversation_blocks.get_mut(block_index) else {
             return;
         };
-        if let OutputRenderMode::Thinking { expanded } = &mut block.render_mode {
+        if let OutputRenderMode::Collapsible { expanded, .. } = &mut block.render_mode {
             *expanded = !*expanded;
         }
     }
@@ -3038,20 +3111,14 @@ impl ReplApp {
     fn conversation_visual_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
         let mut rows = Vec::new();
         for (idx, block) in self.conversation_blocks.iter().enumerate() {
-            let previous = idx
-                .checked_sub(1)
-                .and_then(|previous_idx| self.conversation_blocks.get(previous_idx));
-            let user_block_boundary = previous
-                .is_some_and(|previous_block| previous_block.kind == ConversationBlockKind::User)
-                || block.kind == ConversationBlockKind::User;
-            if !rows.is_empty() && !user_block_boundary {
+            if !rows.is_empty() {
                 rows.push(ConversationVisualRow {
                     line: Line::from(""),
                     plain_text: String::new(),
                     block_index: None,
                     menu_button_block: None,
                     menu_button_range: None,
-                    thinking_toggle_block: None,
+                    collapsible_toggle_block: None,
                 });
             }
             match block.kind {
@@ -3059,7 +3126,7 @@ impl ReplApp {
                     rows.extend(self.user_block_rows(idx, block, width));
                 }
                 ConversationBlockKind::Output => {
-                    match block.render_mode {
+                    match &block.render_mode {
                         OutputRenderMode::Plain => {
                             for ol in &block.lines {
                                 rows.extend(Self::output_line_visual_rows(
@@ -3074,8 +3141,14 @@ impl ReplApp {
                         OutputRenderMode::Markdown => {
                             rows.extend(Self::markdown_visual_rows(block, idx, width));
                         }
-                        OutputRenderMode::Thinking { expanded } => {
-                            rows.extend(Self::thinking_visual_rows(block, idx, width, expanded));
+                        OutputRenderMode::Collapsible {
+                            header,
+                            expanded,
+                            style,
+                        } => {
+                            rows.extend(Self::collapsible_visual_rows(
+                                block, idx, width, header, *expanded, *style,
+                            ));
                         }
                     }
                     if let Some(elapsed) = &block.elapsed {
@@ -3085,7 +3158,7 @@ impl ReplApp {
                             block_index: Some(idx),
                             menu_button_block: None,
                             menu_button_range: None,
-                            thinking_toggle_block: None,
+                            collapsible_toggle_block: None,
                         });
                     }
                 }
@@ -3123,7 +3196,7 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
-                thinking_toggle_block: None,
+                collapsible_toggle_block: None,
             },
             ConversationVisualRow {
                 line,
@@ -3131,7 +3204,7 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: selected.then_some(block_index),
                 menu_button_range: range,
-                thinking_toggle_block: None,
+                collapsible_toggle_block: None,
             },
             ConversationVisualRow {
                 line: meta_line,
@@ -3139,7 +3212,7 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
-                thinking_toggle_block: None,
+                collapsible_toggle_block: None,
             },
             ConversationVisualRow {
                 line: bottom_padding,
@@ -3147,7 +3220,7 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
-                thinking_toggle_block: None,
+                collapsible_toggle_block: None,
             },
         ]
     }
@@ -3178,7 +3251,7 @@ impl ReplApp {
                     block_index,
                     menu_button_block,
                     menu_button_range,
-                    thinking_toggle_block: None,
+                    collapsible_toggle_block: None,
                 }
             })
             .collect()
@@ -3204,27 +3277,29 @@ impl ReplApp {
             .collect()
     }
 
-    fn thinking_visual_rows(
+    fn collapsible_visual_rows(
         block: &ConversationBlock,
         block_index: usize,
         width: u16,
+        header: &str,
         expanded: bool,
+        style: OutputStyle,
     ) -> Vec<ConversationVisualRow> {
         let marker = if expanded { "\u{25BE}" } else { "\u{25B8}" };
-        let header = format!("{marker} Thinking");
+        let header = format!("{marker} {header}");
         let mut rows = vec![ConversationVisualRow {
-            line: Line::from(Span::styled(header.clone(), theme::out_thinking())),
+            line: Line::from(Span::styled(header.clone(), style_for_output(style))),
             plain_text: header,
             block_index: Some(block_index),
             menu_button_block: None,
             menu_button_range: None,
-            thinking_toggle_block: Some(block_index),
+            collapsible_toggle_block: Some(block_index),
         }];
 
         if expanded {
             for line in &block.lines {
                 let text = format!("\u{2502} {}", line.text.trim_end());
-                let output_line = OutputLine::new(text, OutputStyle::Thinking);
+                let output_line = OutputLine::new(text, style);
                 rows.extend(Self::output_line_visual_rows(
                     &output_line,
                     Some(block_index),
@@ -3490,7 +3565,7 @@ impl ReplApp {
     fn styled_row_to_visual(
         row: StyledRow,
         block_index: Option<usize>,
-        thinking_toggle_block: Option<usize>,
+        collapsible_toggle_block: Option<usize>,
     ) -> ConversationVisualRow {
         ConversationVisualRow {
             line: Line::from(
@@ -3503,7 +3578,7 @@ impl ReplApp {
             block_index,
             menu_button_block: None,
             menu_button_range: None,
-            thinking_toggle_block,
+            collapsible_toggle_block,
         }
     }
 
@@ -3692,18 +3767,7 @@ impl ReplApp {
                     Line::from(Span::styled(text.clone(), theme::out_help_cmd()))
                 }
             }
-            _ => {
-                let style = match ol.style {
-                    OutputStyle::Normal => theme::out_normal(),
-                    OutputStyle::Error => theme::out_error(),
-                    OutputStyle::Success => theme::out_success(),
-                    OutputStyle::Dim => theme::out_dim(),
-                    OutputStyle::Ai => theme::out_ai(),
-                    OutputStyle::Thinking => theme::out_thinking(),
-                    OutputStyle::Help => unreachable!(),
-                };
-                Line::from(Span::styled(ol.text.clone(), style))
-            }
+            _ => Line::from(Span::styled(ol.text.clone(), style_for_output(ol.style))),
         }
     }
 
@@ -3714,16 +3778,17 @@ impl ReplApp {
 
         // Right-side intent indicator: "intent —" (empty) or "intent [slug]".
         let intent_label = "intent ";
+
+        let left_len = mode_strip_left_width(mode_label, dot_glyph);
+        let value_width = (area.width as usize)
+            .saturating_sub(left_len)
+            .saturating_sub(intent_label.len());
         let intent_value: String = self
             .focused_intent
             .as_deref()
-            .map(|s| format!("[{s}]"))
+            .map(|s| format_focused_intent_value(s, value_width))
             .unwrap_or_else(|| "—".to_string());
-
-        let hint_prefix = 14usize;
-        let mode_len = 4 + mode_label.len();
         let right_len = intent_label.len() + intent_value.chars().count();
-        let left_len = hint_prefix + mode_len;
         let padding = (area.width as usize).saturating_sub(left_len + right_len);
 
         let mut spans = vec![
@@ -4646,6 +4711,33 @@ mod tests {
     }
 
     #[test]
+    fn focused_intent_value_preserves_suffix_when_constrained() {
+        let slug = "build-a-calculator-with-add-subtract-mul";
+        let out = format_focused_intent_value(slug, 28);
+
+        assert!(out.chars().count() <= 28);
+        assert!(out.starts_with("[build"));
+        assert!(out.contains("..."));
+        assert!(out.ends_with("subtract-mul]"));
+    }
+
+    #[test]
+    fn focused_intent_value_keeps_short_slug() {
+        assert_eq!(
+            format_focused_intent_value("calculator", 20),
+            "[calculator]"
+        );
+    }
+
+    #[test]
+    fn mode_strip_left_width_matches_rendered_static_spans() {
+        assert_eq!(
+            mode_strip_left_width("intent", ReplApp::mode_dot_glyph()),
+            " Shift  +  Tab  switch mode   ● intent   ".chars().count()
+        );
+    }
+
+    #[test]
     fn mode_dot_glyph_returns_solid_circle() {
         // Static dot now; only the solid bullet (U+25CF) is allowed.
         assert_eq!(ReplApp::mode_dot_glyph(), "\u{25CF}");
@@ -4846,6 +4938,38 @@ mod tests {
     }
 
     #[test]
+    fn conversation_blocks_have_single_boundary_separator() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("Create a calculator");
+        app.push_output("Generating intent spec", OutputStyle::Dim);
+        app.push_markdown_output("Intent saved.");
+        app.begin_user_block("execute");
+
+        let rows = app.conversation_visual_rows(120);
+        let first_row_for_block = |block_index: usize| {
+            rows.iter()
+                .position(|row| row.block_index == Some(block_index))
+                .expect("block should render")
+        };
+
+        for block_index in 1..app.conversation_blocks.len() {
+            let first = first_row_for_block(block_index);
+            assert!(
+                rows.get(first.saturating_sub(1))
+                    .is_some_and(|row| { row.block_index.is_none() && row.plain_text.is_empty() }),
+                "block {block_index} should have exactly one boundary separator before it"
+            );
+            assert!(
+                first < 2
+                    || rows.get(first - 2).is_none_or(|row| {
+                        row.block_index.is_some() || !row.plain_text.is_empty()
+                    }),
+                "block {block_index} should not have multiple boundary separators before it"
+            );
+        }
+    }
+
+    #[test]
     fn user_block_padding_and_thinking_spacing_are_single_rows() {
         let (mut app, _textarea) = make_app();
         app.begin_user_block("Where should a power function live?");
@@ -4881,8 +5005,8 @@ mod tests {
         assert!(is_user_padding(&rows[timestamp_idx + 1]));
         assert_eq!(
             thinking_idx,
-            timestamp_idx + 2,
-            "exactly one user padding row should separate the user timestamp and Thinking"
+            timestamp_idx + 3,
+            "one user padding row plus one block separator should separate the user timestamp and Thinking"
         );
         assert_eq!(
             answer_idx,
@@ -4935,6 +5059,39 @@ mod tests {
         let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 30);
         assert!(rendered.contains("▸ Thinking"));
         assert!(!rendered.contains("inspect workspace"));
+    }
+
+    #[test]
+    fn custom_collapsible_block_uses_header_style_and_click_toggle() {
+        let (mut app, textarea) = make_app();
+        app.push_collapsible_output(
+            "Build output",
+            "Build successful\nOutput: .duumbi/build/output",
+            OutputStyle::Normal,
+            true,
+        );
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▾ Build output"));
+        assert!(rendered.contains("│ Build successful"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▾ Build output"))
+            .expect("expanded build header should render") as u16;
+        let col = rows[row as usize]
+            .find("▾ Build output")
+            .expect("build header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Build output"));
+        assert!(!rendered.contains("Build successful"));
     }
 
     #[test]

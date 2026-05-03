@@ -10,6 +10,7 @@ pub mod describe;
 pub mod init;
 pub mod keystore;
 pub mod mode;
+pub mod phase15_e2e;
 pub mod progress;
 pub mod provider;
 pub mod provider_startup;
@@ -79,7 +80,7 @@ pub enum Commands {
         input: Option<PathBuf>,
     },
 
-    /// Apply an AI-generated mutation to the graph (requires [llm] config).
+    /// Apply an AI-generated mutation to the graph (requires provider setup).
     Add {
         /// Natural language description of the desired change.
         request: String,
@@ -180,6 +181,29 @@ pub enum Commands {
         /// Compare against a previous report JSON for regression detection.
         #[arg(long)]
         baseline: Option<std::path::PathBuf>,
+    },
+
+    /// Run the Phase 15 Calculator E2E validation harness.
+    #[command(name = "phase15-e2e", hide = true)]
+    Phase15E2e {
+        /// Task to validate. Only `calculator` is currently supported.
+        task: String,
+
+        /// Provider to use for live validation.
+        #[arg(long, default_value = "minimax")]
+        provider: String,
+
+        /// Number of Ralph Loop attempts to run.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+        attempts: u32,
+
+        /// Write JSON evidence report to this file.
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+
+        /// Studio port used by the harness.
+        #[arg(long, default_value_t = 8421)]
+        port: u16,
     },
 
     /// Generate shell completion scripts for bash, zsh, fish, or powershell.

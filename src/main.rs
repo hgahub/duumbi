@@ -36,6 +36,9 @@ mod session;
 mod snapshot;
 mod tools;
 mod types;
+#[allow(dead_code)] // Library workflow API is also compiled into the binary crate.
+mod workflow;
+mod workspace;
 
 use std::fs;
 use std::io::{self, IsTerminal as _, Write as _};
@@ -188,18 +191,26 @@ async fn run(cli: Cli) -> Result<()> {
             cli::commands::build_with_opts(&input_path, &output_path, offline)
         }
         Commands::Run { args } => {
-            let binary = resolve_output(None)?;
-            if !binary.exists() {
-                anyhow::bail!(
-                    "Binary not found at '{}'. Run `duumbi build` first.",
-                    binary.display()
-                );
+            let workspace = PathBuf::from(".");
+            if workspace.join(".duumbi").exists() {
+                let output = workspace::run_workspace_binary(&workspace, &args)?;
+                print!("{}", output.stdout);
+                eprint!("{}", output.stderr);
+                process::exit(output.exit_code);
+            } else {
+                let binary = resolve_output(None)?;
+                if !binary.exists() {
+                    anyhow::bail!(
+                        "Binary not found at '{}'. Run `duumbi build` first.",
+                        binary.display()
+                    );
+                }
+                let status = process::Command::new(&binary)
+                    .args(&args)
+                    .status()
+                    .with_context(|| format!("Failed to execute '{}'", binary.display()))?;
+                process::exit(status.code().unwrap_or(1));
             }
-            let status = process::Command::new(&binary)
-                .args(&args)
-                .status()
-                .with_context(|| format!("Failed to execute '{}'", binary.display()))?;
-            process::exit(status.code().unwrap_or(1));
         }
         Commands::Check { input } => {
             let input_path = resolve_input(input.as_deref())?;
@@ -280,6 +291,13 @@ async fn run(cli: Cli) -> Result<()> {
             ci,
             baseline,
         } => run_benchmark(showcase, provider, attempts, output, ci, baseline).await,
+        Commands::Phase15E2e {
+            task,
+            provider,
+            attempts,
+            output,
+            port,
+        } => cli::phase15_e2e::run(&task, &provider, attempts, output, port).await,
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -354,6 +372,12 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         serde_json::from_str(&source_str).context("Failed to parse current graph as JSON")?;
 
     let client = require_llm_client(&workspace_root)?;
+    let agent_policy = config::load_effective_config(&workspace_root)
+        .map(|effective| {
+            let provider = config::ProviderKind::from_provider_name(client.name());
+            effective.config.effective_agent_policy(provider.as_ref())
+        })
+        .unwrap_or_default();
 
     // Detect multi-module workspace: if there are other .jsonld files besides
     // main.jsonld, skip Call validation (cross-module calls can't be resolved
@@ -380,11 +404,18 @@ async fn add(request: &str, yes: bool) -> Result<()> {
         sp.finish_and_clear();
     }
 
-    let result =
-        orchestrator::mutate_streaming(&client, &source, request, 3, is_multi_module, |text| {
+    let result = orchestrator::mutate_streaming_with_timeout(
+        &client,
+        &source,
+        request,
+        agent_policy.mutation_retries,
+        agent_policy.mutation_timeout_secs,
+        is_multi_module,
+        |text| {
             eprint!("{text}");
-        })
-        .await?;
+        },
+    )
+    .await?;
     eprintln!();
 
     let result = match result {
@@ -492,10 +523,13 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             let nodes = if let Some(type_filter) = r#type {
                 let node_type = match type_filter.as_str() {
                     "success" => knowledge::types::TYPE_SUCCESS,
+                    "failure" => knowledge::types::TYPE_FAILURE,
                     "decision" => knowledge::types::TYPE_DECISION,
                     "pattern" => knowledge::types::TYPE_PATTERN,
                     other => {
-                        anyhow::bail!("Unknown type '{other}'. Use: success, decision, pattern")
+                        anyhow::bail!(
+                            "Unknown type '{other}'. Use: success, failure, decision, pattern"
+                        )
                     }
                 };
                 store.query_by_type(node_type)
@@ -535,6 +569,7 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             for node in &all {
                 let ts = match node {
                     KnowledgeNode::Success(r) => r.timestamp,
+                    KnowledgeNode::Failure(r) => r.timestamp,
                     KnowledgeNode::Decision(r) => r.timestamp,
                     KnowledgeNode::Pattern(r) => r.timestamp,
                 };
@@ -555,6 +590,7 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             let success_count = learning::success_count(&workspace);
             eprintln!("Knowledge store:");
             eprintln!("  Success records:  {}", stats.successes);
+            eprintln!("  Failure records:  {}", stats.failures);
             eprintln!("  Decision records: {}", stats.decisions);
             eprintln!("  Pattern records:  {}", stats.patterns);
             eprintln!("  Total:            {}", stats.total());

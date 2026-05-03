@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -114,10 +114,10 @@ impl Program {
         // Step 1: discover and parse all .jsonld files from all directories
         let mut found_any_dir = false;
         for &graph_dir in graph_dirs {
-            let entries = match fs::read_dir(graph_dir) {
-                Ok(e) => {
+            let paths = match collect_jsonld_paths(graph_dir) {
+                Ok(paths) => {
                     found_any_dir = true;
-                    e
+                    paths
                 }
                 Err(e) => {
                     errors.push(ProgramError::LoadFailed {
@@ -128,12 +128,7 @@ impl Program {
                 }
             };
 
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
-                    continue;
-                }
-
+            for path in paths {
                 let source = match fs::read_to_string(&path) {
                     Ok(s) => s,
                     Err(e) => {
@@ -245,6 +240,25 @@ impl Program {
     }
 }
 
+fn collect_jsonld_paths(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    collect_jsonld_paths_into(dir, &mut paths)?;
+    Ok(paths)
+}
+
+fn collect_jsonld_paths_into(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonld_paths_into(&path, paths)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -338,6 +352,9 @@ mod tests {
         fs::create_dir_all(&graph_dir).expect("create graph dir");
         for (filename, content) in files {
             let path = graph_dir.join(filename);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create nested graph dir");
+            }
             let mut f = fs::File::create(&path).expect("create file");
             f.write_all(content.as_bytes()).expect("write");
         }
@@ -465,5 +482,47 @@ mod tests {
         ]);
         let program = Program::load(ws.path()).expect("must load, ignoring non-jsonld files");
         assert_eq!(program.modules.len(), 1);
+    }
+
+    #[test]
+    fn nested_jsonld_modules_are_loaded_recursively() {
+        let app = make_module_with_call("app", "helper", &[]);
+        let math = r#"{
+    "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:calculator/ops",
+    "duumbi:name": "calculator/ops",
+    "duumbi:exports": ["helper"],
+    "duumbi:functions": [{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:calculator/ops/helper",
+        "duumbi:name": "helper",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:calculator/ops/helper/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {"@type": "duumbi:Const", "@id": "duumbi:calculator/ops/helper/entry/0",
+                  "duumbi:value": 42, "duumbi:resultType": "i64"},
+                {"@type": "duumbi:Return", "@id": "duumbi:calculator/ops/helper/entry/1",
+                  "duumbi:operand": {"@id": "duumbi:calculator/ops/helper/entry/0"}}
+            ]
+        }]
+    }]
+}"#;
+
+        let ws = write_workspace(&[("app.jsonld", &app), ("calculator/ops.jsonld", math)]);
+        let program = Program::load(ws.path()).expect("must load nested module");
+
+        assert!(
+            program
+                .modules
+                .contains_key(&ModuleName("calculator/ops".to_string()))
+        );
+        assert_eq!(
+            program.exports[&FunctionName("helper".to_string())],
+            ModuleName("calculator/ops".to_string())
+        );
     }
 }

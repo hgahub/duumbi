@@ -10,7 +10,7 @@
 //! The temp workspace is compiled and run; stdout is parsed and compared to
 //! `expected_return`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::json;
@@ -205,34 +205,50 @@ fn build_and_run(tc: &TestCase, workspace: &Path) -> Result<i64, String> {
 
 /// Copies all `.jsonld` files from `src_dir` to `dst_dir`.
 fn copy_all_modules(src_dir: &Path, dst_dir: &Path) -> Result<(), String> {
-    if !src_dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(src_dir).map_err(|e| format!("read ws graph: {e}"))? {
-        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
-        let src = entry.path();
-        if src.extension().and_then(|e| e.to_str()) == Some("jsonld") {
-            let fname = src.file_name().expect("invariant: file has name");
-            std::fs::copy(&src, dst_dir.join(fname)).map_err(|e| format!("copy module: {e}"))?;
-        }
-    }
-    Ok(())
+    copy_modules(src_dir, dst_dir, true)
 }
 
 /// Copies all `.jsonld` files from `src_dir` to `dst_dir`, excluding `main.jsonld`.
 fn copy_non_main_modules(src_dir: &Path, dst_dir: &Path) -> Result<(), String> {
+    copy_modules(src_dir, dst_dir, false)
+}
+
+fn copy_modules(src_dir: &Path, dst_dir: &Path, include_main: bool) -> Result<(), String> {
     if !src_dir.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(src_dir).map_err(|e| format!("read ws graph: {e}"))? {
+
+    for src in collect_jsonld_paths(src_dir)? {
+        let fname = src.file_name().expect("invariant: file has name");
+        if !include_main && fname == "main.jsonld" {
+            continue;
+        }
+        let rel = src
+            .strip_prefix(src_dir)
+            .map_err(|e| format!("strip module prefix: {e}"))?;
+        let dst = dst_dir.join(rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create module dir: {e}"))?;
+        }
+        std::fs::copy(&src, &dst).map_err(|e| format!("copy module: {e}"))?;
+    }
+    Ok(())
+}
+
+fn collect_jsonld_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    collect_jsonld_paths_into(dir, &mut paths)?;
+    Ok(paths)
+}
+
+fn collect_jsonld_paths_into(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read ws graph: {e}"))? {
         let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
-        let src = entry.path();
-        if src.extension().and_then(|e| e.to_str()) == Some("jsonld") {
-            let fname = src.file_name().expect("invariant: file has name");
-            if fname != "main.jsonld" {
-                std::fs::copy(&src, dst_dir.join(fname))
-                    .map_err(|e| format!("copy module: {e}"))?;
-            }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonld_paths_into(&path, paths)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+            paths.push(path);
         }
     }
     Ok(())

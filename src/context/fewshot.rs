@@ -29,7 +29,7 @@ pub fn select_examples(
     estimator: &dyn TokenEstimator,
     max_tokens_per_example: usize,
 ) -> Vec<String> {
-    let successes = learning::query_successes(workspace, 50);
+    let successes = learning::query_combined_successes(workspace, 50);
     if successes.is_empty() {
         return Vec::new();
     }

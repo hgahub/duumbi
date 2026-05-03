@@ -4,7 +4,7 @@
 //! tasks via the Coordinator, runs each task through the mutation orchestrator
 //! with 3-step retry, then verifies test cases with the Verifier Agent.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -23,7 +23,7 @@ use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, Tas
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
 use crate::knowledge::learning;
-use crate::knowledge::types::SuccessRecord;
+use crate::knowledge::types::{FailureRecord, SuccessRecord};
 use crate::snapshot;
 
 // ---------------------------------------------------------------------------
@@ -77,6 +77,14 @@ pub async fn run_execute_with_progress(
 
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+    let provider_kind = crate::config::ProviderKind::from_provider_name(client.name());
+    let agent_policy = crate::config::load_effective_config(workspace)
+        .map(|effective| {
+            effective
+                .config
+                .effective_agent_policy(provider_kind.as_ref())
+        })
+        .unwrap_or_default();
 
     emit!(format!("Executing intent: \"{}\"", spec.intent));
 
@@ -124,8 +132,7 @@ pub async fn run_execute_with_progress(
         // write the result to a new file. For other tasks, mutate main.jsonld.
         let (source, target_path) = match &task.kind {
             TaskKind::CreateModule { module_name } => {
-                let file_name = module_name_to_filename(module_name);
-                let target = graph_dir.join(&file_name);
+                let target = module_name_to_path(&graph_dir, module_name);
                 let template = empty_module_template(module_name);
                 (template, target)
             }
@@ -189,11 +196,12 @@ pub async fn run_execute_with_progress(
         // chunks collected in order AND accessible after the future completes.
         let log_clone = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log_tx = log_clone.clone();
-        let result = orchestrator::mutate_streaming(
+        let result = orchestrator::mutate_streaming_with_timeout(
             client,
             &source,
             &prompt,
-            3,
+            agent_policy.mutation_retries,
+            agent_policy.mutation_timeout_secs,
             skip_call_validation,
             move |text| {
                 log_tx
@@ -218,6 +226,17 @@ pub async fn run_execute_with_progress(
                     "    Intent execution does not support interactive clarification.".to_string()
                 );
                 task.status = TaskStatus::Failed(format!("Clarification needed: {question}"));
+                record_task_failure(
+                    workspace,
+                    client,
+                    &task.description,
+                    &task.kind,
+                    &spec,
+                    "clarification_needed",
+                    agent_policy.mutation_retries,
+                    Vec::new(),
+                    &question,
+                );
 
                 spec.status = IntentStatus::Failed;
                 save_intent(workspace, slug, &spec)
@@ -248,11 +267,12 @@ pub async fn run_execute_with_progress(
                         let retry_log =
                             std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
                         let retry_tx = retry_log.clone();
-                        let retry_result = orchestrator::mutate_streaming(
+                        let retry_result = orchestrator::mutate_streaming_with_timeout(
                             client,
                             &mutation_result.patched,
                             &retry_prompt,
-                            1,
+                            agent_policy.repair_retries,
+                            agent_policy.mutation_timeout_secs,
                             skip_call_validation,
                             move |text| {
                                 retry_tx
@@ -280,6 +300,10 @@ pub async fn run_execute_with_progress(
 
                 let patched_str = serde_json::to_string_pretty(&mutation_result.patched)
                     .context("Serialize patched graph")?;
+                if let Some(parent) = target_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("Create '{}'", parent.display()))?;
+                }
                 std::fs::write(&target_path, &patched_str)
                     .with_context(|| format!("Write '{}'", target_path.display()))?;
 
@@ -320,11 +344,23 @@ pub async fn run_execute_with_progress(
                     .collect();
                 record.retry_count = mutation_result.retry_count;
                 record.error_codes = mutation_result.error_codes_encountered.clone();
-                let _ = learning::append_success(workspace, &record);
+                let _ = learning::append_success_with_user_cache(workspace, &record);
             }
             Err(e) => {
                 emit!(format!("  {} Task failed: {e:#}", "\u{2717}".red().bold()));
                 task.status = TaskStatus::Failed(e.to_string());
+                let summary = format!("{e:#}");
+                record_task_failure(
+                    workspace,
+                    client,
+                    &task.description,
+                    &task.kind,
+                    &spec,
+                    &classify_failure_category(&summary),
+                    agent_policy.mutation_retries,
+                    extract_error_codes_from_text(&summary),
+                    &summary,
+                );
 
                 spec.status = IntentStatus::Failed;
                 save_intent(workspace, slug, &spec)
@@ -415,13 +451,7 @@ pub async fn run_execute_with_progress(
 
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
-        for entry in std::fs::read_dir(&graph_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
-                continue;
-            }
-
+        for path in collect_jsonld_paths(&graph_dir) {
             let module_source: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path)?)
                     .context("Failed to parse module for repair")?;
@@ -429,11 +459,12 @@ pub async fn run_execute_with_progress(
             // AI-AGENT: Same Arc<Mutex> pattern as the main streaming callback above.
             let repair_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let repair_tx = repair_log.clone();
-            let repair_result = orchestrator::mutate_streaming(
+            let repair_result = orchestrator::mutate_streaming_with_timeout(
                 client,
                 &module_source,
                 &repair_prompt,
-                1,
+                agent_policy.repair_retries,
+                agent_policy.mutation_timeout_secs,
                 true, // skip call validation
                 move |text| {
                     repair_tx
@@ -472,6 +503,19 @@ pub async fn run_execute_with_progress(
             emit!(report.display());
         } else {
             emit!("  No repair patches applied.".to_string());
+            let summary = failed_details.join("; ");
+            record_intent_failure(
+                workspace,
+                client,
+                &spec.intent,
+                "VerifierRepair",
+                "verifier_failure_after_repair",
+                agent_policy.repair_retries,
+                extract_error_codes_from_text(&summary),
+                &summary,
+                "all",
+                intent_functions(&spec),
+            );
         }
     }
 
@@ -530,6 +574,19 @@ pub async fn run_execute_with_progress(
 
         spec.status = IntentStatus::Failed;
         save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+        let summary = report.display();
+        record_intent_failure(
+            workspace,
+            client,
+            &spec.intent,
+            "Verifier",
+            "verifier_failure_after_repair",
+            agent_policy.repair_retries,
+            extract_error_codes_from_text(&summary),
+            &summary,
+            "all",
+            intent_functions(&spec),
+        );
         emit!(format!(
             "Intent failed: {} test(s) did not pass.",
             report.failed
@@ -562,10 +619,39 @@ fn ensure_exports(module: &mut serde_json::Value) {
     module["duumbi:exports"] = serde_json::Value::Array(function_names);
 }
 
-/// Converts a module name like `"calculator/ops"` to a flat filename `"calculator_ops.jsonld"`.
-fn module_name_to_filename(module_name: &str) -> String {
-    let sanitized = module_name.replace('/', "_");
-    format!("{sanitized}.jsonld")
+/// Converts a module name like `"calculator/ops"` to a nested graph path.
+fn module_name_to_path(graph_dir: &Path, module_name: &str) -> PathBuf {
+    graph_dir.join(module_name_to_relative_path(module_name))
+}
+
+fn module_name_to_relative_path(module_name: &str) -> PathBuf {
+    let normalized = module_name.replace('\\', "/");
+    let mut path = PathBuf::new();
+    for raw_segment in normalized.split('/') {
+        let segment = raw_segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let sanitized: String = segment
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+            continue;
+        }
+        path.push(sanitized);
+    }
+    if path.as_os_str().is_empty() {
+        path.push("module");
+    }
+    path.set_extension("jsonld");
+    path
 }
 
 /// Creates an empty module template for a new module.
@@ -595,18 +681,9 @@ fn empty_module_template(module_name: &str) -> serde_json::Value {
 /// - module "ops": add(a: i64, b: i64) -> i64, multiply(a: i64, b: i64) -> i64
 /// ```
 fn collect_module_exports(graph_dir: &Path) -> String {
-    let entries = match std::fs::read_dir(graph_dir) {
-        Ok(e) => e,
-        Err(_) => return String::new(),
-    };
-
     let mut lines = Vec::new();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
-            continue;
-        }
+    for path in collect_jsonld_paths(graph_dir) {
         if path
             .file_name()
             .map(|f| f == "main.jsonld")
@@ -670,6 +747,135 @@ fn collect_module_exports(graph_dir: &Path) -> String {
     }
 
     lines.join("\n")
+}
+
+fn collect_jsonld_paths(dir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    collect_jsonld_paths_into(dir, &mut paths);
+    paths
+}
+
+fn collect_jsonld_paths_into(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonld_paths_into(&path, paths);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+            paths.push(path);
+        }
+    }
+}
+
+fn task_type_name(task_kind: &TaskKind) -> &'static str {
+    match task_kind {
+        TaskKind::CreateModule { .. } => "CreateModule",
+        TaskKind::AddFunction { .. } => "AddFunction",
+        TaskKind::ModifyFunction { .. } => "ModifyFunction",
+        TaskKind::ModifyMain { .. } => "ModifyMain",
+    }
+}
+
+fn task_module_name(task_kind: &TaskKind) -> String {
+    match task_kind {
+        TaskKind::CreateModule { module_name } => module_name.clone(),
+        _ => "main".to_string(),
+    }
+}
+
+fn intent_functions(spec: &IntentSpec) -> Vec<String> {
+    spec.test_cases
+        .iter()
+        .map(|tc| tc.function.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn classify_failure_category(summary: &str) -> String {
+    let lower = summary.to_ascii_lowercase();
+    if lower.contains("no tool calls") {
+        "no_tool_calls".to_string()
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "provider_timeout".to_string()
+    } else if lower.contains("status 401") || lower.contains("status 403") {
+        "provider_auth".to_string()
+    } else if lower.contains("status 429") || lower.contains("rate limited") {
+        "provider_rate_limit".to_string()
+    } else if lower.contains("status 5") {
+        "provider_server_error".to_string()
+    } else if lower.contains("validation failed") {
+        "validation_retry_exhaustion".to_string()
+    } else {
+        "mutation_failed".to_string()
+    }
+}
+
+fn extract_error_codes_from_text(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| {
+            word.len() == 4
+                && word.starts_with('E')
+                && word[1..].chars().all(|c| c.is_ascii_digit())
+        })
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_task_failure(
+    workspace: &Path,
+    client: &dyn LlmProvider,
+    request: &str,
+    task_kind: &TaskKind,
+    spec: &IntentSpec,
+    category: &str,
+    retry_count: u32,
+    error_codes: Vec<String>,
+    summary: &str,
+) {
+    record_intent_failure(
+        workspace,
+        client,
+        request,
+        task_type_name(task_kind),
+        category,
+        retry_count,
+        error_codes,
+        summary,
+        &task_module_name(task_kind),
+        intent_functions(spec),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_intent_failure(
+    workspace: &Path,
+    client: &dyn LlmProvider,
+    request: &str,
+    task_type: &str,
+    category: &str,
+    retry_count: u32,
+    error_codes: Vec<String>,
+    summary: &str,
+    module: &str,
+    functions: Vec<String>,
+) {
+    let mut record = FailureRecord::new(request, task_type, category);
+    record.provider = client.name().to_string();
+    record.model_label = client.model_label();
+    record.module = module.to_string();
+    record.functions = functions;
+    record.retry_count = retry_count;
+    record.error_codes = error_codes;
+    record.error_summary = learning::sanitize_error_summary(summary);
+    let _ = learning::append_failure_with_user_cache(workspace, &record);
 }
 
 /// Builds the full mutation prompt for a task, including the intent context.
@@ -779,5 +985,17 @@ mod tests {
         assert!(prompt.contains("Build calculator"));
         assert!(prompt.contains("add(a,b) returns a+b"));
         assert!(prompt.contains("Create module ops"));
+    }
+
+    #[test]
+    fn module_name_to_relative_path_preserves_slash_modules() {
+        assert_eq!(
+            module_name_to_relative_path("calculator/ops"),
+            PathBuf::from("calculator/ops.jsonld")
+        );
+        assert_eq!(
+            module_name_to_relative_path("../calculator weird/ops"),
+            PathBuf::from("calculator_weird/ops.jsonld")
+        );
     }
 }

@@ -29,3 +29,5 @@ pub mod session;
 pub mod snapshot;
 pub mod tools;
 pub mod types;
+pub mod workflow;
+pub mod workspace;

@@ -122,7 +122,9 @@ pub async fn generate_spec_with_llm(
     // Note: this calls the LLM's chat completion path (no tool use).
     let raw = call_plain_completion(client, INTENT_SYSTEM_PROMPT, &user_message).await?;
 
-    parse_llm_response(description, &raw)
+    let mut spec = parse_llm_response(description, &raw)?;
+    let _ = crate::intent::benchmarks::apply_known_benchmark(description, &mut spec);
+    Ok(spec)
 }
 
 /// Extracts the first valid JSON object from an LLM response.

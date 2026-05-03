@@ -28,7 +28,10 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
     use std::net::SocketAddr;
     use std::sync::Arc;
 
-    use axum::{Router, routing::get};
+    use axum::{
+        Router,
+        routing::{get, post},
+    };
     use leptos::config::LeptosOptions;
     use leptos_axum::{LeptosRoutes, generate_route_list};
     use tokio::sync::RwLock;
@@ -123,6 +126,36 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
                 move |path: axum::extract::Path<String>| {
                     let ws = ws.clone();
                     async move { api_get_intent(ws, path.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/intent/{slug}/execute",
+            post({
+                let ws = api_ws.clone();
+                move |path: axum::extract::Path<String>| {
+                    let ws = ws.clone();
+                    async move { api_execute_intent(ws, path.0).await }
+                }
+            }),
+        )
+        .route(
+            "/api/build",
+            post({
+                let ws = api_ws.clone();
+                move || {
+                    let ws = ws.clone();
+                    async move { api_build(ws).await }
+                }
+            }),
+        )
+        .route(
+            "/api/run",
+            post({
+                let ws = api_ws.clone();
+                move || {
+                    let ws = ws.clone();
+                    async move { api_run(ws).await }
                 }
             }),
         )
@@ -641,6 +674,10 @@ async fn api_get_intent(
                 "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
                 spec.status
             ));
+            html.push_str(&format!(
+                "<p><button class=\"cip-btn cip-btn-create\" onclick=\"window.__studio.executeIntent('{}')\">Execute</button></p>\n",
+                slug
+            ));
 
             if !spec.acceptance_criteria.is_empty() {
                 html.push_str("<h2>Acceptance Criteria</h2>\n<ul>\n");
@@ -701,6 +738,88 @@ async fn api_get_intent(
         )
             .into_response(),
     }
+}
+
+/// Executes an intent by slug.
+///
+/// `POST /api/intent/{slug}/execute` → `{"ok": true, "message": "...", "log": [...]}`
+#[cfg(feature = "ssr")]
+async fn api_execute_intent(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+    slug: String,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let response = server_fns::execute_intent_for_api(&ws.root, &slug).await;
+    let status = if response.ok {
+        http::StatusCode::OK
+    } else {
+        http::StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&response).unwrap_or_else(|_| {
+            r#"{"ok":false,"message":"serialization failed","log":[]}"#.to_string()
+        }),
+    )
+        .into_response()
+}
+
+/// Builds the current workspace.
+///
+/// `POST /api/build` → `{"ok": true, "message": "...", "output_path": "..."}`
+#[cfg(feature = "ssr")]
+async fn api_build(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let response = server_fns::build_workspace_for_api(&ws.root).await;
+    let status = if response.ok {
+        http::StatusCode::OK
+    } else {
+        http::StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&response).unwrap_or_else(|_| {
+            r#"{"ok":false,"message":"serialization failed","output_path":null}"#.to_string()
+        }),
+    )
+        .into_response()
+}
+
+/// Runs the current workspace binary.
+///
+/// `POST /api/run` → `{"ok": true, "exit_code": 0, "stdout": "...", "stderr": ""}`
+#[cfg(feature = "ssr")]
+async fn api_run(
+    ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
+) -> axum::response::Response {
+    use axum::http;
+    use axum::response::IntoResponse;
+
+    let ws = ws.read().await;
+    let response = server_fns::run_workspace_for_api(&ws.root).await;
+    let status = if response.ok {
+        http::StatusCode::OK
+    } else {
+        http::StatusCode::BAD_REQUEST
+    };
+    (
+        status,
+        [(http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&response).unwrap_or_else(|_| {
+            r#"{"ok":false,"exit_code":-1,"stdout":"","stderr":"serialization failed"}"#.to_string()
+        }),
+    )
+        .into_response()
 }
 
 /// Returns configured providers as JSON.
