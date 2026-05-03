@@ -3333,7 +3333,7 @@ impl ReplApp {
                         Self::finish_markdown_row(&mut rows, &mut current);
                         style_state.heading = Some(level);
                     }
-                    Tag::BlockQuote => {
+                    Tag::BlockQuote(_) => {
                         Self::finish_markdown_row(&mut rows, &mut current);
                         style_state.quote_depth += 1;
                         Self::append_markdown_prefix(
@@ -3386,7 +3386,7 @@ impl ReplApp {
                             style_state.heading = None;
                         }
                     }
-                    TagEnd::BlockQuote => {
+                    TagEnd::BlockQuote(_) => {
                         Self::finish_markdown_row(&mut rows, &mut current);
                         style_state.quote_depth = style_state.quote_depth.saturating_sub(1);
                     }
