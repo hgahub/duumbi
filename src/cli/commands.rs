@@ -132,8 +132,9 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 
 /// Compiles all modules in a workspace (including declared dependencies) and links them.
 fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) -> Result<()> {
-    crate::workspace::build_workspace(workspace_root, output, offline).inspect_err(|_e| {
-        emit_error_suggestions(ErrorKind::Graph);
+    crate::workspace::build_workspace(workspace_root, output, offline).map_err(|e| {
+        emit_error_suggestions(error_kind_for_workspace_build(&e));
+        anyhow::Error::new(e)
     })?;
 
     eprintln!(
@@ -142,6 +143,14 @@ fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) 
         output.display()
     );
     Ok(())
+}
+
+fn error_kind_for_workspace_build(error: &crate::workspace::WorkspaceBuildError) -> ErrorKind {
+    match error.kind() {
+        crate::workspace::WorkspaceBuildErrorKind::Graph => ErrorKind::Graph,
+        crate::workspace::WorkspaceBuildErrorKind::Compilation => ErrorKind::Compilation,
+        crate::workspace::WorkspaceBuildErrorKind::Link => ErrorKind::Link,
+    }
 }
 
 /// Validates a graph file without compiling.
@@ -434,5 +443,20 @@ mod tests {
         emit_error_suggestions(ErrorKind::Graph);
         emit_error_suggestions(ErrorKind::Compilation);
         emit_error_suggestions(ErrorKind::Link);
+    }
+
+    #[test]
+    fn workspace_build_error_kind_maps_to_cli_suggestions() {
+        let error = crate::workspace::WorkspaceBuildError::BuildIo {
+            context: "write object".to_string(),
+            source: std::io::Error::other("disk full"),
+        };
+        assert_eq!(
+            error_kind_for_workspace_build(&error),
+            ErrorKind::Compilation
+        );
+
+        let error = crate::workspace::WorkspaceBuildError::Link(anyhow::anyhow!("cc failed"));
+        assert_eq!(error_kind_for_workspace_build(&error), ErrorKind::Link);
     }
 }

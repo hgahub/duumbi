@@ -1750,8 +1750,9 @@ fn handle_knowledge_slash(app: &mut ReplApp, arg: &str) {
                 let success_count = learning::success_count(&workspace);
                 app.push_output(
                     format!(
-                        "Knowledge: {} success, {} decision, {} pattern ({} total)",
+                        "Knowledge: {} success, {} failure, {} decision, {} pattern ({} total)",
                         stats.successes,
+                        stats.failures,
                         stats.decisions,
                         stats.patterns,
                         stats.total()

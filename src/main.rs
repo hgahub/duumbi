@@ -523,10 +523,13 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             let nodes = if let Some(type_filter) = r#type {
                 let node_type = match type_filter.as_str() {
                     "success" => knowledge::types::TYPE_SUCCESS,
+                    "failure" => knowledge::types::TYPE_FAILURE,
                     "decision" => knowledge::types::TYPE_DECISION,
                     "pattern" => knowledge::types::TYPE_PATTERN,
                     other => {
-                        anyhow::bail!("Unknown type '{other}'. Use: success, decision, pattern")
+                        anyhow::bail!(
+                            "Unknown type '{other}'. Use: success, failure, decision, pattern"
+                        )
                     }
                 };
                 store.query_by_type(node_type)
@@ -587,6 +590,7 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
             let success_count = learning::success_count(&workspace);
             eprintln!("Knowledge store:");
             eprintln!("  Success records:  {}", stats.successes);
+            eprintln!("  Failure records:  {}", stats.failures);
             eprintln!("  Decision records: {}", stats.decisions);
             eprintln!("  Pattern records:  {}", stats.patterns);
             eprintln!("  Total:            {}", stats.total());

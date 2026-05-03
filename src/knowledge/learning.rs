@@ -14,6 +14,8 @@ use crate::knowledge::types::{FailureRecord, SuccessRecord};
 
 #[cfg(test)]
 static TEST_USER_LEARNING_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+static DEFAULT_TEST_USER_LEARNING_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Returns the path to the successes JSONL file.
 fn successes_path(workspace: &Path) -> PathBuf {
@@ -40,7 +42,7 @@ pub fn user_learning_dir() -> PathBuf {
             .lock()
             .expect("invariant: test learning dir mutex not poisoned")
             .clone()
-            .unwrap_or_else(|| PathBuf::from("/tmp/duumbi-test-learning-disabled"));
+            .unwrap_or_else(default_test_user_learning_dir);
     }
 
     #[cfg(not(test))]
@@ -52,10 +54,25 @@ pub fn user_learning_dir() -> PathBuf {
 
 #[cfg(test)]
 #[allow(dead_code)]
-fn set_test_user_learning_dir(path: PathBuf) {
+pub(crate) fn set_test_user_learning_dir(path: PathBuf) {
     *TEST_USER_LEARNING_DIR
         .lock()
         .expect("invariant: test learning dir mutex not poisoned") = Some(path);
+}
+
+#[cfg(test)]
+fn default_test_user_learning_dir() -> PathBuf {
+    DEFAULT_TEST_USER_LEARNING_DIR
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            std::env::temp_dir().join(format!(
+                "duumbi-test-learning-{}-{unique}",
+                std::process::id()
+            ))
+        })
+        .clone()
 }
 
 /// Returns the user-local successes JSONL path.
@@ -387,6 +404,19 @@ mod tests {
             user_learning_dir_for_home(home),
             PathBuf::from("/tmp/example-home/.duumbi/learning")
         );
+    }
+
+    #[test]
+    fn default_test_user_learning_dir_is_unique_and_non_persistent() {
+        let dir = default_test_user_learning_dir();
+
+        assert!(dir.starts_with(std::env::temp_dir()));
+        assert!(
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("duumbi-test-learning-"))
+        );
+        assert_ne!(dir, PathBuf::from("/tmp/duumbi-test-learning-disabled"));
     }
 
     #[test]
