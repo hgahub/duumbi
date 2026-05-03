@@ -21,7 +21,9 @@ use crate::agents::analyzer::{Complexity, Risk, Scope, TaskProfile, TaskType};
 use crate::agents::model_catalog::ModelSelectionContext;
 use crate::agents::template::AgentRole;
 use crate::agents::{LlmClient, orchestrator};
-use crate::config::{DuumbiConfig, EffectiveConfig, ProviderConfigSource, ProviderRole};
+use crate::config::{
+    DuumbiConfig, EffectiveConfig, ProviderConfigSource, ProviderKind, ProviderRole,
+};
 use crate::intent;
 use crate::interaction::router;
 use crate::query::{ModeHandoff, QueryAnswer, QueryEngine, QueryRequest, split_thinking_blocks};
@@ -910,13 +912,20 @@ async fn handle_ai_request(
     // Collect streamed text into a local String. We cannot update the TUI
     // mid-stream, so we accumulate and push the result after completion.
     let workspace = app.workspace_root.clone();
+    let agent_policy = crate::config::load_effective_config(&workspace)
+        .map(|effective| {
+            let provider = ProviderKind::from_provider_name(client.name());
+            effective.config.effective_agent_policy(provider.as_ref())
+        })
+        .unwrap_or_default();
     let (outcome, streamed) = {
         let buf = std::sync::Mutex::new(String::new());
-        let res = orchestrator::mutate_streaming(
+        let res = orchestrator::mutate_streaming_with_timeout(
             client.as_ref(),
             &source,
             &prompt,
-            3,
+            agent_policy.mutation_retries,
+            agent_policy.mutation_timeout_secs,
             is_multi_module,
             |text| {
                 buf.lock()
@@ -1039,7 +1048,7 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
         // Treat as intent create.
         if app.client.is_none() {
             app.push_output(
-                "AI not available — add [llm] section to .duumbi/config.toml.",
+                "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
                 OutputStyle::Error,
             );
             return;
@@ -1084,7 +1093,7 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
             // Modify the focused intent via LLM.
             if app.client.is_none() {
                 app.push_output(
-                    "AI not available — add [[providers]] to .duumbi/config.toml.",
+                    "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
                     OutputStyle::Error,
                 );
                 return;
@@ -1176,7 +1185,7 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
             }
             if app.client.is_none() {
                 app.push_output(
-                    "AI not available — add [llm] section to .duumbi/config.toml.",
+                    "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
                     OutputStyle::Error,
                 );
                 return;
@@ -1296,7 +1305,7 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
 async fn handle_intent_execute(app: &mut ReplApp, slug: &str) {
     if app.client.is_none() {
         app.push_output(
-            "AI not available — add [llm] section to .duumbi/config.toml.",
+            "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
             OutputStyle::Error,
         );
         return;
@@ -1619,6 +1628,7 @@ fn handle_knowledge_slash(app: &mut ReplApp, arg: &str) {
                     for node in &all {
                         let ts = match node {
                             KnowledgeNode::Success(r) => r.timestamp,
+                            KnowledgeNode::Failure(r) => r.timestamp,
                             KnowledgeNode::Decision(r) => r.timestamp,
                             KnowledgeNode::Pattern(r) => r.timestamp,
                         };

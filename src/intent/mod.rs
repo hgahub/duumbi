@@ -20,6 +20,7 @@
 
 #![allow(dead_code)] // Progressively integrated as CLI commands are wired
 
+pub mod benchmarks;
 pub mod coordinator;
 pub mod create;
 pub mod execute;

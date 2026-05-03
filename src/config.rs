@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Default number of validation retries after the first provider mutation response.
+pub const DEFAULT_MUTATION_RETRIES: u32 = 5;
+/// Default number of repair retries after verifier failures.
+pub const DEFAULT_REPAIR_RETRIES: u32 = 2;
+/// Default timeout for one mutation task, in seconds.
+pub const DEFAULT_MUTATION_TIMEOUT_SECS: u64 = 600;
+
 /// Errors that can occur when loading or validating the config file.
 #[allow(dead_code)] // Used in Issue #29/#30 when provider implementations call load_config
 #[derive(Debug, Error)]
@@ -112,6 +119,21 @@ impl fmt::Display for ProviderKind {
             ProviderKind::Grok => f.write_str("grok"),
             ProviderKind::OpenRouter => f.write_str("openrouter"),
             ProviderKind::MiniMax => f.write_str("minimax"),
+        }
+    }
+}
+
+impl ProviderKind {
+    /// Parses a provider display name into a provider kind.
+    #[must_use]
+    pub fn from_provider_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "anthropic" => Some(Self::Anthropic),
+            "openai" => Some(Self::OpenAI),
+            "grok" => Some(Self::Grok),
+            "openrouter" => Some(Self::OpenRouter),
+            "minimax" => Some(Self::MiniMax),
+            _ => None,
         }
     }
 }
@@ -369,6 +391,83 @@ impl Default for CostSection {
     }
 }
 
+fn default_mutation_retries() -> u32 {
+    DEFAULT_MUTATION_RETRIES
+}
+
+fn default_repair_retries() -> u32 {
+    DEFAULT_REPAIR_RETRIES
+}
+
+fn default_mutation_timeout_secs() -> u64 {
+    DEFAULT_MUTATION_TIMEOUT_SECS
+}
+
+/// Runtime agent mutation policy after global and provider-specific config are resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedAgentPolicy {
+    /// Number of validation retries after the first provider mutation response.
+    pub mutation_retries: u32,
+    /// Number of repair retries after verifier failures.
+    pub repair_retries: u32,
+    /// Timeout for one mutation task, in seconds.
+    pub mutation_timeout_secs: u64,
+}
+
+impl Default for ResolvedAgentPolicy {
+    fn default() -> Self {
+        Self {
+            mutation_retries: DEFAULT_MUTATION_RETRIES,
+            repair_retries: DEFAULT_REPAIR_RETRIES,
+            mutation_timeout_secs: DEFAULT_MUTATION_TIMEOUT_SECS,
+        }
+    }
+}
+
+/// Optional provider-specific overrides for agent mutation policy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ProviderAgentPolicy {
+    /// Number of validation retries after the first provider mutation response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_retries: Option<u32>,
+    /// Number of repair retries after verifier failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_retries: Option<u32>,
+    /// Timeout for one mutation task, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_timeout_secs: Option<u64>,
+}
+
+/// Optional `[agent]` section controlling LLM mutation retries and timeouts.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AgentSection {
+    /// Number of validation retries after the first provider mutation response.
+    #[serde(default = "default_mutation_retries")]
+    pub mutation_retries: u32,
+    /// Number of repair retries after verifier failures.
+    #[serde(default = "default_repair_retries")]
+    pub repair_retries: u32,
+    /// Timeout for one mutation task, in seconds.
+    #[serde(default = "default_mutation_timeout_secs")]
+    pub mutation_timeout_secs: u64,
+    /// Provider-specific overrides keyed by provider name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub providers: HashMap<String, ProviderAgentPolicy>,
+}
+
+impl Default for AgentSection {
+    fn default() -> Self {
+        Self {
+            mutation_retries: DEFAULT_MUTATION_RETRIES,
+            repair_retries: DEFAULT_REPAIR_RETRIES,
+            mutation_timeout_secs: DEFAULT_MUTATION_TIMEOUT_SECS,
+            providers: HashMap::new(),
+        }
+    }
+}
+
 /// Optional `[vendor]` section in `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VendorSection {
@@ -456,6 +555,10 @@ pub struct DuumbiConfig {
     /// All sub-fields have safe defaults; omitting the `[cost]` section is valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostSection>,
+
+    /// Agent mutation retry/repair policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSection>,
 }
 
 impl DuumbiConfig {
@@ -490,6 +593,33 @@ impl DuumbiConfig {
         }
 
         Vec::new()
+    }
+
+    /// Returns the resolved agent policy for an optional provider.
+    #[must_use]
+    pub fn effective_agent_policy(&self, provider: Option<&ProviderKind>) -> ResolvedAgentPolicy {
+        let agent = self.agent.clone().unwrap_or_default();
+        let mut resolved = ResolvedAgentPolicy {
+            mutation_retries: agent.mutation_retries,
+            repair_retries: agent.repair_retries,
+            mutation_timeout_secs: agent.mutation_timeout_secs,
+        };
+
+        if let Some(provider) = provider
+            && let Some(override_policy) = agent.providers.get(&provider.to_string())
+        {
+            if let Some(value) = override_policy.mutation_retries {
+                resolved.mutation_retries = value;
+            }
+            if let Some(value) = override_policy.repair_retries {
+                resolved.repair_retries = value;
+            }
+            if let Some(value) = override_policy.mutation_timeout_secs {
+                resolved.mutation_timeout_secs = value;
+            }
+        }
+
+        resolved
     }
 }
 
@@ -637,6 +767,9 @@ fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     }
     if overlay.cost.is_some() {
         base.cost = overlay.cost.clone();
+    }
+    if overlay.agent.is_some() {
+        base.agent = overlay.agent.clone();
     }
 }
 
@@ -873,6 +1006,65 @@ output_dir = "build"
 
         let cfg = load_config(tmp.path()).expect("config without llm must parse");
         assert!(cfg.llm.is_none());
+    }
+
+    #[test]
+    fn agent_policy_defaults_when_section_omitted() {
+        let cfg = DuumbiConfig::default();
+        let policy = cfg.effective_agent_policy(None);
+
+        assert_eq!(policy.mutation_retries, DEFAULT_MUTATION_RETRIES);
+        assert_eq!(policy.repair_retries, DEFAULT_REPAIR_RETRIES);
+        assert_eq!(policy.mutation_timeout_secs, DEFAULT_MUTATION_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn agent_policy_parses_global_values() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[agent]
+mutation-retries = 7
+repair-retries = 3
+mutation-timeout-secs = 900
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let policy = cfg.effective_agent_policy(None);
+
+        assert_eq!(policy.mutation_retries, 7);
+        assert_eq!(policy.repair_retries, 3);
+        assert_eq!(policy.mutation_timeout_secs, 900);
+    }
+
+    #[test]
+    fn agent_policy_parses_minimax_provider_override() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[agent]
+mutation-retries = 5
+repair-retries = 2
+mutation-timeout-secs = 600
+
+[agent.providers.minimax]
+mutation-retries = 9
+repair-retries = 4
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let minimax = cfg.effective_agent_policy(Some(&ProviderKind::MiniMax));
+        let openai = cfg.effective_agent_policy(Some(&ProviderKind::OpenAI));
+
+        assert_eq!(minimax.mutation_retries, 9);
+        assert_eq!(minimax.repair_retries, 4);
+        assert_eq!(minimax.mutation_timeout_secs, 600);
+        assert_eq!(openai.mutation_retries, 5);
+        assert_eq!(openai.repair_retries, 2);
     }
 
     #[test]

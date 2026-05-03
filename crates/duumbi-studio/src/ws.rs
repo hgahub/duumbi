@@ -93,7 +93,7 @@ struct ClarifyFrame {
 pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceContext>>) {
     use duumbi::agents::factory::create_available_provider_chain_for_global_access_context;
     use duumbi::agents::orchestrator::{self, MutationOutcome};
-    use duumbi::config::load_effective_config;
+    use duumbi::config::{ProviderKind, load_effective_config};
     use duumbi::context;
     use duumbi::interaction::InteractionMode;
     use duumbi::query::{QueryEngine, QueryRequest};
@@ -253,6 +253,10 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
                     continue;
                 }
             };
+        let provider = ProviderKind::from_provider_name(client.name());
+        let agent_policy = effective_config
+            .config
+            .effective_agent_policy(provider.as_ref());
 
         // Stream mutation with text callback.
         // Bounded channel with backpressure (256 chunks buffer).
@@ -262,11 +266,12 @@ pub async fn handle_chat_ws(mut socket: WebSocket, ctx: Arc<RwLock<WorkspaceCont
         let enriched = enriched_message.clone();
         let client_clone = Arc::clone(&client);
         let mutation_handle = tokio::spawn(async move {
-            orchestrator::mutate_streaming(
+            orchestrator::mutate_streaming_with_timeout(
                 client_clone.as_ref(),
                 &source_clone,
                 &enriched,
-                3,
+                agent_policy.mutation_retries,
+                agent_policy.mutation_timeout_secs,
                 library_mode,
                 move |chunk| {
                     let _ = tx.try_send(chunk.to_string());

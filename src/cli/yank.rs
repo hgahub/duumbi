@@ -176,6 +176,7 @@ mod tests {
             dependencies: HashMap::new(),
             vendor: None,
             cost: None,
+            agent: None,
             mcp_clients: HashMap::new(),
         }
     }

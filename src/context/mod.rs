@@ -101,6 +101,7 @@ pub fn assemble_context(
         &estimator,
         500,
     );
+    let recent_failures = crate::knowledge::learning::query_combined_failures(workspace, 5);
 
     // Build the enriched message
     let mut parts = Vec::new();
@@ -135,6 +136,30 @@ pub fn assemble_context(
         parts.push(format!(
             "Similar successful mutations:\n{}",
             few_shot.join("\n---\n")
+        ));
+    }
+
+    if !recent_failures.is_empty() {
+        let failure_text = recent_failures
+            .iter()
+            .map(|failure| {
+                format!(
+                    "- {} | {} | module: {} | retries: {} | summary: {}",
+                    failure.task_type,
+                    failure.failure_category,
+                    if failure.module.is_empty() {
+                        "unknown"
+                    } else {
+                        &failure.module
+                    },
+                    failure.retry_count,
+                    failure.error_summary
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!(
+            "Recent failed mutation attempts to avoid repeating:\n{failure_text}"
         ));
     }
 

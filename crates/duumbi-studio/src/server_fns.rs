@@ -537,21 +537,7 @@ pub async fn get_workspace_status() -> Result<WorkspaceStatus, ServerFnError> {
         .unwrap_or_else(|| "workspace".to_string());
 
     let mut modules = Vec::new();
-
-    if ws.root.join(".duumbi/graph/main.jsonld").exists() {
-        modules.push("app/main".to_string());
-    }
-
-    let stdlib_dir = ws.root.join(".duumbi/stdlib");
-    if stdlib_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&stdlib_dir)
-    {
-        for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
-            }
-        }
-    }
+    modules.extend(discover_workspace_modules(&ws.root));
 
     let module_count = modules.len();
     Ok(WorkspaceStatus {
@@ -567,18 +553,11 @@ pub async fn trigger_build() -> Result<String, ServerFnError> {
     let ws = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ws.read().await;
 
-    let output = tokio::process::Command::new("cargo")
-        .args(["run", "--", "build"])
-        .current_dir(&ws.root)
-        .output()
-        .await
-        .map_err(|e| ServerFnError::new(format!("Failed to run build: {e}")))?;
-
-    if output.status.success() {
-        Ok("Build successful".to_string())
+    let response = build_workspace_for_api(&ws.root).await;
+    if response.ok {
+        Ok(response.message)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(ServerFnError::new(format!("Build failed: {stderr}")))
+        Err(ServerFnError::new(response.message))
     }
 }
 
@@ -759,21 +738,7 @@ pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
         }
     };
 
-    // Collect module list
-    let mut modules = Vec::new();
-    if workspace.join(".duumbi/graph/main.jsonld").exists() {
-        modules.push("app/main".to_string());
-    }
-    let stdlib_dir = workspace.join(".duumbi/stdlib");
-    if stdlib_dir.exists()
-        && let Ok(entries) = fs::read_dir(&stdlib_dir)
-    {
-        for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
-            }
-        }
-    }
+    let modules = discover_workspace_modules(workspace);
 
     // Collect intents
     let mut intents = Vec::new();
@@ -809,6 +774,53 @@ pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
         intents,
         modules,
     }
+}
+
+/// Discovers graph modules in `.duumbi/graph/**/*.jsonld`.
+#[cfg(feature = "ssr")]
+pub fn discover_workspace_modules(workspace: &std::path::Path) -> Vec<String> {
+    fn visit(dir: &std::path::Path, root: &std::path::Path, modules: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                visit(&path, root, modules);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonld") {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let mut module = rel.with_extension("").to_string_lossy().replace('\\', "/");
+            if module == "main" {
+                module = "app/main".to_string();
+            }
+            modules.push(module);
+        }
+    }
+
+    let graph_root = workspace.join(".duumbi/graph");
+    let mut modules = Vec::new();
+    visit(&graph_root, &graph_root, &mut modules);
+
+    let stdlib_dir = workspace.join(".duumbi/stdlib");
+    if stdlib_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&stdlib_dir)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                modules.push(format!("stdlib/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+    }
+
+    modules.sort();
+    modules.dedup();
+    modules
 }
 
 /// Computes the set of function names reachable from `main()` via Call ops (BFS).
@@ -1068,25 +1080,14 @@ pub async fn trigger_run() -> Result<String, ServerFnError> {
     let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ctx.read().await;
 
-    let output_path = ws.root.join(".duumbi").join("build").join("output");
-    if !output_path.exists() {
-        return Err(ServerFnError::new(
-            "No binary found. Build first.".to_string(),
-        ));
+    let response = run_workspace_for_api(&ws.root).await;
+    if !response.ok && response.exit_code == -1 {
+        return Err(ServerFnError::new(response.stderr));
     }
 
-    let output = tokio::process::Command::new(&output_path)
-        .current_dir(&ws.root)
-        .output()
-        .await
-        .map_err(|e| ServerFnError::new(format!("Run failed: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let exit = output.status.code().unwrap_or(-1);
-
     Ok(format!(
-        "Exit code: {exit}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        "Exit code: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        response.exit_code, response.stdout, response.stderr
     ))
 }
 
@@ -1096,24 +1097,11 @@ pub async fn execute_intent(slug: String) -> Result<String, ServerFnError> {
     let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ctx.read().await;
 
-    let config = duumbi::config::load_config(&ws.root)
-        .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
-
-    let providers = config.effective_providers();
-    let client = duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
-        .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
-
-    let mut log = Vec::new();
-    let success = duumbi::intent::execute::run_execute(&*client, &ws.root, &slug, &mut log)
-        .await
-        .map_err(|e| ServerFnError::new(format!("Execute: {e}")))?;
-
-    if success {
-        Ok(format!(
-            "Intent '{slug}' executed successfully — all tests passed."
-        ))
+    let response = execute_intent_for_api(&ws.root, &slug).await;
+    if response.ok {
+        Ok(response.message)
     } else {
-        Ok(format!("Intent '{slug}' executed — some tests failed."))
+        Err(ServerFnError::new(response.message))
     }
 }
 
@@ -1125,25 +1113,24 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
     let ctx = expect_context::<std::sync::Arc<tokio::sync::RwLock<WorkspaceContext>>>();
     let ws = ctx.read().await;
 
-    let config = duumbi::config::load_config(&ws.root)
+    let effective = duumbi::config::load_effective_config(&ws.root)
         .map_err(|e| ServerFnError::new(format!("Config: {e}")))?;
 
-    let providers = config.effective_providers();
+    let providers = effective.config.effective_providers();
     let client = duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
         .map_err(|e| ServerFnError::new(format!("Provider: {e}")))?;
 
     // Studio always auto-confirms (no interactive prompt).
-    let mut log = Vec::new();
-    let slug = duumbi::intent::create::run_create(&*client, &ws.root, &description, true, &mut log)
+    let result = duumbi::workflow::create_intent(&*client, &ws.root, &description, true)
         .await
         .map_err(|e| ServerFnError::new(format!("Create: {e}")))?;
 
     // Reload the saved intent to get its status
-    let spec = duumbi::intent::load_intent(&ws.root, &slug)
+    let spec = duumbi::intent::load_intent(&ws.root, &result.slug)
         .map_err(|e| ServerFnError::new(format!("Load: {e}")))?;
 
     Ok(IntentSummary {
-        slug,
+        slug: result.slug,
         description: spec.intent,
         status: format!("{:?}", spec.status),
     })
@@ -1162,6 +1149,127 @@ pub struct AgentTemplateInfo {
     pub specialization: Vec<String>,
     /// System prompt preview (first 200 chars).
     pub prompt_preview: String,
+}
+
+/// JSON response for Studio build endpoints.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BuildApiResponse {
+    /// Whether the build completed successfully.
+    pub ok: bool,
+    /// Human-readable status message.
+    pub message: String,
+    /// Output binary path when the build succeeded.
+    pub output_path: Option<String>,
+}
+
+/// JSON response for Studio run endpoints.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunApiResponse {
+    /// Whether the binary executed with exit code 0.
+    pub ok: bool,
+    /// Process exit code, or -1 when unavailable.
+    pub exit_code: i32,
+    /// Captured stdout.
+    pub stdout: String,
+    /// Captured stderr.
+    pub stderr: String,
+}
+
+/// JSON response for Studio intent execution endpoints.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IntentExecuteApiResponse {
+    /// Whether intent execution completed successfully.
+    pub ok: bool,
+    /// Human-readable status message.
+    pub message: String,
+    /// Execution log emitted by the intent pipeline.
+    pub log: Vec<String>,
+}
+
+/// Builds the current workspace for JSON API callers.
+#[cfg(feature = "ssr")]
+pub async fn build_workspace_for_api(workspace: &std::path::Path) -> BuildApiResponse {
+    let root = workspace.to_path_buf();
+    match tokio::task::spawn_blocking(move || duumbi::workflow::build_workspace(&root)).await {
+        Ok(result) => BuildApiResponse {
+            ok: result.ok,
+            message: result.message,
+            output_path: result.output_path,
+        },
+        Err(e) => BuildApiResponse {
+            ok: false,
+            message: format!("Build task failed: {e}"),
+            output_path: None,
+        },
+    }
+}
+
+/// Runs the current workspace binary for JSON API callers.
+#[cfg(feature = "ssr")]
+pub async fn run_workspace_for_api(workspace: &std::path::Path) -> RunApiResponse {
+    let root = workspace.to_path_buf();
+    match tokio::task::spawn_blocking(move || duumbi::workflow::run_workspace(&root)).await {
+        Ok(result) => RunApiResponse {
+            ok: result.ok,
+            exit_code: result.exit_code,
+            stdout: result.stdout,
+            stderr: result.stderr,
+        },
+        Err(e) => RunApiResponse {
+            ok: false,
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: format!("Run task failed: {e}"),
+        },
+    }
+}
+
+/// Executes an intent for JSON API callers.
+#[cfg(feature = "ssr")]
+pub async fn execute_intent_for_api(
+    workspace: &std::path::Path,
+    slug: &str,
+) -> IntentExecuteApiResponse {
+    let effective = match duumbi::config::load_effective_config(workspace) {
+        Ok(config) => config,
+        Err(e) => {
+            return IntentExecuteApiResponse {
+                ok: false,
+                message: format!("Config: {e}"),
+                log: Vec::new(),
+            };
+        }
+    };
+
+    let providers = effective.config.effective_providers();
+    let client = match duumbi::agents::factory::create_provider_chain_for_global_access(&providers)
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return IntentExecuteApiResponse {
+                ok: false,
+                message: format!("Provider: {e}"),
+                log: Vec::new(),
+            };
+        }
+    };
+
+    match duumbi::workflow::execute_intent(&*client, workspace, slug).await {
+        Ok(result) => IntentExecuteApiResponse {
+            ok: result.ok,
+            message: if result.ok {
+                format!("Intent '{slug}' executed successfully — all tests passed.")
+            } else {
+                format!("Intent '{slug}' executed — some tests failed.")
+            },
+            log: result.log,
+        },
+        Err(e) => IntentExecuteApiResponse {
+            ok: false,
+            message: format!("Execute: {e}"),
+            log: Vec::new(),
+        },
+    }
 }
 
 /// Builds the agent template info list (shared by server fn and JSON API route).

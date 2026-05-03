@@ -268,6 +268,12 @@ fn format_knowledge_node(node: &KnowledgeNode) -> String {
         KnowledgeNode::Success(record) => {
             format!("- success: {} ({})", record.request, record.task_type)
         }
+        KnowledgeNode::Failure(record) => {
+            format!(
+                "- failure: {} ({}, {})",
+                record.request, record.task_type, record.failure_category
+            )
+        }
         KnowledgeNode::Decision(record) => format!("- decision: {}", record.decision),
         KnowledgeNode::Pattern(record) => {
             format!("- pattern: {} - {}", record.name, record.description)
@@ -278,6 +284,7 @@ fn format_knowledge_node(node: &KnowledgeNode) -> String {
 fn node_type(node: &KnowledgeNode) -> &'static str {
     match node {
         KnowledgeNode::Success(_) => "success",
+        KnowledgeNode::Failure(_) => "failure",
         KnowledgeNode::Decision(_) => "decision",
         KnowledgeNode::Pattern(_) => "pattern",
     }

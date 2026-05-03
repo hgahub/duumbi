@@ -132,57 +132,9 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 
 /// Compiles all modules in a workspace (including declared dependencies) and links them.
 fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) -> Result<()> {
-    let program = deps::load_program_with_deps_opts(workspace_root, offline).map_err(|e| {
-        emit_program_error_diagnostics(&e);
+    crate::workspace::build_workspace(workspace_root, output, offline).inspect_err(|_e| {
         emit_error_suggestions(ErrorKind::Graph);
-        anyhow::anyhow!("Graph construction failed: {e}")
     })?;
-
-    let objects = lowering::compile_program(&program)
-        .map_err(|e| {
-            emit_error_suggestions(ErrorKind::Compilation);
-            anyhow::Error::new(e)
-        })
-        .context("Cranelift compilation failed")?;
-
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let tmp_dir =
-        std::env::temp_dir().join(format!("duumbi_build_{}_{}", std::process::id(), unique_id));
-    fs::create_dir_all(&tmp_dir).context("Failed to create temp build directory")?;
-
-    let mut module_names: Vec<&String> = objects.keys().collect();
-    module_names.sort();
-
-    let mut object_paths = Vec::with_capacity(module_names.len());
-    for module_name in module_names {
-        let obj_bytes = objects
-            .get(module_name)
-            .ok_or_else(|| anyhow::anyhow!("Missing object bytes for module '{module_name}'"))?;
-        let obj_path = tmp_dir.join(format!("{module_name}.o"));
-        if let Some(parent) = obj_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create dir for '{}'", obj_path.display()))?;
-        }
-        fs::write(&obj_path, obj_bytes)
-            .with_context(|| format!("Failed to write object file '{}'", obj_path.display()))?;
-        object_paths.push(obj_path);
-    }
-
-    let runtime_c = find_runtime_c()?;
-    let runtime_o = tmp_dir.join("duumbi_runtime.o");
-    linker::compile_runtime(&runtime_c, &runtime_o).context("Failed to compile C runtime")?;
-
-    let object_path_refs: Vec<&Path> = object_paths.iter().map(|p| p.as_path()).collect();
-    linker::link_multi(&object_path_refs, &runtime_o, output)
-        .map_err(|e| {
-            emit_error_suggestions(ErrorKind::Link);
-            anyhow::Error::new(e)
-        })
-        .context("Failed to link binary")?;
-
-    let _ = fs::remove_dir_all(&tmp_dir);
 
     eprintln!(
         "{} Build successful: {}",

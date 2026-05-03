@@ -113,25 +113,23 @@ pub fn App() -> impl IntoView {
                             }).collect_view()}
                         </div>
                     </div>
-                    // Plans page (placeholder)
-                    <div class="sb-page" id="page-plans">
-                        <div class="sidebar-section"><div class="section-label">"Plans"</div>
-                        <div style="padding:12px 8px;color:#4a4845;font-size:11px;font-family:'JetBrains Mono',monospace;text-align:center">"— coming soon —"</div></div>
+                    // Graph page
+                    <div class="sb-page" id="page-graph">
+                        <div class="sidebar-section">
+                            <div class="section-label">"Graph"</div>
+                            <div class="tree-child" onclick="window.__studio.selectC4('context')"><span class="child-dot" style="background:#6fd8b2"></span>"Context"<span class="tree-badge tb-fn" style="margin-left:auto">"C4"</span></div>
+                            <div class="tree-child" onclick="window.__studio.selectC4('container')"><span class="child-dot" style="background:#9ac4ef"></span>"Container"<span class="tree-badge tb-mod" style="margin-left:auto">"C4"</span></div>
+                            <div class="tree-child" onclick="window.__studio.selectC4('component')"><span class="child-dot" style="background:#e07830"></span>"Component"<span class="tree-badge" style="margin-left:auto;background:#352618;color:#e07830">"C4"</span></div>
+                            <div class="tree-child" onclick="window.__studio.selectC4('code')"><span class="child-dot" style="background:#c25a1a"></span>"Code"<span class="tree-badge" style="margin-left:auto;background:#351a1a;color:#f09090">"C4"</span></div>
+                        </div>
                     </div>
-                    // Build page (placeholder)
+                    // Build page
                     <div class="sb-page" id="page-build">
-                        <div class="sidebar-section"><div class="section-label">"Build"</div>
-                        <div style="padding:12px 8px;color:#4a4845;font-size:11px;font-family:'JetBrains Mono',monospace;text-align:center">"— coming soon —"</div></div>
-                    </div>
-                    // Agents page (placeholder)
-                    <div class="sb-page" id="page-agents">
-                        <div class="sidebar-section"><div class="section-label">"Agents"</div>
-                        <div style="padding:12px 8px;color:#4a4845;font-size:11px;font-family:'JetBrains Mono',monospace;text-align:center">"— coming soon —"</div></div>
-                    </div>
-                    // Registry page (placeholder)
-                    <div class="sb-page" id="page-registry">
-                        <div class="sidebar-section"><div class="section-label">"Registry"</div>
-                        <div style="padding:12px 8px;color:#4a4845;font-size:11px;font-family:'JetBrains Mono',monospace;text-align:center">"— coming soon —"</div></div>
+                        <div class="sidebar-section">
+                            <div class="section-label">"Build"</div>
+                            <div class="tree-child" onclick="window.__studio.runBuild()"><span class="child-dot" style="background:#6fd8b2"></span>"Build"<span class="tree-badge tb-fn" style="margin-left:auto">"POST"</span></div>
+                            <div class="tree-child" onclick="window.__studio.runBinary()"><span class="child-dot" style="background:#9ac4ef"></span>"Run"<span class="tree-badge tb-mod" style="margin-left:auto">"POST"</span></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -154,7 +152,7 @@ pub fn App() -> impl IntoView {
                     <div class="md-content" id="mdContent">
                         <h1>"Welcome to DUUMBI Studio"</h1>
                         <p>"Select an intent from the sidebar or create a new one to get started."</p>
-                        <p>"Use the footer navigation to switch between Intents, Plans, Build, Agents, and Registry views."</p>
+                        <p>"Use the footer navigation to switch between Intents, Graph, and Build."</p>
                     </div>
                 </div>
 
@@ -203,21 +201,13 @@ pub fn App() -> impl IntoView {
                     <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.5"/><line x1="8" y1="2" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14"/><line x1="2" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14" y2="8"/></svg>
                     <span class="footer-label">"Intents"</span>
                 </div>
-                <div class="footer-item" data-fn="plans" onclick="window.__studio.toggleFunction('plans')">
-                    <svg viewBox="0 0 16 16"><rect x="3" y="2" width="10" height="12" rx="1.5"/><line x1="6" y1="5.5" x2="11" y2="5.5"/><line x1="6" y1="8" x2="11" y2="8"/><line x1="6" y1="10.5" x2="9" y2="10.5"/></svg>
-                    <span class="footer-label">"Plans"</span>
+                <div class="footer-item" data-fn="graph" onclick="window.__studio.toggleFunction('graph')">
+                    <svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="5.5" y="9" width="5" height="5" rx="1"/><line x1="4.5" y1="7" x2="8" y2="9"/><line x1="11.5" y1="7" x2="8" y2="9"/></svg>
+                    <span class="footer-label">"Graph"</span>
                 </div>
                 <div class="footer-item" data-fn="build" onclick="window.__studio.toggleFunction('build')">
                     <svg viewBox="0 0 16 16"><polygon points="5,2 13,8 5,14"/></svg>
                     <span class="footer-label">"Build"</span>
-                </div>
-                <div class="footer-item" data-fn="agents" onclick="window.__studio.toggleFunction('agents')">
-                    <svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/><circle cx="12.5" cy="3.5" r="1.5"/><line x1="12.5" y1="5" x2="12.5" y2="7"/><line x1="11" y1="6" x2="14" y2="6"/></svg>
-                    <span class="footer-label">"Agents"</span>
-                </div>
-                <div class="footer-item" data-fn="registry" onclick="window.__studio.toggleFunction('registry')">
-                    <svg viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="2" y1="10" x2="14" y2="10"/><line x1="6" y1="6" x2="6" y2="14"/></svg>
-                    <span class="footer-label">"Registry"</span>
                 </div>
             </div>
         </div>

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use crate::knowledge::KnowledgeError;
 use crate::knowledge::types::{
-    DecisionRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION, TYPE_PATTERN,
-    TYPE_SUCCESS,
+    DecisionRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION, TYPE_FAILURE,
+    TYPE_PATTERN, TYPE_SUCCESS,
 };
 
 /// File-based knowledge store rooted at `.duumbi/knowledge/`.
@@ -32,6 +32,8 @@ impl KnowledgeStore {
         let root = workspace.join(".duumbi").join("knowledge");
         fs::create_dir_all(root.join("success"))
             .map_err(|e| KnowledgeError::Io(format!("creating knowledge/success dir: {e}")))?;
+        fs::create_dir_all(root.join("failure"))
+            .map_err(|e| KnowledgeError::Io(format!("creating knowledge/failure dir: {e}")))?;
         fs::create_dir_all(root.join("decision"))
             .map_err(|e| KnowledgeError::Io(format!("creating knowledge/decision dir: {e}")))?;
         fs::create_dir_all(root.join("pattern"))
@@ -68,7 +70,7 @@ impl KnowledgeStore {
     #[must_use]
     pub fn load_all(&self) -> Vec<KnowledgeNode> {
         let mut nodes = Vec::new();
-        for subdir in &["success", "decision", "pattern"] {
+        for subdir in &["success", "failure", "decision", "pattern"] {
             let dir = self.root.join(subdir);
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -90,6 +92,7 @@ impl KnowledgeStore {
     pub fn query_by_type(&self, node_type: &str) -> Vec<KnowledgeNode> {
         let subdir = match node_type {
             TYPE_SUCCESS => "success",
+            TYPE_FAILURE => "failure",
             TYPE_DECISION => "decision",
             TYPE_PATTERN => "pattern",
             _ => return Vec::new(),
@@ -118,7 +121,7 @@ impl KnowledgeStore {
             .filter(|node| match node {
                 KnowledgeNode::Decision(d) => d.tags.iter().any(|t| t == tag),
                 KnowledgeNode::Pattern(p) => p.tags.iter().any(|t| t == tag),
-                KnowledgeNode::Success(_) => false,
+                KnowledgeNode::Success(_) | KnowledgeNode::Failure(_) => false,
             })
             .collect()
     }
@@ -197,6 +200,7 @@ fn count_json_files(dir: &Path) -> usize {
 fn node_path_parts(node: &KnowledgeNode) -> (&'static str, String) {
     let (subdir, id) = match node {
         KnowledgeNode::Success(r) => ("success", &r.id),
+        KnowledgeNode::Failure(r) => ("failure", &r.id),
         KnowledgeNode::Decision(r) => ("decision", &r.id),
         KnowledgeNode::Pattern(r) => ("pattern", &r.id),
     };

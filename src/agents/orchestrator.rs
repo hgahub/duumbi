@@ -10,7 +10,7 @@
 //!
 //! - **Retry 1:** Structured error feedback (error code + nodeId + fix hint)
 //! - **Retry 2:** Same as above + a relevant few-shot example
-//! - **Retry 3:** Same as above + a simplified instruction to use `replace_block`
+//! - **Later retries:** Same as above + simplified instructions to use `replace_block`
 //!
 //! Each retry sends the full original user message plus the escalating context,
 //! always working from the original `source` graph (not a partially-patched one).
@@ -20,6 +20,11 @@ use anyhow::{Context, Result};
 use crate::agents::LlmProvider;
 use crate::errors::Diagnostic;
 use crate::patch::{GraphPatch, apply_patch};
+
+/// Default number of validation retries after the first LLM mutation attempt.
+///
+/// The total number of provider calls can be one higher than this value.
+pub const DEFAULT_MUTATION_RETRIES: u32 = crate::config::DEFAULT_MUTATION_RETRIES;
 
 /// System prompt sent to the LLM with every mutation request.
 ///
@@ -451,6 +456,34 @@ pub async fn mutate_streaming(
             }
             unreachable!("retry loop must return or bail before this point");
         }
+    }
+}
+
+/// Runs [`mutate_streaming`] with an outer timeout.
+pub async fn mutate_streaming_with_timeout(
+    client: &dyn LlmProvider,
+    source: &serde_json::Value,
+    user_request: &str,
+    max_retries: u32,
+    timeout_secs: u64,
+    library_mode: bool,
+    on_text: impl Fn(&str) + Send + Sync,
+) -> Result<MutationOutcome> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        mutate_streaming(
+            client,
+            source,
+            user_request,
+            max_retries,
+            library_mode,
+            on_text,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(crate::agents::AgentError::Timeout(timeout_secs)),
     }
 }
 
