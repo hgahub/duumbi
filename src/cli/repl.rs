@@ -6,6 +6,7 @@
 //! the async command dispatch.
 
 use std::fs;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -36,6 +37,8 @@ use super::mode::{OutputStyle, ReplMode};
 
 const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+const NO_INTENT_SELECTED_MESSAGE: &str =
+    "No intent selected. Describe the new intent you want to create.";
 
 struct PendingProviderProbe {
     provider: crate::config::ProviderKind,
@@ -326,7 +329,7 @@ async fn process_input(
                 false
             }
             ReplMode::Intent => {
-                handle_intent_input(app, input).await;
+                handle_intent_input(terminal, app, textarea, input).await;
                 if show_elapsed {
                     app.finish_current_output_elapsed(started.elapsed());
                 }
@@ -367,11 +370,17 @@ async fn handle_slash(
 
     match cmd {
         "/build" => {
-            run_with_terminal_restore(terminal, app, textarea, || {
-                commands::build(&graph_path, &output_path).unwrap_or_else(|e| {
-                    eprintln!("Build failed: {e:#}");
-                });
-            });
+            let result = crate::workflow::build_workspace(&app.workspace_root);
+            let output = if result.ok {
+                format!(
+                    "{}\nOutput: {}",
+                    result.message,
+                    result.output_path.as_deref().unwrap_or("<unknown>")
+                )
+            } else {
+                result.message
+            };
+            app.push_collapsible_output("Build output", output, OutputStyle::Normal, true);
         }
 
         "/run" => {
@@ -464,7 +473,7 @@ async fn handle_slash(
         }
 
         "/intent" => {
-            handle_intent_slash(app, arg).await;
+            handle_intent_slash(terminal, app, textarea, arg).await;
         }
 
         "/mode" => {
@@ -742,10 +751,6 @@ async fn handle_query_input(
     let mut request = QueryRequest::new(&app.workspace_root, input);
     request.session_turns = session_turns;
 
-    let pending_label = format!("Reviewer agent ({}) is answering", client.model_label());
-    app.push_output(pending_status_text(&pending_label, 0), OutputStyle::Dim);
-    let _ = terminal.draw(|frame| app.render(frame, textarea));
-
     let streamed = std::sync::Mutex::new(String::new());
     let engine = QueryEngine::new();
     let on_text = |text: &str| {
@@ -754,24 +759,9 @@ async fn handle_query_input(
             .expect("invariant: query stream mutex not poisoned")
             .push_str(text);
     };
-    let result = {
-        let query = engine.answer_streaming(client.as_ref(), request, &on_text);
-        tokio::pin!(query);
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(280));
-        let mut frame = 1usize;
-        loop {
-            tokio::select! {
-                result = &mut query => break result,
-                _ = tick.tick() => {
-                    app.replace_last_output_line(pending_status_text(&pending_label, frame), OutputStyle::Dim);
-                    let _ = terminal.draw(|frame| app.render(frame, textarea));
-                    frame = frame.wrapping_add(1);
-                }
-            }
-        }
-    };
-    app.pop_last_output_line();
-    let _ = terminal.draw(|frame| app.render(frame, textarea));
+    let pending_label = pending_agent_label(AgentRole::Reviewer, &client, "is answering");
+    let query = engine.answer_streaming(client.as_ref(), request, &on_text);
+    let result = run_with_pending_status(terminal, app, textarea, &pending_label, query).await;
 
     match result {
         Ok(answer) => {
@@ -801,6 +791,66 @@ async fn handle_query_input(
 fn pending_status_text(label: &str, frame: usize) -> String {
     let dots = ".".repeat(frame % 4);
     format!("{label}{dots}")
+}
+
+async fn run_with_pending_status<T, F>(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    pending_label: &str,
+    operation: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    let was_working = app.working;
+    app.working = true;
+    app.push_output(pending_status_text(pending_label, 0), OutputStyle::Dim);
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+
+    tokio::pin!(operation);
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(280));
+    let mut frame = 1usize;
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            _ = tick.tick() => {
+                app.replace_last_output_line(
+                    pending_status_text(pending_label, frame),
+                    OutputStyle::Dim,
+                );
+                let _ = terminal.draw(|frame| app.render(frame, textarea));
+                frame = frame.wrapping_add(1);
+            }
+        }
+    };
+
+    app.pop_last_output_line();
+    app.working = was_working;
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+    result
+}
+
+fn pending_agent_label(
+    role: AgentRole,
+    client: &dyn crate::agents::LlmProvider,
+    action: &str,
+) -> String {
+    format!(
+        "{} agent ({}) {action}",
+        agent_role_label(role),
+        client.model_label()
+    )
+}
+
+fn agent_role_label(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Planner => "Planner",
+        AgentRole::Coder => "Coder",
+        AgentRole::Reviewer => "Reviewer",
+        AgentRole::Tester => "Tester",
+        AgentRole::Repair => "Repair",
+    }
 }
 
 fn push_query_answer(app: &mut ReplApp, answer: &QueryAnswer, text: &str) {
@@ -1042,31 +1092,38 @@ async fn handle_ai_request(
 ///   and forwarded to [`intent::create::run_create`].
 /// - If the input is "execute" or "run", delegates to intent execute.
 /// - Otherwise, modifies the focused intent via LLM based on the input.
-async fn handle_intent_input(app: &mut ReplApp, input: &str) {
+async fn handle_intent_input(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    input: &str,
+) {
     let trimmed = input.trim();
     if app.focused_intent.is_none() {
+        if is_intent_execute_alias(trimmed) {
+            push_no_intent_selected(app);
+            return;
+        }
+
         // Treat as intent create.
-        if app.client.is_none() {
+        let context = intent_create_model_context(trimmed);
+        let Some(client) = select_client_for_context(app, &context) else {
             app.push_output(
                 "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
                 OutputStyle::Error,
             );
             return;
-        }
-        let workspace = app.workspace_root.clone();
-        let (result, log) = {
-            let client_ref: &dyn crate::agents::LlmProvider = app
-                .client
-                .as_ref()
-                .map(|c| c.as_ref())
-                .expect("invariant: checked above");
-            let mut log = Vec::new();
-            let r =
-                // REPL always auto-confirms — interactive stdin is not available
-                // in ratatui raw mode.
-                intent::create::run_create(client_ref, &workspace, trimmed, true, &mut log).await;
-            (r, log)
         };
+        let workspace = app.workspace_root.clone();
+        let mut log = Vec::new();
+        let pending_label =
+            pending_agent_label(AgentRole::Planner, client.as_ref(), "is creating an intent");
+        let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+            // REPL always auto-confirms — interactive stdin is not available
+            // in ratatui raw mode.
+            intent::create::run_create(client.as_ref(), &workspace, trimmed, true, &mut log).await
+        })
+        .await;
         for line in &log {
             app.push_output(line, OutputStyle::Dim);
         }
@@ -1082,22 +1139,15 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
     }
 
     match trimmed {
-        "execute" | "run" => {
+        value if is_intent_execute_alias(value) => {
             let slug = app
                 .focused_intent
                 .clone()
                 .expect("invariant: focused_intent checked above");
-            handle_intent_execute(app, &slug).await;
+            handle_intent_execute(terminal, app, textarea, &slug).await;
         }
         _ => {
             // Modify the focused intent via LLM.
-            if app.client.is_none() {
-                app.push_output(
-                    "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
-                    OutputStyle::Error,
-                );
-                return;
-            }
             let slug = app
                 .focused_intent
                 .clone()
@@ -1114,14 +1164,21 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
 
             app.push_output(format!("Modifying intent '{slug}'…"), OutputStyle::Dim);
 
-            let result = {
-                let client_ref: &dyn crate::agents::LlmProvider = app
-                    .client
-                    .as_ref()
-                    .map(|c| c.as_ref())
-                    .expect("invariant: checked above");
-                intent::modify::modify_intent_with_llm(client_ref, &spec, trimmed).await
+            let context = intent_modify_model_context(&spec, trimmed);
+            let agent_role = context.agent_role.unwrap_or(AgentRole::Coder);
+            let Some(client) = select_client_for_context(app, &context) else {
+                app.push_output(
+                    "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
+                    OutputStyle::Error,
+                );
+                return;
             };
+            let pending_label =
+                pending_agent_label(agent_role, client.as_ref(), "is modifying the intent");
+            let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+                intent::modify::modify_intent_with_llm(client.as_ref(), &spec, trimmed).await
+            })
+            .await;
 
             match result {
                 Ok(modified) => {
@@ -1158,7 +1215,12 @@ async fn handle_intent_input(app: &mut ReplApp, input: &str) {
 ///
 /// Supported subcommands: `list`, `create`, `review`, `execute`, `status`,
 /// `focus`, `unfocus`.
-async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
+async fn handle_intent_slash(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    arg: &str,
+) {
     let mut parts = arg.splitn(2, ' ');
     let subcmd = parts.next().unwrap_or("").trim();
     let rest = parts.next().unwrap_or("").trim();
@@ -1183,26 +1245,23 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
                 app.push_output("Usage: /intent create <description>", OutputStyle::Dim);
                 return;
             }
-            if app.client.is_none() {
+            let context = intent_create_model_context(rest);
+            let Some(client) = select_client_for_context(app, &context) else {
                 app.push_output(
                     "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
                     OutputStyle::Error,
                 );
                 return;
-            }
-            let workspace = app.workspace_root.clone();
-            let (result, log) = {
-                let client_ref: &dyn crate::agents::LlmProvider = app
-                    .client
-                    .as_ref()
-                    .map(|c| c.as_ref())
-                    .expect("invariant: checked above");
-                let mut log = Vec::new();
-                let r =
-                    // REPL always auto-confirms (no interactive stdin in ratatui).
-                    intent::create::run_create(client_ref, &workspace, rest, true, &mut log).await;
-                (r, log)
             };
+            let workspace = app.workspace_root.clone();
+            let mut log = Vec::new();
+            let pending_label =
+                pending_agent_label(AgentRole::Planner, client.as_ref(), "is creating an intent");
+            let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+                // REPL always auto-confirms (no interactive stdin in ratatui).
+                intent::create::run_create(client.as_ref(), &workspace, rest, true, &mut log).await
+            })
+            .await;
             for line in &log {
                 app.push_output(line, OutputStyle::Dim);
             }
@@ -1243,7 +1302,7 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
                 app.push_output("Usage: /intent execute <name>", OutputStyle::Dim);
                 return;
             }
-            handle_intent_execute(app, rest).await;
+            handle_intent_execute(terminal, app, textarea, rest).await;
         }
 
         "status" => {
@@ -1302,45 +1361,83 @@ async fn handle_intent_slash(app: &mut ReplApp, arg: &str) {
 }
 
 /// Executes an intent by slug and pushes the result into the output buffer.
-async fn handle_intent_execute(app: &mut ReplApp, slug: &str) {
-    if app.client.is_none() {
+async fn handle_intent_execute(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    slug: &str,
+) {
+    let workspace = app.workspace_root.clone();
+    let context = intent_execute_model_context(&workspace, slug);
+    let agent_role = context.agent_role.unwrap_or(AgentRole::Coder);
+    let Some(client) = select_client_for_context(app, &context) else {
         app.push_output(
             "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
             OutputStyle::Error,
         );
         return;
-    }
+    };
     app.push_output(format!("Executing intent '{slug}'…"), OutputStyle::Dim);
 
-    let workspace = app.workspace_root.clone();
-    let (result, log) = {
-        let client_ref: &dyn crate::agents::LlmProvider = app
-            .client
-            .as_ref()
-            .map(|c| c.as_ref())
-            .expect("invariant: checked above");
-        let mut log = Vec::new();
-        let r = intent::execute::run_execute(client_ref, &workspace, slug, &mut log).await;
-        (r, log)
-    };
+    let mut log = Vec::new();
+    let pending_label = pending_agent_label(agent_role, client.as_ref(), "is executing the intent");
+    let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+        intent::execute::run_execute(client.as_ref(), &workspace, slug, &mut log).await
+    })
+    .await;
     for line in &log {
-        app.push_output(line, OutputStyle::Dim);
+        app.push_output(line, OutputStyle::Normal);
     }
 
+    finish_intent_execute(app, slug, result);
+}
+
+fn finish_intent_execute(app: &mut ReplApp, slug: &str, result: Result<bool>) {
     match result {
         Ok(true) => {
             app.push_output(
                 format!("Intent '{slug}' completed successfully."),
                 OutputStyle::Success,
             );
+            clear_focused_intent_if_matches(app, slug);
         }
         Ok(false) => {
             app.push_output(format!("Intent '{slug}' failed."), OutputStyle::Error);
         }
         Err(e) => {
-            app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
+            if is_missing_intent_error(&e, slug) {
+                clear_focused_intent_if_matches(app, slug);
+                push_no_intent_selected(app);
+            } else {
+                app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
+            }
         }
     }
+}
+
+fn is_intent_execute_alias(input: &str) -> bool {
+    matches!(input.trim(), "execute" | "run")
+}
+
+fn push_no_intent_selected(app: &mut ReplApp) {
+    app.push_output(NO_INTENT_SELECTED_MESSAGE, OutputStyle::Normal);
+}
+
+fn clear_focused_intent_if_matches(app: &mut ReplApp, slug: &str) {
+    if app.focused_intent.as_deref() == Some(slug) {
+        app.focused_intent = None;
+    }
+}
+
+fn is_missing_intent_error(error: &anyhow::Error, slug: &str) -> bool {
+    if let Some(crate::intent::IntentError::NotFound { name }) =
+        error.downcast_ref::<crate::intent::IntentError>()
+    {
+        return name == slug;
+    }
+
+    let rendered = format!("{error:#}");
+    rendered.contains(&format!("Intent '{slug}' not found in .duumbi/intents/"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2184,6 +2281,46 @@ fn query_model_context(question: &str) -> ModelSelectionContext {
     }
 }
 
+fn intent_create_model_context(description: &str) -> ModelSelectionContext {
+    ModelSelectionContext {
+        agent_role: Some(AgentRole::Planner),
+        prompt_tokens: Some(estimate_tokens(description)),
+        requires_tools: false,
+        ..ModelSelectionContext::default()
+    }
+}
+
+fn intent_modify_model_context(
+    spec: &crate::intent::spec::IntentSpec,
+    request: &str,
+) -> ModelSelectionContext {
+    let prompt_tokens = estimate_tokens(&spec.intent) + estimate_tokens(request);
+    agent_model_context(request, prompt_tokens, intent_has_multiple_modules(spec))
+}
+
+fn intent_execute_model_context(workspace: &Path, slug: &str) -> ModelSelectionContext {
+    match intent::load_intent(workspace, slug) {
+        Ok(spec) => {
+            let prompt = format!("{}\n{}", spec.intent, spec.acceptance_criteria.join("\n"));
+            agent_model_context(
+                &prompt,
+                estimate_tokens(&prompt),
+                intent_has_multiple_modules(&spec),
+            )
+        }
+        Err(_) => ModelSelectionContext {
+            agent_role: Some(AgentRole::Coder),
+            prompt_tokens: Some(estimate_tokens(slug)),
+            requires_tools: true,
+            ..ModelSelectionContext::default()
+        },
+    }
+}
+
+fn intent_has_multiple_modules(spec: &crate::intent::spec::IntentSpec) -> bool {
+    spec.modules.create.len() + spec.modules.modify.len() > 1
+}
+
 fn agent_model_context(
     request: &str,
     prompt_tokens: usize,
@@ -2406,8 +2543,43 @@ fn find_closest_command<'a>(input: &str, commands: &[&'a str]) -> Option<&'a str
 mod tests {
     use super::*;
     use crate::config::{KeyStorage, ProviderConfig, ProviderKind, ProviderRole, WorkspaceSection};
+    use crate::patch::PatchOp;
     use std::ffi::OsString;
+    use std::pin::Pin;
     use tempfile::TempDir;
+
+    struct LabelProvider;
+
+    impl crate::agents::LlmProvider for LabelProvider {
+        fn name(&self) -> &str {
+            "minimax"
+        }
+
+        fn model_name(&self) -> Option<&str> {
+            Some("MiniMax-M2.7")
+        }
+
+        fn call_with_tools<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<PatchOp>, crate::agents::AgentError>> + Send + 'a>,
+        > {
+            Box::pin(async { Err(crate::agents::AgentError::NoToolCalls) })
+        }
+
+        fn call_with_tools_streaming<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+            _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        ) -> Pin<
+            Box<dyn Future<Output = Result<Vec<PatchOp>, crate::agents::AgentError>> + Send + 'a>,
+        > {
+            Box::pin(async { Err(crate::agents::AgentError::NoToolCalls) })
+        }
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -2671,6 +2843,88 @@ mod tests {
             pending_status_text("Reviewer agent is answering", 4),
             "Reviewer agent is answering"
         );
+    }
+
+    #[test]
+    fn intent_pending_label_includes_agent_and_model() {
+        let provider = LabelProvider;
+
+        assert_eq!(
+            pending_agent_label(AgentRole::Planner, &provider, "is creating an intent"),
+            "Planner agent (minimax/MiniMax-M2.7) is creating an intent"
+        );
+    }
+
+    fn intent_focus_test_app(slug: &str) -> ReplApp {
+        let mut app = ReplApp::new(
+            DuumbiConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+            None,
+            true,
+            false,
+        );
+        app.focused_intent = Some(slug.to_string());
+        app
+    }
+
+    #[test]
+    fn successful_intent_execute_clears_focused_intent() {
+        let slug = "build-a-calculator";
+        let mut app = intent_focus_test_app(slug);
+
+        finish_intent_execute(&mut app, slug, Ok(true));
+
+        assert_eq!(app.focused_intent, None);
+        assert!(
+            status_output(&app).contains("Intent 'build-a-calculator' completed successfully.")
+        );
+    }
+
+    #[test]
+    fn failed_intent_execute_keeps_focused_intent() {
+        let slug = "build-a-calculator";
+        let mut app = intent_focus_test_app(slug);
+
+        finish_intent_execute(&mut app, slug, Ok(false));
+
+        assert_eq!(app.focused_intent.as_deref(), Some(slug));
+        assert!(status_output(&app).contains("Intent 'build-a-calculator' failed."));
+    }
+
+    #[test]
+    fn execute_alias_without_focused_intent_shows_guidance() {
+        let mut app = ReplApp::new(
+            DuumbiConfig::default(),
+            std::path::PathBuf::from("."),
+            None,
+            None,
+            true,
+            false,
+        );
+
+        assert!(is_intent_execute_alias("execute"));
+        assert!(is_intent_execute_alias("run"));
+        push_no_intent_selected(&mut app);
+
+        assert_eq!(app.focused_intent, None);
+        assert!(status_output(&app).contains(NO_INTENT_SELECTED_MESSAGE));
+    }
+
+    #[test]
+    fn missing_active_intent_clears_stale_focus_and_shows_guidance() {
+        let slug = "build-a-calculator";
+        let mut app = intent_focus_test_app(slug);
+        let error = anyhow::Error::new(crate::intent::IntentError::NotFound {
+            name: slug.to_string(),
+        });
+
+        finish_intent_execute(&mut app, slug, Err(error));
+
+        assert_eq!(app.focused_intent, None);
+        let rendered = status_output(&app);
+        assert!(rendered.contains(NO_INTENT_SELECTED_MESSAGE));
+        assert!(!rendered.contains("not found in .duumbi/intents"));
     }
 
     #[test]

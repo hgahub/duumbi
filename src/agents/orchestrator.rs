@@ -403,7 +403,9 @@ pub async fn mutate_streaming(
             // AI-AGENT: Same as mutate() — retries always use the ORIGINAL `source`.
             for attempt in 0..max_retries {
                 let attempt_num = attempt + 1;
-                eprintln!("Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}…");
+                on_text(&format!(
+                    "Attempt {attempt_num} failed, retry {attempt_num}/{max_retries}...\n"
+                ));
 
                 let retry_msg = build_retry_message(
                     &base_message,

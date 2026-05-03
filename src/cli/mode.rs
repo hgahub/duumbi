@@ -65,10 +65,14 @@ pub enum OutputRenderMode {
     Plain,
     /// Markdown answer text rendered into terminal styles.
     Markdown,
-    /// Model-emitted thinking text, collapsed by default.
-    Thinking {
-        /// Whether the hidden thinking body is currently visible.
+    /// Headered command or assistant output that can be collapsed.
+    Collapsible {
+        /// Header shown next to the disclosure marker.
+        header: String,
+        /// Whether the body is currently visible.
         expanded: bool,
+        /// Style applied to the header and body text.
+        style: OutputStyle,
     },
 }
 
