@@ -85,6 +85,16 @@ cargo fmt --check                    # Format check
   examples, tests, and docs together so `/provider` remains the user-facing entry
   point and `/model` stays compatibility-only.
 
+## REPL/TUI UX
+- Keep Query mode read-only by default; require explicit Agent or Intent mode for
+  graph mutation, filesystem writes, or workspace changes.
+- TUI panels should stay quiet, bounded, and keyboard-complete: no startup
+  provider warnings during unrelated flows, no clipped prompts, no duplicate
+  hints, and `Esc` must close the active panel consistently.
+- For REPL/TUI changes, add focused state-machine tests and run at least one
+  manual smoke path for the changed interaction, including provider/no-provider
+  behavior when relevant.
+
 ## CLI commands (Phase 7 + 12)
 - `duumbi mcp` — start the MCP server (JSON-RPC over stdio, 10 tools)
 - `duumbi search <query>` — search modules in configured registries
