@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::agents::LlmProvider;
-use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TestCase};
+use crate::agents::{AgentError, LlmProvider};
+use crate::intent::spec::{IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase};
 use crate::intent::{IntentError, save_intent, slugify, unique_slug};
 
 // ---------------------------------------------------------------------------
@@ -103,6 +103,50 @@ User: \"Build a math library with double, square, and cube\"
   \"dependencies\": []
 }";
 
+const INTENT_CLARIFY_PROMPT: &str = "\
+You are preparing a DUUMBI intent before structured spec generation. Decide whether the \
+request has enough product and integration context to execute well.
+
+Ask clarification questions only when they materially affect implementation. Focus on:
+- target surface: function, command, TUI flow, REST endpoint, whole application, or module
+- entrypoint/caller and where the behavior is wired
+- runtime environment and constraints
+- acceptance behavior that should be verified
+
+DUUMBI currently verifies integer graph behavior best. Capture broader product context, but keep \
+generated executable tests within DUUMBI's current i64 graph capabilities.
+
+Respond ONLY with valid JSON:
+{
+  \"needs_clarification\": true|false,
+  \"questions\": [\"...\"],
+  \"enhanced_description\": \"...\",
+  \"context\": {
+    \"scope\": \"...\",
+    \"entrypoint\": \"...\",
+    \"runtime_surface\": \"...\",
+    \"integration_points\": [\"...\"],
+    \"constraints\": [\"...\"]
+  }
+}";
+
+/// TUI intent creation planning result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiIntentCreatePlan {
+    /// The request can be converted into an intent immediately.
+    Ready {
+        /// Description to pass to structured spec generation.
+        description: String,
+        /// Clarified context to persist with the spec.
+        context: Option<IntentContext>,
+    },
+    /// The user should answer material clarification questions first.
+    NeedsClarification {
+        /// Questions to show in the chat.
+        questions: Vec<String>,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // LLM-based spec generation
 // ---------------------------------------------------------------------------
@@ -125,6 +169,134 @@ pub async fn generate_spec_with_llm(
     let mut spec = parse_llm_response(description, &raw)?;
     let _ = crate::intent::benchmarks::apply_known_benchmark(description, &mut spec);
     Ok(spec)
+}
+
+/// Uses an LLM to decide whether a TUI intent request needs clarification first.
+pub async fn plan_tui_create(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    description: &str,
+) -> Result<TuiIntentCreatePlan> {
+    let user_message = format!(
+        "Workspace context:\n{}\n\nUser request:\n{}",
+        workspace_context_summary(workspace),
+        description
+    );
+    let raw = call_plain_completion(client, INTENT_CLARIFY_PROMPT, &user_message).await?;
+    parse_clarification_response(description, &raw)
+}
+
+fn workspace_context_summary(workspace: &Path) -> String {
+    let graph_dir = workspace.join(".duumbi/graph");
+    let mut modules = Vec::new();
+    collect_jsonld_module_paths(&graph_dir, &mut modules);
+    if modules.is_empty() {
+        return "No graph modules found.".to_string();
+    }
+    let mut lines = vec!["Existing graph modules:".to_string()];
+    for path in modules.into_iter().take(20) {
+        if let Ok(relative) = path.strip_prefix(&graph_dir) {
+            lines.push(format!("- {}", relative.display()));
+        }
+    }
+    lines.join("\n")
+}
+
+fn collect_jsonld_module_paths(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonld_module_paths(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonld") {
+            out.push(path);
+        }
+    }
+    out.sort();
+}
+
+pub(crate) fn parse_clarification_response(
+    original_description: &str,
+    raw: &str,
+) -> Result<TuiIntentCreatePlan> {
+    let Some(json_str) = extract_json(raw) else {
+        return Ok(TuiIntentCreatePlan::Ready {
+            description: original_description.to_string(),
+            context: None,
+        });
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(json_str).context("Failed to parse clarification JSON")?;
+
+    let questions: Vec<String> = value["questions"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let needs_clarification = value["needs_clarification"].as_bool().unwrap_or(false);
+    if needs_clarification && !questions.is_empty() {
+        return Ok(TuiIntentCreatePlan::NeedsClarification { questions });
+    }
+
+    let description = value["enhanced_description"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(original_description)
+        .to_string();
+    let context = parse_intent_context(&value["context"]);
+    Ok(TuiIntentCreatePlan::Ready {
+        description,
+        context,
+    })
+}
+
+fn parse_intent_context(value: &serde_json::Value) -> Option<IntentContext> {
+    if !value.is_object() {
+        return None;
+    }
+    let context = IntentContext {
+        scope: string_field(value, "scope"),
+        entrypoint: string_field(value, "entrypoint"),
+        runtime_surface: string_field(value, "runtime_surface"),
+        integration_points: string_array_field(value, "integration_points"),
+        constraints: string_array_field(value, "constraints"),
+        clarification_log: Vec::new(),
+    };
+    let has_data = context.scope.is_some()
+        || context.entrypoint.is_some()
+        || context.runtime_surface.is_some()
+        || !context.integration_points.is_empty()
+        || !context.constraints.is_empty();
+    has_data.then_some(context)
+}
+
+fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value[key]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn string_array_field(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value[key]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(str::trim))
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extracts the first valid JSON object from an LLM response.
@@ -267,6 +439,7 @@ pub(crate) fn parse_llm_response(description: &str, raw: &str) -> Result<IntentS
         },
         test_cases,
         dependencies,
+        context: None,
         created_at: Some(now),
         execution: None,
     })
@@ -307,6 +480,12 @@ pub(crate) async fn call_plain_completion(
     system: &str,
     user: &str,
 ) -> Result<String> {
+    match client.answer(system, user).await {
+        Ok(text) if !text.trim().is_empty() => return Ok(text),
+        Ok(_) | Err(AgentError::NoToolCalls | AgentError::Parse(_)) => {}
+        Err(e) => return Err(anyhow::anyhow!("LLM call failed: {e}")),
+    }
+
     // Mutex lets the closure satisfy Fn + Send + Sync while accumulating chunks.
     let response = std::sync::Mutex::new(String::new());
 
@@ -331,10 +510,10 @@ pub(crate) async fn call_plain_completion(
     let text = response
         .into_inner()
         .expect("invariant: mutex not poisoned");
-    if text.is_empty() {
+    if text.trim().is_empty() {
         anyhow::bail!(
-            "The selected model did not generate an intent spec.\n\
-             This usually means the active provider could not satisfy structured output for this task.\n\
+            "The selected model did not generate a text response.\n\
+             This usually means the active provider could not satisfy plain completion for this task.\n\
              Configure another supported provider or retry when provider health improves."
         );
     }
@@ -361,11 +540,24 @@ pub async fn run_create(
     yes: bool,
     log: &mut Vec<String>,
 ) -> Result<String> {
+    run_create_with_context(client, workspace, description, None, yes, log).await
+}
+
+/// Full create flow with optional clarified context, used by the TUI.
+pub async fn run_create_with_context(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    description: &str,
+    context: Option<IntentContext>,
+    yes: bool,
+    log: &mut Vec<String>,
+) -> Result<String> {
     log.push(format!("Generating intent spec for: \"{description}\"…"));
 
-    let spec = generate_spec_with_llm(client, description)
+    let mut spec = generate_spec_with_llm(client, description)
         .await
         .context("Failed to generate intent spec")?;
+    spec.context = context;
 
     // Show preview
     crate::intent::review::format_spec_detail("(preview)", &spec, log);
@@ -400,6 +592,55 @@ pub async fn run_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use crate::patch::PatchOp;
+
+    struct PlainMockProvider {
+        answer_text: Option<&'static str>,
+        tool_text: &'static str,
+    }
+
+    impl LlmProvider for PlainMockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn call_with_tools<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn call_with_tools_streaming<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+            on_text: &'a (dyn Fn(&str) + Send + Sync),
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async move {
+                if !self.tool_text.is_empty() {
+                    on_text(self.tool_text);
+                }
+                Err(AgentError::NoToolCalls)
+            })
+        }
+
+        fn answer<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.answer_text
+                    .map(ToString::to_string)
+                    .ok_or(AgentError::NoToolCalls)
+            })
+        }
+    }
 
     #[test]
     fn parse_valid_llm_response() {
@@ -444,6 +685,99 @@ This intent creates an addition function that..."#;
         let spec =
             parse_llm_response("Test trailing", raw).expect("must parse despite trailing text");
         assert_eq!(spec.acceptance_criteria, vec!["add works"]);
+    }
+
+    #[test]
+    fn parse_clarification_response_ready_with_context() {
+        let raw = r#"{
+  "needs_clarification": false,
+  "questions": [],
+  "enhanced_description": "Add add(a,b) to calculator/ops and call it from app/main",
+  "context": {
+    "scope": "function",
+    "entrypoint": "app/main",
+    "runtime_surface": "CLI",
+    "integration_points": ["calculator/ops", "app/main"],
+    "constraints": ["i64 only"]
+  }
+}"#;
+
+        let plan = parse_clarification_response("Add", raw).expect("parse");
+
+        match plan {
+            TuiIntentCreatePlan::Ready {
+                description,
+                context: Some(context),
+            } => {
+                assert!(description.contains("calculator/ops"));
+                assert_eq!(context.scope.as_deref(), Some("function"));
+                assert_eq!(
+                    context.integration_points,
+                    vec!["calculator/ops", "app/main"]
+                );
+            }
+            other => panic!("unexpected plan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clarification_response_questions() {
+        let raw = r#"{
+  "needs_clarification": true,
+  "questions": ["Where should this be wired?", "Which function should call it?"],
+  "enhanced_description": "",
+  "context": {}
+}"#;
+
+        let plan = parse_clarification_response("Do a thing", raw).expect("parse");
+
+        assert!(matches!(
+            plan,
+            TuiIntentCreatePlan::NeedsClarification { questions } if questions.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parse_clarification_response_without_json_falls_back_to_ready() {
+        let plan = parse_clarification_response(
+            "Build a calculator with i64 arithmetic functions",
+            "This is clear enough to implement.",
+        )
+        .expect("fallback");
+
+        assert!(matches!(
+            plan,
+            TuiIntentCreatePlan::Ready { description, context: None }
+                if description == "Build a calculator with i64 arithmetic functions"
+        ));
+    }
+
+    #[tokio::test]
+    async fn call_plain_completion_prefers_plain_answer() {
+        let provider = PlainMockProvider {
+            answer_text: Some("{\"ok\":true}"),
+            tool_text: "",
+        };
+
+        let text = call_plain_completion(&provider, "system", "user")
+            .await
+            .expect("plain answer");
+
+        assert_eq!(text, "{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn call_plain_completion_falls_back_to_tool_text() {
+        let provider = PlainMockProvider {
+            answer_text: None,
+            tool_text: "{\"fallback\":true}",
+        };
+
+        let text = call_plain_completion(&provider, "system", "user")
+            .await
+            .expect("tool fallback");
+
+        assert_eq!(text, "{\"fallback\":true}");
     }
 
     #[test]

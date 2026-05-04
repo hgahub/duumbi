@@ -327,6 +327,7 @@ mod tests {
                 expected_return: 8,
             }],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         }
@@ -421,6 +422,7 @@ mod tests {
                 expected_return: 14,
             }],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         };
@@ -465,6 +467,7 @@ mod tests {
                 },
             ],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         };
@@ -495,6 +498,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         };

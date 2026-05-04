@@ -887,11 +887,40 @@ fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
         .map(|(i, c)| format!("  {}. {c}", i + 1))
         .collect::<Vec<_>>()
         .join("\n");
+    let context = spec
+        .context
+        .as_ref()
+        .map(format_intent_context)
+        .unwrap_or_else(|| "No additional clarified context.".to_string());
 
     format!(
-        "Intent: \"{}\"\n\nAcceptance criteria:\n{}\n\nCurrent task:\n{}",
-        spec.intent, criteria, task_prompt
+        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}\n\nCurrent task:\n{}",
+        spec.intent, context, criteria, task_prompt
     )
+}
+
+fn format_intent_context(context: &crate::intent::spec::IntentContext) -> String {
+    let mut lines = Vec::new();
+    if let Some(scope) = &context.scope {
+        lines.push(format!("- Scope: {scope}"));
+    }
+    if let Some(entrypoint) = &context.entrypoint {
+        lines.push(format!("- Entrypoint: {entrypoint}"));
+    }
+    if let Some(surface) = &context.runtime_surface {
+        lines.push(format!("- Runtime surface: {surface}"));
+    }
+    for point in &context.integration_points {
+        lines.push(format!("- Integration point: {point}"));
+    }
+    for constraint in &context.constraints {
+        lines.push(format!("- Constraint: {constraint}"));
+    }
+    if lines.is_empty() {
+        "No additional clarified context.".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Archives a successfully completed intent.
@@ -978,6 +1007,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         };

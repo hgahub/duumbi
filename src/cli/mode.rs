@@ -137,7 +137,7 @@ impl ConversationBlock {
 /// A slash command match for the inline menu.
 #[derive(Debug, Clone)]
 pub struct SlashMatch {
-    /// Full command string (e.g. "/intent create").
+    /// Full command string (e.g. "/intent review").
     pub command: String,
     /// Description text.
     pub description: String,
@@ -188,6 +188,11 @@ pub enum Action {
         /// Whether an existing `.duumbi/` directory may be deleted first.
         overwrite_existing: bool,
     },
+    /// Delete the active intent after confirmation.
+    IntentDeleteConfirmed {
+        /// Intent slug to remove from active work.
+        slug: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +228,20 @@ pub enum PanelState {
         /// Optional status message shown in the panel.
         status_msg: Option<(String, OutputStyle)>,
     },
+    /// Active intent picker.
+    IntentPicker {
+        /// Loaded active intent rows. Row zero in the UI is always "new intent mode".
+        intents: Vec<IntentPickerItem>,
+        /// Highlighted row, including row zero.
+        selected: usize,
+        /// Optional status message shown in the panel.
+        status_msg: Option<(String, OutputStyle)>,
+    },
+    /// Confirmation panel for removing an active intent from the active list.
+    ConfirmIntentDelete {
+        /// Intent slug being deleted.
+        slug: String,
+    },
 }
 
 /// Sub-mode within an interactive panel for text input or confirmation.
@@ -247,6 +266,28 @@ pub enum PanelInputMode {
     },
     /// Waiting for y/N confirmation to delete the selected provider.
     ConfirmDelete,
+}
+
+/// One active intent row shown by the TUI intent picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentPickerItem {
+    /// Intent slug.
+    pub slug: String,
+    /// Lifecycle status text.
+    pub status: String,
+    /// Short natural-language intent description.
+    pub description: String,
+    /// Number of test cases attached to the intent.
+    pub test_count: usize,
+}
+
+/// Pending TUI intent creation clarification state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentDraft {
+    /// Original user request before clarification.
+    pub original_request: String,
+    /// Questions asked by the planner model.
+    pub questions: Vec<String>,
 }
 
 #[cfg(test)]

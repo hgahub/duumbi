@@ -105,6 +105,7 @@ mod tests {
             },
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            context: None,
             created_at: None,
             execution: None,
         }
