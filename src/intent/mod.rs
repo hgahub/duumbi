@@ -61,6 +61,32 @@ pub enum IntentError {
         source: std::io::Error,
     },
 
+    /// Editor command failed before the file could be opened.
+    #[error("Editor '{editor}' failed: {source}")]
+    EditorIo {
+        /// Editor command.
+        editor: String,
+        /// Underlying error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Editor command could not be parsed into a program and arguments.
+    #[error("Failed to parse editor command '{editor}'")]
+    EditorCommandParse {
+        /// Editor command.
+        editor: String,
+    },
+
+    /// Editor process exited unsuccessfully.
+    #[error("Editor '{editor}' exited with {status}")]
+    EditorExit {
+        /// Editor command.
+        editor: String,
+        /// Exit status.
+        status: String,
+    },
+
     /// YAML parse error.
     #[error("Failed to parse intent YAML at '{path}': {source}")]
     Parse {
@@ -88,6 +114,11 @@ pub fn intents_dir(workspace: &Path) -> PathBuf {
 /// Returns the `.duumbi/intents/history/` directory for a workspace.
 pub fn history_dir(workspace: &Path) -> PathBuf {
     intents_dir(workspace).join("history")
+}
+
+/// Returns the `.duumbi/intents/deleted/` directory for removed active intents.
+pub fn deleted_dir(workspace: &Path) -> PathBuf {
+    intents_dir(workspace).join("deleted")
 }
 
 /// Returns the path to an active intent YAML file.
@@ -128,6 +159,36 @@ pub fn save_intent(workspace: &Path, slug: &str, spec: &IntentSpec) -> Result<()
         path: path.display().to_string(),
         source,
     })
+}
+
+/// Moves an active intent to `.duumbi/intents/deleted/` instead of removing it permanently.
+#[must_use = "intent delete errors should be handled"]
+pub fn delete_intent(workspace: &Path, slug: &str) -> Result<PathBuf, IntentError> {
+    let active_path = intent_path(workspace, slug);
+    if !active_path.exists() {
+        return Err(IntentError::NotFound {
+            name: slug.to_string(),
+        });
+    }
+
+    let dir = deleted_dir(workspace);
+    fs::create_dir_all(&dir).map_err(|source| IntentError::Io {
+        path: dir.display().to_string(),
+        source,
+    })?;
+
+    let mut deleted_path = dir.join(format!("{slug}-{}.yaml", timestamp_suffix()));
+    let mut counter = 2;
+    while deleted_path.exists() {
+        deleted_path = dir.join(format!("{slug}-{}-{counter}.yaml", timestamp_suffix()));
+        counter += 1;
+    }
+
+    fs::rename(&active_path, &deleted_path).map_err(|source| IntentError::Io {
+        path: active_path.display().to_string(),
+        source,
+    })?;
+    Ok(deleted_path)
 }
 
 /// Lists all active intent slugs in `.duumbi/intents/` (excludes `history/`).
@@ -199,10 +260,10 @@ pub fn unique_slug(workspace: &Path, base_slug: &str) -> String {
             return candidate;
         }
     }
-    format!("{base_slug}-{}", uuid_suffix())
+    format!("{base_slug}-{}", timestamp_suffix())
 }
 
-fn uuid_suffix() -> u64 {
+fn timestamp_suffix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -247,6 +308,7 @@ mod tests {
             },
             test_cases: vec![],
             dependencies: vec![],
+            context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,
         };
@@ -282,6 +344,7 @@ mod tests {
             modules: spec::IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         };
@@ -290,6 +353,31 @@ mod tests {
 
         let slugs = list_intents(tmp.path()).expect("list");
         assert_eq!(slugs, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn delete_intent_moves_to_deleted_dir() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let spec = IntentSpec {
+            intent: "Delete me".to_string(),
+            version: 1,
+            status: spec::IntentStatus::Pending,
+            acceptance_criteria: vec![],
+            modules: spec::IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        save_intent(tmp.path(), "delete-me", &spec).expect("save");
+
+        let deleted_path = delete_intent(tmp.path(), "delete-me").expect("delete");
+
+        assert!(!intent_path(tmp.path(), "delete-me").exists());
+        assert!(deleted_path.starts_with(deleted_dir(tmp.path())));
+        assert!(deleted_path.exists());
+        assert!(list_intents(tmp.path()).expect("list").is_empty());
     }
 
     #[test]

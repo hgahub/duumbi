@@ -89,37 +89,27 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         command: "/intent",
-        description: "Manage intent specs",
-        group: SlashGroup::Intent,
-    },
-    SlashCommand {
-        command: "/intent create",
-        description: "Generate a new intent spec",
+        description: "Select or clear the active intent",
         group: SlashGroup::Intent,
     },
     SlashCommand {
         command: "/intent review",
-        description: "Show intent details",
+        description: "Review the active intent",
         group: SlashGroup::Intent,
     },
     SlashCommand {
         command: "/intent execute",
-        description: "Execute an intent end-to-end",
+        description: "Execute the active intent",
         group: SlashGroup::Intent,
     },
     SlashCommand {
-        command: "/intent status",
-        description: "Show intent status",
+        command: "/intent edit",
+        description: "Edit the active intent YAML",
         group: SlashGroup::Intent,
     },
     SlashCommand {
-        command: "/intent focus",
-        description: "Focus an intent by slug",
-        group: SlashGroup::Intent,
-    },
-    SlashCommand {
-        command: "/intent unfocus",
-        description: "Clear the focused intent",
+        command: "/intent delete",
+        description: "Remove the active intent from active work",
         group: SlashGroup::Intent,
     },
     SlashCommand {
@@ -338,21 +328,31 @@ mod tests {
     #[test]
     fn intent_subcommands_found() {
         let results = match_commands("/intent ", 10);
-        assert!(results.iter().any(|(cmd, _)| *cmd == "/intent create"));
+        assert!(results.iter().any(|(cmd, _)| *cmd == "/intent review"));
+        assert!(results.iter().any(|(cmd, _)| *cmd == "/intent edit"));
+        assert!(!results.iter().any(|(cmd, _)| *cmd == "/intent create"));
     }
 
     #[test]
-    fn slash_commands_has_new_intent_commands() {
+    fn slash_commands_has_tui_intent_commands_only() {
         assert!(
             SLASH_COMMANDS
                 .iter()
-                .any(|entry| entry.command == "/intent focus")
+                .any(|entry| entry.command == "/intent")
         );
         assert!(
             SLASH_COMMANDS
                 .iter()
-                .any(|entry| entry.command == "/intent unfocus")
+                .any(|entry| entry.command == "/intent delete")
         );
+        for removed in [
+            "/intent create",
+            "/intent status",
+            "/intent focus",
+            "/intent unfocus",
+        ] {
+            assert!(!SLASH_COMMANDS.iter().any(|entry| entry.command == removed));
+        }
     }
 
     #[test]

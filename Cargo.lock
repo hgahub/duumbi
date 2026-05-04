@@ -1181,7 +1181,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "duumbi"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1210,6 +1210,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "shlex",
  "strsim",
  "tar",
  "target-lexicon",
@@ -1256,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "duumbi-studio"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",

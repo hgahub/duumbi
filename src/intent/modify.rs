@@ -68,6 +68,7 @@ pub async fn modify_intent_with_llm(
     modified.created_at = current_spec.created_at.clone();
     modified.status = current_spec.status.clone();
     modified.execution = current_spec.execution.clone();
+    modified.context = current_spec.context.clone();
 
     Ok(modified)
 }
@@ -98,6 +99,7 @@ mod tests {
                 expected_return: 8,
             }],
             dependencies: vec![],
+            context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,
         }

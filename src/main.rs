@@ -63,11 +63,18 @@ async fn main() {
     // If invoked with no arguments and stdin is a terminal, enter the
     // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
-        let workspace_root = PathBuf::from(".");
+        let workspace_root = cli::repl::resolve_repl_workspace_root(&PathBuf::from("."));
         let config = match config::load_effective_config(&workspace_root) {
             Ok(config) => config,
             Err(e) => {
                 eprintln!("error: {e}");
+                process::exit(1);
+            }
+        };
+        let config = match auto_configure_startup_editor(&workspace_root, config) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("error: {e:#}");
                 process::exit(1);
             }
         };
@@ -89,6 +96,36 @@ async fn main() {
     if let Err(e) = run(cli).await {
         eprintln!("error: {e:#}");
         process::exit(1);
+    }
+}
+
+fn auto_configure_startup_editor(
+    workspace_root: &Path,
+    effective_config: config::EffectiveConfig,
+) -> Result<config::EffectiveConfig> {
+    if effective_config.config.editor.is_some() {
+        return Ok(effective_config);
+    }
+
+    let Some(editor) = config::discover_editor_command() else {
+        return Ok(effective_config);
+    };
+
+    let mut updated_config = effective_config;
+    updated_config.user_config.editor = Some(editor.clone());
+    updated_config.config.editor = Some(editor);
+
+    if let Err(e) = config::save_user_config(&updated_config.user_config) {
+        eprintln!("warning: failed to save startup editor config: {e}");
+        return Ok(updated_config);
+    }
+
+    match config::load_effective_config(workspace_root) {
+        Ok(reloaded) => Ok(reloaded),
+        Err(e) => {
+            eprintln!("warning: failed to reload config after startup editor setup: {e}");
+            Ok(updated_config)
+        }
     }
 }
 

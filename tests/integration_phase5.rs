@@ -32,6 +32,7 @@ fn minimal_spec(intent: &str) -> IntentSpec {
         modules: IntentModules::default(),
         test_cases: vec![],
         dependencies: vec![],
+        context: None,
         created_at: Some("2026-01-01T00:00:00Z".to_string()),
         execution: None,
     }
@@ -144,6 +145,7 @@ fn phase5_coordinator_creates_before_modifies() {
         },
         test_cases: vec![],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -180,6 +182,7 @@ fn phase5_coordinator_modifymain_is_last() {
         },
         test_cases: vec![],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -208,6 +211,7 @@ fn phase5_coordinator_task_ids_are_sequential() {
         },
         test_cases: vec![],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -239,6 +243,7 @@ fn phase5_verifier_double_21_returns_42() {
             expected_return: 42,
         }],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -270,6 +275,7 @@ fn phase5_verifier_double_0_returns_0() {
             expected_return: 0,
         }],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -299,6 +305,7 @@ fn phase5_verifier_wrong_expected_fails() {
             expected_return: 99, // wrong: double(5) = 10
         }],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -320,6 +327,7 @@ fn phase5_verifier_empty_test_cases_passes() {
         modules: IntentModules::default(),
         test_cases: vec![],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };
@@ -365,6 +373,7 @@ fn phase5_m5_kill_criterion_verifier_validates_real_function() {
             },
         ],
         dependencies: vec![],
+        context: None,
         created_at: None,
         execution: None,
     };

@@ -234,6 +234,7 @@ mod tests {
                 })
                 .collect(),
             dependencies: vec![],
+            context: None,
             created_at: None,
             execution: None,
         }

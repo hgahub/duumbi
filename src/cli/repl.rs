@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Local, Utc};
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::execute;
@@ -33,12 +33,41 @@ use crate::snapshot;
 
 use super::app::{ReplApp, Turn};
 use super::commands;
-use super::mode::{OutputStyle, ReplMode};
+use super::mode::{IntentPickerAction, OutputStyle, ReplMode};
 
 const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 const NO_INTENT_SELECTED_MESSAGE: &str =
     "No intent selected. Describe the new intent you want to create.";
+
+/// Resolves the workspace root used by the interactive TUI.
+///
+/// If the current directory is already a DUUMBI workspace, it is used as-is.
+/// Otherwise, when there is exactly one direct child workspace, attach to that
+/// child. This matches the common `duumbi init myproject` flow followed by
+/// launching `duumbi` from the parent directory.
+#[must_use]
+pub fn resolve_repl_workspace_root(start: &Path) -> PathBuf {
+    if start.join(".duumbi").exists() {
+        return start.to_path_buf();
+    }
+
+    let Ok(entries) = fs::read_dir(start) else {
+        return start.to_path_buf();
+    };
+    let mut candidates = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join(".duumbi").exists())
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    if candidates.len() == 1 {
+        candidates.remove(0)
+    } else {
+        start.to_path_buf()
+    }
+}
 
 struct PendingProviderProbe {
     provider: crate::config::ProviderKind,
@@ -253,6 +282,26 @@ async fn event_loop(
                         overwrite_existing,
                     } => {
                         complete_tui_init(app, workspace_name, overwrite_existing);
+                        should_redraw = true;
+                    }
+                    super::mode::Action::IntentDeleteConfirmed { slug } => {
+                        handle_confirmed_intent_delete(app, &slug);
+                        should_redraw = true;
+                    }
+                    super::mode::Action::IntentSelected {
+                        slug,
+                        requested_action,
+                    } => {
+                        if let (Some(slug), Some(action)) = (slug, requested_action) {
+                            app.working = matches!(action, IntentPickerAction::Execute);
+                            terminal.draw(|frame| app.render(frame, textarea))?;
+                            last_draw = Instant::now();
+                            handle_intent_picker_action(terminal, app, textarea, &slug, action)
+                                .await;
+                            app.working = false;
+                        } else if requested_action.is_some() {
+                            push_no_intent_selected(app);
+                        }
                         should_redraw = true;
                     }
                 },
@@ -876,7 +925,7 @@ fn push_handoff(app: &mut ReplApp, handoff: &ModeHandoff) {
     let prefix = match handoff.mode {
         ReplMode::Query => "/query",
         ReplMode::Agent => "/agent",
-        ReplMode::Intent => "/intent create",
+        ReplMode::Intent => "/mode intent",
     };
     app.push_output(
         format!("{prefix} {}", handoff.suggested_request),
@@ -1089,8 +1138,9 @@ async fn handle_ai_request(
 /// Handles free-form text input when in Intent mode.
 ///
 /// - If no intent is focused, the input is treated as an intent description
-///   and forwarded to [`intent::create::run_create`].
-/// - If the input is "execute" or "run", delegates to intent execute.
+///   and starts the TUI clarification/create flow.
+/// - If the input is "review", "execute", "run", "edit", or "delete",
+///   delegates to the active intent action.
 /// - Otherwise, modifies the focused intent via LLM based on the input.
 async fn handle_intent_input(
     terminal: &mut ratatui::DefaultTerminal,
@@ -1099,54 +1149,51 @@ async fn handle_intent_input(
     input: &str,
 ) {
     let trimmed = input.trim();
+    if let Some(draft) = app.intent_draft.take() {
+        handle_intent_draft_answer(terminal, app, textarea, draft, trimmed).await;
+        return;
+    }
+
     if app.focused_intent.is_none() {
-        if is_intent_execute_alias(trimmed) {
+        if intent_prompt_action(trimmed).is_some() {
             push_no_intent_selected(app);
             return;
         }
 
-        // Treat as intent create.
-        let context = intent_create_model_context(trimmed);
-        let Some(client) = select_client_for_context(app, &context) else {
-            app.push_output(
-                "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
-                OutputStyle::Error,
-            );
-            return;
-        };
-        let workspace = app.workspace_root.clone();
-        let mut log = Vec::new();
-        let pending_label =
-            pending_agent_label(AgentRole::Planner, client.as_ref(), "is creating an intent");
-        let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
-            // REPL always auto-confirms — interactive stdin is not available
-            // in ratatui raw mode.
-            intent::create::run_create(client.as_ref(), &workspace, trimmed, true, &mut log).await
-        })
-        .await;
-        for line in &log {
-            app.push_output(line, OutputStyle::Dim);
-        }
-        match result {
-            Ok(slug) => {
-                app.focused_intent = Some(slug.clone());
-            }
-            Err(e) => {
-                app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
-            }
-        }
+        handle_tui_intent_create(terminal, app, textarea, trimmed).await;
         return;
     }
 
-    match trimmed {
-        value if is_intent_execute_alias(value) => {
+    match intent_prompt_action(trimmed) {
+        Some(IntentPromptAction::Review) => {
+            let slug = app
+                .focused_intent
+                .clone()
+                .expect("invariant: focused_intent checked above");
+            handle_intent_review(app, &slug);
+        }
+        Some(IntentPromptAction::Execute) => {
             let slug = app
                 .focused_intent
                 .clone()
                 .expect("invariant: focused_intent checked above");
             handle_intent_execute(terminal, app, textarea, &slug).await;
         }
-        _ => {
+        Some(IntentPromptAction::Edit) => {
+            let slug = app
+                .focused_intent
+                .clone()
+                .expect("invariant: focused_intent checked above");
+            handle_intent_edit(terminal, app, textarea, &slug);
+        }
+        Some(IntentPromptAction::Delete) => {
+            let slug = app
+                .focused_intent
+                .clone()
+                .expect("invariant: focused_intent checked above");
+            app.confirm_intent_delete(slug);
+        }
+        None => {
             // Modify the focused intent via LLM.
             let slug = app
                 .focused_intent
@@ -1183,8 +1230,11 @@ async fn handle_intent_input(
             match result {
                 Ok(modified) => {
                     // Show the modified spec.
-                    let yaml = serde_yaml::to_string(&modified).unwrap_or_default();
-                    app.push_output(yaml, OutputStyle::Ai);
+                    let mut log = Vec::new();
+                    intent::review::format_spec_detail(&slug, &modified, &mut log);
+                    for line in log {
+                        app.push_output(line, OutputStyle::Normal);
+                    }
 
                     // Save (auto-save in intent mode for now).
                     match intent::save_intent(&workspace, &slug, &modified) {
@@ -1213,8 +1263,7 @@ async fn handle_intent_input(
 
 /// Handles `/intent <subcommand> [args]` within the REPL.
 ///
-/// Supported subcommands: `list`, `create`, `review`, `execute`, `status`,
-/// `focus`, `unfocus`.
+/// Supported TUI subcommands: `review`, `execute`, `edit`, `delete`.
 async fn handle_intent_slash(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ReplApp,
@@ -1227,135 +1276,345 @@ async fn handle_intent_slash(
 
     match subcmd {
         "" | "list" => {
-            let workspace = app.workspace_root.clone();
-            match collect_intent_list(&workspace) {
-                Ok(lines) => {
-                    for line in lines {
-                        app.push_output(line, OutputStyle::Normal);
-                    }
-                }
-                Err(e) => {
-                    app.push_output(format!("Error: {e}"), OutputStyle::Error);
-                }
-            }
+            open_intent_picker(app, None, None);
         }
 
         "create" => {
-            if rest.is_empty() {
-                app.push_output("Usage: /intent create <description>", OutputStyle::Dim);
-                return;
-            }
-            let context = intent_create_model_context(rest);
-            let Some(client) = select_client_for_context(app, &context) else {
+            app.push_output(
+                "In the TUI, switch to Intent mode and describe the new intent in the prompt.",
+                OutputStyle::Dim,
+            );
+            if !rest.is_empty() {
                 app.push_output(
-                    "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
-                    OutputStyle::Error,
+                    format!("Suggested intent description: {rest}"),
+                    OutputStyle::Dim,
                 );
-                return;
-            };
-            let workspace = app.workspace_root.clone();
-            let mut log = Vec::new();
-            let pending_label =
-                pending_agent_label(AgentRole::Planner, client.as_ref(), "is creating an intent");
-            let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
-                // REPL always auto-confirms (no interactive stdin in ratatui).
-                intent::create::run_create(client.as_ref(), &workspace, rest, true, &mut log).await
-            })
-            .await;
-            for line in &log {
-                app.push_output(line, OutputStyle::Dim);
-            }
-            if let Err(e) = result {
-                app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
             }
         }
 
         "review" => {
-            let workspace = app.workspace_root.clone();
-            if rest.is_empty() {
-                match collect_intent_list(&workspace) {
-                    Ok(lines) => {
-                        for line in lines {
-                            app.push_output(line, OutputStyle::Normal);
-                        }
-                    }
-                    Err(e) => {
-                        app.push_output(format!("Error: {e}"), OutputStyle::Error);
-                    }
-                }
+            if let Some(slug) = active_intent_slug(app) {
+                handle_intent_review(app, &slug);
             } else {
-                match collect_intent_detail(&workspace, rest) {
-                    Ok(lines) => {
-                        for line in lines {
-                            app.push_output(line, OutputStyle::Normal);
-                        }
-                    }
-                    Err(e) => {
-                        app.push_output(format!("Error: {e}"), OutputStyle::Error);
-                    }
-                }
+                open_intent_picker(
+                    app,
+                    Some(IntentPickerAction::Review),
+                    Some(("Select an intent to review.".to_string(), OutputStyle::Dim)),
+                );
             }
         }
 
         "execute" => {
-            if rest.is_empty() {
-                app.push_output("Usage: /intent execute <name>", OutputStyle::Dim);
-                return;
-            }
-            handle_intent_execute(terminal, app, textarea, rest).await;
-        }
-
-        "status" => {
-            let workspace = app.workspace_root.clone();
-            if rest.is_empty() {
-                match collect_intent_status_list(&workspace) {
-                    Ok(lines) => {
-                        for line in lines {
-                            app.push_output(line, OutputStyle::Normal);
-                        }
-                    }
-                    Err(e) => {
-                        app.push_output(format!("Error: {e}"), OutputStyle::Error);
-                    }
-                }
+            if let Some(slug) = active_intent_slug(app) {
+                handle_intent_execute(terminal, app, textarea, &slug).await;
             } else {
-                match collect_intent_status_detail(&workspace, rest) {
-                    Ok(lines) => {
-                        for line in lines {
-                            app.push_output(line, OutputStyle::Normal);
-                        }
-                    }
-                    Err(e) => {
-                        app.push_output(format!("Error: {e}"), OutputStyle::Error);
-                    }
-                }
+                open_intent_picker(
+                    app,
+                    Some(IntentPickerAction::Execute),
+                    Some(("Select an intent to execute.".to_string(), OutputStyle::Dim)),
+                );
             }
         }
 
-        "focus" => {
-            if rest.is_empty() {
-                app.push_output("Usage: /intent focus <slug>", OutputStyle::Dim);
+        "edit" => {
+            if let Some(slug) = active_intent_slug(app) {
+                handle_intent_edit(terminal, app, textarea, &slug);
             } else {
-                app.focused_intent = Some(rest.to_string());
-                app.push_output(format!("Focused intent: {rest}"), OutputStyle::Success);
+                open_intent_picker(
+                    app,
+                    Some(IntentPickerAction::Edit),
+                    Some(("Select an intent to edit.".to_string(), OutputStyle::Dim)),
+                );
             }
         }
 
-        "unfocus" => {
-            app.focused_intent = None;
-            app.push_output("Intent focus cleared.", OutputStyle::Dim);
+        "delete" => {
+            if let Some(slug) = active_intent_slug(app) {
+                app.confirm_intent_delete(slug);
+            } else {
+                open_intent_picker(
+                    app,
+                    Some(IntentPickerAction::Delete),
+                    Some(("Select an intent to delete.".to_string(), OutputStyle::Dim)),
+                );
+            }
         }
 
+        "status" | "focus" | "unfocus" => {
+            app.push_output(
+                "This TUI command is no longer used. Use /intent to switch the active intent.",
+                OutputStyle::Dim,
+            );
+        }
         _ => {
             app.push_output(
                 format!("Unknown intent subcommand: {subcmd}"),
                 OutputStyle::Error,
             );
             app.push_output(
-                "Available: list, create <desc>, review [name], execute <name>, \
-                 status [name], focus <slug>, unfocus",
+                "Available: /intent, /intent review, /intent execute, /intent edit, /intent delete",
                 OutputStyle::Dim,
             );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntentPromptAction {
+    Review,
+    Execute,
+    Edit,
+    Delete,
+}
+
+fn intent_prompt_action(input: &str) -> Option<IntentPromptAction> {
+    match input.trim() {
+        "review" => Some(IntentPromptAction::Review),
+        value if is_intent_execute_alias(value) => Some(IntentPromptAction::Execute),
+        "edit" => Some(IntentPromptAction::Edit),
+        "delete" | "remove" => Some(IntentPromptAction::Delete),
+        _ => None,
+    }
+}
+
+fn active_intent_slug(app: &ReplApp) -> Option<String> {
+    app.focused_intent.clone()
+}
+
+fn open_intent_picker(
+    app: &mut ReplApp,
+    requested_action: Option<IntentPickerAction>,
+    status_msg: Option<(String, OutputStyle)>,
+) {
+    match collect_intent_picker_items(&app.workspace_root) {
+        Ok(items) => app.open_intent_picker(items, requested_action, status_msg),
+        Err(e) => app.push_output(format!("Failed to load intents: {e}"), OutputStyle::Error),
+    }
+}
+
+fn collect_intent_picker_items(workspace: &Path) -> Result<Vec<super::mode::IntentPickerItem>> {
+    let slugs = intent::list_intents(workspace).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut items = Vec::new();
+    for slug in slugs {
+        match intent::load_intent(workspace, &slug) {
+            Ok(spec) => items.push(super::mode::IntentPickerItem {
+                slug,
+                status: spec.status.to_string(),
+                description: spec.intent,
+                test_count: spec.test_cases.len(),
+            }),
+            Err(e) => items.push(super::mode::IntentPickerItem {
+                slug,
+                status: "error".to_string(),
+                description: e.to_string(),
+                test_count: 0,
+            }),
+        }
+    }
+    Ok(items)
+}
+
+fn handle_intent_review(app: &mut ReplApp, slug: &str) {
+    match intent::load_intent(&app.workspace_root, slug) {
+        Ok(spec) => {
+            let mut log = Vec::new();
+            intent::review::format_spec_detail(slug, &spec, &mut log);
+            for line in log {
+                app.push_output(line, OutputStyle::Normal);
+            }
+        }
+        Err(e) => {
+            if matches!(e, intent::IntentError::NotFound { .. }) {
+                clear_focused_intent_if_matches(app, slug);
+                push_no_intent_selected(app);
+            } else {
+                app.push_output(format!("Failed to load intent: {e}"), OutputStyle::Error);
+            }
+        }
+    }
+}
+
+fn handle_intent_edit(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    slug: &str,
+) {
+    let workspace = app.workspace_root.clone();
+    let editor = app.config.editor.clone();
+    let result = run_with_terminal_restore(terminal, app, textarea, || {
+        intent::review::edit_intent_with_editor(&workspace, slug, editor.as_deref())
+    });
+    match result {
+        Ok(()) => {
+            app.push_output(
+                format!("Intent '{slug}' saved and validated."),
+                OutputStyle::Success,
+            );
+            handle_intent_review(app, slug);
+        }
+        Err(e) => app.push_output(format!("Intent edit failed: {e}"), OutputStyle::Error),
+    }
+}
+
+fn handle_confirmed_intent_delete(app: &mut ReplApp, slug: &str) {
+    match intent::delete_intent(&app.workspace_root, slug) {
+        Ok(path) => {
+            clear_focused_intent_if_matches(app, slug);
+            app.push_output(
+                format!("Intent '{slug}' moved to '{}'.", path.display()),
+                OutputStyle::Success,
+            );
+        }
+        Err(e) => {
+            if matches!(e, intent::IntentError::NotFound { .. }) {
+                clear_focused_intent_if_matches(app, slug);
+                push_no_intent_selected(app);
+            } else {
+                app.push_output(format!("Intent delete failed: {e}"), OutputStyle::Error);
+            }
+        }
+    }
+}
+
+async fn handle_tui_intent_create(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    description: &str,
+) {
+    let context = intent_create_model_context(description);
+    let Some(client) = select_client_for_context(app, &context) else {
+        app.push_output(
+            "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
+            OutputStyle::Error,
+        );
+        return;
+    };
+    let workspace = app.workspace_root.clone();
+    let pending_label = pending_agent_label(
+        AgentRole::Planner,
+        client.as_ref(),
+        "is clarifying the intent",
+    );
+    let plan = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+        intent::create::plan_tui_create(client.as_ref(), &workspace, description).await
+    })
+    .await;
+
+    match plan {
+        Ok(intent::create::TuiIntentCreatePlan::NeedsClarification { questions }) => {
+            app.intent_draft = Some(super::mode::IntentDraft {
+                original_request: description.to_string(),
+                questions: questions.clone(),
+            });
+            app.push_output(
+                "Clarification needed before creating the intent:",
+                OutputStyle::Normal,
+            );
+            for (index, question) in questions.iter().enumerate() {
+                app.push_output(format!("  {}. {question}", index + 1), OutputStyle::Normal);
+            }
+        }
+        Ok(intent::create::TuiIntentCreatePlan::Ready {
+            description,
+            context,
+        }) => {
+            handle_tui_intent_create_ready(terminal, app, textarea, &description, context).await;
+        }
+        Err(e) => app.push_output(
+            format!("Intent clarification failed: {e:#}"),
+            OutputStyle::Error,
+        ),
+    }
+}
+
+async fn handle_intent_draft_answer(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    draft: super::mode::IntentDraft,
+    answer: &str,
+) {
+    if matches!(answer.trim(), "cancel" | "abort") {
+        app.push_output("Intent creation cancelled.", OutputStyle::Dim);
+        return;
+    }
+
+    let mut context = crate::intent::spec::IntentContext {
+        clarification_log: vec![format!("Original request: {}", draft.original_request)],
+        ..crate::intent::spec::IntentContext::default()
+    };
+    for (index, question) in draft.questions.iter().enumerate() {
+        context
+            .clarification_log
+            .push(format!("Question {}: {question}", index + 1));
+    }
+    context.clarification_log.push(format!("Answer: {answer}"));
+
+    let clarified_description = format!(
+        "{}\n\nClarification questions:\n{}\n\nUser clarification answer:\n{}",
+        draft.original_request,
+        draft
+            .questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| format!("{}. {question}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        answer
+    );
+    handle_tui_intent_create_ready(
+        terminal,
+        app,
+        textarea,
+        &clarified_description,
+        Some(context),
+    )
+    .await;
+}
+
+async fn handle_tui_intent_create_ready(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    description: &str,
+    context: Option<crate::intent::spec::IntentContext>,
+) {
+    let model_context = intent_create_model_context(description);
+    let Some(client) = select_client_for_context(app, &model_context) else {
+        app.push_output(
+            "AI not available — use /provider in the REPL or `duumbi provider add ...` to configure a provider.",
+            OutputStyle::Error,
+        );
+        return;
+    };
+    let workspace = app.workspace_root.clone();
+    let mut log = Vec::new();
+    let pending_label =
+        pending_agent_label(AgentRole::Planner, client.as_ref(), "is creating an intent");
+    let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
+        intent::create::run_create_with_context(
+            client.as_ref(),
+            &workspace,
+            description,
+            context,
+            true,
+            &mut log,
+        )
+        .await
+    })
+    .await;
+    for line in &log {
+        app.push_output(line, OutputStyle::Normal);
+    }
+    match result {
+        Ok(slug) => {
+            app.focused_intent = Some(slug.clone());
+            app.push_output(format!("Active intent: {slug}"), OutputStyle::Success);
+        }
+        Err(e) => {
+            app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
         }
     }
 }
@@ -1423,6 +1682,21 @@ fn push_no_intent_selected(app: &mut ReplApp) {
     app.push_output(NO_INTENT_SELECTED_MESSAGE, OutputStyle::Normal);
 }
 
+async fn handle_intent_picker_action(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    slug: &str,
+    action: IntentPickerAction,
+) {
+    match action {
+        IntentPickerAction::Review => handle_intent_review(app, slug),
+        IntentPickerAction::Execute => handle_intent_execute(terminal, app, textarea, slug).await,
+        IntentPickerAction::Edit => handle_intent_edit(terminal, app, textarea, slug),
+        IntentPickerAction::Delete => app.confirm_intent_delete(slug.to_string()),
+    }
+}
+
 fn clear_focused_intent_if_matches(app: &mut ReplApp, slug: &str) {
     if app.focused_intent.as_deref() == Some(slug) {
         app.focused_intent = None;
@@ -1438,67 +1712,6 @@ fn is_missing_intent_error(error: &anyhow::Error, slug: &str) -> bool {
 
     let rendered = format!("{error:#}");
     rendered.contains(&format!("Intent '{slug}' not found in .duumbi/intents/"))
-}
-
-// ---------------------------------------------------------------------------
-// Intent output helpers (capture-to-string wrappers)
-// ---------------------------------------------------------------------------
-
-/// Captures [`intent::review::print_intent_list`] output as lines.
-fn collect_intent_list(workspace: &Path) -> Result<Vec<String>> {
-    // The underlying function prints to stderr; we can't easily redirect it.
-    // Instead, re-implement a lightweight version that returns strings.
-    let intents_dir = workspace.join(".duumbi/intents");
-    let mut lines = Vec::new();
-    if !intents_dir.exists() {
-        lines.push("No active intents.".to_string());
-        return Ok(lines);
-    }
-    let entries: Vec<_> = std::fs::read_dir(&intents_dir)
-        .context("read intents dir")?
-        .flatten()
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "yaml" || ext == "yml")
-        })
-        .collect();
-    if entries.is_empty() {
-        lines.push("No active intents.".to_string());
-    } else {
-        lines.push(format!("Active intents ({}):", entries.len()));
-        for entry in &entries {
-            let name = entry
-                .path()
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            lines.push(format!("  {name}"));
-        }
-    }
-    Ok(lines)
-}
-
-/// Captures [`intent::review::print_intent_detail`] output as lines.
-fn collect_intent_detail(workspace: &Path, name: &str) -> Result<Vec<String>> {
-    let path = workspace.join(format!(".duumbi/intents/{name}.yaml"));
-    if !path.exists() {
-        anyhow::bail!("Intent '{name}' not found.");
-    }
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("reading intent '{name}'"))?;
-    Ok(content.lines().map(|l| l.to_string()).collect())
-}
-
-/// Captures intent status list as lines.
-fn collect_intent_status_list(workspace: &Path) -> Result<Vec<String>> {
-    // Delegate to the list for now — status details live in the YAML.
-    collect_intent_list(workspace)
-}
-
-/// Captures intent status detail as lines.
-fn collect_intent_status_detail(workspace: &Path, name: &str) -> Result<Vec<String>> {
-    collect_intent_detail(workspace, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -2582,6 +2795,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn repl_workspace_root_uses_current_workspace_first() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir_all(dir.path().join(".duumbi")).expect("workspace");
+        fs::create_dir_all(dir.path().join("child/.duumbi")).expect("child workspace");
+
+        let resolved = resolve_repl_workspace_root(dir.path());
+
+        assert_eq!(resolved, dir.path());
+    }
+
+    #[test]
+    fn repl_workspace_root_uses_single_direct_child_workspace() {
+        let dir = TempDir::new().expect("tempdir");
+        let child = dir.path().join("myproject");
+        fs::create_dir_all(child.join(".duumbi/intents")).expect("child workspace");
+
+        let resolved = resolve_repl_workspace_root(dir.path());
+
+        assert_eq!(resolved, child);
+    }
+
+    #[test]
+    fn repl_workspace_root_keeps_parent_when_child_workspace_is_ambiguous() {
+        let dir = TempDir::new().expect("tempdir");
+        fs::create_dir_all(dir.path().join("one/.duumbi")).expect("first workspace");
+        fs::create_dir_all(dir.path().join("two/.duumbi")).expect("second workspace");
+
+        let resolved = resolve_repl_workspace_root(dir.path());
+
+        assert_eq!(resolved, dir.path());
+    }
+
     struct EnvGuard {
         key: &'static str,
         previous: Option<OsString>,
@@ -2910,6 +3156,28 @@ mod tests {
 
         assert_eq!(app.focused_intent, None);
         assert!(status_output(&app).contains(NO_INTENT_SELECTED_MESSAGE));
+    }
+
+    #[test]
+    fn intent_prompt_action_maps_active_intent_commands() {
+        assert_eq!(
+            intent_prompt_action("review"),
+            Some(IntentPromptAction::Review)
+        );
+        assert_eq!(
+            intent_prompt_action("execute"),
+            Some(IntentPromptAction::Execute)
+        );
+        assert_eq!(
+            intent_prompt_action("run"),
+            Some(IntentPromptAction::Execute)
+        );
+        assert_eq!(intent_prompt_action("edit"), Some(IntentPromptAction::Edit));
+        assert_eq!(
+            intent_prompt_action("delete"),
+            Some(IntentPromptAction::Delete)
+        );
+        assert_eq!(intent_prompt_action("add another test"), None);
     }
 
     #[test]

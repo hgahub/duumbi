@@ -487,6 +487,10 @@ pub struct DuumbiConfig {
     /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
 
+    /// Command used to edit files from the TUI, for example `"code --wait"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
+
     /// External MCP server configurations for agent tool access.
     ///
     /// Keys are short server names used in logs and error messages.
@@ -675,6 +679,74 @@ pub fn save_user_config(config: &DuumbiConfig) -> Result<(), ConfigError> {
     save_config_file(&user_config_path(), config)
 }
 
+/// Detects a suitable editor command for TUI file editing.
+#[must_use]
+pub fn discover_editor_command() -> Option<String> {
+    for env_var in ["DUUMBI_EDITOR", "VISUAL", "EDITOR"] {
+        if let Ok(value) = std::env::var(env_var) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && editor_command_is_available(trimmed) {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    for (program, command) in [
+        ("code", "code --wait"),
+        ("cursor", "cursor --wait"),
+        ("zed", "zed --wait"),
+        ("subl", "subl -w"),
+        ("mate", "mate -w"),
+        ("nvim", "nvim"),
+        ("vim", "vim"),
+        ("vi", "vi"),
+    ] {
+        if program_is_available(program) {
+            return Some(command.to_string());
+        }
+    }
+
+    None
+}
+
+fn editor_command_is_available(command: &str) -> bool {
+    parse_editor_command(command)
+        .and_then(|parts| parts.into_iter().next())
+        .is_some_and(|program| program_is_available(&program))
+}
+
+/// Parses an editor command into program and argument parts.
+#[must_use]
+pub(crate) fn parse_editor_command(command: &str) -> Option<Vec<String>> {
+    shlex::split(command).filter(|parts| !parts.is_empty())
+}
+
+fn program_is_available(program: &str) -> bool {
+    let path = Path::new(program);
+    if path.is_absolute() || program.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable_file(path);
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(program)))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
 /// Loads system, user, and workspace config layers and returns the effective runtime config.
 pub fn load_effective_config(workspace_root: &Path) -> Result<EffectiveConfig, ConfigError> {
     let system_config = match load_config_file(Path::new("/etc/duumbi/config.toml")) {
@@ -752,6 +824,9 @@ pub fn merge_config_layers(
 fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     if overlay.workspace.is_some() {
         base.workspace = overlay.workspace.clone();
+    }
+    if overlay.editor.is_some() {
+        base.editor = overlay.editor.clone();
     }
     if !overlay.mcp_clients.is_empty() {
         base.mcp_clients = overlay.mcp_clients.clone();
@@ -1006,6 +1081,36 @@ output_dir = "build"
 
         let cfg = load_config(tmp.path()).expect("config without llm must parse");
         assert!(cfg.llm.is_none());
+    }
+
+    #[test]
+    fn load_config_editor_field() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+editor = "code --wait"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config with editor must parse");
+        assert_eq!(cfg.editor.as_deref(), Some("code --wait"));
+    }
+
+    #[test]
+    fn workspace_editor_overrides_user_editor() {
+        let user = DuumbiConfig {
+            editor: Some("code --wait".to_string()),
+            ..DuumbiConfig::default()
+        };
+        let workspace = DuumbiConfig {
+            editor: Some("zed --wait".to_string()),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+
+        assert_eq!(effective.config.editor.as_deref(), Some("zed --wait"));
     }
 
     #[test]

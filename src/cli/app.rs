@@ -174,6 +174,18 @@ fn truncate_path(path: &str, max_chars: usize) -> String {
     format!("{head}\u{2026}{tail}")
 }
 
+fn truncate_for_width(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let mut out: String = value.chars().take(max_chars - 3).collect();
+    out.push_str("...");
+    out
+}
+
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
     use crate::config::ProviderKind;
@@ -213,8 +225,9 @@ fn configured_provider_index(
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
-    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine,
-    OutputRenderMode, OutputStyle, PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
+    Action, ConversationAction, ConversationBlock, ConversationBlockKind, IntentDraft,
+    IntentPickerAction, IntentPickerItem, OutputLine, OutputRenderMode, OutputStyle,
+    PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
 use super::theme::tui as theme;
 
@@ -753,6 +766,8 @@ pub struct ReplApp {
     pub mode: ReplMode,
     /// Intent slug that is currently focused, if any.
     pub focused_intent: Option<String>,
+    /// Pending intent creation clarification draft.
+    pub intent_draft: Option<IntentDraft>,
     /// Absolute path to the workspace root.
     pub workspace_root: PathBuf,
     /// Parsed workspace configuration.
@@ -869,6 +884,7 @@ impl ReplApp {
         Self {
             mode: ReplMode::default(),
             focused_intent: None,
+            intent_draft: None,
             workspace_root,
             config,
             system_config,
@@ -967,6 +983,12 @@ impl ReplApp {
         }
         if matches!(self.panel, PanelState::InitWorkspace { .. }) {
             return self.handle_init_panel_key(key);
+        }
+        if matches!(self.panel, PanelState::IntentPicker { .. }) {
+            return self.handle_intent_picker_key(key, textarea);
+        }
+        if matches!(self.panel, PanelState::ConfirmIntentDelete { .. }) {
+            return self.handle_confirm_intent_delete_key(key);
         }
 
         if self.conversation_action_menu.is_some() {
@@ -1117,6 +1139,12 @@ impl ReplApp {
             self.insert_text_into_init_panel(text);
             return;
         }
+        if matches!(
+            self.panel,
+            PanelState::IntentPicker { .. } | PanelState::ConfirmIntentDelete { .. }
+        ) {
+            return;
+        }
 
         textarea.insert_str(text);
         let current = textarea.lines().join("\n");
@@ -1133,6 +1161,117 @@ impl ReplApp {
             confirm_overwrite: false,
             status_msg: None,
         };
+    }
+
+    /// Opens the active intent picker panel.
+    pub(crate) fn open_intent_picker(
+        &mut self,
+        intents: Vec<IntentPickerItem>,
+        requested_action: Option<IntentPickerAction>,
+        status_msg: Option<(String, OutputStyle)>,
+    ) {
+        self.clear_slash_menu();
+        let selected = self
+            .focused_intent
+            .as_deref()
+            .and_then(|slug| intents.iter().position(|item| item.slug == slug))
+            .map_or(0, |index| index + 1);
+        self.panel = PanelState::IntentPicker {
+            intents,
+            selected,
+            requested_action,
+            status_msg,
+        };
+    }
+
+    /// Opens a confirmation panel before removing an active intent.
+    pub(crate) fn confirm_intent_delete(&mut self, slug: String) {
+        self.clear_slash_menu();
+        self.panel = PanelState::ConfirmIntentDelete { slug };
+    }
+
+    fn handle_intent_picker_key(
+        &mut self,
+        key_event: KeyEvent,
+        textarea: &mut TextArea<'_>,
+    ) -> Action {
+        let PanelState::IntentPicker {
+            intents,
+            mut selected,
+            requested_action,
+            ..
+        } = self.panel.clone()
+        else {
+            return Action::Continue;
+        };
+        let max = intents.len();
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.panel = PanelState::None;
+                textarea.move_cursor(CursorMove::Head);
+                textarea.delete_line_by_end();
+            }
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+            KeyCode::Down => {
+                selected = (selected + 1).min(max);
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+            KeyCode::Enter => {
+                let slug = selected
+                    .checked_sub(1)
+                    .and_then(|index| intents.get(index))
+                    .map(|item| item.slug.clone());
+                self.focused_intent = slug.clone();
+                self.panel = PanelState::None;
+                textarea.move_cursor(CursorMove::Head);
+                textarea.delete_line_by_end();
+                return Action::IntentSelected {
+                    slug,
+                    requested_action,
+                };
+            }
+            _ => {
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+        }
+        Action::Continue
+    }
+
+    fn handle_confirm_intent_delete_key(&mut self, key_event: KeyEvent) -> Action {
+        let PanelState::ConfirmIntentDelete { slug } = self.panel.clone() else {
+            return Action::Continue;
+        };
+
+        match key_event.code {
+            KeyCode::Char('y' | 'Y') => {
+                self.panel = PanelState::None;
+                Action::IntentDeleteConfirmed { slug }
+            }
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
+                self.panel = PanelState::None;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
     }
 
     fn handle_init_panel_key(&mut self, key_event: KeyEvent) -> Action {
@@ -1325,7 +1464,10 @@ impl ReplApp {
                 input_mode,
                 ..
             } => (*selected, input_mode.clone()),
-            PanelState::None | PanelState::InitWorkspace { .. } => return Action::Continue,
+            PanelState::None
+            | PanelState::InitWorkspace { .. }
+            | PanelState::IntentPicker { .. }
+            | PanelState::ConfirmIntentDelete { .. } => return Action::Continue,
         };
         let mut new_status_msg: Option<(String, OutputStyle)> = None;
         let mut action = Action::Continue;
@@ -2730,6 +2872,22 @@ impl ReplApp {
                     self.render_init_panel(frame, overlay_area, &self.panel);
                 }
             }
+            PanelState::IntentPicker { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(60, 112);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_intent_picker_panel(frame, overlay_area, &self.panel);
+                }
+            }
+            PanelState::ConfirmIntentDelete { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 90);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_intent_delete_panel(frame, overlay_area, &self.panel);
+                }
+            }
         }
     }
 
@@ -2787,6 +2945,20 @@ impl ReplApp {
             PanelState::InitWorkspace {
                 confirm_overwrite, ..
             } => Some(if *confirm_overwrite { 16 } else { 12 }),
+            PanelState::IntentPicker {
+                intents,
+                status_msg,
+                ..
+            } => {
+                let rows = intents.len().max(1) as u16;
+                let status = u16::from(status_msg.is_some()) * 2;
+                // The panel block has borders plus one row of vertical padding
+                // on each side, so the outer height needs four extra rows.
+                let base_rows = if intents.is_empty() { 7 } else { 7 + rows };
+                let content_rows = base_rows + status;
+                Some((content_rows + 4).min(24))
+            }
+            PanelState::ConfirmIntentDelete { .. } => Some(8),
         }
     }
 
@@ -2897,7 +3069,7 @@ impl ReplApp {
                 "TRY ONE OF THESE",
                 vec![
                     Line::from(vec![
-                        Span::styled("/intent create", theme::brand_word()),
+                        Span::styled("/mode intent", theme::brand_word()),
                         Span::raw("  "),
                         Span::styled(
                             "\"Build a calculator with add and multiply\"",
@@ -3821,7 +3993,7 @@ impl ReplApp {
         let placeholder = match self.mode {
             ReplMode::Query => "e.g. \"what modules exist?\" or /help",
             ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
-            ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
+            ReplMode::Intent => "describe a new intent, refine the active intent, or /intent",
         };
 
         if area.height >= 3 {
@@ -4212,6 +4384,141 @@ impl ReplApp {
                 theme::out_dim(),
             )));
         }
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// Renders the active intent picker panel.
+    fn render_intent_picker_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::IntentPicker {
+            intents,
+            selected,
+            status_msg,
+            ..
+        } = panel
+        else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let inner_width = inner.width as usize;
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled("  Active Intents", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(42))),
+            Span::styled("(Esc to close)", theme::out_dim()),
+        ]));
+        lines.push(Line::from(""));
+
+        let clear_style = if *selected == 0 {
+            theme::slash_selected()
+        } else {
+            theme::out_dim()
+        };
+        let clear_marker = if *selected == 0 { "\u{25cf}" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!("  {clear_marker} No active intent / new intent mode"),
+            clear_style,
+        )));
+
+        if intents.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  No unfinished intents. Switch to Intent mode and describe what to build.",
+                theme::out_dim(),
+            )));
+        } else {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<28} {:<12} {:<6} {}",
+                    "Slug", "Status", "Tests", "Description"
+                ),
+                theme::out_dim(),
+            )));
+            for (index, item) in intents.iter().enumerate() {
+                let row = index + 1;
+                let is_selected = *selected == row;
+                let marker = if is_selected { "\u{25cf}" } else { " " };
+                let style = if is_selected {
+                    theme::slash_selected()
+                } else {
+                    theme::out_dim()
+                };
+                let description = truncate_for_width(&item.description, 44);
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {marker} {:<28} {:<12} {:<6} {}",
+                        truncate_for_width(&item.slug, 28),
+                        item.status,
+                        item.test_count,
+                        description
+                    ),
+                    style,
+                )));
+            }
+        }
+
+        if let Some((msg, style)) = status_msg {
+            let status_style = match style {
+                OutputStyle::Success => theme::out_success(),
+                OutputStyle::Error => theme::out_error(),
+                _ => theme::out_dim(),
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("  {msg}"), status_style)));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [\u{2191}/\u{2193}] Select  [Enter] Activate  [Esc] Close",
+            theme::out_dim(),
+        )));
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// Renders the active intent delete confirmation panel.
+    fn render_intent_delete_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::ConfirmIntentDelete { slug } = panel else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(Span::styled("  Delete Intent", theme::brand_word())),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Remove '{slug}' from active work?"),
+                theme::out_error(),
+            )),
+            Line::from(Span::styled(
+                "  The YAML will be moved to .duumbi/intents/deleted/.",
+                theme::out_dim(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("  Confirm? [y/N]", theme::out_dim())),
+        ];
 
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
@@ -4790,7 +5097,7 @@ mod tests {
 
         assert!(rendered.contains(" empty workspace "));
         assert!(rendered.contains("TRY ONE OF THESE"));
-        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/mode intent"));
         assert!(rendered.contains("\"Build a calculator with add and multiply\""));
         assert!(!rendered.contains("Use the prompt"));
 
@@ -5430,7 +5737,7 @@ mod tests {
 
         assert!(rendered.contains("FILTER"));
         assert!(rendered.contains("/intent"));
-        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/intent review"));
         assert!(rendered.contains("/init"));
     }
 
@@ -5451,6 +5758,96 @@ mod tests {
         app.slash_selected = 1;
         let action = app.handle_key(enter, &mut textarea);
         assert!(matches!(action, Action::Submit(cmd) if cmd == "/build"));
+    }
+
+    #[test]
+    fn intent_picker_renders_empty_guidance() {
+        let (mut app, textarea) = make_app();
+        app.open_intent_picker(Vec::new(), None, None);
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("Active Intents"));
+        assert!(rendered.contains("No active intent / new intent mode"));
+        assert!(rendered.contains("No unfinished intents"));
+    }
+
+    #[test]
+    fn intent_picker_enter_selects_intent() {
+        let (mut app, mut textarea) = make_app();
+        app.open_intent_picker(
+            vec![IntentPickerItem {
+                slug: "build-calculator".to_string(),
+                status: "pending".to_string(),
+                description: "Build calculator".to_string(),
+                test_count: 2,
+            }],
+            None,
+            None,
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::IntentSelected {
+                slug: Some(slug),
+                requested_action: None
+            } if slug == "build-calculator"
+        ));
+        assert_eq!(app.focused_intent.as_deref(), Some("build-calculator"));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn intent_picker_renders_first_intent_row() {
+        let (mut app, textarea) = make_app();
+        app.open_intent_picker(
+            vec![IntentPickerItem {
+                slug: "build-calculator".to_string(),
+                status: "pending".to_string(),
+                description: "Build calculator".to_string(),
+                test_count: 4,
+            }],
+            None,
+            None,
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("build-calculator"));
+        assert!(rendered.contains("pending"));
+        assert!(rendered.contains("Build calculator"));
+    }
+
+    #[test]
+    fn intent_delete_confirmation_requires_yes() {
+        let (mut app, mut textarea) = make_app();
+        app.confirm_intent_delete("build-calculator".to_string());
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+
+        app.confirm_intent_delete("build-calculator".to_string());
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+        assert!(matches!(
+            action,
+            Action::IntentDeleteConfirmed { slug } if slug == "build-calculator"
+        ));
     }
 
     #[test]
