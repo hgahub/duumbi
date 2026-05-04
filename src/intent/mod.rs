@@ -71,6 +71,22 @@ pub enum IntentError {
         source: std::io::Error,
     },
 
+    /// Editor command could not be parsed into a program and arguments.
+    #[error("Failed to parse editor command '{editor}'")]
+    EditorCommandParse {
+        /// Editor command.
+        editor: String,
+    },
+
+    /// Editor process exited unsuccessfully.
+    #[error("Editor '{editor}' exited with {status}")]
+    EditorExit {
+        /// Editor command.
+        editor: String,
+        /// Exit status.
+        status: String,
+    },
+
     /// YAML parse error.
     #[error("Failed to parse intent YAML at '{path}': {source}")]
     Parse {
@@ -244,18 +260,14 @@ pub fn unique_slug(workspace: &Path, base_slug: &str) -> String {
             return candidate;
         }
     }
-    format!("{base_slug}-{}", uuid_suffix())
+    format!("{base_slug}-{}", timestamp_suffix())
 }
 
-fn uuid_suffix() -> u64 {
+fn timestamp_suffix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-fn timestamp_suffix() -> u64 {
-    uuid_suffix()
 }
 
 // ---------------------------------------------------------------------------

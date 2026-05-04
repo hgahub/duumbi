@@ -193,6 +193,13 @@ pub enum Action {
         /// Intent slug to remove from active work.
         slug: String,
     },
+    /// Intent picker selected or cleared the active intent.
+    IntentSelected {
+        /// Selected intent slug, or none when the "new intent mode" row was selected.
+        slug: Option<String>,
+        /// Action requested before opening the picker.
+        requested_action: Option<IntentPickerAction>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +241,8 @@ pub enum PanelState {
         intents: Vec<IntentPickerItem>,
         /// Highlighted row, including row zero.
         selected: usize,
+        /// Action to run after a real intent row is selected.
+        requested_action: Option<IntentPickerAction>,
         /// Optional status message shown in the panel.
         status_msg: Option<(String, OutputStyle)>,
     },
@@ -279,6 +288,19 @@ pub struct IntentPickerItem {
     pub description: String,
     /// Number of test cases attached to the intent.
     pub test_count: usize,
+}
+
+/// Intent action requested before opening the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentPickerAction {
+    /// Review the selected intent.
+    Review,
+    /// Execute the selected intent.
+    Execute,
+    /// Edit the selected intent YAML.
+    Edit,
+    /// Delete the selected intent from the active list.
+    Delete,
 }
 
 /// Pending TUI intent creation clarification state.

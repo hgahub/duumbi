@@ -226,8 +226,8 @@ fn configured_provider_index(
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
     Action, ConversationAction, ConversationBlock, ConversationBlockKind, IntentDraft,
-    IntentPickerItem, OutputLine, OutputRenderMode, OutputStyle, PanelInputMode, PanelState,
-    ReplMode, SlashMatch, SlashMenuItem,
+    IntentPickerAction, IntentPickerItem, OutputLine, OutputRenderMode, OutputStyle,
+    PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
 use super::theme::tui as theme;
 
@@ -1167,6 +1167,7 @@ impl ReplApp {
     pub(crate) fn open_intent_picker(
         &mut self,
         intents: Vec<IntentPickerItem>,
+        requested_action: Option<IntentPickerAction>,
         status_msg: Option<(String, OutputStyle)>,
     ) {
         self.clear_slash_menu();
@@ -1178,6 +1179,7 @@ impl ReplApp {
         self.panel = PanelState::IntentPicker {
             intents,
             selected,
+            requested_action,
             status_msg,
         };
     }
@@ -1196,6 +1198,7 @@ impl ReplApp {
         let PanelState::IntentPicker {
             intents,
             mut selected,
+            requested_action,
             ..
         } = self.panel.clone()
         else {
@@ -1214,6 +1217,7 @@ impl ReplApp {
                 self.panel = PanelState::IntentPicker {
                     intents,
                     selected,
+                    requested_action,
                     status_msg: None,
                 };
             }
@@ -1222,22 +1226,29 @@ impl ReplApp {
                 self.panel = PanelState::IntentPicker {
                     intents,
                     selected,
+                    requested_action,
                     status_msg: None,
                 };
             }
             KeyCode::Enter => {
-                self.focused_intent = selected
+                let slug = selected
                     .checked_sub(1)
                     .and_then(|index| intents.get(index))
                     .map(|item| item.slug.clone());
+                self.focused_intent = slug.clone();
                 self.panel = PanelState::None;
                 textarea.move_cursor(CursorMove::Head);
                 textarea.delete_line_by_end();
+                return Action::IntentSelected {
+                    slug,
+                    requested_action,
+                };
             }
             _ => {
                 self.panel = PanelState::IntentPicker {
                     intents,
                     selected,
+                    requested_action,
                     status_msg: None,
                 };
             }
@@ -4385,6 +4396,7 @@ impl ReplApp {
             intents,
             selected,
             status_msg,
+            ..
         } = panel
         else {
             return;
@@ -5751,7 +5763,7 @@ mod tests {
     #[test]
     fn intent_picker_renders_empty_guidance() {
         let (mut app, textarea) = make_app();
-        app.open_intent_picker(Vec::new(), None);
+        app.open_intent_picker(Vec::new(), None, None);
 
         let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
 
@@ -5771,6 +5783,7 @@ mod tests {
                 test_count: 2,
             }],
             None,
+            None,
         );
         app.handle_key(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -5782,7 +5795,13 @@ mod tests {
             &mut textarea,
         );
 
-        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            action,
+            Action::IntentSelected {
+                slug: Some(slug),
+                requested_action: None
+            } if slug == "build-calculator"
+        ));
         assert_eq!(app.focused_intent.as_deref(), Some("build-calculator"));
         assert!(matches!(app.panel, PanelState::None));
     }
@@ -5797,6 +5816,7 @@ mod tests {
                 description: "Build calculator".to_string(),
                 test_count: 4,
             }],
+            None,
             None,
         );
 

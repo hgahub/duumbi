@@ -33,7 +33,7 @@ use crate::snapshot;
 
 use super::app::{ReplApp, Turn};
 use super::commands;
-use super::mode::{OutputStyle, ReplMode};
+use super::mode::{IntentPickerAction, OutputStyle, ReplMode};
 
 const ENABLE_BALANCED_MOUSE_REPORTING: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_ALL_MOUSE_REPORTING: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
@@ -286,6 +286,22 @@ async fn event_loop(
                     }
                     super::mode::Action::IntentDeleteConfirmed { slug } => {
                         handle_confirmed_intent_delete(app, &slug);
+                        should_redraw = true;
+                    }
+                    super::mode::Action::IntentSelected {
+                        slug,
+                        requested_action,
+                    } => {
+                        if let (Some(slug), Some(action)) = (slug, requested_action) {
+                            app.working = matches!(action, IntentPickerAction::Execute);
+                            terminal.draw(|frame| app.render(frame, textarea))?;
+                            last_draw = Instant::now();
+                            handle_intent_picker_action(terminal, app, textarea, &slug, action)
+                                .await;
+                            app.working = false;
+                        } else if requested_action.is_some() {
+                            push_no_intent_selected(app);
+                        }
                         should_redraw = true;
                     }
                 },
@@ -1260,7 +1276,7 @@ async fn handle_intent_slash(
 
     match subcmd {
         "" | "list" => {
-            open_intent_picker(app, None);
+            open_intent_picker(app, None, None);
         }
 
         "create" => {
@@ -1282,6 +1298,7 @@ async fn handle_intent_slash(
             } else {
                 open_intent_picker(
                     app,
+                    Some(IntentPickerAction::Review),
                     Some(("Select an intent to review.".to_string(), OutputStyle::Dim)),
                 );
             }
@@ -1293,6 +1310,7 @@ async fn handle_intent_slash(
             } else {
                 open_intent_picker(
                     app,
+                    Some(IntentPickerAction::Execute),
                     Some(("Select an intent to execute.".to_string(), OutputStyle::Dim)),
                 );
             }
@@ -1304,6 +1322,7 @@ async fn handle_intent_slash(
             } else {
                 open_intent_picker(
                     app,
+                    Some(IntentPickerAction::Edit),
                     Some(("Select an intent to edit.".to_string(), OutputStyle::Dim)),
                 );
             }
@@ -1315,6 +1334,7 @@ async fn handle_intent_slash(
             } else {
                 open_intent_picker(
                     app,
+                    Some(IntentPickerAction::Delete),
                     Some(("Select an intent to delete.".to_string(), OutputStyle::Dim)),
                 );
             }
@@ -1361,9 +1381,13 @@ fn active_intent_slug(app: &ReplApp) -> Option<String> {
     app.focused_intent.clone()
 }
 
-fn open_intent_picker(app: &mut ReplApp, status_msg: Option<(String, OutputStyle)>) {
+fn open_intent_picker(
+    app: &mut ReplApp,
+    requested_action: Option<IntentPickerAction>,
+    status_msg: Option<(String, OutputStyle)>,
+) {
     match collect_intent_picker_items(&app.workspace_root) {
-        Ok(items) => app.open_intent_picker(items, status_msg),
+        Ok(items) => app.open_intent_picker(items, requested_action, status_msg),
         Err(e) => app.push_output(format!("Failed to load intents: {e}"), OutputStyle::Error),
     }
 }
@@ -1656,6 +1680,21 @@ fn is_intent_execute_alias(input: &str) -> bool {
 
 fn push_no_intent_selected(app: &mut ReplApp) {
     app.push_output(NO_INTENT_SELECTED_MESSAGE, OutputStyle::Normal);
+}
+
+async fn handle_intent_picker_action(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    slug: &str,
+    action: IntentPickerAction,
+) {
+    match action {
+        IntentPickerAction::Review => handle_intent_review(app, slug),
+        IntentPickerAction::Execute => handle_intent_execute(terminal, app, textarea, slug).await,
+        IntentPickerAction::Edit => handle_intent_edit(terminal, app, textarea, slug),
+        IntentPickerAction::Delete => app.confirm_intent_delete(slug.to_string()),
+    }
 }
 
 fn clear_focused_intent_if_matches(app: &mut ReplApp, slug: &str) {

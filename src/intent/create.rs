@@ -190,6 +190,7 @@ fn workspace_context_summary(workspace: &Path) -> String {
     let graph_dir = workspace.join(".duumbi/graph");
     let mut modules = Vec::new();
     collect_jsonld_module_paths(&graph_dir, &mut modules);
+    modules.sort();
     if modules.is_empty() {
         return "No graph modules found.".to_string();
     }
@@ -214,7 +215,6 @@ fn collect_jsonld_module_paths(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
             out.push(path);
         }
     }
-    out.sort();
 }
 
 pub(crate) fn parse_clarification_response(

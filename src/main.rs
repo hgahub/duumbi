@@ -103,7 +103,7 @@ fn auto_configure_startup_editor(
     workspace_root: &Path,
     effective_config: config::EffectiveConfig,
 ) -> Result<config::EffectiveConfig> {
-    if effective_config.user_config.editor.is_some() {
+    if effective_config.config.editor.is_some() {
         return Ok(effective_config);
     }
 
@@ -111,11 +111,22 @@ fn auto_configure_startup_editor(
         return Ok(effective_config);
     };
 
-    let mut user_config = effective_config.user_config;
-    user_config.editor = Some(editor);
-    config::save_user_config(&user_config).context("Failed to save startup editor config")?;
-    config::load_effective_config(workspace_root)
-        .context("Failed to reload config after startup editor setup")
+    let mut updated_config = effective_config;
+    updated_config.user_config.editor = Some(editor.clone());
+    updated_config.config.editor = Some(editor);
+
+    if let Err(e) = config::save_user_config(&updated_config.user_config) {
+        eprintln!("warning: failed to save startup editor config: {e}");
+        return Ok(updated_config);
+    }
+
+    match config::load_effective_config(workspace_root) {
+        Ok(reloaded) => Ok(reloaded),
+        Err(e) => {
+            eprintln!("warning: failed to reload config after startup editor setup: {e}");
+            Ok(updated_config)
+        }
+    }
 }
 
 async fn auto_configure_startup_providers(

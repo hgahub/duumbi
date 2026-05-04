@@ -710,22 +710,41 @@ pub fn discover_editor_command() -> Option<String> {
 }
 
 fn editor_command_is_available(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .next()
-        .is_some_and(program_is_available)
+    parse_editor_command(command)
+        .and_then(|parts| parts.into_iter().next())
+        .is_some_and(|program| program_is_available(&program))
+}
+
+/// Parses an editor command into program and argument parts.
+#[must_use]
+pub(crate) fn parse_editor_command(command: &str) -> Option<Vec<String>> {
+    shlex::split(command).filter(|parts| !parts.is_empty())
 }
 
 fn program_is_available(program: &str) -> bool {
     let path = Path::new(program);
     if path.is_absolute() || program.contains(std::path::MAIN_SEPARATOR) {
-        return path.is_file();
+        return is_executable_file(path);
     }
 
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    std::env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(program)))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Loads system, user, and workspace config layers and returns the effective runtime config.

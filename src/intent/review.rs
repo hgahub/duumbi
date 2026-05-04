@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use crate::config::parse_editor_command;
+
 use super::spec::{IntentSpec, IntentStatus};
 use super::{IntentError, list_intents, load_intent};
 
@@ -230,9 +232,12 @@ pub fn edit_intent_with_editor(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .unwrap_or_else(default_editor_command);
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("vi");
-    let args = parts.collect::<Vec<_>>();
+    let parts = parse_editor_command(&editor).ok_or_else(|| IntentError::EditorCommandParse {
+        editor: editor.clone(),
+    })?;
+    let (program, args) = parts
+        .split_first()
+        .expect("invariant: parse_editor_command rejects empty commands");
 
     let status = std::process::Command::new(program)
         .args(args)
@@ -244,7 +249,10 @@ pub fn edit_intent_with_editor(
         })?;
 
     if !status.success() {
-        eprintln!("Editor exited with {status}");
+        return Err(IntentError::EditorExit {
+            editor,
+            status: status.to_string(),
+        });
     }
 
     // Re-validate by loading
