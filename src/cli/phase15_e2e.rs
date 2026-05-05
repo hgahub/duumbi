@@ -419,7 +419,9 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
         },
         Err(e) => {
             let message = format!("{e:#}");
-            let category = if message.to_ascii_lowercase().contains("timed out")
+            let category = if message.contains("Studio UX check failed") {
+                "studio_ux_failed"
+            } else if message.to_ascii_lowercase().contains("timed out")
                 || message.to_ascii_lowercase().contains("timeout")
             {
                 "timeout"
@@ -788,22 +790,32 @@ fn studio_ux_evidence(html: &str) -> Result<Vec<String>> {
         anyhow::bail!("Studio footer labels were {labels:?}, expected {expected:?}");
     }
 
-    let query_default_active = html.contains(r#"class="chat-mode-tab active" data-mode="query""#)
-        || html.contains(r#"data-mode="query" class="chat-mode-tab active""#);
+    let query_default_active =
+        chat_mode_tab_matches(html, "query", &["chat-mode-tab", "active"], &[]);
     if !query_default_active {
         anyhow::bail!("Studio chat did not render Query as the default active mode");
     }
 
-    let query_read_only =
-        html.contains(r#"data-mode="query""#) && html.contains(r#"title="Read-only answers""#);
+    let query_read_only = chat_mode_tab_matches(
+        html,
+        "query",
+        &["chat-mode-tab"],
+        &[r#"title="Read-only answers""#],
+    );
     if !query_read_only {
-        anyhow::bail!("Studio Query mode did not expose read-only UX copy");
+        anyhow::bail!("Studio UX check failed: Query mode did not expose read-only UX copy");
     }
 
-    let agent_mode_available =
-        html.contains(r#"data-mode="agent""#) && html.contains(r#"title="Apply graph changes""#);
+    let agent_mode_available = chat_mode_tab_matches(
+        html,
+        "agent",
+        &["chat-mode-tab"],
+        &[r#"title="Apply graph changes""#],
+    );
     if !agent_mode_available {
-        anyhow::bail!("Studio Agent mode was not available for graph mutation handoff");
+        anyhow::bail!(
+            "Studio UX check failed: Agent mode was not available for graph mutation handoff"
+        );
     }
 
     Ok(vec![
@@ -833,6 +845,46 @@ fn extract_footer_labels(html: &str) -> Vec<String> {
         rest = &rest[text_end..];
     }
     labels
+}
+
+fn chat_mode_tab_matches(
+    html: &str,
+    mode: &str,
+    required_classes: &[&str],
+    required_attrs: &[&str],
+) -> bool {
+    let mode_attr = format!(r#"data-mode="{mode}""#);
+    let mut rest = html;
+    while let Some(start) = rest.find("<button") {
+        rest = &rest[start..];
+        let Some(end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..end];
+        if tag.contains(&mode_attr)
+            && required_classes
+                .iter()
+                .all(|class| tag_class_contains(tag, class))
+            && required_attrs.iter().all(|attr| tag.contains(attr))
+        {
+            return true;
+        }
+        rest = &rest[end + 1..];
+    }
+    false
+}
+
+fn tag_class_contains(tag: &str, expected_class: &str) -> bool {
+    let Some(class_start) = tag.find(r#"class=""#) else {
+        return false;
+    };
+    let value_start = class_start + r#"class=""#.len();
+    let Some(value_end) = tag[value_start..].find('"') else {
+        return false;
+    };
+    tag[value_start..value_start + value_end]
+        .split_whitespace()
+        .any(|class| class == expected_class)
 }
 
 fn build_performance_report(results: &[Phase15AttemptReport]) -> Phase15PerformanceReport {
@@ -873,7 +925,7 @@ fn build_ux_report(results: &[Phase15AttemptReport]) -> Phase15UxReport {
                 checks.push(format!("attempt_{}:{item}", result.attempt));
             }
         }
-        if !result.studio.ok {
+        if result.studio.failure_category.as_deref() == Some("studio_ux_failed") {
             issues.push(format!(
                 "attempt_{}:{}",
                 result.attempt, result.studio.message
@@ -882,7 +934,7 @@ fn build_ux_report(results: &[Phase15AttemptReport]) -> Phase15UxReport {
     }
 
     Phase15UxReport {
-        ok: !checks.is_empty() && issues.is_empty(),
+        ok: issues.is_empty(),
         checks,
         issues,
     }
@@ -984,6 +1036,20 @@ mod tests {
     }
 
     #[test]
+    fn studio_ux_evidence_binds_read_only_title_to_query_tab() {
+        let html = r#"
+            <span class="footer-label">Intents</span>
+            <span class="footer-label">Graph</span>
+            <span class="footer-label">Build</span>
+            <button class="chat-mode-tab active" data-mode="query">Query</button>
+            <button class="other" title="Read-only answers">Other</button>
+            <button class="chat-mode-tab" data-mode="agent" title="Apply graph changes">Agent</button>
+        "#;
+
+        assert!(studio_ux_evidence(html).is_err());
+    }
+
+    #[test]
     fn performance_report_flags_cli_budget_overrun() {
         let result = Phase15AttemptReport {
             attempt: 1,
@@ -1011,5 +1077,67 @@ mod tests {
 
         let report = build_performance_report(&[result]);
         assert!(!report.ok);
+    }
+
+    #[test]
+    fn ux_report_ignores_skipped_studio_failures() {
+        let result = Phase15AttemptReport {
+            attempt: 1,
+            ok: false,
+            cli: Phase15LegReport {
+                ok: false,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 0.0,
+                evidence: Vec::new(),
+                failure_category: Some("provider_error".to_string()),
+            },
+            studio: Phase15LegReport {
+                ok: false,
+                message: "Studio skipped because CLI failed".to_string(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 0.0,
+                evidence: Vec::new(),
+                failure_category: Some("skipped_cli_failed".to_string()),
+            },
+            elapsed_secs: 0.0,
+        };
+
+        let report = build_ux_report(&[result]);
+        assert!(report.ok);
+        assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn ux_report_records_studio_ux_failures() {
+        let result = Phase15AttemptReport {
+            attempt: 1,
+            ok: false,
+            cli: Phase15LegReport {
+                ok: true,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 0.0,
+                evidence: Vec::new(),
+                failure_category: None,
+            },
+            studio: Phase15LegReport {
+                ok: false,
+                message: "Studio failed: Studio UX check failed: Query mode did not expose read-only UX copy".to_string(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 0.0,
+                evidence: Vec::new(),
+                failure_category: Some("studio_ux_failed".to_string()),
+            },
+            elapsed_secs: 0.0,
+        };
+
+        let report = build_ux_report(&[result]);
+        assert!(!report.ok);
+        assert_eq!(report.issues.len(), 1);
     }
 }
