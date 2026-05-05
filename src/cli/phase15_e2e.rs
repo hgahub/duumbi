@@ -30,6 +30,10 @@ pub struct Phase15Report {
     pub attempts: u32,
     /// Per-attempt results.
     pub attempts_results: Vec<Phase15AttemptReport>,
+    /// Aggregate performance measurements for the run.
+    pub performance: Phase15PerformanceReport,
+    /// Aggregate user-experience checks for the run.
+    pub user_experience: Phase15UxReport,
     /// Ralph Loop gate shown after the run.
     pub ralph_gate: RalphGate,
 }
@@ -77,6 +81,28 @@ pub struct RalphGate {
     pub suggest_provider_change: String,
     /// Engineering opinion.
     pub opinion: String,
+}
+
+/// Aggregate performance summary across all attempts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Phase15PerformanceReport {
+    /// Whether measured timings stayed within the Phase 15 budget.
+    pub ok: bool,
+    /// Maximum allowed provider-backed CLI elapsed time.
+    pub cli_budget_secs: f64,
+    /// Per-attempt performance evidence.
+    pub evidence: Vec<String>,
+}
+
+/// Aggregate Studio user-experience summary across all attempts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Phase15UxReport {
+    /// Whether all UX checks passed.
+    pub ok: bool,
+    /// Passing UX checks collected from the Studio leg.
+    pub checks: Vec<String>,
+    /// UX issues collected from failed Studio evidence.
+    pub issues: Vec<String>,
 }
 
 /// Runs the Phase 15 Calculator E2E harness.
@@ -163,6 +189,8 @@ pub async fn run(
     }
 
     let gate = build_ralph_gate(&attempts_results, key_env);
+    let performance = build_performance_report(&attempts_results);
+    let user_experience = build_ux_report(&attempts_results);
     print_ralph_gate(&gate);
 
     let report = Phase15Report {
@@ -170,6 +198,8 @@ pub async fn run(
         provider: provider.to_string(),
         attempts,
         attempts_results,
+        performance,
+        user_experience,
         ralph_gate: gate,
     };
 
@@ -408,6 +438,9 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
     let base = format!("http://127.0.0.1:{port}");
     wait_for_studio(&client, &base).await?;
 
+    let html = client.get(&base).send().await?.text().await?;
+    let mut evidence = studio_ux_evidence(&html)?;
+
     let graph: serde_json::Value = client
         .get(format!("{base}/api/graph/context"))
         .send()
@@ -448,7 +481,7 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         anyhow::bail!("run output did not include calculator evidence: {run}");
     }
 
-    Ok(vec![
+    evidence.extend([
         "shared_backend_workspace=true".to_string(),
         "graph_has_calculator_ops=true".to_string(),
         format!(
@@ -456,7 +489,8 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
             build.get("output_path").unwrap_or(&serde_json::Value::Null)
         ),
         format!("stdout={}", truncate(stdout, 500)),
-    ])
+    ]);
+    Ok(evidence)
 }
 
 async fn wait_for_studio(client: &reqwest::Client, base: &str) -> Result<()> {
@@ -747,6 +781,113 @@ fn output_mentions_calculator_results(stdout: &str) -> bool {
         && (compact.contains("10/2=5") || compact.contains("5"))
 }
 
+fn studio_ux_evidence(html: &str) -> Result<Vec<String>> {
+    let labels = extract_footer_labels(html);
+    let expected = ["Intents", "Graph", "Build"];
+    if labels != expected {
+        anyhow::bail!("Studio footer labels were {labels:?}, expected {expected:?}");
+    }
+
+    let query_default_active = html.contains(r#"class="chat-mode-tab active" data-mode="query""#)
+        || html.contains(r#"data-mode="query" class="chat-mode-tab active""#);
+    if !query_default_active {
+        anyhow::bail!("Studio chat did not render Query as the default active mode");
+    }
+
+    let query_read_only =
+        html.contains(r#"data-mode="query""#) && html.contains(r#"title="Read-only answers""#);
+    if !query_read_only {
+        anyhow::bail!("Studio Query mode did not expose read-only UX copy");
+    }
+
+    let agent_mode_available =
+        html.contains(r#"data-mode="agent""#) && html.contains(r#"title="Apply graph changes""#);
+    if !agent_mode_available {
+        anyhow::bail!("Studio Agent mode was not available for graph mutation handoff");
+    }
+
+    Ok(vec![
+        format!("ux_footer_items={}", labels.join(",")),
+        "ux_query_default_active=true".to_string(),
+        "ux_query_read_only=true".to_string(),
+        "ux_agent_mode_available=true".to_string(),
+    ])
+}
+
+fn extract_footer_labels(html: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut rest = html;
+    while let Some(class_start) = rest.find("footer-label") {
+        rest = &rest[class_start..];
+        let Some(tag_end) = rest.find('>') else {
+            break;
+        };
+        rest = &rest[tag_end + 1..];
+        let Some(text_end) = rest.find('<') else {
+            break;
+        };
+        let label = rest[..text_end].trim();
+        if !label.is_empty() {
+            labels.push(label.to_string());
+        }
+        rest = &rest[text_end..];
+    }
+    labels
+}
+
+fn build_performance_report(results: &[Phase15AttemptReport]) -> Phase15PerformanceReport {
+    let cli_budget_secs = LIVE_LEG_TIMEOUT_SECS as f64;
+    let mut ok = true;
+    let mut evidence = Vec::new();
+    for result in results {
+        if result.cli.elapsed_secs > cli_budget_secs {
+            ok = false;
+        }
+        evidence.push(format!(
+            "attempt_{}_total_elapsed_secs={:.3}",
+            result.attempt, result.elapsed_secs
+        ));
+        evidence.push(format!(
+            "attempt_{}_cli_elapsed_secs={:.3}",
+            result.attempt, result.cli.elapsed_secs
+        ));
+        evidence.push(format!(
+            "attempt_{}_studio_elapsed_secs={:.3}",
+            result.attempt, result.studio.elapsed_secs
+        ));
+    }
+    Phase15PerformanceReport {
+        ok,
+        cli_budget_secs,
+        evidence,
+    }
+}
+
+fn build_ux_report(results: &[Phase15AttemptReport]) -> Phase15UxReport {
+    let mut checks = Vec::new();
+    let mut issues = Vec::new();
+
+    for result in results {
+        for item in &result.studio.evidence {
+            if item.starts_with("ux_") {
+                checks.push(format!("attempt_{}:{item}", result.attempt));
+            }
+        }
+        if !result.studio.ok {
+            issues.push(format!(
+                "attempt_{}:{}",
+                result.attempt, result.studio.message
+            ));
+        }
+    }
+
+    Phase15UxReport {
+        ok: !checks.is_empty() && issues.is_empty(),
+        checks,
+        issues,
+    }
+}
+
 fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGate {
     let all_ok = results.iter().all(|r| r.ok);
     let categories: Vec<&str> = results
@@ -805,4 +946,70 @@ fn truncate(text: &str, max_chars: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn studio_ux_evidence_accepts_phase15_shell() {
+        let html = r#"
+            <div class="footer-item"><span class="footer-label">Intents</span></div>
+            <div class="footer-item"><span class="footer-label">Graph</span></div>
+            <div class="footer-item"><span class="footer-label">Build</span></div>
+            <button class="chat-mode-tab active" data-mode="query" title="Read-only answers">Query</button>
+            <button class="chat-mode-tab" data-mode="agent" title="Apply graph changes">Agent</button>
+        "#;
+
+        let evidence = studio_ux_evidence(html).expect("ux evidence");
+        assert!(evidence.contains(&"ux_footer_items=Intents,Graph,Build".to_string()));
+        assert!(evidence.contains(&"ux_query_default_active=true".to_string()));
+        assert!(evidence.contains(&"ux_query_read_only=true".to_string()));
+        assert!(evidence.contains(&"ux_agent_mode_available=true".to_string()));
+    }
+
+    #[test]
+    fn studio_ux_evidence_rejects_extra_footer_items() {
+        let html = r#"
+            <span class="footer-label">Intents</span>
+            <span class="footer-label">Graph</span>
+            <span class="footer-label">Build</span>
+            <span class="footer-label">Agents</span>
+            <button class="chat-mode-tab active" data-mode="query" title="Read-only answers">Query</button>
+            <button class="chat-mode-tab" data-mode="agent" title="Apply graph changes">Agent</button>
+        "#;
+
+        assert!(studio_ux_evidence(html).is_err());
+    }
+
+    #[test]
+    fn performance_report_flags_cli_budget_overrun() {
+        let result = Phase15AttemptReport {
+            attempt: 1,
+            ok: false,
+            cli: Phase15LegReport {
+                ok: false,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: LIVE_LEG_TIMEOUT_SECS as f64 + 1.0,
+                evidence: Vec::new(),
+                failure_category: Some("provider_timeout".to_string()),
+            },
+            studio: Phase15LegReport {
+                ok: false,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 0.0,
+                evidence: Vec::new(),
+                failure_category: Some("skipped_cli_failed".to_string()),
+            },
+            elapsed_secs: LIVE_LEG_TIMEOUT_SECS as f64 + 1.0,
+        };
+
+        let report = build_performance_report(&[result]);
+        assert!(!report.ok);
+    }
 }

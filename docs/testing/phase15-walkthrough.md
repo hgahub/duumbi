@@ -94,8 +94,9 @@ $DUUMBI phase15-e2e calculator \
 
 The harness creates fresh temp workspaces for CLI and Studio legs, records
 timing, generated slug, graph/module evidence, build/run results, stdout/stderr,
-and a Ralph Gate summary. Each provider-backed leg has an outer 600 second
-timeout so a stalled live call becomes structured evidence instead of hanging.
+aggregate performance, Studio UX checks, and a Ralph Gate summary. Each
+provider-backed leg has an outer 600 second timeout so a stalled live call
+becomes structured evidence instead of hanging.
 
 After each run it prints:
 
@@ -214,6 +215,17 @@ CLI evidence: seeded_learning_records=13, module_calculator_ops_exists=true, run
 CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
 Studio elapsed: 4.369s
 Studio evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
+Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
+
+Report: /tmp/duumbi-phase15-calculator-report-9a93.json
+Result: passed after explicit performance and Studio UX reporting
+CLI elapsed: 95.021s
+Studio elapsed: 3.621s
+Total elapsed: 98.644s
+CLI evidence: seeded_learning_records=16, module_calculator_ops_exists=true, run_exit_code=8
+CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
+Studio UX evidence: footer items were exactly Intents, Graph, Build; Query mode rendered as active/read-only; Agent mode was available for mutation handoff
+Studio backend evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
 Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
 ```
 
