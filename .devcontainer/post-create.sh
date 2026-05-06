@@ -16,6 +16,26 @@ fi
 # Install required Rust components
 rustup component add rustfmt clippy
 
+# Configure npm global installs to use a user-writable prefix.
+# This avoids EACCES errors caused by root-owned global module paths.
+if command -v npm >/dev/null 2>&1; then
+    mkdir -p /home/vscode/.local/bin /home/vscode/.local/lib
+    npm config set prefix /home/vscode/.local
+
+    ensure_path_export() {
+        local rc_file="$1"
+        local export_line='export PATH="$HOME/.local/bin:$PATH"'
+
+        touch "$rc_file"
+        if ! grep -qxF "$export_line" "$rc_file"; then
+            echo "$export_line" >> "$rc_file"
+        fi
+    }
+
+    ensure_path_export /home/vscode/.bashrc
+    ensure_path_export /home/vscode/.profile
+fi
+
 # Install pre-commit hooks if pre-commit is available
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit install --hook-type pre-commit --hook-type commit-msg
