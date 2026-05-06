@@ -56,6 +56,9 @@ fn link_and_run(objects: &std::collections::HashMap<String, Vec<u8>>) -> (String
     for name in &all_names {
         if let Some(bytes) = objects.get(*name) {
             let path = tmp_dir.join(format!("{name}.o"));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("invariant: create obj dir");
+            }
             fs::write(&path, bytes).expect("invariant: write obj");
             obj_paths.push(path);
         }
@@ -118,6 +121,85 @@ fn phase4_two_module_program_links_and_runs() {
 
     assert_eq!(stdout, "42", "expected double(21)=42 printed");
     assert_eq!(exit_code, 42, "expected exit code 42");
+}
+
+#[test]
+fn phase4_qualified_call_disambiguates_duplicate_exports() {
+    let ws = tempfile::TempDir::new().expect("invariant: tempdir must be creatable");
+    let graph_dir = ws.path().join(".duumbi").join("graph");
+    fs::create_dir_all(&graph_dir).expect("invariant: must create graph dir");
+
+    let main_jsonld = r#"{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:functions": [{
+    "@type": "duumbi:Function",
+    "@id": "duumbi:main/main",
+    "duumbi:name": "main",
+    "duumbi:returnType": "i64",
+    "duumbi:blocks": [{
+      "@type": "duumbi:Block",
+      "@id": "duumbi:main/main/entry",
+      "duumbi:label": "entry",
+      "duumbi:ops": [
+        {"@type": "duumbi:Call", "@id": "duumbi:main/main/entry/0",
+          "duumbi:module": "calculator/ops", "duumbi:function": "value",
+          "duumbi:args": [], "duumbi:resultType": "i64"},
+        {"@type": "duumbi:Print", "@id": "duumbi:main/main/entry/1",
+          "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}},
+        {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/2",
+          "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}}
+      ]
+    }]
+  }]
+}"#;
+
+    fn lib_module(name: &str, value: i64) -> String {
+        format!(
+            r#"{{
+  "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:{name}",
+  "duumbi:name": "{name}",
+  "duumbi:exports": ["value"],
+  "duumbi:functions": [{{
+    "@type": "duumbi:Function",
+    "@id": "duumbi:{name}/value",
+    "duumbi:name": "value",
+    "duumbi:returnType": "i64",
+    "duumbi:blocks": [{{
+      "@type": "duumbi:Block",
+      "@id": "duumbi:{name}/value/entry",
+      "duumbi:label": "entry",
+      "duumbi:ops": [
+        {{"@type": "duumbi:Const", "@id": "duumbi:{name}/value/entry/0",
+          "duumbi:value": {value}, "duumbi:resultType": "i64"}},
+        {{"@type": "duumbi:Return", "@id": "duumbi:{name}/value/entry/1",
+          "duumbi:operand": {{"@id": "duumbi:{name}/value/entry/0"}}}}
+      ]
+    }}]
+  }}]
+}}"#
+        )
+    }
+
+    fs::write(graph_dir.join("main.jsonld"), main_jsonld).expect("write main");
+    let calc_path = graph_dir.join("calculator").join("ops.jsonld");
+    fs::create_dir_all(calc_path.parent().unwrap()).expect("create calc dir");
+    fs::write(&calc_path, lib_module("calculator/ops", 42)).expect("write calculator");
+    let utils_path = graph_dir.join("utils").join("ops.jsonld");
+    fs::create_dir_all(utils_path.parent().unwrap()).expect("create utils dir");
+    fs::write(&utils_path, lib_module("utils/ops", 7)).expect("write utils");
+
+    let program = Program::load(ws.path()).expect("qualified duplicate exports must load");
+    let objects =
+        lowering::compile_program(&program).expect("qualified duplicate exports must compile");
+    let (stdout, exit_code) = link_and_run(&objects);
+
+    assert_eq!(stdout, "42", "qualified call must target calculator/ops");
+    assert_eq!(exit_code, 42, "main returns the qualified call result");
 }
 
 // ---------------------------------------------------------------------------

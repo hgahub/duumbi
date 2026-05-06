@@ -296,7 +296,10 @@ fn format_op(op: &crate::types::Op) -> String {
         Op::Return => "return".to_string(),
         Op::Load { variable } => format!("load {variable}"),
         Op::Store { variable } => format!("store {variable}"),
-        Op::Call { function } => format!("call {function}"),
+        Op::Call { module, function } => module.as_ref().map_or_else(
+            || format!("call {function}"),
+            |m| format!("call {m}::{function}"),
+        ),
         Op::Compare(cmp) => format!("compare {cmp:?}"),
         Op::Branch => "branch".to_string(),
         _ => format!("{op:?}"),

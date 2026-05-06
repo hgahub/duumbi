@@ -20,7 +20,7 @@ use target_lexicon::Triple;
 
 use crate::graph::program::Program;
 use crate::graph::{FunctionInfo, GraphEdge, SemanticGraph};
-use crate::types::{CompareOp, DuumbiType, NodeId, Op};
+use crate::types::{CompareOp, DuumbiType, FunctionName, NodeId, Op};
 
 use super::CompileError;
 
@@ -84,6 +84,41 @@ struct RuntimeFuncs {
     string_to_upper: FuncId,
     string_to_lower: FuncId,
     string_replace: FuncId,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedFunction<'a> {
+    key: String,
+    symbol: String,
+    function_name: String,
+    info: &'a FunctionInfo,
+}
+
+fn callable_key(module_name: &str, function_name: &str) -> String {
+    format!("{module_name}::{function_name}")
+}
+
+fn function_symbol_name(module_name: &str, function_name: &str) -> String {
+    if function_name == "main" {
+        "main".to_string()
+    } else {
+        format!(
+            "duumbi__{}__{}",
+            mangle_symbol_component(module_name),
+            mangle_symbol_component(function_name)
+        )
+    }
+}
+
+fn mangle_symbol_component(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => out.push(byte as char),
+            _ => out.push_str(&format!("_x{byte:02x}_")),
+        }
+    }
+    if out.is_empty() { "_".to_string() } else { out }
 }
 
 /// Helper to declare an imported C function with given param/return types.
@@ -332,11 +367,15 @@ pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError>
 #[allow(dead_code)] // Called by CLI in upcoming phase (#61)
 #[must_use = "compilation errors should be handled"]
 pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, CompileError> {
-    // Build a cross-module function info lookup: fn_name → &FunctionInfo
-    let all_fn_info: HashMap<&str, &FunctionInfo> = program
+    // Build a cross-module function info lookup: (module_name, fn_name) → &FunctionInfo
+    let all_fn_info: HashMap<(String, String), &FunctionInfo> = program
         .modules
-        .values()
-        .flat_map(|sg| sg.functions.iter().map(|fi| (fi.name.0.as_str(), fi)))
+        .iter()
+        .flat_map(|(module_name, sg)| {
+            sg.functions
+                .iter()
+                .map(|fi| ((module_name.0.clone(), fi.name.0.clone()), fi))
+        })
         .collect();
 
     // Validate: at most one module may define `main`
@@ -356,10 +395,10 @@ pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, Co
     for (module_name, sg) in &program.modules {
         // Functions exported by this module
         let exported_fns: HashSet<String> = program
-            .exports
+            .qualified_exports
             .iter()
-            .filter(|(_, mn)| mn.0 == module_name.0)
-            .map(|(fn_name, _)| fn_name.0.clone())
+            .filter(|(mn, _)| mn.0 == module_name.0)
+            .map(|(_, fn_name)| fn_name.0.clone())
             .collect();
 
         // Local function names defined in this module
@@ -367,19 +406,44 @@ pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, Co
             sg.functions.iter().map(|f| f.name.0.as_str()).collect();
 
         // Cross-module calls: Call ops targeting functions not in this module
-        let mut imported: HashMap<String, &FunctionInfo> = HashMap::new();
+        let mut imported: HashMap<String, ImportedFunction<'_>> = HashMap::new();
         for node in sg.graph.node_weights() {
-            if let Op::Call { function } = &node.op
-                && !local_fn_names.contains(function.as_str())
-                && !imported.contains_key(function.as_str())
-                && let Some(fi) = all_fn_info.get(function.as_str())
-            {
-                imported.insert(function.clone(), fi);
+            if let Op::Call { module, function } = &node.op {
+                let target_module = if let Some(module) = module {
+                    module.clone()
+                } else if local_fn_names.contains(function.as_str()) {
+                    module_name.0.clone()
+                } else if let Some(resolved_module) =
+                    program.exports.get(&FunctionName(function.clone()))
+                {
+                    resolved_module.0.clone()
+                } else {
+                    continue;
+                };
+
+                if target_module == module_name.0 {
+                    continue;
+                }
+
+                let key = callable_key(&target_module, function);
+                if imported.contains_key(&key) {
+                    continue;
+                }
+                if let Some(fi) = all_fn_info.get(&(target_module.clone(), function.clone())) {
+                    imported.insert(
+                        key.clone(),
+                        ImportedFunction {
+                            key,
+                            symbol: function_symbol_name(&target_module, function),
+                            function_name: function.clone(),
+                            info: fi,
+                        },
+                    );
+                }
             }
         }
 
-        let imported_list: Vec<(&str, &FunctionInfo)> =
-            imported.iter().map(|(n, fi)| (n.as_str(), *fi)).collect();
+        let imported_list: Vec<ImportedFunction<'_>> = imported.into_values().collect();
 
         let obj_bytes = compile_to_object_impl(sg, &exported_fns, &imported_list)?;
         objects.insert(module_name.0.clone(), obj_bytes);
@@ -392,12 +456,12 @@ pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, Co
 ///
 /// - `exported_fns`: function names in this module that get `Linkage::Export`
 ///   (in addition to `main` which is always exported).
-/// - `imported_fns`: `(name, FunctionInfo)` pairs for functions defined in other
-///   modules; declared with `Linkage::Import` so the linker resolves them.
+/// - `imported_fns`: functions defined in other modules; declared with
+///   `Linkage::Import` so the linker resolves them.
 fn compile_to_object_impl(
     graph: &SemanticGraph,
     exported_fns: &HashSet<String>,
-    imported_fns: &[(&str, &FunctionInfo)],
+    imported_fns: &[ImportedFunction<'_>],
 ) -> Result<Vec<u8>, CompileError> {
     let mut obj_module = create_object_module()?;
 
@@ -409,43 +473,62 @@ fn compile_to_object_impl(
 
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     let mut func_sigs: HashMap<String, cranelift_codegen::ir::Signature> = HashMap::new();
+    let mut unqualified_imports: HashMap<String, String> = HashMap::new();
+    let mut ambiguous_unqualified_imports: HashSet<String> = HashSet::new();
 
     // Declare imported cross-module functions (Linkage::Import) first.
     // Their FuncIds are added to func_ids so compile_function can resolve calls.
-    for (name, fi) in imported_fns {
-        let sig = make_func_signature(&obj_module, fi);
+    for import in imported_fns {
+        let sig = make_func_signature(&obj_module, import.info);
         let func_id = obj_module
-            .declare_function(name, Linkage::Import, &sig)
+            .declare_function(&import.symbol, Linkage::Import, &sig)
             .map_err(|e| CompileError::Cranelift {
-                message: format!("Failed to declare imported function '{name}': {e}"),
+                message: format!(
+                    "Failed to declare imported function '{}': {e}",
+                    import.symbol
+                ),
             })?;
-        func_ids.insert((*name).to_string(), func_id);
-        func_sigs.insert((*name).to_string(), sig);
+        func_ids.insert(import.key.clone(), func_id);
+        func_sigs.insert(import.key.clone(), sig);
+        if ambiguous_unqualified_imports.contains(&import.function_name) {
+            continue;
+        }
+        if let Some(existing) = unqualified_imports.get(&import.function_name) {
+            if existing != &import.key {
+                unqualified_imports.remove(&import.function_name);
+                ambiguous_unqualified_imports.insert(import.function_name.clone());
+            }
+        } else {
+            unqualified_imports.insert(import.function_name.clone(), import.key.clone());
+        }
     }
 
     // Declare all local functions.
     // `main` and explicitly exported functions get Linkage::Export.
     for func_info in &graph.functions {
         let sig = make_func_signature(&obj_module, func_info);
+        let key = callable_key(&graph.module_name.0, &func_info.name.0);
+        let symbol = function_symbol_name(&graph.module_name.0, &func_info.name.0);
         let linkage = if func_info.name.0 == "main" || exported_fns.contains(&func_info.name.0) {
             Linkage::Export
         } else {
             Linkage::Local
         };
         let func_id = obj_module
-            .declare_function(&func_info.name.0, linkage, &sig)
+            .declare_function(&symbol, linkage, &sig)
             .map_err(|e| CompileError::Cranelift {
                 message: format!("Failed to declare function '{}': {e}", func_info.name),
             })?;
-        func_ids.insert(func_info.name.0.clone(), func_id);
-        func_sigs.insert(func_info.name.0.clone(), sig);
+        func_ids.insert(key.clone(), func_id);
+        func_sigs.insert(key, sig);
     }
 
     // Define each local function (emit Cranelift IR).
     let mut fn_builder_ctx = FunctionBuilderContext::new();
     for func_info in &graph.functions {
-        let func_id = func_ids[&func_info.name.0];
-        let sig = func_sigs[&func_info.name.0].clone();
+        let key = callable_key(&graph.module_name.0, &func_info.name.0);
+        let func_id = func_ids[&key];
+        let sig = func_sigs[&key].clone();
 
         let mut ctx = Context::new();
         ctx.func.signature = sig;
@@ -458,6 +541,7 @@ fn compile_to_object_impl(
             &mut obj_module,
             &func_ids,
             &func_sigs,
+            &unqualified_imports,
             &runtime,
             &string_data,
         )?;
@@ -529,6 +613,7 @@ fn compile_function(
     obj_module: &mut ObjectModule,
     func_ids: &HashMap<String, FuncId>,
     func_sigs: &HashMap<String, cranelift_codegen::ir::Signature>,
+    unqualified_imports: &HashMap<String, String>,
     runtime: &RuntimeFuncs,
     string_data: &HashMap<String, DataId>,
 ) -> Result<(), CompileError> {
@@ -726,8 +811,20 @@ fn compile_function(
                         .ins()
                         .brif(cond_val, true_block, &[], false_block, &[]);
                 }
-                Op::Call { function } => {
-                    let func_ref = func_refs.get(function).copied().ok_or_else(|| {
+                Op::Call { module, function } => {
+                    let local_key = callable_key(&graph.module_name.0, function);
+                    let target_key = if let Some(module) = module {
+                        callable_key(module, function)
+                    } else if func_refs.contains_key(&local_key) {
+                        local_key
+                    } else {
+                        unqualified_imports
+                            .get(function)
+                            .cloned()
+                            .unwrap_or_else(|| function.clone())
+                    };
+
+                    let func_ref = func_refs.get(&target_key).copied().ok_or_else(|| {
                         CompileError::Cranelift {
                             message: format!("Function '{function}' not found for call"),
                         }
@@ -737,7 +834,7 @@ fn compile_function(
                     let call_inst = builder.ins().call(func_ref, &args);
 
                     // Get return value if the called function returns something
-                    if let Some(target_sig) = func_sigs.get(function)
+                    if let Some(target_sig) = func_sigs.get(&target_key)
                         && !target_sig.returns.is_empty()
                     {
                         let ret_val = builder.inst_results(call_inst)[0];

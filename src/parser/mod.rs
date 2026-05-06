@@ -488,6 +488,10 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
         }
         "duumbi:Call" => {
             let function_name = get_str(value, "duumbi:function", node_id_str)?;
+            let module_name = value
+                .get("duumbi:module")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let args = if let Some(args_val) = value.get("duumbi:args") {
                 if let Some(args_arr) = args_val.as_array() {
                     let mut refs = Vec::with_capacity(args_arr.len());
@@ -513,6 +517,7 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             let mut ast = make_op_ast(
                 NodeId(node_id_str.to_string()),
                 Op::Call {
+                    module: module_name,
                     function: function_name.to_string(),
                 },
                 result_type,
@@ -1202,11 +1207,47 @@ mod tests {
         assert_eq!(
             call.op,
             Op::Call {
+                module: None,
                 function: "fib".to_string()
             }
         );
         assert_eq!(call.args.len(), 1);
         assert_eq!(call.args[0].id.0, "duumbi:t/main/e/0");
+    }
+
+    #[test]
+    fn parse_qualified_call() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 10, "duumbi:resultType": "i64"},
+                        {
+                            "@type": "duumbi:Call",
+                            "@id": "duumbi:t/main/e/1",
+                            "duumbi:module": "calculator/ops",
+                            "duumbi:function": "add",
+                            "duumbi:args": [{"@id": "duumbi:t/main/e/0"}],
+                            "duumbi:resultType": "i64"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let call = &module.functions[0].blocks[0].ops[1];
+        assert_eq!(
+            call.op,
+            Op::Call {
+                module: Some("calculator/ops".to_string()),
+                function: "add".to_string()
+            }
+        );
     }
 
     #[test]

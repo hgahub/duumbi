@@ -114,6 +114,8 @@ pub enum Op {
     Branch,
     /// Function call: `duumbi:Call`
     Call {
+        /// Optional module qualifier for cross-module calls.
+        module: Option<String>,
         /// Name of the function to call.
         function: String,
     },
@@ -292,7 +294,13 @@ impl fmt::Display for Op {
             Op::Div => f.write_str("Div"),
             Op::Compare(op) => write!(f, "Compare({op})"),
             Op::Branch => f.write_str("Branch"),
-            Op::Call { function } => write!(f, "Call({function})"),
+            Op::Call { module, function } => {
+                if let Some(module) = module {
+                    write!(f, "Call({module}::{function})")
+                } else {
+                    write!(f, "Call({function})")
+                }
+            }
             Op::Load { variable } => write!(f, "Load({variable})"),
             Op::Store { variable } => write!(f, "Store({variable})"),
             Op::Print => f.write_str("Print"),
@@ -565,10 +573,19 @@ mod tests {
         assert_eq!(Op::Branch.to_string(), "Branch");
         assert_eq!(
             Op::Call {
+                module: None,
                 function: "fib".to_string()
             }
             .to_string(),
             "Call(fib)"
+        );
+        assert_eq!(
+            Op::Call {
+                module: Some("math/ops".to_string()),
+                function: "fib".to_string()
+            }
+            .to_string(),
+            "Call(math/ops::fib)"
         );
         assert_eq!(
             Op::Load {

@@ -28,8 +28,13 @@ use crate::types::{FunctionName, ModuleName, Op};
 pub struct Program {
     /// Per-module semantic graphs, keyed by module name.
     pub modules: HashMap<ModuleName, SemanticGraph>,
-    /// Cross-module export table: exported function name → owning module.
+    /// Unambiguous cross-module export table: exported function name → owning module.
+    ///
+    /// Function names exported by more than one module are intentionally omitted
+    /// from this table and must be called with `duumbi:module`.
     pub exports: HashMap<FunctionName, ModuleName>,
+    /// Complete export table keyed by `(module, function)`.
+    pub qualified_exports: HashSet<(ModuleName, FunctionName)>,
 }
 
 /// Errors produced while loading a multi-module program.
@@ -66,6 +71,38 @@ pub enum ProgramError {
         function: String,
         /// The module containing the unresolved call.
         from_module: String,
+    },
+
+    /// A qualified `Call` op references a function that is not exported by the named module.
+    #[error(
+        "[{code}] Unresolved qualified cross-module reference: \
+         '{target_module}::{function}' called from module '{from_module}' is not exported"
+    )]
+    UnresolvedQualifiedCrossModuleRef {
+        /// Error code (E010).
+        code: &'static str,
+        /// The target module name.
+        target_module: String,
+        /// The callee function name.
+        function: String,
+        /// The module containing the unresolved call.
+        from_module: String,
+    },
+
+    /// An unqualified `Call` op matches more than one exported function.
+    #[error(
+        "[{code}] Ambiguous cross-module reference: '{function}' called from module \
+         '{from_module}' is exported by multiple modules: {candidates}"
+    )]
+    AmbiguousCrossModuleRef {
+        /// Error code (E010).
+        code: &'static str,
+        /// The callee function name.
+        function: String,
+        /// The module containing the ambiguous call.
+        from_module: String,
+        /// Candidate module names for this function.
+        candidates: String,
     },
 }
 
@@ -172,15 +209,18 @@ impl Program {
             }
         }
 
-        // Step 2: collect the combined export table (fn_name → module_name)
-        let all_exports: HashMap<String, String> = selected_asts
-            .iter()
-            .flat_map(|ast| {
-                ast.exports
-                    .iter()
-                    .map(|fn_name| (fn_name.clone(), ast.name.0.clone()))
-            })
-            .collect();
+        // Step 2: collect exports by both short and qualified names.
+        let mut exports_by_name: HashMap<String, Vec<String>> = HashMap::new();
+        let mut qualified_exports: HashSet<(ModuleName, FunctionName)> = HashSet::new();
+        for ast in &selected_asts {
+            for fn_name in &ast.exports {
+                exports_by_name
+                    .entry(fn_name.clone())
+                    .or_default()
+                    .push(ast.name.0.clone());
+                qualified_exports.insert((ast.name.clone(), FunctionName(fn_name.clone())));
+            }
+        }
 
         // Step 3: build per-module graphs without intra-module Call validation.
         // Cross-module calls are validated in step 4 using the export table.
@@ -207,20 +247,45 @@ impl Program {
         }
 
         // Step 4: cross-module call validation (E010)
-        // For each Call op, if the callee is not local and not exported → E010
         for (module_name, sg) in &modules {
             let local_fns: HashSet<&FunctionName> = sg.functions.iter().map(|f| &f.name).collect();
 
             for node in sg.graph.node_weights() {
-                if let Op::Call { function } = &node.op {
+                if let Op::Call { module, function } = &node.op {
                     let callee = FunctionName(function.clone());
-                    if !local_fns.contains(&callee) && !all_exports.contains_key(function.as_str())
-                    {
-                        errors.push(ProgramError::UnresolvedCrossModuleRef {
-                            code: codes::E010_UNRESOLVED_CROSS_MODULE,
-                            function: function.clone(),
-                            from_module: module_name.0.clone(),
-                        });
+                    if let Some(target_module) = module {
+                        let qualified_target = (ModuleName(target_module.clone()), callee);
+                        let is_local_qualified = target_module == &module_name.0
+                            && local_fns.contains(&qualified_target.1);
+                        if !is_local_qualified && !qualified_exports.contains(&qualified_target) {
+                            errors.push(ProgramError::UnresolvedQualifiedCrossModuleRef {
+                                code: codes::E010_UNRESOLVED_CROSS_MODULE,
+                                target_module: target_module.clone(),
+                                function: function.clone(),
+                                from_module: module_name.0.clone(),
+                            });
+                        }
+                    } else if !local_fns.contains(&callee) {
+                        match exports_by_name.get(function.as_str()).map(Vec::as_slice) {
+                            Some([_]) => {}
+                            Some(candidates) if candidates.len() > 1 => {
+                                let mut sorted = candidates.to_vec();
+                                sorted.sort();
+                                errors.push(ProgramError::AmbiguousCrossModuleRef {
+                                    code: codes::E010_UNRESOLVED_CROSS_MODULE,
+                                    function: function.clone(),
+                                    from_module: module_name.0.clone(),
+                                    candidates: sorted.join(", "),
+                                });
+                            }
+                            _ => {
+                                errors.push(ProgramError::UnresolvedCrossModuleRef {
+                                    code: codes::E010_UNRESOLVED_CROSS_MODULE,
+                                    function: function.clone(),
+                                    from_module: module_name.0.clone(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -230,13 +295,23 @@ impl Program {
             return Err(errors);
         }
 
-        // Build the typed export table from all_exports
-        let exports: HashMap<FunctionName, ModuleName> = all_exports
+        // Build the typed unambiguous export table from exports_by_name.
+        let exports: HashMap<FunctionName, ModuleName> = exports_by_name
             .into_iter()
-            .map(|(fn_name, mod_name)| (FunctionName(fn_name), ModuleName(mod_name)))
+            .filter_map(|(fn_name, modules)| {
+                if let [module_name] = modules.as_slice() {
+                    Some((FunctionName(fn_name), ModuleName(module_name.clone())))
+                } else {
+                    None
+                }
+            })
             .collect();
 
-        Ok(Program { modules, exports })
+        Ok(Program {
+            modules,
+            exports,
+            qualified_exports,
+        })
     }
 }
 
@@ -339,6 +414,69 @@ mod tests {
                 }},
                 {{"@type": "duumbi:Return", "@id": "duumbi:{name}/main/entry/2",
                   "duumbi:operand": {{"@id": "duumbi:{name}/main/entry/1"}}}}
+            ]
+        }}]
+    }}]
+}}"#
+        )
+    }
+
+    fn make_module_with_qualified_call(name: &str, target_module: &str, callee: &str) -> String {
+        format!(
+            r#"{{
+    "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:{name}",
+    "duumbi:name": "{name}",
+    "duumbi:functions": [{{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:{name}/main",
+        "duumbi:name": "main",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:{name}/main/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {{
+                    "@type": "duumbi:Call",
+                    "@id": "duumbi:{name}/main/entry/0",
+                    "duumbi:module": "{target_module}",
+                    "duumbi:function": "{callee}",
+                    "duumbi:args": [],
+                    "duumbi:resultType": "i64"
+                }},
+                {{"@type": "duumbi:Return", "@id": "duumbi:{name}/main/entry/1",
+                  "duumbi:operand": {{"@id": "duumbi:{name}/main/entry/0"}}}}
+            ]
+        }}]
+    }}]
+}}"#
+        )
+    }
+
+    fn make_library_function_module(name: &str, function: &str, value: i64) -> String {
+        format!(
+            r#"{{
+    "@context": {{"duumbi": "https://duumbi.dev/ns/core#"}},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:{name}",
+    "duumbi:name": "{name}",
+    "duumbi:exports": ["{function}"],
+    "duumbi:functions": [{{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:{name}/{function}",
+        "duumbi:name": "{function}",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:{name}/{function}/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {{"@type": "duumbi:Const", "@id": "duumbi:{name}/{function}/entry/0",
+                  "duumbi:value": {value}, "duumbi:resultType": "i64"}},
+                {{"@type": "duumbi:Return", "@id": "duumbi:{name}/{function}/entry/1",
+                  "duumbi:operand": {{"@id": "duumbi:{name}/{function}/entry/0"}}}}
             ]
         }}]
     }}]
@@ -456,6 +594,56 @@ mod tests {
                     if function == "secret" && *code == codes::E010_UNRESOLVED_CROSS_MODULE
             )),
             "expected E010 for unresolved 'secret', got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn qualified_call_resolves_duplicate_export_name() {
+        let app = make_module_with_qualified_call("app", "calculator/ops", "helper");
+        let calculator = make_library_function_module("calculator/ops", "helper", 42);
+        let utils = make_library_function_module("utils/ops", "helper", 7);
+
+        let ws = write_workspace(&[
+            ("app.jsonld", &app),
+            ("calculator/ops.jsonld", &calculator),
+            ("utils/ops.jsonld", &utils),
+        ]);
+
+        let program = Program::load(ws.path()).expect("qualified duplicate export must load");
+        assert!(program.qualified_exports.contains(&(
+            ModuleName("calculator/ops".to_string()),
+            FunctionName("helper".to_string())
+        )));
+        assert!(
+            !program
+                .exports
+                .contains_key(&FunctionName("helper".to_string())),
+            "duplicate short exports must not be available for unqualified calls"
+        );
+    }
+
+    #[test]
+    fn unqualified_call_to_duplicate_export_name_is_ambiguous() {
+        let app = make_module_with_call("app", "helper", &[]);
+        let calculator = make_library_function_module("calculator/ops", "helper", 42);
+        let utils = make_library_function_module("utils/ops", "helper", 7);
+
+        let ws = write_workspace(&[
+            ("app.jsonld", &app),
+            ("calculator/ops.jsonld", &calculator),
+            ("utils/ops.jsonld", &utils),
+        ]);
+
+        let errors = Program::load(ws.path()).expect_err("unqualified duplicate export must fail");
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ProgramError::AmbiguousCrossModuleRef { function, candidates, .. }
+                    if function == "helper"
+                        && candidates.contains("calculator/ops")
+                        && candidates.contains("utils/ops")
+            )),
+            "expected ambiguous helper error, got: {errors:?}"
         );
     }
 

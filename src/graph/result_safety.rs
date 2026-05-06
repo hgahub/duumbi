@@ -469,6 +469,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "may_fail".to_string(),
                     },
                     Some(result_ty.clone()),
@@ -493,6 +494,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "may_fail".to_string(),
                     },
                     Some(result_ty),
@@ -521,6 +523,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "find".to_string(),
                     },
                     Some(option_ty),
@@ -545,6 +548,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "find".to_string(),
                     },
                     Some(option_ty),
@@ -598,6 +602,7 @@ mod tests {
         let call_idx = graph.add_node(GraphNode {
             id: nid("call0"),
             op: Op::Call {
+                module: None,
                 function: "f".to_string(),
             },
             result_type: Some(result_ty.clone()),
@@ -745,6 +750,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "f".to_string(),
                     },
                     Some(result_ty),
@@ -783,6 +789,7 @@ mod tests {
                 (
                     nid("call0"),
                     Op::Call {
+                        module: None,
                         function: "f".to_string(),
                     },
                     Some(result_ty),

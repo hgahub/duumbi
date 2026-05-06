@@ -108,11 +108,12 @@ impl Task {
             TaskKind::CreateModule { module_name } => {
                 format!(
                     "Create a new module named '{}'. {} \
-                     IMPORTANT: This is a standalone module (NOT the main module). \
-                     You MUST add all function names to the \"duumbi:exports\" array \
-                     so they can be called from other modules. Do NOT add a main function \
-                     to this module — it is a library module.",
-                    module_name, self.description
+	                     IMPORTANT: This is a standalone module (NOT the main module). \
+	                     Set both @id and duumbi:name from the full module name '{}'. \
+	                     You MUST add all function names to the \"duumbi:exports\" array \
+	                     so they can be called from other modules. Do NOT add a main function \
+	                     to this module — it is a library module.",
+                    module_name, self.description, module_name
                 )
             }
             TaskKind::AddFunction {

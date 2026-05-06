@@ -85,14 +85,21 @@ fn build_graph_impl(
                 // In multi-module mode (validate_calls = false) this check is
                 // skipped; the program layer performs cross-module validation.
                 if validate_calls
-                    && let crate::types::Op::Call { ref function } = op_ast.op
-                    && !function_names.contains(function.as_str())
+                    && let crate::types::Op::Call {
+                        module: ref call_module,
+                        ref function,
+                    } = op_ast.op
                 {
-                    errors.push(GraphError::OrphanRef {
-                        code: codes::E004_ORPHAN_REF,
-                        from_node: op_ast.id.0.clone(),
-                        target: function.clone(),
-                    });
+                    let is_local_call = call_module
+                        .as_deref()
+                        .is_none_or(|m| m == module.name.0.as_str());
+                    if is_local_call && !function_names.contains(function.as_str()) {
+                        errors.push(GraphError::OrphanRef {
+                            code: codes::E004_ORPHAN_REF,
+                            from_node: op_ast.id.0.clone(),
+                            target: function.clone(),
+                        });
+                    }
                 }
 
                 let node = GraphNode {
@@ -454,6 +461,7 @@ mod tests {
                     ops: vec![OpAst {
                         id: NodeId("duumbi:test/main/entry/0".to_string()),
                         op: Op::Call {
+                            module: None,
                             function: "nonexistent".to_string(),
                         },
                         result_type: Some(DuumbiType::I64),

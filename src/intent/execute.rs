@@ -160,9 +160,9 @@ pub async fn run_execute_with_progress(
                 prompt.push_str(&format!(
                     "\n\nAvailable functions from other modules (do NOT re-define these, \
                      just call them):\n{exports_summary}\n\
-                     IMPORTANT: When creating Call ops to these functions, use ONLY the plain \
-                     function name in \"duumbi:function\" (e.g., \"add\", NOT \"ops:add\" or \
-                     \"module:add\"). The module resolution is automatic."
+                     IMPORTANT: When creating cross-module Call ops to these functions, set \
+                     \"duumbi:module\" to the owning module name and keep \"duumbi:function\" \
+                     as the plain function name."
                 ));
             }
         }
@@ -660,14 +660,11 @@ fn module_name_to_relative_path(module_name: &str) -> PathBuf {
 /// expected to populate it with the names of functions it creates. The
 /// system prompt in [`build_task_prompt`] reminds the LLM to do this.
 fn empty_module_template(module_name: &str) -> serde_json::Value {
-    // Use the last path component as the short name for ids
-    let short_name = module_name.rsplit('/').next().unwrap_or(module_name);
-
     json!({
         "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
         "@type": "duumbi:Module",
-        "@id": format!("duumbi:{short_name}"),
-        "duumbi:name": short_name,
+        "@id": format!("duumbi:{module_name}"),
+        "duumbi:name": module_name,
         "duumbi:exports": [],
         "duumbi:functions": []
     })
@@ -738,7 +735,7 @@ fn collect_module_exports(graph_dir: &Path) -> String {
 
         if !sigs.is_empty() {
             lines.push(format!(
-                "- from module \"{}\": {} (call with plain name, e.g. \"add\" not \"{}:add\")",
+                "- from module \"{}\": {} (call with duumbi:module \"{}\" and plain duumbi:function)",
                 module_name,
                 sigs.join(", "),
                 module_name
@@ -1027,5 +1024,12 @@ mod tests {
             module_name_to_relative_path("../calculator weird/ops"),
             PathBuf::from("calculator_weird/ops.jsonld")
         );
+    }
+
+    #[test]
+    fn empty_module_template_preserves_full_module_identity() {
+        let template = empty_module_template("calculator/ops");
+        assert_eq!(template["@id"], "duumbi:calculator/ops");
+        assert_eq!(template["duumbi:name"], "calculator/ops");
     }
 }

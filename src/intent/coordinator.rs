@@ -140,20 +140,25 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
 
     let main_desc = if test_summary.is_empty() {
         format!(
-            "Update the main function to demonstrate the implementation. Modules: {}",
+            "Update the main function to demonstrate the implementation. Modules: {}. \
+             Demo main must return 0 after printing.",
             all_modules.join(", ")
         )
     } else {
         format!(
             "Update the main function to call and demonstrate: {test_summary}. \
-             The binary must exit with the result of the first call.\n\n\
+             The binary must return 0 after printing all demonstration lines.\n\n\
+             FUNCTION CALLS: When calling an exported function from another module, \
+             include \"duumbi:module\" with the owning module name and keep \
+             \"duumbi:function\" as the plain function name.\n\n\
              OUTPUT FORMAT: The program MUST produce human-readable formatted output.\n\
              1. Print a header: ConstString(\"=== {intent_title} ===\") → PrintString\n\
              2. For EACH test case, print a labeled result line:\n\
                 ConstString(\"func(a, b) = \") → StringFromI64(call_result) → StringConcat → PrintString\n\
+             3. End with ConstI64(0) → Return so successful demos exit cleanly.\n\
              Use this exact pattern for each line:\n\
                op/0: ConstString(\"func(args) = \")\n\
-               op/1: [Call the function → get i64 result]\n\
+               op/1: [Call the function → get i64 result; use duumbi:module for cross-module calls]\n\
                op/2: StringFromI64(op/1)\n\
                op/3: StringConcat(op/0, op/2)\n\
                op/4: PrintString(op/3)\n\
@@ -485,6 +490,27 @@ mod tests {
             !create_task.description.contains("main"),
             "exports hint must not include 'main'; got: {}",
             create_task.description
+        );
+    }
+
+    #[test]
+    fn modify_main_prompt_uses_qualified_calls_and_returns_zero() {
+        let spec = sample_spec();
+        let tasks = decompose(&spec);
+        let main_task = tasks
+            .iter()
+            .find(|t| matches!(&t.kind, TaskKind::ModifyMain { .. }))
+            .expect("must have main task");
+
+        assert!(
+            main_task.description.contains("duumbi:module"),
+            "main prompt must guide qualified cross-module calls: {}",
+            main_task.description
+        );
+        assert!(
+            main_task.description.contains("return 0"),
+            "main prompt must tell demo mains to return 0: {}",
+            main_task.description
         );
     }
 
