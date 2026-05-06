@@ -56,6 +56,12 @@ pub struct RuntimeLogging {
 }
 
 impl RuntimeLogging {
+    /// Returns a runtime logging handle with file and performance logging disabled.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self { performance: None }
+    }
+
     /// Returns the active performance logger, if command timing is enabled.
     #[must_use]
     pub fn performance(&self) -> Option<&PerformanceLogger> {
@@ -205,8 +211,8 @@ pub fn resolve_logging(
     let general = logging.general;
     let performance = logging.performance;
 
-    let mut general_level = if general.enabled {
-        Some(general.level)
+    let mut general_level = if general.effective_enabled() {
+        Some(general.effective_level())
     } else {
         None
     };
@@ -216,9 +222,11 @@ pub fn resolve_logging(
     let general_path = overrides
         .general_path
         .clone()
-        .or(general.path)
+        .or_else(|| general.path.clone())
         .or_else(|| default_log_path(workspace_root, DEFAULT_GENERAL_LOG));
-    let general_mode = overrides.general_mode.unwrap_or(general.mode);
+    let general_mode = overrides
+        .general_mode
+        .unwrap_or_else(|| general.effective_mode());
     if general_level == Some(LogLevel::Off) {
         general_level = None;
     }
@@ -229,11 +237,13 @@ pub fn resolve_logging(
             overrides
                 .performance_path
                 .clone()
-                .or(performance.path)
+                .or_else(|| performance.path.clone())
                 .or_else(|| default_log_path(workspace_root, DEFAULT_PERFORMANCE_LOG))
         })
         .flatten();
-    let performance_mode = overrides.performance_mode.unwrap_or(performance.mode);
+    let performance_mode = overrides
+        .performance_mode
+        .unwrap_or_else(|| performance.effective_mode());
 
     ResolvedLogging {
         general_level: general_path.as_ref().and(general_level),
@@ -250,7 +260,7 @@ fn resolve_performance_enabled(
 ) -> bool {
     overrides
         .performance_enabled
-        .unwrap_or(performance.enabled || overrides.performance_path.is_some())
+        .unwrap_or(performance.effective_enabled() || overrides.performance_path.is_some())
 }
 
 fn default_log_path(workspace_root: &Path, relative: &str) -> Option<PathBuf> {
@@ -288,8 +298,7 @@ fn init_general_logging(path: &Path, mode: LogMode, level: LogLevel) -> io::Resu
         .with_ansi(false)
         .with_writer(writer)
         .finish();
-    let _ = subscriber.try_init();
-    Ok(())
+    subscriber.try_init().map_err(io::Error::other)
 }
 
 fn open_log_file(path: &Path, mode: LogMode) -> io::Result<File> {
@@ -383,7 +392,7 @@ mod tests {
         let config = DuumbiConfig {
             logging: Some(LoggingSection {
                 general: GeneralLoggingSection {
-                    enabled: false,
+                    enabled: Some(false),
                     ..GeneralLoggingSection::default()
                 },
                 ..LoggingSection::default()

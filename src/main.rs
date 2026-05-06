@@ -72,17 +72,11 @@ async fn main() {
                 process::exit(1);
             }
         };
-        let logging_runtime = match logging::initialize(
+        let logging_runtime = initialize_logging(
             &workspace_root,
             &config.config,
             &logging::LoggingOverrides::default(),
-        ) {
-            Ok(runtime) => runtime,
-            Err(e) => {
-                eprintln!("error: failed to initialize logging: {e}");
-                process::exit(1);
-            }
-        };
+        );
         let repl_started = logging_runtime
             .performance()
             .map(|performance| performance.record_start("repl"));
@@ -116,19 +110,13 @@ async fn main() {
     }
 
     let cli = Cli::parse();
-    let workspace_root = PathBuf::from(".");
+    let workspace_root = logging_workspace_root(&cli.command);
     let command_name = command_name(&cli.command);
     let logging_config = config::load_effective_config(&workspace_root)
         .map(|effective| effective.config)
         .unwrap_or_default();
     let logging_runtime =
-        match logging::initialize(&workspace_root, &logging_config, &logging_overrides(&cli)) {
-            Ok(runtime) => runtime,
-            Err(e) => {
-                eprintln!("error: failed to initialize logging: {e}");
-                process::exit(1);
-            }
-        };
+        initialize_logging(&workspace_root, &logging_config, &logging_overrides(&cli));
     let command_started = logging_runtime
         .performance()
         .map(|performance| performance.record_start(command_name));
@@ -156,6 +144,34 @@ fn logging_overrides(cli: &Cli) -> logging::LoggingOverrides {
         performance_enabled: cli.perf_log.then_some(true),
         performance_path: cli.perf_log_file.clone(),
         performance_mode: cli.perf_log_mode.map(Into::into),
+    }
+}
+
+fn initialize_logging(
+    workspace_root: &Path,
+    config: &config::DuumbiConfig,
+    overrides: &logging::LoggingOverrides,
+) -> logging::RuntimeLogging {
+    match logging::initialize(workspace_root, config, overrides) {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("warning: failed to initialize logging: {e}");
+            logging::RuntimeLogging::disabled()
+        }
+    }
+}
+
+fn logging_workspace_root(command: &Commands) -> PathBuf {
+    match command {
+        Commands::Build {
+            input: Some(input), ..
+        }
+        | Commands::Check { input: Some(input) }
+        | Commands::Describe { input: Some(input) } => {
+            cli::commands::workspace_root_for_graph_input(input)
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
+        _ => PathBuf::from("."),
     }
 }
 

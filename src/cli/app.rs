@@ -1550,18 +1550,24 @@ impl ReplApp {
             .get_or_insert_with(LoggingSection::default);
         match selected {
             0 => {
-                let next = cycle_log_level(logging.general.level, forward);
-                logging.general.level = next;
-                logging.general.enabled = next != LogLevel::Off;
+                let current = if logging.general.effective_enabled() {
+                    logging.general.effective_level()
+                } else {
+                    LogLevel::Off
+                };
+                let next = cycle_log_level(current, forward);
+                logging.general.level = Some(next);
+                logging.general.enabled = Some(next != LogLevel::Off);
             }
             1 => {
-                logging.general.mode = cycle_log_mode(logging.general.mode);
+                logging.general.mode = Some(cycle_log_mode(logging.general.effective_mode()));
             }
             2 => {
-                logging.performance.enabled = !logging.performance.enabled;
+                logging.performance.enabled = Some(!logging.performance.effective_enabled());
             }
             3 => {
-                logging.performance.mode = cycle_log_mode(logging.performance.mode);
+                logging.performance.mode =
+                    Some(cycle_log_mode(logging.performance.effective_mode()));
             }
             _ => {}
         }
@@ -3069,7 +3075,7 @@ impl ReplApp {
                 }
             }),
             PanelState::UserConfig { status_msg, .. } => {
-                Some(Self::USER_CONFIG_ROWS as u16 + 8 + u16::from(status_msg.is_some()))
+                Some(Self::USER_CONFIG_ROWS as u16 + 10 + 2 * u16::from(status_msg.is_some()))
             }
             PanelState::InitWorkspace {
                 confirm_overwrite, ..
@@ -4452,21 +4458,24 @@ impl ReplApp {
         frame.render_widget(block, area);
 
         let logging = self.user_config.logging.clone().unwrap_or_default();
-        let general_level = if logging.general.enabled {
-            logging.general.level
+        let general_level = if logging.general.effective_enabled() {
+            logging.general.effective_level()
         } else {
             LogLevel::Off
         };
-        let performance = if logging.performance.enabled {
+        let performance = if logging.performance.effective_enabled() {
             "enabled"
         } else {
             "disabled"
         };
         let rows = [
             ("General level", general_level.to_string()),
-            ("General mode", logging.general.mode.to_string()),
+            ("General mode", logging.general.effective_mode().to_string()),
             ("Performance log", performance.to_string()),
-            ("Performance mode", logging.performance.mode.to_string()),
+            (
+                "Performance mode",
+                logging.performance.effective_mode().to_string(),
+            ),
         ];
 
         let mut lines: Vec<Line<'_>> = Vec::new();
@@ -6163,8 +6172,8 @@ mod tests {
         );
 
         let logging = app.user_config.logging.expect("logging settings");
-        assert_eq!(logging.general.level, LogLevel::Warn);
-        assert!(logging.general.enabled);
+        assert_eq!(logging.general.level, Some(LogLevel::Warn));
+        assert_eq!(logging.general.enabled, Some(true));
         assert!(matches!(
             app.panel,
             PanelState::UserConfig {
@@ -6195,7 +6204,10 @@ mod tests {
         );
 
         let saved = crate::config::load_user_config().expect("user config must save");
-        assert!(saved.logging.expect("logging settings").performance.enabled);
+        assert_eq!(
+            saved.logging.expect("logging settings").performance.enabled,
+            Some(true)
+        );
     }
 
     #[test]
