@@ -289,7 +289,9 @@ fn emit_program_error_diagnostics(err: &deps::DepsError) {
     if let deps::DepsError::Program(errors) = err {
         for e in errors {
             match e {
-                ProgramError::UnresolvedCrossModuleRef { code, .. } => {
+                ProgramError::UnresolvedCrossModuleRef { code, .. }
+                | ProgramError::UnresolvedQualifiedCrossModuleRef { code, .. }
+                | ProgramError::AmbiguousCrossModuleRef { code, .. } => {
                     let diag = Diagnostic::error(code, e.to_string());
                     emit_diagnostic(&diag);
                 }

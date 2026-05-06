@@ -96,7 +96,7 @@ fn describe_op_plain(
                 format!("Branch({cond}, ?, ?)")
             }
         }
-        Op::Call { function } => {
+        Op::Call { module, function } => {
             let mut args: Vec<(usize, String)> = Vec::new();
             for e in &incoming {
                 if let GraphEdge::Arg(i) = e.weight() {
@@ -105,7 +105,10 @@ fn describe_op_plain(
             }
             args.sort_by_key(|(i, _)| *i);
             let arg_strs: Vec<String> = args.into_iter().map(|(_, s)| s).collect();
-            format!("Call({function}, [{}])", arg_strs.join(", "))
+            let target = module
+                .as_ref()
+                .map_or_else(|| function.to_string(), |m| format!("{m}::{function}"));
+            format!("Call({target}, [{}])", arg_strs.join(", "))
         }
         Op::Load { variable } => format!("Load({variable})"),
         Op::Store { variable } => {

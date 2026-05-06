@@ -54,8 +54,8 @@ Important rules:\n\
   (e.g. \"zero\", \"recurse\"), NOT full paths (NOT \"math/gcd/fib/zero\").\n\
   Each label must match exactly one block's duumbi:label in the same function.\n\
 - FUNCTION CALLS: duumbi:function must be the plain function name (e.g. \"gcd\", \"fib\"),\n\
-  NOT a full module path (NOT \"math/gcd/gcd\"). The module system resolves function names\n\
-  automatically — for both cross-module and recursive calls, use the simple name.\n\
+  NOT a full module path. For cross-module calls, add duumbi:module with the owning\n\
+  module name (e.g. \"calculator/ops\"). Recursive/local calls may omit duumbi:module.\n\
 - add_op APPENDS to the end of a block.\n\
 - To REWRITE a block body (change Add to Call, insert ops before Return, etc.):\n\
   Use replace_block — provide the block_id and the COMPLETE new ops array ending with Return/Branch.\n\
@@ -74,7 +74,7 @@ Op reference (exhaustive — no other @type values exist):\n\
 - Branch:  {\"@type\":\"duumbi:Branch\", \"duumbi:condition\":{\"@id\":\"…\"}, \"duumbi:trueBlock\":\"<label>\", \"duumbi:falseBlock\":\"<label>\"}\n\
 - Load:    {\"@type\":\"duumbi:Load\",   \"duumbi:variable\":\"<name>\", \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
 - Store:   {\"@type\":\"duumbi:Store\",  \"duumbi:variable\":\"<name>\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
-- Call:    {\"@type\":\"duumbi:Call\",   \"duumbi:function\":\"<name>\", \"duumbi:args\":[{\"@id\":\"…\"}], \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
+- Call:    {\"@type\":\"duumbi:Call\",   \"duumbi:module\":\"<optional-module>\", \"duumbi:function\":\"<name>\", \"duumbi:args\":[{\"@id\":\"…\"}], \"duumbi:resultType\":\"i64\"|\"f64\"|\"bool\"}\n\
 - Print:   {\"@type\":\"duumbi:Print\",  \"duumbi:operand\":{\"@id\":\"…\"}}\n\
 - Return:  {\"@type\":\"duumbi:Return\", \"duumbi:operand\":{\"@id\":\"…\"}}\n\
 \n\

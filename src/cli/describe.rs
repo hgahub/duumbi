@@ -121,7 +121,7 @@ fn describe_op(
                 format!("{}({cond}, ?, ?)", "Branch".magenta())
             }
         }
-        Op::Call { function } => {
+        Op::Call { module, function } => {
             let mut args: Vec<(usize, String)> = Vec::new();
             for e in &incoming {
                 if let GraphEdge::Arg(i) = e.weight() {
@@ -130,10 +130,13 @@ fn describe_op(
             }
             args.sort_by_key(|(i, _)| *i);
             let arg_strs: Vec<String> = args.into_iter().map(|(_, s)| s).collect();
+            let target = module
+                .as_ref()
+                .map_or_else(|| function.to_string(), |m| format!("{m}::{function}"));
             format!(
                 "{}({}, [{}])",
                 "Call".magenta(),
-                function.cyan(),
+                target.cyan(),
                 arg_strs.join(", ")
             )
         }

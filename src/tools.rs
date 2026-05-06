@@ -270,8 +270,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "duumbi:operand": { "type": "object" },
                             "duumbi:condition": { "type": "object" },
                             "duumbi:trueBlock": { "type": "string" },
-                            "duumbi:falseBlock": { "type": "string" },
-                            "duumbi:function": { "type": "string" },
+                                "duumbi:falseBlock": { "type": "string" },
+                                "duumbi:module": { "type": "string" },
+                                "duumbi:function": { "type": "string" },
                             "duumbi:args": { "type": "array", "items": {} },
                             "duumbi:variable": { "type": "string" },
                             "duumbi:operator": { "type": "string" }

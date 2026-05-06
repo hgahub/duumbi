@@ -85,6 +85,12 @@ fn calculator_test_cases() -> Vec<TestCase> {
             args: vec![10, 2],
             expected_return: 5,
         },
+        TestCase {
+            name: "divide_ten_zero".to_string(),
+            function: "divide".to_string(),
+            args: vec![10, 0],
+            expected_return: 0,
+        },
     ]
 }
 
@@ -123,12 +129,15 @@ mod tests {
         assert_eq!(matched, Some("calculator"));
         assert_eq!(spec.modules.create, vec!["calculator/ops"]);
         assert_eq!(spec.modules.modify, vec!["app/main"]);
-        assert_eq!(spec.test_cases.len(), 4);
+        assert_eq!(spec.test_cases.len(), 5);
         assert_eq!(spec.test_cases[0].function, "add");
         assert_eq!(spec.test_cases[0].args, vec![3, 5]);
         assert_eq!(spec.test_cases[0].expected_return, 8);
         assert_eq!(spec.test_cases[3].function, "divide");
         assert_eq!(spec.test_cases[3].expected_return, 5);
+        assert_eq!(spec.test_cases[4].function, "divide");
+        assert_eq!(spec.test_cases[4].args, vec![10, 0]);
+        assert_eq!(spec.test_cases[4].expected_return, 0);
     }
 
     #[test]
