@@ -52,6 +52,8 @@ cache/
 # ── Personal AI config ────────────────────────────────────────────────────────
 # opencode.json contains personal model choices, local MCP paths, and permissions
 opencode.json
+# .mcp.json contains local MCP server configurations with machine-specific paths
+.mcp.json
 
 # ── Temporary ────────────────────────────────────────────────────────────────
 *.tmp
