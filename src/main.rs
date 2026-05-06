@@ -21,6 +21,7 @@ mod hash;
 mod intent;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
+mod logging;
 mod manifest;
 mod mcp;
 mod parser;
@@ -45,13 +46,6 @@ use cli::{Cli, Commands};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
-
     // If invoked with no arguments and stdin is a terminal, enter the
     // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
@@ -63,24 +57,115 @@ async fn main() {
                 process::exit(1);
             }
         };
+        let logging_runtime = match logging::initialize(
+            &workspace_root,
+            &config.config,
+            &logging::LoggingOverrides::default(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("error: failed to initialize logging: {e}");
+                process::exit(1);
+            }
+        };
+        let repl_started = logging_runtime
+            .performance()
+            .map(|performance| performance.record_start("repl"));
+        tracing::info!(command = "repl", "duumbi command started");
         let config = match auto_configure_startup_providers(&workspace_root, config).await {
             Ok(config) => config,
             Err(e) => {
+                if let (Some(performance), Some(started)) =
+                    (logging_runtime.performance(), repl_started)
+                {
+                    performance.record_error("repl", started, &format!("{e:#}"));
+                }
                 eprintln!("error: {e:#}");
                 process::exit(1);
             }
         };
         if let Err(e) = cli::repl::run(workspace_root, config).await {
+            if let (Some(performance), Some(started)) =
+                (logging_runtime.performance(), repl_started)
+            {
+                performance.record_error("repl", started, &format!("{e:#}"));
+            }
             eprintln!("error: {e:#}");
             process::exit(1);
         }
+        if let (Some(performance), Some(started)) = (logging_runtime.performance(), repl_started) {
+            performance.record_success("repl", started);
+        }
+        tracing::info!(command = "repl", "duumbi command finished");
         return;
     }
 
     let cli = Cli::parse();
+    let workspace_root = PathBuf::from(".");
+    let command_name = command_name(&cli.command);
+    let logging_config = config::load_effective_config(&workspace_root)
+        .map(|effective| effective.config)
+        .unwrap_or_default();
+    let logging_runtime =
+        match logging::initialize(&workspace_root, &logging_config, &logging_overrides(&cli)) {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("error: failed to initialize logging: {e}");
+                process::exit(1);
+            }
+        };
+    let command_started = logging_runtime
+        .performance()
+        .map(|performance| performance.record_start(command_name));
+    tracing::info!(command = command_name, "duumbi command started");
     if let Err(e) = run(cli).await {
+        if let (Some(performance), Some(started)) = (logging_runtime.performance(), command_started)
+        {
+            performance.record_error(command_name, started, &format!("{e:#}"));
+        }
+        tracing::error!(command = command_name, error = %e, "duumbi command failed");
         eprintln!("error: {e:#}");
         process::exit(1);
+    }
+    if let (Some(performance), Some(started)) = (logging_runtime.performance(), command_started) {
+        performance.record_success(command_name, started);
+    }
+    tracing::info!(command = command_name, "duumbi command finished");
+}
+
+fn logging_overrides(cli: &Cli) -> logging::LoggingOverrides {
+    logging::LoggingOverrides {
+        general_level: cli.log_level.map(Into::into),
+        general_path: cli.log_file.clone(),
+        general_mode: cli.log_mode.map(Into::into),
+        performance_enabled: cli.perf_log.then_some(true),
+        performance_path: cli.perf_log_file.clone(),
+        performance_mode: cli.perf_log_mode.map(Into::into),
+    }
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Init { .. } => "init",
+        Commands::Build { .. } => "build",
+        Commands::Run { .. } => "run",
+        Commands::Check { .. } => "check",
+        Commands::Describe { .. } => "describe",
+        Commands::Add { .. } => "add",
+        Commands::Undo => "undo",
+        Commands::Deps { .. } => "deps",
+        Commands::Search { .. } => "search",
+        Commands::Intent { .. } => "intent",
+        Commands::Registry { .. } => "registry",
+        Commands::Publish { .. } => "publish",
+        Commands::Yank { .. } => "yank",
+        Commands::Upgrade => "upgrade",
+        Commands::Benchmark { .. } => "benchmark",
+        Commands::Completions { .. } => "completions",
+        Commands::Studio { .. } => "studio",
+        Commands::Knowledge { .. } => "knowledge",
+        Commands::Provider { .. } => "provider",
+        Commands::Mcp { .. } => "mcp",
     }
 }
 

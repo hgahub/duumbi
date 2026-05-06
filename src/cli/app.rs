@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
-use crate::config::{DuumbiConfig, ProviderConfigSource};
+use crate::config::{DuumbiConfig, LogLevel, LogMode, LoggingSection, ProviderConfigSource};
 use crate::session::SessionManager;
 
 // ---------------------------------------------------------------------------
@@ -337,6 +337,34 @@ fn animated_provider_status_message(msg: &str) -> String {
 
     let dots = (ReplApp::animation_now_ms() / 360 % 4) as usize;
     format!("{PROVIDER_TESTING_STATUS_PREFIX}{:<3}", ".".repeat(dots))
+}
+
+fn cycle_log_level(level: LogLevel, forward: bool) -> LogLevel {
+    const LEVELS: &[LogLevel] = &[
+        LogLevel::Off,
+        LogLevel::Error,
+        LogLevel::Warn,
+        LogLevel::Info,
+        LogLevel::Debug,
+        LogLevel::Trace,
+    ];
+    let index = LEVELS
+        .iter()
+        .position(|candidate| *candidate == level)
+        .unwrap_or(1);
+    let next = if forward {
+        (index + 1) % LEVELS.len()
+    } else {
+        (index + LEVELS.len() - 1) % LEVELS.len()
+    };
+    LEVELS[next]
+}
+
+fn cycle_log_mode(mode: LogMode) -> LogMode {
+    match mode {
+        LogMode::Append => LogMode::Rewrite,
+        LogMode::Rewrite => LogMode::Append,
+    }
 }
 
 pub(crate) async fn probe_provider_config_with_key(
@@ -868,8 +896,14 @@ impl ReplApp {
     /// mode toggles, slash-menu navigation, and output buffer updates.
     pub fn handle_key(&mut self, key: KeyEvent, textarea: &mut TextArea<'_>) -> Action {
         // Interactive panel gets priority over normal key handling.
-        if matches!(self.panel, PanelState::ProviderManager { .. }) {
-            return self.handle_provider_panel_key(key, textarea);
+        match self.panel {
+            PanelState::ProviderManager { .. } => {
+                return self.handle_provider_panel_key(key, textarea);
+            }
+            PanelState::UserConfig { .. } => {
+                return self.handle_user_config_panel_key(key, textarea);
+            }
+            PanelState::None => {}
         }
 
         if self.conversation_action_menu.is_some() {
@@ -1019,6 +1053,9 @@ impl ReplApp {
             let _ = self.insert_text_into_active_panel_field(text);
             return;
         }
+        if matches!(self.panel, PanelState::UserConfig { .. }) {
+            return;
+        }
 
         textarea.insert_str(text);
         let current = textarea.lines().join("\n");
@@ -1100,6 +1137,88 @@ impl ReplApp {
         Action::Continue
     }
 
+    const USER_CONFIG_ROWS: usize = 4;
+
+    /// Handles key events when the user configuration panel is active.
+    fn handle_user_config_panel_key(
+        &mut self,
+        key_event: KeyEvent,
+        textarea: &mut TextArea<'_>,
+    ) -> Action {
+        let mut selected = match &self.panel {
+            PanelState::UserConfig { selected, .. } => *selected,
+            _ => return Action::Continue,
+        };
+        let mut status_msg = None;
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.panel = PanelState::None;
+                textarea.move_cursor(CursorMove::Head);
+                textarea.delete_line_by_end();
+                return Action::Continue;
+            }
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                selected = (selected + 1).min(Self::USER_CONFIG_ROWS - 1);
+            }
+            KeyCode::Left => {
+                self.adjust_user_config_setting(selected, false);
+                status_msg = Some(("Changed. Press S to save.".to_string(), OutputStyle::Dim));
+            }
+            KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+                self.adjust_user_config_setting(selected, true);
+                status_msg = Some(("Changed. Press S to save.".to_string(), OutputStyle::Dim));
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                match crate::config::save_user_config(&self.user_config) {
+                    Ok(()) => {
+                        self.refresh_effective_config();
+                        status_msg =
+                            Some(("Logging defaults saved.".to_string(), OutputStyle::Success));
+                    }
+                    Err(e) => {
+                        status_msg = Some((format!("Save failed: {e}"), OutputStyle::Error));
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        self.panel = PanelState::UserConfig {
+            selected,
+            status_msg,
+        };
+        Action::Continue
+    }
+
+    fn adjust_user_config_setting(&mut self, selected: usize, forward: bool) {
+        let logging = self
+            .user_config
+            .logging
+            .get_or_insert_with(LoggingSection::default);
+        match selected {
+            0 => {
+                let next = cycle_log_level(logging.general.level, forward);
+                logging.general.level = next;
+                logging.general.enabled = next != LogLevel::Off;
+            }
+            1 => {
+                logging.general.mode = cycle_log_mode(logging.general.mode);
+            }
+            2 => {
+                logging.performance.enabled = !logging.performance.enabled;
+            }
+            3 => {
+                logging.performance.mode = cycle_log_mode(logging.performance.mode);
+            }
+            _ => {}
+        }
+        self.refresh_effective_config();
+    }
+
     /// Handles key events when the provider manager panel is active.
     ///
     /// Extracts panel state by value, processes the key, then writes back.
@@ -1114,7 +1233,7 @@ impl ReplApp {
                 input_mode,
                 ..
             } => (*selected, input_mode.clone()),
-            PanelState::None => return Action::Continue,
+            _ => return Action::Continue,
         };
         let mut new_status_msg: Option<(String, OutputStyle)> = None;
         let mut action = Action::Continue;
@@ -2303,6 +2422,17 @@ impl ReplApp {
                     )
                 }
             }
+            PanelState::UserConfig {
+                selected,
+                status_msg,
+            } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 96);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_user_config_panel(frame, overlay_area, *selected, status_msg);
+                }
+            }
         }
     }
 
@@ -2357,6 +2487,9 @@ impl ReplApp {
                     (provider_count as u16) + 9 + status_line
                 }
             }),
+            PanelState::UserConfig { status_msg, .. } => {
+                Some(Self::USER_CONFIG_ROWS as u16 + 8 + u16::from(status_msg.is_some()))
+            }
         }
     }
 
@@ -3223,6 +3356,89 @@ impl ReplApp {
         ])
     }
 
+    /// Renders the interactive user configuration panel.
+    fn render_user_config_panel(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        selected: usize,
+        status_msg: &Option<(String, OutputStyle)>,
+    ) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let logging = self.user_config.logging.clone().unwrap_or_default();
+        let general_level = if logging.general.enabled {
+            logging.general.level
+        } else {
+            LogLevel::Off
+        };
+        let performance = if logging.performance.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let rows = [
+            ("General level", general_level.to_string()),
+            ("General mode", logging.general.mode.to_string()),
+            ("Performance log", performance.to_string()),
+            ("Performance mode", logging.performance.mode.to_string()),
+        ];
+
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        let inner_width = inner.width as usize;
+        lines.push(Line::from(vec![
+            Span::styled("  User Config", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(38))),
+            Span::styled("(Esc to close)", theme::out_dim()),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Logging defaults saved to ~/.duumbi/config.toml",
+            theme::out_dim(),
+        )));
+        lines.push(Line::from(""));
+
+        for (index, (label, value)) in rows.iter().enumerate() {
+            let is_sel = index == selected;
+            let prefix = if is_sel { "  \u{25cf} " } else { "    " };
+            let style = if is_sel {
+                theme::slash_selected()
+            } else {
+                theme::out_dim()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{label:<18} {value}"),
+                style,
+            )));
+        }
+
+        if let Some((msg, style)) = status_msg {
+            let style = match style {
+                OutputStyle::Success => theme::out_success(),
+                OutputStyle::Error => theme::out_error(),
+                _ => theme::out_dim(),
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("  {msg}"), style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [\u{2191}/\u{2193}] Select  [\u{2190}/\u{2192}] Change  [S] Save",
+            theme::out_dim(),
+        )));
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
     /// Renders the interactive provider connection manager panel.
     fn render_provider_panel(
         &self,
@@ -3975,6 +4191,55 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
         let action = app.handle_key(key, &mut textarea);
         assert!(matches!(action, Action::Exit));
+    }
+
+    #[test]
+    fn user_config_panel_cycles_general_log_level() {
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::UserConfig {
+            selected: 0,
+            status_msg: None,
+        };
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let logging = app.user_config.logging.expect("logging settings");
+        assert_eq!(logging.general.level, LogLevel::Warn);
+        assert!(logging.general.enabled);
+        assert!(matches!(
+            app.panel,
+            PanelState::UserConfig {
+                status_msg: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn user_config_panel_saves_logging_defaults() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let home = tempfile::TempDir::new().expect("invariant: temp dir");
+        let _home = HomeEnvGuard::set(home.path());
+        let (mut app, mut textarea) = make_app();
+        app.panel = PanelState::UserConfig {
+            selected: 2,
+            status_msg: None,
+        };
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut textarea,
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let saved = crate::config::load_user_config().expect("user config must save");
+        assert!(saved.logging.expect("logging settings").performance.enabled);
     }
 
     #[test]

@@ -278,6 +278,7 @@ mod tests {
             dependencies: HashMap::new(),
             vendor: None,
             cost: None,
+            logging: None,
             mcp_clients: HashMap::new(),
         }
     }

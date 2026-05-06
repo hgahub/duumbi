@@ -253,6 +253,16 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         group: SlashGroup::WorkspaceConfig,
     },
     SlashCommand {
+        command: "/settings",
+        description: "Manage user configuration defaults",
+        group: SlashGroup::WorkspaceConfig,
+    },
+    SlashCommand {
+        command: "/config",
+        description: "Manage user configuration defaults",
+        group: SlashGroup::WorkspaceConfig,
+    },
+    SlashCommand {
         command: "/help",
         description: "Show available commands",
         group: SlashGroup::System,

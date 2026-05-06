@@ -531,6 +531,15 @@ async fn handle_slash(
             textarea.delete_line_by_end();
         }
 
+        "/settings" | "/config" => {
+            app.panel = super::mode::PanelState::UserConfig {
+                selected: 0,
+                status_msg: None,
+            };
+            textarea.move_cursor(ratatui_textarea::CursorMove::Head);
+            textarea.delete_line_by_end();
+        }
+
         "/help" => {
             print_help_to_buffer(app);
         }

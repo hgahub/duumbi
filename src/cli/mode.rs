@@ -187,6 +187,13 @@ pub enum PanelState {
     /// No panel open — normal REPL mode.
     #[default]
     None,
+    /// User configuration panel.
+    UserConfig {
+        /// Index of highlighted setting row.
+        selected: usize,
+        /// Optional status message shown in the panel footer. Cleared on next key press.
+        status_msg: Option<(String, OutputStyle)>,
+    },
     /// Provider connection manager panel.
     ProviderManager {
         /// Index of highlighted provider kind (0-based).

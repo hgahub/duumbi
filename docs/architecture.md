@@ -84,8 +84,10 @@ Phase 5 (implemented):
 | `core.schema.json` | JSON Schema for Op node validation | `.duumbi/schema/` |
 | `.o` | Cranelift object file output | `.duumbi/build/` |
 | `traces.jsonl` | Runtime traceId → nodeId mapping | `.duumbi/telemetry/` |
-| `config.toml` | Workspace, LLM, registries, dependencies, vendor | `.duumbi/` |
+| `config.toml` | Workspace, LLM, registries, dependencies, vendor, logging | `.duumbi/` |
 | `deps.lock` | Lockfile v1 with integrity hashes | `.duumbi/` |
+| `duumbi.log` | General internal diagnostic log | `.duumbi/logs/` |
+| `performance.jsonl` | Command performance timing events | `.duumbi/logs/` |
 | `manifest.toml` | Module metadata (name, version, exports) | cache/vendor entries |
 | `{N:06}.jsonld` | Undo history snapshots | `.duumbi/history/` |
 | `<slug>.yaml` | Active intent specs | `.duumbi/intents/` |

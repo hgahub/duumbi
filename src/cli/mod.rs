@@ -22,15 +22,87 @@ pub mod yank;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Duumbi — AI-first semantic graph compiler.
 #[derive(Parser, Debug)]
 #[command(name = "duumbi", version, about)]
 pub struct Cli {
+    /// General diagnostic log level for this invocation.
+    #[arg(long, value_enum, global = true)]
+    pub log_level: Option<CliLogLevel>,
+
+    /// General diagnostic log file path for this invocation.
+    #[arg(long, global = true)]
+    pub log_file: Option<PathBuf>,
+
+    /// General diagnostic log write mode for this invocation.
+    #[arg(long, value_enum, global = true)]
+    pub log_mode: Option<CliLogMode>,
+
+    /// Enable command performance JSONL logging for this invocation.
+    #[arg(long, global = true)]
+    pub perf_log: bool,
+
+    /// Performance JSONL log file path for this invocation.
+    #[arg(long, global = true)]
+    pub perf_log_file: Option<PathBuf>,
+
+    /// Performance JSONL log write mode for this invocation.
+    #[arg(long, value_enum, global = true)]
+    pub perf_log_mode: Option<CliLogMode>,
+
     /// Subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
+}
+
+/// CLI values for the general diagnostic log level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliLogLevel {
+    /// Disable general diagnostic logging.
+    Off,
+    /// Log errors only.
+    Error,
+    /// Log warnings and errors.
+    Warn,
+    /// Log informational messages and above.
+    Info,
+    /// Log debug messages and above.
+    Debug,
+    /// Log all tracing events.
+    Trace,
+}
+
+impl From<CliLogLevel> for crate::config::LogLevel {
+    fn from(value: CliLogLevel) -> Self {
+        match value {
+            CliLogLevel::Off => Self::Off,
+            CliLogLevel::Error => Self::Error,
+            CliLogLevel::Warn => Self::Warn,
+            CliLogLevel::Info => Self::Info,
+            CliLogLevel::Debug => Self::Debug,
+            CliLogLevel::Trace => Self::Trace,
+        }
+    }
+}
+
+/// CLI values for log file write mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliLogMode {
+    /// Append to an existing file.
+    Append,
+    /// Rewrite the file when logging starts.
+    Rewrite,
+}
+
+impl From<CliLogMode> for crate::config::LogMode {
+    fn from(value: CliLogMode) -> Self {
+        match value {
+            CliLogMode::Append => Self::Append,
+            CliLogMode::Rewrite => Self::Rewrite,
+        }
+    }
 }
 
 /// Available CLI commands.
@@ -439,4 +511,52 @@ pub enum IntentSubcommand {
         /// Intent name/slug to show details for. Omit to list all.
         name: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_logging_flags_parse_before_subcommand() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "--log-level",
+            "debug",
+            "--log-file",
+            "duumbi.log",
+            "--log-mode",
+            "rewrite",
+            "--perf-log",
+            "--perf-log-file",
+            "perf.jsonl",
+            "--perf-log-mode",
+            "append",
+            "build",
+        ])
+        .expect("CLI must parse");
+
+        assert_eq!(cli.log_level, Some(CliLogLevel::Debug));
+        assert_eq!(
+            cli.log_file.as_deref(),
+            Some(std::path::Path::new("duumbi.log"))
+        );
+        assert_eq!(cli.log_mode, Some(CliLogMode::Rewrite));
+        assert!(cli.perf_log);
+        assert_eq!(
+            cli.perf_log_file.as_deref(),
+            Some(std::path::Path::new("perf.jsonl"))
+        );
+        assert_eq!(cli.perf_log_mode, Some(CliLogMode::Append));
+        assert!(matches!(cli.command, Commands::Build { .. }));
+    }
+
+    #[test]
+    fn global_logging_flags_parse_after_subcommand() {
+        let cli =
+            Cli::try_parse_from(["duumbi", "check", "--log-level", "off"]).expect("CLI must parse");
+
+        assert_eq!(cli.log_level, Some(CliLogLevel::Off));
+        assert!(matches!(cli.command, Commands::Check { .. }));
+    }
 }

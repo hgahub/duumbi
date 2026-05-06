@@ -369,6 +369,122 @@ impl Default for CostSection {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Logging configuration
+// ---------------------------------------------------------------------------
+
+/// General diagnostic log level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Disable general diagnostic logging.
+    Off,
+    /// Log errors only.
+    #[default]
+    Error,
+    /// Log warnings and errors.
+    Warn,
+    /// Log informational messages and above.
+    Info,
+    /// Log debug messages and above.
+    Debug,
+    /// Log all tracing events.
+    Trace,
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::Error => f.write_str("error"),
+            Self::Warn => f.write_str("warn"),
+            Self::Info => f.write_str("info"),
+            Self::Debug => f.write_str("debug"),
+            Self::Trace => f.write_str("trace"),
+        }
+    }
+}
+
+/// File write mode for a log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogMode {
+    /// Append to an existing file.
+    #[default]
+    Append,
+    /// Truncate the file when logging starts.
+    Rewrite,
+}
+
+impl fmt::Display for LogMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Append => f.write_str("append"),
+            Self::Rewrite => f.write_str("rewrite"),
+        }
+    }
+}
+
+fn default_general_logging_enabled() -> bool {
+    true
+}
+
+/// General diagnostic logging configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct GeneralLoggingSection {
+    /// Whether general diagnostic logging is enabled.
+    #[serde(default = "default_general_logging_enabled")]
+    pub enabled: bool,
+    /// Minimum diagnostic level to write.
+    #[serde(default)]
+    pub level: LogLevel,
+    /// Append or rewrite the log file.
+    #[serde(default)]
+    pub mode: LogMode,
+    /// Optional path override. Relative paths are resolved by the process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
+impl Default for GeneralLoggingSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_general_logging_enabled(),
+            level: LogLevel::Error,
+            mode: LogMode::Append,
+            path: None,
+        }
+    }
+}
+
+/// Performance logging configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct PerformanceLoggingSection {
+    /// Whether command performance logging is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Append or rewrite the performance log file.
+    #[serde(default)]
+    pub mode: LogMode,
+    /// Optional path override. Relative paths are resolved by the process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
+/// Logging configuration for workspace diagnostics and command timings.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoggingSection {
+    /// General diagnostic tracing log.
+    #[serde(default)]
+    pub general: GeneralLoggingSection,
+    /// Command performance JSONL log.
+    #[serde(default)]
+    pub performance: PerformanceLoggingSection,
+}
+
 /// Optional `[vendor]` section in `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VendorSection {
@@ -456,6 +572,10 @@ pub struct DuumbiConfig {
     /// All sub-fields have safe defaults; omitting the `[cost]` section is valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostSection>,
+
+    /// Logging settings for diagnostics and command performance events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logging: Option<LoggingSection>,
 }
 
 impl DuumbiConfig {
@@ -638,6 +758,9 @@ fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     if overlay.cost.is_some() {
         base.cost = overlay.cost.clone();
     }
+    if overlay.logging.is_some() {
+        base.logging = overlay.logging.clone();
+    }
 }
 
 /// Saves a [`DuumbiConfig`] to `<workspace_root>/.duumbi/config.toml`.
@@ -695,6 +818,7 @@ fn load_config_file(path: &Path) -> Result<DuumbiConfig, ConfigError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn write_config(dir: &TempDir, contents: &str) {
@@ -873,6 +997,82 @@ output_dir = "build"
 
         let cfg = load_config(tmp.path()).expect("config without llm must parse");
         assert!(cfg.llm.is_none());
+    }
+
+    #[test]
+    fn logging_config_defaults_match_user_config_policy() {
+        let logging = LoggingSection::default();
+
+        assert!(logging.general.enabled);
+        assert_eq!(logging.general.level, LogLevel::Error);
+        assert_eq!(logging.general.mode, LogMode::Append);
+        assert!(!logging.performance.enabled);
+        assert_eq!(logging.performance.mode, LogMode::Append);
+    }
+
+    #[test]
+    fn logging_config_roundtrip() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[logging.general]
+enabled = true
+level = "debug"
+mode = "rewrite"
+path = "custom-general.log"
+
+[logging.performance]
+enabled = true
+mode = "append"
+path = "custom-performance.jsonl"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let logging = cfg.logging.expect("logging section");
+        assert_eq!(logging.general.level, LogLevel::Debug);
+        assert_eq!(logging.general.mode, LogMode::Rewrite);
+        assert_eq!(
+            logging.general.path.as_deref(),
+            Some(Path::new("custom-general.log"))
+        );
+        assert!(logging.performance.enabled);
+        assert_eq!(
+            logging.performance.path.as_deref(),
+            Some(Path::new("custom-performance.jsonl"))
+        );
+    }
+
+    #[test]
+    fn effective_config_workspace_logging_overrides_user_logging() {
+        let user = DuumbiConfig {
+            logging: Some(LoggingSection {
+                general: GeneralLoggingSection {
+                    level: LogLevel::Warn,
+                    ..GeneralLoggingSection::default()
+                },
+                ..LoggingSection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+        let workspace = DuumbiConfig {
+            logging: Some(LoggingSection {
+                general: GeneralLoggingSection {
+                    level: LogLevel::Info,
+                    ..GeneralLoggingSection::default()
+                },
+                ..LoggingSection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+
+        assert_eq!(
+            effective.config.logging.expect("logging").general.level,
+            LogLevel::Info
+        );
     }
 
     #[test]
