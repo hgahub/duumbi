@@ -178,6 +178,7 @@ mod tests {
             cost: None,
             agent: None,
             editor: None,
+            logging: None,
             mcp_clients: HashMap::new(),
         }
     }
