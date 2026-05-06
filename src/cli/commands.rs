@@ -190,7 +190,7 @@ pub(crate) fn describe_to_string(input: &Path) -> Result<String> {
 }
 
 /// If `input` is `<workspace>/.duumbi/graph/*.jsonld`, returns `<workspace>`.
-fn workspace_root_for_graph_input(input: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn workspace_root_for_graph_input(input: &Path) -> Option<std::path::PathBuf> {
     let parent = input.parent()?;
     if parent.file_name().and_then(|s| s.to_str()) != Some("graph") {
         return None;

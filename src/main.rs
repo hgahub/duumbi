@@ -23,6 +23,7 @@ mod intent;
 mod interaction;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
+mod logging;
 mod manifest;
 mod mcp;
 mod parser;
@@ -51,15 +52,11 @@ use clap::Parser;
 use agents::orchestrator;
 use cli::{Cli, Commands};
 
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_FAILURE: i32 = 1;
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
-
     // If invoked with no arguments and stdin is a terminal, enter the
     // interactive REPL — even without an initialised workspace.
     if std::env::args().len() == 1 && io::stdin().is_terminal() {
@@ -78,24 +75,154 @@ async fn main() {
                 process::exit(1);
             }
         };
+        let logging_runtime = initialize_logging(
+            &workspace_root,
+            &config.config,
+            &logging::LoggingOverrides::default(),
+        );
+        let repl_started = logging_runtime
+            .performance()
+            .map(|performance| performance.record_start("repl"));
+        tracing::info!(command = "repl", "duumbi command started");
         let config = match auto_configure_startup_providers(&workspace_root, config).await {
             Ok(config) => config,
             Err(e) => {
+                if let (Some(performance), Some(started)) =
+                    (logging_runtime.performance(), repl_started)
+                {
+                    performance.record_error("repl", started, &format!("{e:#}"));
+                }
                 eprintln!("error: {e:#}");
                 process::exit(1);
             }
         };
         if let Err(e) = cli::repl::run(workspace_root, config).await {
+            if let (Some(performance), Some(started)) =
+                (logging_runtime.performance(), repl_started)
+            {
+                performance.record_error("repl", started, &format!("{e:#}"));
+            }
             eprintln!("error: {e:#}");
             process::exit(1);
         }
+        if let (Some(performance), Some(started)) = (logging_runtime.performance(), repl_started) {
+            performance.record_success("repl", started);
+        }
+        tracing::info!(command = "repl", "duumbi command finished");
         return;
     }
 
     let cli = Cli::parse();
-    if let Err(e) = run(cli).await {
-        eprintln!("error: {e:#}");
-        process::exit(1);
+    let workspace_root = logging_workspace_root(&cli.command);
+    let command_name = command_name(&cli.command);
+    let logging_config = config::load_effective_config(&workspace_root)
+        .map(|effective| effective.config)
+        .unwrap_or_default();
+    let logging_runtime =
+        initialize_logging(&workspace_root, &logging_config, &logging_overrides(&cli));
+    let command_started = logging_runtime
+        .performance()
+        .map(|performance| performance.record_start(command_name));
+    tracing::info!(command = command_name, "duumbi command started");
+    let exit_code = match run(cli).await {
+        Ok(exit_code) => exit_code,
+        Err(e) => {
+            if let (Some(performance), Some(started)) =
+                (logging_runtime.performance(), command_started)
+            {
+                performance.record_error(command_name, started, &format!("{e:#}"));
+            }
+            tracing::error!(command = command_name, error = %e, "duumbi command failed");
+            eprintln!("error: {e:#}");
+            process::exit(EXIT_FAILURE);
+        }
+    };
+    if let (Some(performance), Some(started)) = (logging_runtime.performance(), command_started) {
+        if exit_code == EXIT_SUCCESS {
+            performance.record_success(command_name, started);
+        } else {
+            performance.record_error(
+                command_name,
+                started,
+                &format!("command exited with status {exit_code}"),
+            );
+        }
+    }
+    if exit_code == EXIT_SUCCESS {
+        tracing::info!(command = command_name, "duumbi command finished");
+    } else {
+        tracing::error!(
+            command = command_name,
+            exit_code,
+            "duumbi command exited with non-zero status"
+        );
+        process::exit(exit_code);
+    }
+}
+
+fn logging_overrides(cli: &Cli) -> logging::LoggingOverrides {
+    logging::LoggingOverrides {
+        general_level: cli.log_level.map(Into::into),
+        general_path: cli.log_file.clone(),
+        general_mode: cli.log_mode.map(Into::into),
+        performance_enabled: cli.perf_log.then_some(true),
+        performance_path: cli.perf_log_file.clone(),
+        performance_mode: cli.perf_log_mode.map(Into::into),
+    }
+}
+
+fn initialize_logging(
+    workspace_root: &Path,
+    config: &config::DuumbiConfig,
+    overrides: &logging::LoggingOverrides,
+) -> logging::RuntimeLogging {
+    match logging::initialize(workspace_root, config, overrides) {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("warning: failed to initialize logging: {e}");
+            logging::RuntimeLogging::disabled()
+        }
+    }
+}
+
+fn logging_workspace_root(command: &Commands) -> PathBuf {
+    match command {
+        Commands::Init { name: Some(name) } => PathBuf::from(name),
+        Commands::Build {
+            input: Some(input), ..
+        }
+        | Commands::Check { input: Some(input) }
+        | Commands::Describe { input: Some(input) } => {
+            cli::commands::workspace_root_for_graph_input(input)
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
+        _ => PathBuf::from("."),
+    }
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Init { .. } => "init",
+        Commands::Build { .. } => "build",
+        Commands::Run { .. } => "run",
+        Commands::Check { .. } => "check",
+        Commands::Describe { .. } => "describe",
+        Commands::Add { .. } => "add",
+        Commands::Undo => "undo",
+        Commands::Deps { .. } => "deps",
+        Commands::Search { .. } => "search",
+        Commands::Intent { .. } => "intent",
+        Commands::Registry { .. } => "registry",
+        Commands::Publish { .. } => "publish",
+        Commands::Yank { .. } => "yank",
+        Commands::Upgrade => "upgrade",
+        Commands::Benchmark { .. } => "benchmark",
+        Commands::Phase15E2e { .. } => "phase15-e2e",
+        Commands::Completions { .. } => "completions",
+        Commands::Studio { .. } => "studio",
+        Commands::Knowledge { .. } => "knowledge",
+        Commands::Provider { .. } => "provider",
+        Commands::Mcp { .. } => "mcp",
     }
 }
 
@@ -195,7 +322,7 @@ async fn run_provider_startup_spinner(
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli) -> Result<i32> {
     match cli.command {
         Commands::Init { name } => {
             let base = match name {
@@ -213,7 +340,7 @@ async fn run(cli: Cli) -> Result<()> {
                 cli::theme::check_mark(),
                 summary.workspace_root.join(".duumbi").display()
             );
-            Ok(())
+            Ok(EXIT_SUCCESS)
         }
         Commands::Build {
             input,
@@ -225,7 +352,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            cli::commands::build_with_opts(&input_path, &output_path, offline)
+            success_exit(cli::commands::build_with_opts(
+                &input_path,
+                &output_path,
+                offline,
+            ))
         }
         Commands::Run { args } => {
             let workspace = PathBuf::from(".");
@@ -233,7 +364,7 @@ async fn run(cli: Cli) -> Result<()> {
                 let output = workspace::run_workspace_binary(&workspace, &args)?;
                 print!("{}", output.stdout);
                 eprint!("{}", output.stderr);
-                process::exit(output.exit_code);
+                Ok(output.exit_code)
             } else {
                 let binary = resolve_output(None)?;
                 if !binary.exists() {
@@ -246,26 +377,26 @@ async fn run(cli: Cli) -> Result<()> {
                     .args(&args)
                     .status()
                     .with_context(|| format!("Failed to execute '{}'", binary.display()))?;
-                process::exit(status.code().unwrap_or(1));
+                Ok(status.code().unwrap_or(EXIT_FAILURE))
             }
         }
         Commands::Check { input } => {
             let input_path = resolve_input(input.as_deref())?;
-            cli::commands::check(&input_path)
+            success_exit(cli::commands::check(&input_path))
         }
         Commands::Describe { input } => {
             let input_path = resolve_input(input.as_deref())?;
-            cli::commands::describe(&input_path)
+            success_exit(cli::commands::describe(&input_path))
         }
-        Commands::Add { request, yes } => add(&request, yes).await,
-        Commands::Undo => undo(),
+        Commands::Add { request, yes } => success_exit(add(&request, yes).await),
+        Commands::Undo => success_exit(undo()),
         Commands::Search { query, registry } => {
             let workspace = PathBuf::from(".");
-            cli::deps::run_search(&workspace, &query, registry.as_deref()).await
+            success_exit(cli::deps::run_search(&workspace, &query, registry.as_deref()).await)
         }
         Commands::Deps { subcommand } => {
             let workspace = PathBuf::from(".");
-            match subcommand {
+            success_exit(match subcommand {
                 cli::DepsSubcommand::List => cli::deps::run_deps_list(&workspace),
                 cli::DepsSubcommand::Add {
                     name,
@@ -289,7 +420,7 @@ async fn run(cli: Cli) -> Result<()> {
                 cli::DepsSubcommand::Vendor { all, include } => {
                     cli::deps::run_deps_vendor(&workspace, all, include.as_deref())
                 }
-            }
+            })
         }
         Commands::Publish {
             registry,
@@ -297,11 +428,13 @@ async fn run(cli: Cli) -> Result<()> {
             yes,
         } => {
             let workspace = PathBuf::from(".");
-            cli::publish::run_publish(&workspace, registry.as_deref(), dry_run, yes).await
+            success_exit(
+                cli::publish::run_publish(&workspace, registry.as_deref(), dry_run, yes).await,
+            )
         }
         Commands::Registry { subcommand } => {
             let workspace = PathBuf::from(".");
-            run_registry(subcommand, &workspace).await
+            success_exit(run_registry(subcommand, &workspace).await)
         }
         Commands::Intent { subcommand } => {
             let workspace = PathBuf::from(".");
@@ -313,12 +446,14 @@ async fn run(cli: Cli) -> Result<()> {
             yes,
         } => {
             let workspace = PathBuf::from(".");
-            cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await
+            success_exit(
+                cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await,
+            )
         }
-        Commands::Upgrade => cli::upgrade::run_upgrade(&PathBuf::from(".")),
+        Commands::Upgrade => success_exit(cli::upgrade::run_upgrade(&PathBuf::from("."))),
         Commands::Knowledge { subcommand } => {
             let workspace = PathBuf::from(".");
-            run_knowledge(subcommand, workspace)
+            success_exit(run_knowledge(subcommand, workspace))
         }
         Commands::Benchmark {
             showcase,
@@ -334,7 +469,7 @@ async fn run(cli: Cli) -> Result<()> {
             attempts,
             output,
             port,
-        } => cli::phase15_e2e::run(&task, &provider, attempts, output, port).await,
+        } => success_exit(cli::phase15_e2e::run(&task, &provider, attempts, output, port).await),
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -342,15 +477,19 @@ async fn run(cli: Cli) -> Result<()> {
                 "duumbi",
                 &mut std::io::stdout(),
             );
-            Ok(())
+            Ok(EXIT_SUCCESS)
         }
         Commands::Studio { port, dev } => studio(port, dev).await,
         Commands::Provider { subcommand } => {
             let workspace = PathBuf::from(".");
-            run_provider(subcommand, &workspace)
+            success_exit(run_provider(subcommand, &workspace))
         }
-        Commands::Mcp { sse, port } => run_mcp(sse, port).await,
+        Commands::Mcp { sse, port } => success_exit(run_mcp(sse, port).await),
     }
+}
+
+fn success_exit(result: Result<()>) -> Result<i32> {
+    result.map(|()| EXIT_SUCCESS)
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +638,7 @@ async fn add(request: &str, yes: bool) -> Result<()> {
 }
 
 /// Dispatches `duumbi intent` subcommands.
-async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Result<()> {
+async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Result<i32> {
     match subcommand {
         cli::IntentSubcommand::Create { description, yes } => {
             let client = require_llm_client(&workspace)?;
@@ -508,17 +647,17 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             for line in &log {
                 eprintln!("{line}");
             }
-            Ok(())
+            Ok(EXIT_SUCCESS)
         }
         cli::IntentSubcommand::Review { name, edit } => {
-            match name {
+            success_exit(match name {
                 None => intent::review::print_intent_list(&workspace)
                     .map_err(|e| anyhow::anyhow!("{e}")),
                 Some(ref slug) if edit => intent::review::edit_intent(&workspace, slug)
                     .map_err(|e| anyhow::anyhow!("{e}")),
                 Some(ref slug) => intent::review::print_intent_detail(&workspace, slug)
                     .map_err(|e| anyhow::anyhow!("{e}")),
-            }
+            })
         }
         cli::IntentSubcommand::Execute { name } => {
             let client = require_llm_client(&workspace)?;
@@ -534,16 +673,18 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             )
             .await?;
             if !ok {
-                process::exit(1);
+                return Ok(EXIT_FAILURE);
             }
-            Ok(())
+            Ok(EXIT_SUCCESS)
         }
         cli::IntentSubcommand::Status { name } => match name {
-            None => {
-                intent::status::print_status_list(&workspace).map_err(|e| anyhow::anyhow!("{e}"))
-            }
-            Some(ref slug) => intent::status::print_status_detail(&workspace, slug)
-                .map_err(|e| anyhow::anyhow!("{e}")),
+            None => success_exit(
+                intent::status::print_status_list(&workspace).map_err(|e| anyhow::anyhow!("{e}")),
+            ),
+            Some(ref slug) => success_exit(
+                intent::status::print_status_detail(&workspace, slug)
+                    .map_err(|e| anyhow::anyhow!("{e}")),
+            ),
         },
     }
 }
@@ -733,7 +874,7 @@ fn require_llm_client(workspace: &Path) -> Result<agents::LlmClient> {
 /// Looks for the `studio` binary next to the running `duumbi` executable
 /// (both are built from the same cargo workspace). If found, execs into it;
 /// otherwise bails with build instructions.
-async fn studio(port: u16, _dev: bool) -> Result<()> {
+async fn studio(port: u16, _dev: bool) -> Result<i32> {
     let workspace = PathBuf::from(".");
     if !workspace.join(".duumbi").exists() {
         anyhow::bail!("No duumbi workspace found. Run `duumbi init` first.");
@@ -753,7 +894,7 @@ async fn studio(port: u16, _dev: bool) -> Result<()> {
                 .arg(port.to_string())
                 .status()
                 .with_context(|| format!("Failed to execute '{}'", studio_bin.display()))?;
-            process::exit(status.code().unwrap_or(1));
+            return Ok(status.code().unwrap_or(EXIT_FAILURE));
         }
     }
 
@@ -770,7 +911,7 @@ async fn run_benchmark(
     output: Option<PathBuf>,
     ci: bool,
     baseline: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<i32> {
     let workspace = PathBuf::from(".");
     let cfg = config::load_effective_config(&workspace)?.config;
 
@@ -831,10 +972,10 @@ async fn run_benchmark(
 
     // CI exit code
     if ci && !report.kill_criterion_met {
-        process::exit(1);
+        Ok(EXIT_FAILURE)
+    } else {
+        Ok(EXIT_SUCCESS)
     }
-
-    Ok(())
 }
 
 /// Returns the current time as an ISO-8601 string (UTC, second precision).
