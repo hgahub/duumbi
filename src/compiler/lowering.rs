@@ -114,7 +114,7 @@ fn mangle_symbol_component(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => out.push(byte as char),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => out.push(byte as char),
             _ => out.push_str(&format!("_x{byte:02x}_")),
         }
     }
@@ -1872,6 +1872,18 @@ mod tests {
         assert!(
             is_macho || is_elf,
             "Output should be a valid Mach-O or ELF object file"
+        );
+    }
+
+    #[test]
+    fn symbol_component_mangling_is_injective_for_escape_like_names() {
+        assert_ne!(
+            mangle_symbol_component("a/b"),
+            mangle_symbol_component("a_x2f_b")
+        );
+        assert_ne!(
+            function_symbol_name("a/b", "helper"),
+            function_symbol_name("a_x2f_b", "helper")
         );
     }
 

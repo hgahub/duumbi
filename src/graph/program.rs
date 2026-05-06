@@ -210,14 +210,14 @@ impl Program {
         }
 
         // Step 2: collect exports by both short and qualified names.
-        let mut exports_by_name: HashMap<String, Vec<String>> = HashMap::new();
+        let mut exports_by_name: HashMap<String, HashSet<String>> = HashMap::new();
         let mut qualified_exports: HashSet<(ModuleName, FunctionName)> = HashSet::new();
         for ast in &selected_asts {
             for fn_name in &ast.exports {
                 exports_by_name
                     .entry(fn_name.clone())
                     .or_default()
-                    .push(ast.name.0.clone());
+                    .insert(ast.name.0.clone());
                 qualified_exports.insert((ast.name.clone(), FunctionName(fn_name.clone())));
             }
         }
@@ -266,10 +266,10 @@ impl Program {
                             });
                         }
                     } else if !local_fns.contains(&callee) {
-                        match exports_by_name.get(function.as_str()).map(Vec::as_slice) {
-                            Some([_]) => {}
+                        match exports_by_name.get(function.as_str()) {
+                            Some(candidates) if candidates.len() == 1 => {}
                             Some(candidates) if candidates.len() > 1 => {
-                                let mut sorted = candidates.to_vec();
+                                let mut sorted: Vec<_> = candidates.iter().cloned().collect();
                                 sorted.sort();
                                 errors.push(ProgramError::AmbiguousCrossModuleRef {
                                     code: codes::E010_UNRESOLVED_CROSS_MODULE,
@@ -299,8 +299,12 @@ impl Program {
         let exports: HashMap<FunctionName, ModuleName> = exports_by_name
             .into_iter()
             .filter_map(|(fn_name, modules)| {
-                if let [module_name] = modules.as_slice() {
-                    Some((FunctionName(fn_name), ModuleName(module_name.clone())))
+                if modules.len() == 1 {
+                    let module_name = modules
+                        .into_iter()
+                        .next()
+                        .expect("invariant: len checked above");
+                    Some((FunctionName(fn_name), ModuleName(module_name)))
                 } else {
                     None
                 }
@@ -619,6 +623,23 @@ mod tests {
                 .exports
                 .contains_key(&FunctionName("helper".to_string())),
             "duplicate short exports must not be available for unqualified calls"
+        );
+    }
+
+    #[test]
+    fn repeated_export_in_same_module_does_not_create_ambiguity() {
+        let app = make_module_with_call("app", "helper", &[]);
+        let math = make_library_function_module("math", "helper", 42).replace(
+            r#""duumbi:exports": ["helper"]"#,
+            r#""duumbi:exports": ["helper", "helper"]"#,
+        );
+
+        let ws = write_workspace(&[("app.jsonld", &app), ("math.jsonld", &math)]);
+
+        let program = Program::load(ws.path()).expect("duplicate export in one module must load");
+        assert_eq!(
+            program.exports[&FunctionName("helper".to_string())],
+            ModuleName("math".to_string())
         );
     }
 
