@@ -4,7 +4,7 @@ set -euo pipefail
 # Ensure Cargo and workspace target directories are writable for the devcontainer user.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-USER_HOME="${HOME:-/home/vscode}"
+USER_HOME="$HOME"
 DEV_USER="$(id -un)"
 DEV_GROUP="$(id -gn)"
 mkdir -p "$USER_HOME/.cargo/registry" "$USER_HOME/.cargo/git" "$WORKSPACE_DIR/target"
