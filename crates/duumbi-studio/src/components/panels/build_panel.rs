@@ -19,10 +19,7 @@ pub fn BuildPanel() -> impl IntoView {
     let build_output = RwSignal::new(String::new());
     let run_output = RwSignal::new(String::new());
 
-    let build_action = Action::new(move |_: &()| async move {
-        let result = trigger_build().await;
-        result
-    });
+    let build_action = Action::new(move |_: &()| async move { trigger_build().await });
 
     let run_action = Action::new(move |_: &()| async move { trigger_run().await });
 
@@ -103,13 +100,11 @@ pub fn BuildPanel() -> impl IntoView {
                 </div>
                 <div class="md-content">
                     <pre>
-                        <code>{move || {
-                            let out = build_output.get();
-                            if out.is_empty() {
+                        <code>{move || match build_output.get() {
+                            out if out.is_empty() => {
                                 "Press Build to compile the workspace.".to_string()
-                            } else {
-                                out
                             }
+                            out => out,
                         }}</code>
                     </pre>
                 </div>
@@ -122,13 +117,9 @@ pub fn BuildPanel() -> impl IntoView {
                 </div>
                 <div class="md-content">
                     <pre>
-                        <code>{move || {
-                            let out = run_output.get();
-                            if out.is_empty() {
-                                "Build first, then press Run.".to_string()
-                            } else {
-                                out
-                            }
+                        <code>{move || match run_output.get() {
+                            out if out.is_empty() => "Build first, then press Run.".to_string(),
+                            out => out,
                         }}</code>
                     </pre>
                 </div>
