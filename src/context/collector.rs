@@ -153,7 +153,7 @@ pub fn collect(
 
             StepKind::ErrorContext => {
                 // Load recent errors from learning history
-                let successes = crate::knowledge::learning::query_successes(workspace, 5);
+                let successes = crate::knowledge::learning::query_combined_successes(workspace, 5);
                 for success in successes {
                     if !success.error_codes.is_empty() {
                         let text = format!(

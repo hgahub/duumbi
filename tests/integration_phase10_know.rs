@@ -5,8 +5,8 @@
 use duumbi::knowledge::learning;
 use duumbi::knowledge::store::KnowledgeStore;
 use duumbi::knowledge::types::{
-    DecisionRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION, TYPE_PATTERN,
-    TYPE_SUCCESS,
+    DecisionRecord, FailureRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION,
+    TYPE_FAILURE, TYPE_PATTERN, TYPE_SUCCESS,
 };
 use tempfile::TempDir;
 
@@ -20,12 +20,16 @@ fn store_save_load_all_types() {
     let store = KnowledgeStore::new(tmp.path()).expect("store");
 
     let s = SuccessRecord::new("add multiply", "AddFunction");
+    let f = FailureRecord::new("add multiply", "AddFunction", "timeout");
     let d = DecisionRecord::new("use separate modules");
     let p = PatternRecord::new("add-and-wire", "Add function then wire");
 
     store
         .save_node(&KnowledgeNode::Success(s))
         .expect("save success");
+    store
+        .save_node(&KnowledgeNode::Failure(f))
+        .expect("save failure");
     store
         .save_node(&KnowledgeNode::Decision(d))
         .expect("save decision");
@@ -34,13 +38,14 @@ fn store_save_load_all_types() {
         .expect("save pattern");
 
     let all = store.load_all();
-    assert_eq!(all.len(), 3);
+    assert_eq!(all.len(), 4);
 
     let stats = store.stats();
     assert_eq!(stats.successes, 1);
+    assert_eq!(stats.failures, 1);
     assert_eq!(stats.decisions, 1);
     assert_eq!(stats.patterns, 1);
-    assert_eq!(stats.total(), 3);
+    assert_eq!(stats.total(), 4);
 }
 
 #[test]
@@ -62,6 +67,8 @@ fn store_query_by_type_filters_correctly() {
 
     let successes = store.query_by_type(TYPE_SUCCESS);
     assert_eq!(successes.len(), 3);
+    let failures = store.query_by_type(TYPE_FAILURE);
+    assert!(failures.is_empty());
     let decisions = store.query_by_type(TYPE_DECISION);
     assert_eq!(decisions.len(), 1);
     let patterns = store.query_by_type(TYPE_PATTERN);
@@ -102,6 +109,22 @@ fn store_remove_and_verify() {
     assert!(store.remove_node(&id).expect("remove"));
     assert_eq!(store.stats().total(), 0);
     assert!(!store.remove_node(&id).expect("remove again"));
+}
+
+#[test]
+fn store_remove_failure_and_verify() {
+    let tmp = TempDir::new().expect("temp dir");
+    let store = KnowledgeStore::new(tmp.path()).expect("store");
+
+    let node = KnowledgeNode::Failure(FailureRecord::new("r", "t", "timeout"));
+    let id = node.id().to_string();
+    store.save_node(&node).expect("save");
+
+    assert_eq!(store.stats().failures, 1);
+    assert_eq!(store.stats().total(), 1);
+    assert!(store.remove_node(&id).expect("remove"));
+    assert_eq!(store.stats().failures, 0);
+    assert_eq!(store.stats().total(), 0);
 }
 
 #[test]

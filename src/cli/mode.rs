@@ -1,31 +1,14 @@
-//! REPL mode system for Agent / Intent dual-mode interaction.
+//! REPL mode system for Query / Agent / Intent interaction.
 //!
-//! The REPL supports two modes toggled by Shift+Tab:
-//! - **Agent** — free-form AI mutation (default)
+//! The REPL supports three modes toggled by Shift+Tab:
+//! - **Query** — read-only explanation and inspection (default)
+//! - **Agent** — free-form AI mutation
 //! - **Intent** — intent-focused planning and modification
 
 use std::path::PathBuf;
 
-/// The two REPL interaction modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReplMode {
-    /// Free-form AI mutation mode (default).
-    #[default]
-    Agent,
-    /// Intent-focused mode: input is interpreted in context of a focused intent.
-    Intent,
-}
-
-impl ReplMode {
-    /// Human-readable label for the current mode.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Intent => "intent",
-        }
-    }
-}
+/// REPL interaction mode.
+pub use crate::interaction::InteractionMode as ReplMode;
 
 /// Output line style for the scrollable output buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +23,8 @@ pub enum OutputStyle {
     Dim,
     /// AI streaming text (cyan).
     Ai,
+    /// Model-emitted thinking text.
+    Thinking,
     /// Help command entry: command name (magenta) + description (white).
     Help,
 }
@@ -73,6 +58,24 @@ pub enum ConversationBlockKind {
     Output,
 }
 
+/// Rendering mode for assistant or command output blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputRenderMode {
+    /// Plain line-by-line terminal output.
+    Plain,
+    /// Markdown answer text rendered into terminal styles.
+    Markdown,
+    /// Headered command or assistant output that can be collapsed.
+    Collapsible {
+        /// Header shown next to the disclosure marker.
+        header: String,
+        /// Whether the body is currently visible.
+        expanded: bool,
+        /// Style applied to the header and body text.
+        style: OutputStyle,
+    },
+}
+
 /// Action shown in a conversation block header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationAction {
@@ -87,6 +90,8 @@ pub enum ConversationAction {
 pub struct ConversationBlock {
     /// Block type.
     pub kind: ConversationBlockKind,
+    /// Output rendering behavior.
+    pub render_mode: OutputRenderMode,
     /// Lines rendered inside the block.
     pub lines: Vec<OutputLine>,
     /// Time the user submitted the block, formatted for display.
@@ -105,6 +110,7 @@ impl ConversationBlock {
     pub fn user(input: impl Into<String>, submitted_at: impl Into<String>) -> Self {
         Self {
             kind: ConversationBlockKind::User,
+            render_mode: OutputRenderMode::Plain,
             lines: vec![OutputLine::new(input, OutputStyle::Normal)],
             submitted_at: Some(submitted_at.into()),
             elapsed: None,
@@ -118,6 +124,7 @@ impl ConversationBlock {
     pub fn output() -> Self {
         Self {
             kind: ConversationBlockKind::Output,
+            render_mode: OutputRenderMode::Plain,
             lines: Vec::new(),
             submitted_at: None,
             elapsed: None,
@@ -130,7 +137,7 @@ impl ConversationBlock {
 /// A slash command match for the inline menu.
 #[derive(Debug, Clone)]
 pub struct SlashMatch {
-    /// Full command string (e.g. "/intent create").
+    /// Full command string (e.g. "/intent review").
     pub command: String,
     /// Description text.
     pub description: String,
@@ -174,6 +181,25 @@ pub enum Action {
         /// If true, the key is a subscription/Bearer token.
         is_subscription: bool,
     },
+    /// Initialize a workspace from the interactive init panel.
+    InitWorkspaceSubmitted {
+        /// Validated workspace display name.
+        workspace_name: String,
+        /// Whether an existing `.duumbi/` directory may be deleted first.
+        overwrite_existing: bool,
+    },
+    /// Delete the active intent after confirmation.
+    IntentDeleteConfirmed {
+        /// Intent slug to remove from active work.
+        slug: String,
+    },
+    /// Intent picker selected or cleared the active intent.
+    IntentSelected {
+        /// Selected intent slug, or none when the "new intent mode" row was selected.
+        slug: Option<String>,
+        /// Action requested before opening the picker.
+        requested_action: Option<IntentPickerAction>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +229,35 @@ pub enum PanelState {
         /// Optional status message shown in the panel footer. Cleared on next key press.
         status_msg: Option<(String, OutputStyle)>,
     },
+    /// Workspace initialization panel.
+    InitWorkspace {
+        /// Editable workspace name buffer.
+        name_buf: String,
+        /// Default name offered from the current directory.
+        default_name: String,
+        /// Whether the current `.duumbi/` directory exists and contains entries.
+        existing_non_empty: bool,
+        /// Whether the panel is currently waiting for destructive re-init confirmation.
+        confirm_overwrite: bool,
+        /// Optional status message shown in the panel.
+        status_msg: Option<(String, OutputStyle)>,
+    },
+    /// Active intent picker.
+    IntentPicker {
+        /// Loaded active intent rows. Row zero in the UI is always "new intent mode".
+        intents: Vec<IntentPickerItem>,
+        /// Highlighted row, including row zero.
+        selected: usize,
+        /// Action to run after a real intent row is selected.
+        requested_action: Option<IntentPickerAction>,
+        /// Optional status message shown in the panel.
+        status_msg: Option<(String, OutputStyle)>,
+    },
+    /// Confirmation panel for removing an active intent from the active list.
+    ConfirmIntentDelete {
+        /// Intent slug being deleted.
+        slug: String,
+    },
 }
 
 /// Sub-mode within an interactive panel for text input or confirmation.
@@ -229,17 +284,53 @@ pub enum PanelInputMode {
     ConfirmDelete,
 }
 
+/// One active intent row shown by the TUI intent picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentPickerItem {
+    /// Intent slug.
+    pub slug: String,
+    /// Lifecycle status text.
+    pub status: String,
+    /// Short natural-language intent description.
+    pub description: String,
+    /// Number of test cases attached to the intent.
+    pub test_count: usize,
+}
+
+/// Intent action requested before opening the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentPickerAction {
+    /// Review the selected intent.
+    Review,
+    /// Execute the selected intent.
+    Execute,
+    /// Edit the selected intent YAML.
+    Edit,
+    /// Delete the selected intent from the active list.
+    Delete,
+}
+
+/// Pending TUI intent creation clarification state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentDraft {
+    /// Original user request before clarification.
+    pub original_request: String,
+    /// Questions asked by the planner model.
+    pub questions: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn mode_default_is_agent() {
-        assert_eq!(ReplMode::default(), ReplMode::Agent);
+    fn mode_default_is_query() {
+        assert_eq!(ReplMode::default(), ReplMode::Query);
     }
 
     #[test]
     fn mode_labels() {
+        assert_eq!(ReplMode::Query.label(), "query");
         assert_eq!(ReplMode::Agent.label(), "agent");
         assert_eq!(ReplMode::Intent.label(), "intent");
     }

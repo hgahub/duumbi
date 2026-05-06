@@ -160,3 +160,53 @@ fn studio_layout_empty_graph() {
     assert!(nodes.is_empty());
     assert_eq!(bbox.width(), 0.0);
 }
+
+#[test]
+fn studio_root_footer_source_has_phase15_three_panel_workflow() {
+    let source = include_str!("../src/app.rs");
+    assert!(source.contains("<span class=\"footer-label\">\"Intents\"</span>"));
+    assert!(source.contains("<span class=\"footer-label\">\"Graph\"</span>"));
+    assert!(source.contains("<span class=\"footer-label\">\"Build\"</span>"));
+    assert!(!source.contains("<span class=\"footer-label\">\"Plans\"</span>"));
+    assert!(!source.contains("<span class=\"footer-label\">\"Agents\"</span>"));
+    assert!(!source.contains("<span class=\"footer-label\">\"Registry\"</span>"));
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_module_discovery_includes_nested_workspace_modules() {
+    let root = unique_temp_dir("duumbi-studio-modules");
+    let graph = root.join(".duumbi/graph/calculator");
+    std::fs::create_dir_all(&graph).expect("create graph dir");
+    std::fs::write(root.join(".duumbi/graph/main.jsonld"), "{}").expect("main");
+    std::fs::write(graph.join("ops.jsonld"), "{}").expect("ops");
+
+    let modules = duumbi_studio::server_fns::discover_workspace_modules(&root);
+    assert!(modules.contains(&"app/main".to_string()));
+    assert!(modules.contains(&"calculator/ops".to_string()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[tokio::test]
+async fn studio_run_api_no_binary_error_is_structured() {
+    let root = unique_temp_dir("duumbi-studio-run");
+    std::fs::create_dir_all(root.join(".duumbi")).expect("duumbi dir");
+
+    let response = duumbi_studio::server_fns::run_workspace_for_api(&root).await;
+    assert!(!response.ok);
+    assert_eq!(response.exit_code, -1);
+    assert!(response.stderr.contains("Build first"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+}

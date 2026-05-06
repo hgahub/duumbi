@@ -135,11 +135,50 @@ impl AnthropicClient {
 
         parse_sse_stream(resp, on_text).await
     }
+
+    /// Sends a plain text message without graph-mutation tools.
+    async fn do_answer(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+    ) -> Result<String, AgentError> {
+        let body = json!({
+            "model": self.model,
+            "max_tokens": MAX_TOKENS,
+            "system": system_prompt,
+            "messages": [
+                { "role": "user", "content": user_message }
+            ]
+        });
+
+        let req = self
+            .http
+            .post(ANTHROPIC_API_URL)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json");
+        let resp = self.auth_header(req).json(&body).send().await?;
+
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+        parse_anthropic_text_response(&response)
+    }
 }
 
 impl LlmProvider for AnthropicClient {
     fn name(&self) -> &str {
         "anthropic"
+    }
+
+    fn model_name(&self) -> Option<&str> {
+        Some(&self.model)
     }
 
     fn call_with_tools<'a>(
@@ -157,6 +196,27 @@ impl LlmProvider for AnthropicClient {
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         Box::pin(self.do_call_with_tools_streaming(system_prompt, user_message, on_text))
+    }
+
+    fn answer<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        Box::pin(self.do_answer(system_prompt, user_message))
+    }
+
+    fn answer_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let answer = self.do_answer(system_prompt, user_message).await?;
+            on_text(&answer);
+            Ok(answer)
+        })
     }
 }
 
@@ -311,6 +371,27 @@ fn parse_anthropic_response(response: &serde_json::Value) -> Result<Vec<PatchOp>
     }
 
     Ok(ops)
+}
+
+fn parse_anthropic_text_response(response: &serde_json::Value) -> Result<String, AgentError> {
+    let content = response["content"]
+        .as_array()
+        .ok_or_else(|| AgentError::Parse("Response has no 'content' array".to_string()))?;
+
+    let text = content
+        .iter()
+        .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("");
+
+    if text.is_empty() {
+        Err(AgentError::Parse(
+            "Response has no text content block".to_string(),
+        ))
+    } else {
+        Ok(text)
+    }
 }
 
 #[cfg(test)]

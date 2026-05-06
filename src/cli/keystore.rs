@@ -48,11 +48,6 @@ pub fn store_api_key(env_var_name: &str, key: &str) -> Result<(), String> {
     save_all(&map)
 }
 
-/// Loads an API key from `~/.duumbi/credentials.toml`.
-pub fn load_api_key(env_var_name: &str) -> Option<String> {
-    load_all().remove(env_var_name)
-}
-
 /// Deletes an API key from `~/.duumbi/credentials.toml`.
 #[allow(dead_code)]
 pub fn delete_api_key(env_var_name: &str) -> Result<(), String> {

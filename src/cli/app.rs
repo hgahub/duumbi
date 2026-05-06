@@ -10,6 +10,10 @@ use std::path::PathBuf;
 
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
+use pulldown_cmark::{
+    Event as MarkdownEvent, HeadingLevel, Options as MarkdownOptions, Parser as MarkdownParser,
+    Tag, TagEnd,
+};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
@@ -170,6 +174,18 @@ fn truncate_path(path: &str, max_chars: usize) -> String {
     format!("{head}\u{2026}{tail}")
 }
 
+fn truncate_for_width(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let mut out: String = value.chars().take(max_chars - 3).collect();
+    out.push_str("...");
+    out
+}
+
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
     use crate::config::ProviderKind;
@@ -209,7 +225,8 @@ fn configured_provider_index(
 
 use super::completion::{SLASH_COMMANDS, SLASH_GROUPS, SlashGroup};
 use super::mode::{
-    Action, ConversationAction, ConversationBlock, ConversationBlockKind, OutputLine, OutputStyle,
+    Action, ConversationAction, ConversationBlock, ConversationBlockKind, IntentDraft,
+    IntentPickerAction, IntentPickerItem, OutputLine, OutputRenderMode, OutputStyle,
     PanelInputMode, PanelState, ReplMode, SlashMatch, SlashMenuItem,
 };
 use super::theme::tui as theme;
@@ -234,6 +251,7 @@ struct ConversationVisualRow {
     block_index: Option<usize>,
     menu_button_block: Option<usize>,
     menu_button_range: Option<(u16, u16)>,
+    collapsible_toggle_block: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +277,38 @@ struct ConversationTextSelection {
     anchor: ConversationSelectionPoint,
     focus: ConversationSelectionPoint,
     dragged: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StyledChunk {
+    text: String,
+    style: Style,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StyledRow {
+    chunks: Vec<StyledChunk>,
+    plain_text: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MarkdownStyleState {
+    strong: usize,
+    emphasis: usize,
+    link: usize,
+    quote_depth: usize,
+    heading: Option<HeadingLevel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConversationRowAnchor {
+    block_index: usize,
+    block_row_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MarkdownListState {
+    next_number: Option<u64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -672,6 +722,63 @@ fn find_json_message(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn format_focused_intent_value(slug: &str, max_width: usize) -> String {
+    let full = format!("[{slug}]");
+    if full.chars().count() <= max_width {
+        return full;
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let inner_width = max_width.saturating_sub(2);
+    if inner_width <= 3 {
+        return format!("[{}]", ".".repeat(inner_width));
+    }
+
+    let available = inner_width - 3;
+    let prefix_len = if available >= 12 {
+        (available / 3).clamp(4, 8)
+    } else {
+        0
+    };
+    let suffix_len = available.saturating_sub(prefix_len);
+    let prefix: String = slug.chars().take(prefix_len).collect();
+    let mut suffix: Vec<char> = slug.chars().rev().take(suffix_len).collect();
+    suffix.reverse();
+    let suffix: String = suffix.into_iter().collect();
+
+    format!("[{prefix}...{suffix}]")
+}
+
+fn mode_strip_left_width(mode_label: &str, dot_glyph: &str) -> usize {
+    [
+        " Shift ".chars().count(),
+        " + ".chars().count(),
+        " Tab ".chars().count(),
+        " switch mode  ".chars().count(),
+        format!(" {dot_glyph} {mode_label} ").chars().count(),
+        "  ".chars().count(),
+    ]
+    .into_iter()
+    .sum()
+}
+
+fn style_for_output(style: OutputStyle) -> Style {
+    match style {
+        OutputStyle::Normal => theme::out_normal(),
+        OutputStyle::Error => theme::out_error(),
+        OutputStyle::Success => theme::out_success(),
+        OutputStyle::Dim => theme::out_dim(),
+        OutputStyle::Ai => theme::out_ai(),
+        OutputStyle::Thinking => theme::out_thinking(),
+        OutputStyle::Help => theme::out_help_desc(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReplApp
 // ---------------------------------------------------------------------------
@@ -687,6 +794,8 @@ pub struct ReplApp {
     pub mode: ReplMode,
     /// Intent slug that is currently focused, if any.
     pub focused_intent: Option<String>,
+    /// Pending intent creation clarification draft.
+    pub intent_draft: Option<IntentDraft>,
     /// Absolute path to the workspace root.
     pub workspace_root: PathBuf,
     /// Parsed workspace configuration.
@@ -803,6 +912,7 @@ impl ReplApp {
         Self {
             mode: ReplMode::default(),
             focused_intent: None,
+            intent_draft: None,
             workspace_root,
             config,
             system_config,
@@ -903,6 +1013,15 @@ impl ReplApp {
             PanelState::UserConfig { .. } => {
                 return self.handle_user_config_panel_key(key, textarea);
             }
+            PanelState::InitWorkspace { .. } => {
+                return self.handle_init_panel_key(key);
+            }
+            PanelState::IntentPicker { .. } => {
+                return self.handle_intent_picker_key(key, textarea);
+            }
+            PanelState::ConfirmIntentDelete { .. } => {
+                return self.handle_confirm_intent_delete_key(key);
+            }
             PanelState::None => {}
         }
 
@@ -913,12 +1032,9 @@ impl ReplApp {
         match key.code {
             KeyCode::Esc if self.conversation_text_selection.take().is_some() => Action::Continue,
 
-            // Shift+Tab: toggle Agent ↔ Intent mode
+            // Shift+Tab: cycle Query -> Agent -> Intent.
             KeyCode::BackTab => {
-                self.mode = match self.mode {
-                    ReplMode::Agent => ReplMode::Intent,
-                    ReplMode::Intent => ReplMode::Agent,
-                };
+                self.mode = self.mode.next();
                 Action::Continue
             }
 
@@ -1053,13 +1169,246 @@ impl ReplApp {
             let _ = self.insert_text_into_active_panel_field(text);
             return;
         }
-        if matches!(self.panel, PanelState::UserConfig { .. }) {
+        if matches!(self.panel, PanelState::InitWorkspace { .. }) {
+            self.insert_text_into_init_panel(text);
+            return;
+        }
+        if matches!(
+            self.panel,
+            PanelState::IntentPicker { .. }
+                | PanelState::ConfirmIntentDelete { .. }
+                | PanelState::UserConfig { .. }
+        ) {
             return;
         }
 
         textarea.insert_str(text);
         let current = textarea.lines().join("\n");
         self.update_slash_matches(&current);
+    }
+
+    /// Opens the workspace initialization panel with a prefilled name.
+    pub(crate) fn open_init_panel(&mut self, default_name: String, existing_non_empty: bool) {
+        self.clear_slash_menu();
+        self.panel = PanelState::InitWorkspace {
+            name_buf: default_name.clone(),
+            default_name,
+            existing_non_empty,
+            confirm_overwrite: false,
+            status_msg: None,
+        };
+    }
+
+    /// Opens the active intent picker panel.
+    pub(crate) fn open_intent_picker(
+        &mut self,
+        intents: Vec<IntentPickerItem>,
+        requested_action: Option<IntentPickerAction>,
+        status_msg: Option<(String, OutputStyle)>,
+    ) {
+        self.clear_slash_menu();
+        let selected = self
+            .focused_intent
+            .as_deref()
+            .and_then(|slug| intents.iter().position(|item| item.slug == slug))
+            .map_or(0, |index| index + 1);
+        self.panel = PanelState::IntentPicker {
+            intents,
+            selected,
+            requested_action,
+            status_msg,
+        };
+    }
+
+    /// Opens a confirmation panel before removing an active intent.
+    pub(crate) fn confirm_intent_delete(&mut self, slug: String) {
+        self.clear_slash_menu();
+        self.panel = PanelState::ConfirmIntentDelete { slug };
+    }
+
+    fn handle_intent_picker_key(
+        &mut self,
+        key_event: KeyEvent,
+        textarea: &mut TextArea<'_>,
+    ) -> Action {
+        let PanelState::IntentPicker {
+            intents,
+            mut selected,
+            requested_action,
+            ..
+        } = self.panel.clone()
+        else {
+            return Action::Continue;
+        };
+        let max = intents.len();
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.panel = PanelState::None;
+                textarea.move_cursor(CursorMove::Head);
+                textarea.delete_line_by_end();
+            }
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+            KeyCode::Down => {
+                selected = (selected + 1).min(max);
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+            KeyCode::Enter => {
+                let slug = selected
+                    .checked_sub(1)
+                    .and_then(|index| intents.get(index))
+                    .map(|item| item.slug.clone());
+                self.focused_intent = slug.clone();
+                self.panel = PanelState::None;
+                textarea.move_cursor(CursorMove::Head);
+                textarea.delete_line_by_end();
+                return Action::IntentSelected {
+                    slug,
+                    requested_action,
+                };
+            }
+            _ => {
+                self.panel = PanelState::IntentPicker {
+                    intents,
+                    selected,
+                    requested_action,
+                    status_msg: None,
+                };
+            }
+        }
+        Action::Continue
+    }
+
+    fn handle_confirm_intent_delete_key(&mut self, key_event: KeyEvent) -> Action {
+        let PanelState::ConfirmIntentDelete { slug } = self.panel.clone() else {
+            return Action::Continue;
+        };
+
+        match key_event.code {
+            KeyCode::Char('y' | 'Y') => {
+                self.panel = PanelState::None;
+                Action::IntentDeleteConfirmed { slug }
+            }
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
+                self.panel = PanelState::None;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+
+    fn handle_init_panel_key(&mut self, key_event: KeyEvent) -> Action {
+        let PanelState::InitWorkspace {
+            mut name_buf,
+            default_name,
+            existing_non_empty,
+            mut confirm_overwrite,
+            ..
+        } = self.panel.clone()
+        else {
+            return Action::Continue;
+        };
+
+        let mut status_msg: Option<(String, OutputStyle)> = None;
+        if confirm_overwrite {
+            match key_event.code {
+                KeyCode::Esc => {
+                    confirm_overwrite = false;
+                }
+                KeyCode::Enter | KeyCode::Char('n' | 'N') => {
+                    self.panel = PanelState::None;
+                    return Action::Continue;
+                }
+                KeyCode::Char('y' | 'Y') => {
+                    match crate::cli::init::validate_workspace_name(&name_buf) {
+                        Ok(workspace_name) => {
+                            self.panel = PanelState::None;
+                            return Action::InitWorkspaceSubmitted {
+                                workspace_name,
+                                overwrite_existing: true,
+                            };
+                        }
+                        Err(e) => {
+                            confirm_overwrite = false;
+                            status_msg = Some((e.to_string(), OutputStyle::Error));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            self.panel = PanelState::InitWorkspace {
+                name_buf,
+                default_name,
+                existing_non_empty,
+                confirm_overwrite,
+                status_msg,
+            };
+            return Action::Continue;
+        }
+
+        match key_event.code {
+            KeyCode::Esc => {
+                self.panel = PanelState::None;
+                return Action::Continue;
+            }
+            KeyCode::Backspace => {
+                name_buf.pop();
+            }
+            KeyCode::Enter => match crate::cli::init::validate_workspace_name(&name_buf) {
+                Ok(workspace_name) if existing_non_empty => {
+                    name_buf = workspace_name;
+                    confirm_overwrite = true;
+                }
+                Ok(workspace_name) => {
+                    self.panel = PanelState::None;
+                    return Action::InitWorkspaceSubmitted {
+                        workspace_name,
+                        overwrite_existing: false,
+                    };
+                }
+                Err(e) => {
+                    status_msg = Some((e.to_string(), OutputStyle::Error));
+                }
+            },
+            KeyCode::Char(c) if !is_clipboard_shortcut(key_event.modifiers) => {
+                name_buf.push(c);
+            }
+            _ => {}
+        }
+
+        self.panel = PanelState::InitWorkspace {
+            name_buf,
+            default_name,
+            existing_non_empty,
+            confirm_overwrite,
+            status_msg,
+        };
+        Action::Continue
+    }
+
+    fn insert_text_into_init_panel(&mut self, text: &str) {
+        if let PanelState::InitWorkspace {
+            name_buf,
+            confirm_overwrite,
+            ..
+        } = &mut self.panel
+            && !*confirm_overwrite
+        {
+            append_single_line_input(name_buf, text);
+        }
     }
 
     fn insert_text_into_active_panel_field(&mut self, text: &str) -> bool {
@@ -1201,18 +1550,24 @@ impl ReplApp {
             .get_or_insert_with(LoggingSection::default);
         match selected {
             0 => {
-                let next = cycle_log_level(logging.general.level, forward);
-                logging.general.level = next;
-                logging.general.enabled = next != LogLevel::Off;
+                let current = if logging.general.effective_enabled() {
+                    logging.general.effective_level()
+                } else {
+                    LogLevel::Off
+                };
+                let next = cycle_log_level(current, forward);
+                logging.general.level = Some(next);
+                logging.general.enabled = Some(next != LogLevel::Off);
             }
             1 => {
-                logging.general.mode = cycle_log_mode(logging.general.mode);
+                logging.general.mode = Some(cycle_log_mode(logging.general.effective_mode()));
             }
             2 => {
-                logging.performance.enabled = !logging.performance.enabled;
+                logging.performance.enabled = Some(!logging.performance.effective_enabled());
             }
             3 => {
-                logging.performance.mode = cycle_log_mode(logging.performance.mode);
+                logging.performance.mode =
+                    Some(cycle_log_mode(logging.performance.effective_mode()));
             }
             _ => {}
         }
@@ -1638,13 +1993,47 @@ impl ReplApp {
             let _ = crate::config::save_config(&self.workspace_root, &self.workspace_config);
         }
         self.refresh_effective_config();
+        self.rebuild_client_and_keychain_cache();
+    }
+
+    /// Rebuilds the LLM client and keychain cache from the current effective
+    /// config. Used after the config layers have been refreshed externally
+    /// (e.g. after interactive workspace init).
+    pub(super) fn rebuild_client_and_keychain_cache(&mut self) {
         let providers = self.config.effective_providers();
+        Self::load_file_credentials_for_providers(&providers);
         self.client = if providers.is_empty() {
             None
         } else {
-            crate::agents::factory::create_provider_chain_for_global_access(&providers).ok()
+            crate::agents::factory::create_available_provider_chain_for_global_access_context(
+                &providers,
+                &crate::agents::model_catalog::ModelSelectionContext::default(),
+            )
+            .ok()
         };
         self.keychain_cache = Self::build_keychain_cache(&self.config);
+    }
+
+    fn load_file_credentials_for_providers(providers: &[crate::config::ProviderConfig]) {
+        for provider in providers {
+            if std::env::var(&provider.api_key_env).is_err()
+                && let Some(key) = crate::credentials::load_api_key(&provider.api_key_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(&provider.api_key_env, &key);
+                }
+            }
+            if let Some(token_env) = &provider.auth_token_env
+                && std::env::var(token_env).is_err()
+                && let Some(token) = crate::credentials::load_api_key(token_env)
+            {
+                // SAFETY: single-threaded CLI — no concurrent env access.
+                unsafe {
+                    std::env::set_var(token_env, &token);
+                }
+            }
+        }
     }
 
     fn upsert_provider_in_config(
@@ -1707,14 +2096,13 @@ impl ReplApp {
         config
             .effective_providers()
             .iter()
-            .filter(|p| matches!(p.key_storage, Some(crate::config::KeyStorage::File)))
             .flat_map(|p| {
                 let mut names = Vec::new();
-                if super::keystore::load_api_key(&p.api_key_env).is_some() {
+                if crate::credentials::load_api_key(&p.api_key_env).is_some() {
                     names.push(p.api_key_env.clone());
                 }
                 if let Some(token_env) = &p.auth_token_env
-                    && super::keystore::load_api_key(token_env).is_some()
+                    && crate::credentials::load_api_key(token_env).is_some()
                 {
                     names.push(token_env.clone());
                 }
@@ -1899,6 +2287,85 @@ impl ReplApp {
             self.output_lines.drain(..excess);
         }
         // Reset scroll to bottom when new output arrives.
+        self.output_scroll_offset = 0;
+    }
+
+    /// Appends one Markdown-rendered answer block to the conversation pane.
+    pub fn push_markdown_output(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let output_idx = self.start_output_block(OutputRenderMode::Markdown);
+        for line in text.split('\n') {
+            let output_line = OutputLine::new(line.to_string(), OutputStyle::Normal);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
+        }
+        self.trim_output_buffer();
+        self.current_output_block = None;
+        self.output_scroll_offset = 0;
+    }
+
+    /// Appends one collapsed model-thinking block to the conversation pane.
+    pub fn push_thinking_output(&mut self, text: impl Into<String>) {
+        self.push_collapsible_output("Thinking", text, OutputStyle::Thinking, false);
+    }
+
+    /// Appends one headered collapsible output block to the conversation pane.
+    pub fn push_collapsible_output(
+        &mut self,
+        header: impl Into<String>,
+        text: impl Into<String>,
+        style: OutputStyle,
+        expanded: bool,
+    ) {
+        let header = header.into();
+        let text = text.into();
+        let output_idx = self.start_output_block(OutputRenderMode::Collapsible {
+            header,
+            expanded,
+            style,
+        });
+        for line in text.split('\n') {
+            let output_line = OutputLine::new(line.to_string(), style);
+            self.output_lines.push(output_line.clone());
+            if let Some(block) = self.conversation_blocks.get_mut(output_idx) {
+                block.lines.push(output_line);
+            }
+        }
+        self.trim_output_buffer();
+        self.current_output_block = None;
+        self.output_scroll_offset = 0;
+    }
+
+    /// Replaces the most recent output line in both legacy and block buffers.
+    pub fn replace_last_output_line(&mut self, text: impl Into<String>, style: OutputStyle) {
+        let text = text.into();
+        let output_line = OutputLine::new(text, style);
+        if let Some(line) = self.output_lines.last_mut() {
+            *line = output_line.clone();
+        }
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+            && let Some(line) = block.lines.last_mut()
+        {
+            *line = output_line;
+        }
+        self.output_scroll_offset = 0;
+    }
+
+    /// Removes the most recent output line from both legacy and block buffers.
+    pub fn pop_last_output_line(&mut self) {
+        let _ = self.output_lines.pop();
+        if let Some(block) =
+            self.conversation_blocks.iter_mut().rev().find(|block| {
+                block.kind == ConversationBlockKind::Output && !block.lines.is_empty()
+            })
+        {
+            let _ = block.lines.pop();
+        }
         self.output_scroll_offset = 0;
     }
 
@@ -2110,18 +2577,31 @@ impl ReplApp {
 
     fn ensure_output_block(&mut self) -> usize {
         if let Some(idx) = self.current_output_block
-            && self
-                .conversation_blocks
-                .get(idx)
-                .is_some_and(|block| block.kind == ConversationBlockKind::Output)
+            && self.conversation_blocks.get(idx).is_some_and(|block| {
+                block.kind == ConversationBlockKind::Output
+                    && block.render_mode == OutputRenderMode::Plain
+            })
         {
             return idx;
         }
 
-        self.conversation_blocks.push(ConversationBlock::output());
+        self.start_output_block(OutputRenderMode::Plain)
+    }
+
+    fn start_output_block(&mut self, render_mode: OutputRenderMode) -> usize {
+        let mut block = ConversationBlock::output();
+        block.render_mode = render_mode;
+        self.conversation_blocks.push(block);
         let idx = self.conversation_blocks.len() - 1;
         self.current_output_block = Some(idx);
         idx
+    }
+
+    fn trim_output_buffer(&mut self) {
+        if self.output_lines.len() > Self::OUTPUT_BUFFER_MAX {
+            let excess = self.output_lines.len() - Self::OUTPUT_BUFFER_MAX;
+            self.output_lines.drain(..excess);
+        }
     }
 
     fn handle_conversation_mouse_down(&mut self, column: u16, row: u16) -> bool {
@@ -2244,6 +2724,18 @@ impl ReplApp {
             return true;
         }
 
+        if let Some(block_index) = visual_row.collapsible_toggle_block {
+            let relative_y = row.saturating_sub(area.y) as usize;
+            let visible_row = relative_y.saturating_sub(layout.padding);
+            let anchor = self.anchor_for_visible_row(&layout, visible_row, area.width);
+            let was_scrolled = self.output_scroll_offset > 0;
+            self.toggle_collapsible_block(block_index);
+            if was_scrolled && let Some(anchor) = anchor {
+                self.restore_conversation_anchor(area, anchor, relative_y);
+            }
+            return true;
+        }
+
         let Some(block_index) = visual_row.block_index else {
             return false;
         };
@@ -2263,6 +2755,77 @@ impl ReplApp {
             self.conversation_action_menu = None;
         }
         true
+    }
+
+    fn toggle_collapsible_block(&mut self, block_index: usize) {
+        let Some(block) = self.conversation_blocks.get_mut(block_index) else {
+            return;
+        };
+        if let OutputRenderMode::Collapsible { expanded, .. } = &mut block.render_mode {
+            *expanded = !*expanded;
+        }
+    }
+
+    fn anchor_for_visible_row(
+        &self,
+        layout: &VisibleConversationLayout,
+        visible_row: usize,
+        width: u16,
+    ) -> Option<ConversationRowAnchor> {
+        let row = layout.rows.get(visible_row)?;
+        let block_index = row.block_index?;
+        let absolute_row = layout.start_index + visible_row;
+        let block_row_offset = self
+            .conversation_visual_rows(width)
+            .iter()
+            .take(absolute_row)
+            .filter(|candidate| candidate.block_index == Some(block_index))
+            .count();
+        Some(ConversationRowAnchor {
+            block_index,
+            block_row_offset,
+        })
+    }
+
+    fn restore_conversation_anchor(
+        &mut self,
+        area: Rect,
+        anchor: ConversationRowAnchor,
+        target_visible_row: usize,
+    ) {
+        let rows = self.conversation_visual_rows(area.width);
+        let Some(anchor_row) = Self::find_anchor_row(&rows, anchor) else {
+            return;
+        };
+        let max_visible = area.height as usize;
+        let total = rows.len();
+        let bottom = if anchor_row < target_visible_row {
+            max_visible
+                .saturating_sub(target_visible_row - anchor_row)
+                .min(total)
+        } else {
+            let desired_start = anchor_row - target_visible_row;
+            let max_start = total.saturating_sub(max_visible);
+            let start = desired_start.min(max_start);
+            (start + max_visible).min(total)
+        };
+        self.output_scroll_offset = total.saturating_sub(bottom);
+    }
+
+    fn find_anchor_row(
+        rows: &[ConversationVisualRow],
+        anchor: ConversationRowAnchor,
+    ) -> Option<usize> {
+        let mut seen = 0usize;
+        for (idx, row) in rows.iter().enumerate() {
+            if row.block_index == Some(anchor.block_index) {
+                if seen == anchor.block_row_offset {
+                    return Some(idx);
+                }
+                seen += 1;
+            }
+        }
+        None
     }
 
     fn conversation_point_at(
@@ -2295,7 +2858,7 @@ impl ReplApp {
     fn selected_conversation_text(&self, area: Rect) -> Option<String> {
         let selection = self.conversation_text_selection?;
         let rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2433,6 +2996,30 @@ impl ReplApp {
                     self.render_user_config_panel(frame, overlay_area, *selected, status_msg);
                 }
             }
+            PanelState::InitWorkspace { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 96);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_init_panel(frame, overlay_area, &self.panel);
+                }
+            }
+            PanelState::IntentPicker { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(60, 112);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_intent_picker_panel(frame, overlay_area, &self.panel);
+                }
+            }
+            PanelState::ConfirmIntentDelete { .. } => {
+                if let Some(overlay_height) = self.overlay_height() {
+                    let overlay_width = page.width.saturating_sub(4).clamp(52, 90);
+                    let overlay_area =
+                        Self::centered_overlay_rect(page, overlay_width, overlay_height);
+                    self.render_intent_delete_panel(frame, overlay_area, &self.panel);
+                }
+            }
         }
     }
 
@@ -2488,8 +3075,25 @@ impl ReplApp {
                 }
             }),
             PanelState::UserConfig { status_msg, .. } => {
-                Some(Self::USER_CONFIG_ROWS as u16 + 8 + u16::from(status_msg.is_some()))
+                Some(Self::USER_CONFIG_ROWS as u16 + 10 + 2 * u16::from(status_msg.is_some()))
             }
+            PanelState::InitWorkspace {
+                confirm_overwrite, ..
+            } => Some(if *confirm_overwrite { 16 } else { 12 }),
+            PanelState::IntentPicker {
+                intents,
+                status_msg,
+                ..
+            } => {
+                let rows = intents.len().max(1) as u16;
+                let status = u16::from(status_msg.is_some()) * 2;
+                // The panel block has borders plus one row of vertical padding
+                // on each side, so the outer height needs four extra rows.
+                let base_rows = if intents.is_empty() { 7 } else { 7 + rows };
+                let content_rows = base_rows + status;
+                Some((content_rows + 4).min(24))
+            }
+            PanelState::ConfirmIntentDelete { .. } => Some(8),
         }
     }
 
@@ -2600,7 +3204,7 @@ impl ReplApp {
                 "TRY ONE OF THESE",
                 vec![
                     Line::from(vec![
-                        Span::styled("/intent create", theme::brand_word()),
+                        Span::styled("/mode intent", theme::brand_word()),
                         Span::raw("  "),
                         Span::styled(
                             "\"Build a calculator with add and multiply\"",
@@ -2677,7 +3281,7 @@ impl ReplApp {
     fn visible_conversation_layout(&self, area: Rect) -> VisibleConversationLayout {
         let max_lines = area.height as usize;
         let all_rows = if self.conversation_blocks.is_empty() {
-            self.legacy_output_rows()
+            self.legacy_output_rows(area.width)
         } else {
             self.conversation_visual_rows(area.width)
         };
@@ -2804,16 +3408,10 @@ impl ReplApp {
         Some((Rect::new(x, y, width, height), actions))
     }
 
-    fn legacy_output_rows(&self) -> Vec<ConversationVisualRow> {
+    fn legacy_output_rows(&self, width: u16) -> Vec<ConversationVisualRow> {
         self.output_lines
             .iter()
-            .map(|ol| ConversationVisualRow {
-                line: Self::line_from_output(ol),
-                plain_text: ol.text.clone(),
-                block_index: None,
-                menu_button_block: None,
-                menu_button_range: None,
-            })
+            .flat_map(|ol| Self::output_line_visual_rows(ol, None, None, None, width))
             .collect()
     }
 
@@ -2827,6 +3425,7 @@ impl ReplApp {
                     block_index: None,
                     menu_button_block: None,
                     menu_button_range: None,
+                    collapsible_toggle_block: None,
                 });
             }
             match block.kind {
@@ -2834,14 +3433,30 @@ impl ReplApp {
                     rows.extend(self.user_block_rows(idx, block, width));
                 }
                 ConversationBlockKind::Output => {
-                    for ol in &block.lines {
-                        rows.push(ConversationVisualRow {
-                            line: Self::line_from_output(ol),
-                            plain_text: ol.text.clone(),
-                            block_index: Some(idx),
-                            menu_button_block: None,
-                            menu_button_range: None,
-                        });
+                    match &block.render_mode {
+                        OutputRenderMode::Plain => {
+                            for ol in &block.lines {
+                                rows.extend(Self::output_line_visual_rows(
+                                    ol,
+                                    Some(idx),
+                                    None,
+                                    None,
+                                    width,
+                                ));
+                            }
+                        }
+                        OutputRenderMode::Markdown => {
+                            rows.extend(Self::markdown_visual_rows(block, idx, width));
+                        }
+                        OutputRenderMode::Collapsible {
+                            header,
+                            expanded,
+                            style,
+                        } => {
+                            rows.extend(Self::collapsible_visual_rows(
+                                block, idx, width, header, *expanded, *style,
+                            ));
+                        }
                     }
                     if let Some(elapsed) = &block.elapsed {
                         rows.push(ConversationVisualRow {
@@ -2850,6 +3465,7 @@ impl ReplApp {
                             block_index: Some(idx),
                             menu_button_block: None,
                             menu_button_range: None,
+                            collapsible_toggle_block: None,
                         });
                     }
                 }
@@ -2873,17 +3489,29 @@ impl ReplApp {
         let submitted_at = block.submitted_at.as_deref().unwrap_or("");
         let selected = self.selected_conversation_block == Some(block_index);
         let action_trigger = if selected { "..." } else { "" };
+        let (top_padding, _, top_plain_text) = self.user_panel_line("", "", width, false, selected);
         let (line, range, plain_text) =
             self.user_panel_line(input, action_trigger, width, true, selected);
         let (meta_line, _, meta_plain_text) =
             self.user_panel_line(submitted_at, "", width, false, selected);
+        let (bottom_padding, _, bottom_plain_text) =
+            self.user_panel_line("", "", width, false, selected);
         vec![
+            ConversationVisualRow {
+                line: top_padding,
+                plain_text: top_plain_text,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+                collapsible_toggle_block: None,
+            },
             ConversationVisualRow {
                 line,
                 plain_text,
                 block_index: Some(block_index),
                 menu_button_block: selected.then_some(block_index),
                 menu_button_range: range,
+                collapsible_toggle_block: None,
             },
             ConversationVisualRow {
                 line: meta_line,
@@ -2891,8 +3519,470 @@ impl ReplApp {
                 block_index: Some(block_index),
                 menu_button_block: None,
                 menu_button_range: None,
+                collapsible_toggle_block: None,
+            },
+            ConversationVisualRow {
+                line: bottom_padding,
+                plain_text: bottom_plain_text,
+                block_index: Some(block_index),
+                menu_button_block: None,
+                menu_button_range: None,
+                collapsible_toggle_block: None,
             },
         ]
+    }
+
+    fn output_line_visual_rows(
+        ol: &OutputLine,
+        block_index: Option<usize>,
+        menu_button_block: Option<usize>,
+        menu_button_range: Option<(u16, u16)>,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let max_width = usize::from(width.max(1));
+        let wrapped = if width == 0 {
+            vec![ol.text.clone()]
+        } else if ol.style == OutputStyle::Thinking {
+            Self::wrap_thinking_output(&ol.text, max_width)
+        } else {
+            Self::wrap_output_text(&ol.text, max_width)
+        };
+
+        wrapped
+            .into_iter()
+            .map(|text| {
+                let output_line = OutputLine::new(text.clone(), ol.style);
+                ConversationVisualRow {
+                    line: Self::line_from_output(&output_line),
+                    plain_text: text,
+                    block_index,
+                    menu_button_block,
+                    menu_button_range,
+                    collapsible_toggle_block: None,
+                }
+            })
+            .collect()
+    }
+
+    fn markdown_visual_rows(
+        block: &ConversationBlock,
+        block_index: usize,
+        width: u16,
+    ) -> Vec<ConversationVisualRow> {
+        let text = block
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let styled_rows = Self::markdown_styled_rows(&text);
+        let max_width = usize::from(width.max(1));
+        styled_rows
+            .into_iter()
+            .flat_map(|row| Self::wrap_styled_row(row, max_width))
+            .map(|row| Self::styled_row_to_visual(row, Some(block_index), None))
+            .collect()
+    }
+
+    fn collapsible_visual_rows(
+        block: &ConversationBlock,
+        block_index: usize,
+        width: u16,
+        header: &str,
+        expanded: bool,
+        style: OutputStyle,
+    ) -> Vec<ConversationVisualRow> {
+        let marker = if expanded { "\u{25BE}" } else { "\u{25B8}" };
+        let header = format!("{marker} {header}");
+        let mut rows = vec![ConversationVisualRow {
+            line: Line::from(Span::styled(header.clone(), style_for_output(style))),
+            plain_text: header,
+            block_index: Some(block_index),
+            menu_button_block: None,
+            menu_button_range: None,
+            collapsible_toggle_block: Some(block_index),
+        }];
+
+        if expanded {
+            for line in &block.lines {
+                let text = format!("\u{2502} {}", line.text.trim_end());
+                let output_line = OutputLine::new(text, style);
+                rows.extend(Self::output_line_visual_rows(
+                    &output_line,
+                    Some(block_index),
+                    None,
+                    None,
+                    width,
+                ));
+            }
+        }
+
+        rows
+    }
+
+    fn markdown_styled_rows(text: &str) -> Vec<StyledRow> {
+        let options = MarkdownOptions::ENABLE_STRIKETHROUGH
+            | MarkdownOptions::ENABLE_TABLES
+            | MarkdownOptions::ENABLE_TASKLISTS;
+        let parser = MarkdownParser::new_ext(text, options);
+        let mut rows = Vec::new();
+        let mut current = StyledRow::default();
+        let mut style_state = MarkdownStyleState::default();
+        let mut list_stack: Vec<MarkdownListState> = Vec::new();
+        let mut link_stack: Vec<String> = Vec::new();
+        let mut in_code_block = false;
+
+        for event in parser {
+            match event {
+                MarkdownEvent::Start(tag) => match tag {
+                    Tag::Paragraph => {}
+                    Tag::Heading { level, .. } => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.heading = Some(level);
+                    }
+                    Tag::BlockQuote(_) => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.quote_depth += 1;
+                        Self::append_markdown_prefix(
+                            &mut current,
+                            style_state.quote_depth,
+                            list_stack.len(),
+                        );
+                    }
+                    Tag::CodeBlock(_) => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        in_code_block = true;
+                    }
+                    Tag::List(start) => {
+                        list_stack.push(MarkdownListState { next_number: start });
+                    }
+                    Tag::Item => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        let depth = list_stack.len().saturating_sub(1);
+                        Self::append_markdown_prefix(&mut current, style_state.quote_depth, depth);
+                        if let Some(list) = list_stack.last_mut() {
+                            match list.next_number {
+                                Some(n) => {
+                                    Self::append_styled(
+                                        &mut current,
+                                        format!("{n}. "),
+                                        theme::out_dim(),
+                                    );
+                                    list.next_number = Some(n + 1);
+                                }
+                                None => Self::append_styled(
+                                    &mut current,
+                                    "- ".to_string(),
+                                    theme::out_dim(),
+                                ),
+                            }
+                        }
+                    }
+                    Tag::Emphasis => style_state.emphasis += 1,
+                    Tag::Strong => style_state.strong += 1,
+                    Tag::Link { dest_url, .. } => {
+                        style_state.link += 1;
+                        link_stack.push(dest_url.to_string());
+                    }
+                    _ => {}
+                },
+                MarkdownEvent::End(tag) => match tag {
+                    TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        if matches!(tag, TagEnd::Heading(_)) {
+                            style_state.heading = None;
+                        }
+                    }
+                    TagEnd::BlockQuote(_) => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        style_state.quote_depth = style_state.quote_depth.saturating_sub(1);
+                    }
+                    TagEnd::CodeBlock => {
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                        in_code_block = false;
+                    }
+                    TagEnd::List(_) => {
+                        list_stack.pop();
+                        Self::finish_markdown_row(&mut rows, &mut current);
+                    }
+                    TagEnd::Emphasis => {
+                        style_state.emphasis = style_state.emphasis.saturating_sub(1);
+                    }
+                    TagEnd::Strong => {
+                        style_state.strong = style_state.strong.saturating_sub(1);
+                    }
+                    TagEnd::Link => {
+                        if let Some(url) = link_stack.pop()
+                            && !url.is_empty()
+                        {
+                            Self::append_styled(
+                                &mut current,
+                                format!(" ({url})"),
+                                theme::out_dim(),
+                            );
+                        }
+                        style_state.link = style_state.link.saturating_sub(1);
+                    }
+                    _ => {}
+                },
+                MarkdownEvent::Text(text) => {
+                    if in_code_block {
+                        for (idx, line) in text.split('\n').enumerate() {
+                            if idx > 0 {
+                                Self::finish_markdown_row(&mut rows, &mut current);
+                            }
+                            if current.plain_text.is_empty() {
+                                Self::append_styled(
+                                    &mut current,
+                                    "  ".to_string(),
+                                    theme::out_dim(),
+                                );
+                            }
+                            Self::append_styled(
+                                &mut current,
+                                line.to_string(),
+                                Self::markdown_code_style(),
+                            );
+                        }
+                    } else {
+                        Self::append_styled(
+                            &mut current,
+                            text.to_string(),
+                            Self::markdown_inline_style(style_state),
+                        );
+                    }
+                }
+                MarkdownEvent::Code(text) => {
+                    Self::append_styled(
+                        &mut current,
+                        text.to_string(),
+                        Self::markdown_code_style(),
+                    );
+                }
+                MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                    Self::append_markdown_prefix(
+                        &mut current,
+                        style_state.quote_depth,
+                        list_stack.len(),
+                    );
+                }
+                MarkdownEvent::Rule => {
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                    Self::append_styled(&mut current, "\u{2500}".repeat(20), theme::out_dim());
+                    Self::finish_markdown_row(&mut rows, &mut current);
+                }
+                _ => {}
+            }
+        }
+        Self::finish_markdown_row(&mut rows, &mut current);
+        while rows.last().is_some_and(|row| row.plain_text.is_empty()) {
+            rows.pop();
+        }
+        if rows.is_empty() {
+            rows.push(StyledRow::default());
+        }
+        rows
+    }
+
+    fn append_markdown_prefix(row: &mut StyledRow, quote_depth: usize, list_depth: usize) {
+        for _ in 0..quote_depth {
+            Self::append_styled(row, "\u{2502} ".to_string(), theme::out_dim());
+        }
+        if list_depth > 0 {
+            Self::append_styled(row, "  ".repeat(list_depth), theme::out_dim());
+        }
+    }
+
+    fn append_styled(row: &mut StyledRow, text: String, style: Style) {
+        if text.is_empty() {
+            return;
+        }
+        row.plain_text.push_str(&text);
+        row.chunks.push(StyledChunk { text, style });
+    }
+
+    fn finish_markdown_row(rows: &mut Vec<StyledRow>, current: &mut StyledRow) {
+        if !current.plain_text.is_empty() {
+            rows.push(std::mem::take(current));
+        }
+    }
+
+    fn markdown_inline_style(state: MarkdownStyleState) -> Style {
+        let mut style = if state.link > 0 {
+            theme::out_ai().add_modifier(Modifier::UNDERLINED)
+        } else {
+            theme::out_normal()
+        };
+        if state.heading.is_some() || state.strong > 0 {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if state.emphasis > 0 {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        style
+    }
+
+    fn markdown_code_style() -> Style {
+        theme::out_normal().add_modifier(Modifier::BOLD)
+    }
+
+    fn wrap_styled_row(row: StyledRow, width: usize) -> Vec<StyledRow> {
+        let width = width.max(1);
+        let was_empty = row.plain_text.is_empty();
+        let mut rows = Vec::new();
+        let mut current = StyledRow::default();
+        let mut current_len = 0usize;
+
+        for chunk in row.chunks {
+            let StyledChunk { text, style } = chunk;
+            let mut remaining: &str = text.as_str();
+            while !remaining.is_empty() {
+                if current_len == width {
+                    rows.push(std::mem::take(&mut current));
+                    current_len = 0;
+                }
+                let space = width - current_len;
+                let mut taken = 0;
+                let mut end_byte = 0;
+                for (byte, ch) in remaining.char_indices() {
+                    if taken == space {
+                        break;
+                    }
+                    end_byte = byte + ch.len_utf8();
+                    taken += 1;
+                }
+                let (slice, rest) = remaining.split_at(end_byte);
+                current.plain_text.push_str(slice);
+                current.chunks.push(StyledChunk {
+                    text: slice.to_string(),
+                    style,
+                });
+                current_len += taken;
+                remaining = rest;
+            }
+        }
+
+        if !current.plain_text.is_empty() || was_empty {
+            rows.push(current);
+        }
+        rows
+    }
+
+    fn styled_row_to_visual(
+        row: StyledRow,
+        block_index: Option<usize>,
+        collapsible_toggle_block: Option<usize>,
+    ) -> ConversationVisualRow {
+        ConversationVisualRow {
+            line: Line::from(
+                row.chunks
+                    .into_iter()
+                    .map(|chunk| Span::styled(chunk.text, chunk.style))
+                    .collect::<Vec<_>>(),
+            ),
+            plain_text: row.plain_text,
+            block_index,
+            menu_button_block: None,
+            menu_button_range: None,
+            collapsible_toggle_block,
+        }
+    }
+
+    fn wrap_thinking_output(text: &str, width: usize) -> Vec<String> {
+        let Some(body) = text.strip_prefix("│ ") else {
+            return Self::wrap_output_text(text, width);
+        };
+        let body_width = width.saturating_sub(2).max(1);
+        Self::wrap_output_text(body, body_width)
+            .into_iter()
+            .map(|line| format!("│ {line}"))
+            .collect()
+    }
+
+    fn wrap_output_text(text: &str, width: usize) -> Vec<String> {
+        if text.is_empty() {
+            return vec![String::new()];
+        }
+        let width = width.max(1);
+        let mut rows = Vec::new();
+
+        for line in text.split('\n') {
+            if line.is_empty() {
+                rows.push(String::new());
+                continue;
+            }
+
+            let mut current = String::new();
+            let mut token = String::new();
+            let mut token_is_whitespace: Option<bool> = None;
+
+            for ch in line.chars() {
+                let is_whitespace = ch.is_whitespace();
+                match token_is_whitespace {
+                    Some(kind) if kind == is_whitespace => token.push(ch),
+                    Some(_) => {
+                        Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+                        token.clear();
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
+                    None => {
+                        token.push(ch);
+                        token_is_whitespace = Some(is_whitespace);
+                    }
+                }
+            }
+
+            if !token.is_empty() {
+                Self::push_wrapped_token(&mut rows, &mut current, &token, width);
+            }
+            if !current.is_empty() {
+                rows.push(current);
+            }
+        }
+
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+
+        rows
+    }
+
+    fn push_wrapped_token(rows: &mut Vec<String>, current: &mut String, token: &str, width: usize) {
+        if token.is_empty() {
+            return;
+        }
+
+        let token_len = token.chars().count();
+        let current_len = current.chars().count();
+        if current_len + token_len <= width {
+            current.push_str(token);
+            return;
+        }
+
+        if !current.is_empty() {
+            rows.push(std::mem::take(current));
+        }
+
+        let mut chunk = String::new();
+        let mut chunk_len = 0usize;
+        for ch in token.chars() {
+            if chunk_len == width {
+                rows.push(std::mem::take(&mut chunk));
+                chunk_len = 0;
+            }
+            chunk.push(ch);
+            chunk_len += 1;
+        }
+
+        if !chunk.is_empty() {
+            if chunk_len == width {
+                rows.push(chunk);
+            } else {
+                current.push_str(&chunk);
+            }
+        }
     }
 
     fn user_panel_line(
@@ -2984,17 +4074,7 @@ impl ReplApp {
                     Line::from(Span::styled(text.clone(), theme::out_help_cmd()))
                 }
             }
-            _ => {
-                let style = match ol.style {
-                    OutputStyle::Normal => theme::out_normal(),
-                    OutputStyle::Error => theme::out_error(),
-                    OutputStyle::Success => theme::out_success(),
-                    OutputStyle::Dim => theme::out_dim(),
-                    OutputStyle::Ai => theme::out_ai(),
-                    OutputStyle::Help => unreachable!(),
-                };
-                Line::from(Span::styled(ol.text.clone(), style))
-            }
+            _ => Line::from(Span::styled(ol.text.clone(), style_for_output(ol.style))),
         }
     }
 
@@ -3005,16 +4085,17 @@ impl ReplApp {
 
         // Right-side intent indicator: "intent —" (empty) or "intent [slug]".
         let intent_label = "intent ";
+
+        let left_len = mode_strip_left_width(mode_label, dot_glyph);
+        let value_width = (area.width as usize)
+            .saturating_sub(left_len)
+            .saturating_sub(intent_label.len());
         let intent_value: String = self
             .focused_intent
             .as_deref()
-            .map(|s| format!("[{s}]"))
+            .map(|s| format_focused_intent_value(s, value_width))
             .unwrap_or_else(|| "—".to_string());
-
-        let hint_prefix = 14usize;
-        let mode_len = 4 + mode_label.len();
         let right_len = intent_label.len() + intent_value.chars().count();
-        let left_len = hint_prefix + mode_len;
         let padding = (area.width as usize).saturating_sub(left_len + right_len);
 
         let mut spans = vec![
@@ -3045,8 +4126,9 @@ impl ReplApp {
 
         let is_empty = textarea.lines().iter().all(|line| line.is_empty());
         let placeholder = match self.mode {
+            ReplMode::Query => "e.g. \"what modules exist?\" or /help",
             ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
-            ReplMode::Intent => "e.g. \"plan a calculator module\" or /intent create",
+            ReplMode::Intent => "describe a new intent, refine the active intent, or /intent",
         };
 
         if area.height >= 3 {
@@ -3376,21 +4458,24 @@ impl ReplApp {
         frame.render_widget(block, area);
 
         let logging = self.user_config.logging.clone().unwrap_or_default();
-        let general_level = if logging.general.enabled {
-            logging.general.level
+        let general_level = if logging.general.effective_enabled() {
+            logging.general.effective_level()
         } else {
             LogLevel::Off
         };
-        let performance = if logging.performance.enabled {
+        let performance = if logging.performance.effective_enabled() {
             "enabled"
         } else {
             "disabled"
         };
         let rows = [
             ("General level", general_level.to_string()),
-            ("General mode", logging.general.mode.to_string()),
+            ("General mode", logging.general.effective_mode().to_string()),
             ("Performance log", performance.to_string()),
-            ("Performance mode", logging.performance.mode.to_string()),
+            (
+                "Performance mode",
+                logging.performance.effective_mode().to_string(),
+            ),
         ];
 
         let mut lines: Vec<Line<'_>> = Vec::new();
@@ -3435,6 +4520,226 @@ impl ReplApp {
             "  [\u{2191}/\u{2193}] Select  [\u{2190}/\u{2192}] Change  [S] Save",
             theme::out_dim(),
         )));
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// Renders the workspace initialization panel.
+    fn render_init_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::InitWorkspace {
+            name_buf,
+            default_name: _,
+            existing_non_empty,
+            confirm_overwrite,
+            status_msg,
+        } = panel
+        else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let inner_width = inner.width as usize;
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled("  Initialize Workspace", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(50))),
+            Span::styled("(Esc to cancel)", theme::out_dim()),
+        ]));
+        lines.push(Line::from(""));
+        let workspace_value = if *confirm_overwrite {
+            format!("  Workspace name: {name_buf}")
+        } else {
+            format!("  Workspace name: {name_buf}\u{2588}")
+        };
+        let workspace_style = if *confirm_overwrite {
+            theme::out_dim()
+        } else {
+            theme::out_help_cmd()
+        };
+        lines.push(Line::from(Span::styled(workspace_value, workspace_style)));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  Namespace:      {}",
+                crate::cli::init::namespace_slug(name_buf)
+            ),
+            theme::out_dim(),
+        )));
+
+        if *existing_non_empty && !*confirm_overwrite {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  This workspace has already been initialized.",
+                theme::out_error(),
+            )));
+        }
+
+        if let Some((msg, style)) = status_msg {
+            let s = match style {
+                OutputStyle::Success => theme::out_success(),
+                OutputStyle::Error => theme::out_error(),
+                _ => theme::out_dim(),
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("  {msg}"), s)));
+        }
+
+        lines.push(Line::from(""));
+        if *confirm_overwrite {
+            lines.push(Line::from(Span::styled(
+                "  May I delete and reinitialize this workspace? [y/N]",
+                theme::out_error(),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  [Enter] Initialize",
+                theme::out_dim(),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// Renders the active intent picker panel.
+    fn render_intent_picker_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::IntentPicker {
+            intents,
+            selected,
+            status_msg,
+            ..
+        } = panel
+        else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let inner_width = inner.width as usize;
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled("  Active Intents", theme::brand_word()),
+            Span::raw(" ".repeat(inner_width.saturating_sub(42))),
+            Span::styled("(Esc to close)", theme::out_dim()),
+        ]));
+        lines.push(Line::from(""));
+
+        let clear_style = if *selected == 0 {
+            theme::slash_selected()
+        } else {
+            theme::out_dim()
+        };
+        let clear_marker = if *selected == 0 { "\u{25cf}" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!("  {clear_marker} No active intent / new intent mode"),
+            clear_style,
+        )));
+
+        if intents.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  No unfinished intents. Switch to Intent mode and describe what to build.",
+                theme::out_dim(),
+            )));
+        } else {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {:<28} {:<12} {:<6} {}",
+                    "Slug", "Status", "Tests", "Description"
+                ),
+                theme::out_dim(),
+            )));
+            for (index, item) in intents.iter().enumerate() {
+                let row = index + 1;
+                let is_selected = *selected == row;
+                let marker = if is_selected { "\u{25cf}" } else { " " };
+                let style = if is_selected {
+                    theme::slash_selected()
+                } else {
+                    theme::out_dim()
+                };
+                let description = truncate_for_width(&item.description, 44);
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {marker} {:<28} {:<12} {:<6} {}",
+                        truncate_for_width(&item.slug, 28),
+                        item.status,
+                        item.test_count,
+                        description
+                    ),
+                    style,
+                )));
+            }
+        }
+
+        if let Some((msg, style)) = status_msg {
+            let status_style = match style {
+                OutputStyle::Success => theme::out_success(),
+                OutputStyle::Error => theme::out_error(),
+                _ => theme::out_dim(),
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("  {msg}"), status_style)));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [\u{2191}/\u{2193}] Select  [Enter] Activate  [Esc] Close",
+            theme::out_dim(),
+        )));
+
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
+
+    /// Renders the active intent delete confirmation panel.
+    fn render_intent_delete_panel(&self, frame: &mut Frame, area: Rect, panel: &PanelState) {
+        use ratatui::widgets::{Block, Borders, Padding};
+
+        let PanelState::ConfirmIntentDelete { slug } = panel else {
+            return;
+        };
+
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::panel_border())
+            .padding(Padding::new(1, 1, 1, 1))
+            .style(theme::panel_surface());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(Span::styled("  Delete Intent", theme::brand_word())),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Remove '{slug}' from active work?"),
+                theme::out_error(),
+            )),
+            Line::from(Span::styled(
+                "  The YAML will be moved to .duumbi/intents/deleted/.",
+                theme::out_dim(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("  Confirm? [y/N]", theme::out_dim())),
+        ];
 
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
@@ -3642,9 +4947,6 @@ mod tests {
     use super::*;
     use crate::session::SessionManager;
     use std::ffi::OsString;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct HomeEnvGuard(Option<OsString>);
 
@@ -3711,9 +5013,206 @@ mod tests {
     }
 
     #[test]
-    fn new_starts_in_agent_mode() {
+    fn init_panel_prefills_default_workspace_name() {
+        let (mut app, _textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                ref name_buf,
+                ref default_name,
+                existing_non_empty: false,
+                confirm_overwrite: false,
+                ..
+            } if name_buf == "myproject" && default_name == "myproject"
+        ));
+    }
+
+    #[test]
+    fn init_panel_enter_accepts_default_name() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::InitWorkspaceSubmitted {
+                workspace_name,
+                overwrite_existing: false
+            } if workspace_name == "myproject"
+        ));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_esc_closes_name_entry() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), false);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_rejects_names_over_thirty_chars() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel(
+            "a".repeat(crate::cli::init::MAX_WORKSPACE_NAME_CHARS + 1),
+            false,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                status_msg: Some((_, OutputStyle::Error)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_existing_workspace_requires_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                confirm_overwrite: true,
+                status_msg: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_existing_workspace_renders_confirmation() {
+        let (mut app, textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut TextArea::default(),
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(!rendered.contains("This workspace has already been initialized."));
+        assert!(rendered.contains("May I delete and reinitialize this workspace? [y/N]"));
+        assert!(rendered.contains("Workspace name: myproject"));
+        assert!(!rendered.contains("Workspace name: myproject█"));
+        assert!(!rendered.contains("Default:"));
+    }
+
+    #[test]
+    fn init_panel_confirmation_submits_overwrite() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::InitWorkspaceSubmitted {
+                workspace_name,
+                overwrite_existing: true
+            } if workspace_name == "myproject"
+        ));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_esc_returns_to_name_entry_from_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(
+            app.panel,
+            PanelState::InitWorkspace {
+                confirm_overwrite: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_panel_enter_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn init_panel_n_closes_overwrite_confirmation() {
+        let (mut app, mut textarea) = make_app();
+        app.open_init_panel("myproject".to_string(), true);
+        let _ = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn new_starts_in_query_mode() {
         let (app, _) = make_app();
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]
@@ -3737,6 +5236,33 @@ mod tests {
         let out = truncate_path(p, 10);
         assert!(out.chars().count() <= 10);
         assert!(out.contains('\u{2026}'));
+    }
+
+    #[test]
+    fn focused_intent_value_preserves_suffix_when_constrained() {
+        let slug = "build-a-calculator-with-add-subtract-mul";
+        let out = format_focused_intent_value(slug, 28);
+
+        assert!(out.chars().count() <= 28);
+        assert!(out.starts_with("[build"));
+        assert!(out.contains("..."));
+        assert!(out.ends_with("subtract-mul]"));
+    }
+
+    #[test]
+    fn focused_intent_value_keeps_short_slug() {
+        assert_eq!(
+            format_focused_intent_value("calculator", 20),
+            "[calculator]"
+        );
+    }
+
+    #[test]
+    fn mode_strip_left_width_matches_rendered_static_spans() {
+        assert_eq!(
+            mode_strip_left_width("intent", ReplApp::mode_dot_glyph()),
+            " Shift  +  Tab  switch mode   ● intent   ".chars().count()
+        );
     }
 
     #[test]
@@ -3792,7 +5318,7 @@ mod tests {
 
         assert!(rendered.contains(" empty workspace "));
         assert!(rendered.contains("TRY ONE OF THESE"));
-        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/mode intent"));
         assert!(rendered.contains("\"Build a calculator with add and multiply\""));
         assert!(!rendered.contains("Use the prompt"));
 
@@ -3825,6 +5351,351 @@ mod tests {
         assert!(rendered.contains("/status"));
         assert!(!rendered.contains("copy"));
         assert!(rendered.contains("Workspace: /tmp/example"));
+    }
+
+    #[test]
+    fn conversation_render_wraps_long_query_output() {
+        let (mut app, textarea) = make_app();
+        app.begin_user_block("Hello");
+        app.push_markdown_output(
+            "Hello! I'm ready to help you explore your DUUMBI workspace. If you have any questions about your project, code, or architecture, feel free to ask.",
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 80, 35);
+
+        assert!(!rendered.contains('▌'));
+        assert!(rendered.contains("free to ask."));
+    }
+
+    #[test]
+    fn conversation_renders_common_markdown_without_raw_markers() {
+        let (mut app, textarea) = make_app();
+        app.push_markdown_output(
+            "### `main`\nThe workspace contains **5 modules** and _helpers_.\n\n- `add(x)`\n1. first\n\n> quoted note\n\n```duumbi\nfn main() -> i64\n```",
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 35);
+
+        assert!(rendered.contains("main"));
+        assert!(rendered.contains("5 modules"));
+        assert!(rendered.contains("helpers"));
+        assert!(rendered.contains("- add(x)"));
+        assert!(rendered.contains("1. first"));
+        assert!(rendered.contains("quoted note"));
+        assert!(rendered.contains("fn main() -> i64"));
+        assert!(!rendered.contains("###"));
+        assert!(!rendered.contains("**"));
+        assert!(!rendered.contains("_helpers_"));
+        assert!(!rendered.contains("`add(x)`"));
+        assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn markdown_list_items_have_no_blank_separator() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("- first\n- second\n- third\n");
+
+        let rows = app.conversation_visual_rows(120);
+        let first = rows
+            .iter()
+            .position(|r| r.plain_text.contains("first"))
+            .expect("first item should render");
+        let second = rows
+            .iter()
+            .position(|r| r.plain_text.contains("second"))
+            .expect("second item should render");
+        let third = rows
+            .iter()
+            .position(|r| r.plain_text.contains("third"))
+            .expect("third item should render");
+
+        assert_eq!(
+            second,
+            first + 1,
+            "list items should not have blank rows between them"
+        );
+        assert_eq!(
+            third,
+            second + 1,
+            "list items should not have blank rows between them"
+        );
+    }
+
+    #[test]
+    fn markdown_blockquote_renders_prefix_on_first_line() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("> quoted text");
+
+        let rows = app.conversation_visual_rows(120);
+        let quoted = rows
+            .iter()
+            .find(|r| r.plain_text.contains("quoted text"))
+            .expect("quoted line should render");
+        assert!(
+            quoted.plain_text.starts_with('\u{2502}'),
+            "blockquote first line should start with quote prefix, got: {:?}",
+            quoted.plain_text
+        );
+    }
+
+    #[test]
+    fn markdown_answer_has_single_separator_before_sources() {
+        let (mut app, _textarea) = make_app();
+        app.push_markdown_output("- `length(s: string) -> i64`\n");
+        app.push_output(
+            "Sources: 6 | Confidence: Medium | Model: minimax/MiniMax-M2.7",
+            OutputStyle::Dim,
+        );
+
+        let rows = app.conversation_visual_rows(120);
+        let sources_idx = rows
+            .iter()
+            .position(|row| row.plain_text.starts_with("Sources:"))
+            .expect("sources metadata should render");
+
+        assert!(
+            rows.get(sources_idx.saturating_sub(1))
+                .is_some_and(|row| row.plain_text.is_empty()),
+            "one separator row should precede sources metadata"
+        );
+        assert!(
+            rows.get(sources_idx.saturating_sub(2))
+                .is_some_and(|row| !row.plain_text.is_empty()),
+            "markdown answer should not leave an extra blank row before the block separator"
+        );
+    }
+
+    #[test]
+    fn conversation_blocks_have_single_boundary_separator() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("Create a calculator");
+        app.push_output("Generating intent spec", OutputStyle::Dim);
+        app.push_markdown_output("Intent saved.");
+        app.begin_user_block("execute");
+
+        let rows = app.conversation_visual_rows(120);
+        let first_row_for_block = |block_index: usize| {
+            rows.iter()
+                .position(|row| row.block_index == Some(block_index))
+                .expect("block should render")
+        };
+
+        for block_index in 1..app.conversation_blocks.len() {
+            let first = first_row_for_block(block_index);
+            assert!(
+                rows.get(first.saturating_sub(1))
+                    .is_some_and(|row| { row.block_index.is_none() && row.plain_text.is_empty() }),
+                "block {block_index} should have exactly one boundary separator before it"
+            );
+            assert!(
+                first < 2
+                    || rows.get(first - 2).is_none_or(|row| {
+                        row.block_index.is_some() || !row.plain_text.is_empty()
+                    }),
+                "block {block_index} should not have multiple boundary separators before it"
+            );
+        }
+    }
+
+    #[test]
+    fn user_block_padding_and_thinking_spacing_are_single_rows() {
+        let (mut app, _textarea) = make_app();
+        app.begin_user_block("Where should a power function live?");
+        app.push_thinking_output("inspect workspace");
+        app.push_markdown_output("The function belongs in `math`.");
+
+        let rows = app.conversation_visual_rows(120);
+        let input_idx = rows
+            .iter()
+            .position(|row| {
+                row.plain_text
+                    .contains("Where should a power function live?")
+            })
+            .expect("user input should render");
+        let timestamp_idx = input_idx + 1;
+        let thinking_idx = rows
+            .iter()
+            .position(|row| row.plain_text.contains("Thinking"))
+            .expect("thinking header should render");
+        let answer_idx = rows
+            .iter()
+            .position(|row| row.plain_text.contains("The function belongs"))
+            .expect("answer should render");
+
+        let is_user_padding = |row: &ConversationVisualRow| {
+            row.plain_text
+                .chars()
+                .all(|ch| ch.is_whitespace() || ch == '\u{258f}')
+        };
+
+        assert!(input_idx > 0);
+        assert!(is_user_padding(&rows[input_idx - 1]));
+        assert!(is_user_padding(&rows[timestamp_idx + 1]));
+        assert_eq!(
+            thinking_idx,
+            timestamp_idx + 3,
+            "one user padding row plus one block separator should separate the user timestamp and Thinking"
+        );
+        assert_eq!(
+            answer_idx,
+            thinking_idx + 2,
+            "exactly one separator row should separate Thinking and the answer"
+        );
+    }
+
+    #[test]
+    fn thinking_block_is_collapsed_by_default_and_click_toggles() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("inspect workspace\nbuild answer");
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Thinking"));
+        assert!(!rendered.contains("inspect workspace"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▸ Thinking"))
+            .expect("collapsed thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▸ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▾ Thinking"));
+        assert!(rendered.contains("│ inspect workspace"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▾ Thinking"))
+            .expect("expanded thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▾ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Thinking"));
+        assert!(!rendered.contains("inspect workspace"));
+    }
+
+    #[test]
+    fn custom_collapsible_block_uses_header_style_and_click_toggle() {
+        let (mut app, textarea) = make_app();
+        app.push_collapsible_output(
+            "Build output",
+            "Build successful\nOutput: .duumbi/build/output",
+            OutputStyle::Normal,
+            true,
+        );
+
+        let (rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▾ Build output"));
+        assert!(rendered.contains("│ Build successful"));
+
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▾ Build output"))
+            .expect("expanded build header should render") as u16;
+        let col = rows[row as usize]
+            .find("▾ Build output")
+            .expect("build header column should be findable") as u16;
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 100, 30);
+        assert!(rendered.contains("▸ Build output"));
+        assert!(!rendered.contains("Build successful"));
+    }
+
+    #[test]
+    fn thinking_block_row_count_tracks_collapsed_state() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("one\ntwo\nthree");
+
+        let collapsed = app.conversation_line_count(100);
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 30);
+        let row = rows
+            .iter()
+            .position(|line| line.contains("▸ Thinking"))
+            .expect("collapsed thinking header should render") as u16;
+        let col = rows[row as usize]
+            .find("▸ Thinking")
+            .expect("thinking header column should be findable") as u16;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        let expanded = app.conversation_line_count(100);
+        assert!(expanded > collapsed);
+    }
+
+    #[test]
+    fn thinking_toggle_preserves_header_screen_position_when_scrolled() {
+        let (mut app, textarea) = make_app();
+        app.push_thinking_output("one\ntwo\nthree");
+        for i in 0..30 {
+            app.push_output(format!("tail {i}"), OutputStyle::Normal);
+        }
+
+        let mut header: Option<(u16, u16)> = None;
+        let total = app.conversation_line_count(100);
+        for offset in 0..total {
+            app.output_scroll_offset = offset;
+            let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 20);
+            if let Some(row) = rows.iter().position(|line| line.contains("▸ Thinking")) {
+                if row <= 2 {
+                    continue;
+                }
+                let col = rows[row]
+                    .find("▸ Thinking")
+                    .expect("thinking header column should be findable")
+                    as u16;
+                header = Some((row as u16, col));
+                break;
+            }
+        }
+        let (row, col) = header.expect("thinking header should be reachable by scrolling");
+
+        assert!(app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        let (_rendered, rows) = render_app_to_string(&app, &textarea, 100, 20);
+        assert!(
+            rows.get(row as usize)
+                .is_some_and(|line| line.contains("▾ Thinking")),
+            "expanded thinking header should remain on the clicked row"
+        );
+    }
+
+    #[test]
+    fn output_wrapping_preserves_original_spacing() {
+        let rows = ReplApp::wrap_output_text("  Provider ID    Display name", 20);
+
+        assert_eq!(rows[0], "  Provider ID    ");
+        assert_eq!(rows[1], "Display name");
+        assert_eq!(rows.join(""), "  Provider ID    Display name");
     }
 
     #[test]
@@ -4087,7 +5958,7 @@ mod tests {
 
         assert!(rendered.contains("FILTER"));
         assert!(rendered.contains("/intent"));
-        assert!(rendered.contains("/intent create"));
+        assert!(rendered.contains("/intent review"));
         assert!(rendered.contains("/init"));
     }
 
@@ -4108,6 +5979,96 @@ mod tests {
         app.slash_selected = 1;
         let action = app.handle_key(enter, &mut textarea);
         assert!(matches!(action, Action::Submit(cmd) if cmd == "/build"));
+    }
+
+    #[test]
+    fn intent_picker_renders_empty_guidance() {
+        let (mut app, textarea) = make_app();
+        app.open_intent_picker(Vec::new(), None, None);
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("Active Intents"));
+        assert!(rendered.contains("No active intent / new intent mode"));
+        assert!(rendered.contains("No unfinished intents"));
+    }
+
+    #[test]
+    fn intent_picker_enter_selects_intent() {
+        let (mut app, mut textarea) = make_app();
+        app.open_intent_picker(
+            vec![IntentPickerItem {
+                slug: "build-calculator".to_string(),
+                status: "pending".to_string(),
+                description: "Build calculator".to_string(),
+                test_count: 2,
+            }],
+            None,
+            None,
+        );
+        app.handle_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+
+        assert!(matches!(
+            action,
+            Action::IntentSelected {
+                slug: Some(slug),
+                requested_action: None
+            } if slug == "build-calculator"
+        ));
+        assert_eq!(app.focused_intent.as_deref(), Some("build-calculator"));
+        assert!(matches!(app.panel, PanelState::None));
+    }
+
+    #[test]
+    fn intent_picker_renders_first_intent_row() {
+        let (mut app, textarea) = make_app();
+        app.open_intent_picker(
+            vec![IntentPickerItem {
+                slug: "build-calculator".to_string(),
+                status: "pending".to_string(),
+                description: "Build calculator".to_string(),
+                test_count: 4,
+            }],
+            None,
+            None,
+        );
+
+        let (rendered, _rows) = render_app_to_string(&app, &textarea, 120, 30);
+
+        assert!(rendered.contains("build-calculator"));
+        assert!(rendered.contains("pending"));
+        assert!(rendered.contains("Build calculator"));
+    }
+
+    #[test]
+    fn intent_delete_confirmation_requires_yes() {
+        let (mut app, mut textarea) = make_app();
+        app.confirm_intent_delete("build-calculator".to_string());
+
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut textarea,
+        );
+        assert!(matches!(action, Action::Continue));
+        assert!(matches!(app.panel, PanelState::None));
+
+        app.confirm_intent_delete("build-calculator".to_string());
+        let action = app.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut textarea,
+        );
+        assert!(matches!(
+            action,
+            Action::IntentDeleteConfirmed { slug } if slug == "build-calculator"
+        ));
     }
 
     #[test]
@@ -4178,11 +6139,15 @@ mod tests {
         let (mut app, mut textarea) = make_app();
         let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Intent);
+        assert_eq!(app.mode, ReplMode::Agent);
 
         let key2 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
         app.handle_key(key2, &mut textarea);
-        assert_eq!(app.mode, ReplMode::Agent);
+        assert_eq!(app.mode, ReplMode::Intent);
+
+        let key3 = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(key3, &mut textarea);
+        assert_eq!(app.mode, ReplMode::Query);
     }
 
     #[test]
@@ -4207,8 +6172,8 @@ mod tests {
         );
 
         let logging = app.user_config.logging.expect("logging settings");
-        assert_eq!(logging.general.level, LogLevel::Warn);
-        assert!(logging.general.enabled);
+        assert_eq!(logging.general.level, Some(LogLevel::Warn));
+        assert_eq!(logging.general.enabled, Some(true));
         assert!(matches!(
             app.panel,
             PanelState::UserConfig {
@@ -4220,7 +6185,7 @@ mod tests {
 
     #[test]
     fn user_config_panel_saves_logging_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp dir");
         let _home = HomeEnvGuard::set(home.path());
         let (mut app, mut textarea) = make_app();
@@ -4239,7 +6204,10 @@ mod tests {
         );
 
         let saved = crate::config::load_user_config().expect("user config must save");
-        assert!(saved.logging.expect("logging settings").performance.enabled);
+        assert_eq!(
+            saved.logging.expect("logging settings").performance.enabled,
+            Some(true)
+        );
     }
 
     #[test]
@@ -4659,7 +6627,9 @@ mod tests {
 
     #[test]
     fn provider_panel_api_key_enter_submits_probe_action_without_saving() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
 
@@ -4735,7 +6705,9 @@ mod tests {
             .await
             .expect("probe should succeed");
 
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         app.save_tested_provider_key(
@@ -4811,7 +6783,9 @@ mod tests {
             .expect("probe should succeed when at least one model is accessible");
         assert_eq!(probe_report.accessible_count(), 2);
 
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         app.save_tested_provider_key(
@@ -4845,7 +6819,9 @@ mod tests {
 
     #[test]
     fn provider_panel_file_credential_preserves_custom_api_key_env() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
 
@@ -5283,7 +7259,9 @@ mod tests {
 
     #[test]
     fn provider_panel_delete_removes_global_model_access_snapshot() {
-        let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+        let _guard = crate::cli::TEST_ENV_LOCK
+            .lock()
+            .expect("invariant: env lock");
         let home = tempfile::TempDir::new().expect("invariant: temp home");
         let _home_guard = HomeEnvGuard::set(home.path());
         let fingerprint = crate::agents::model_access::credential_fingerprint_for_secret(

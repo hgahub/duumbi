@@ -36,6 +36,10 @@ impl LlmProvider for GrokClient {
         self.0.name()
     }
 
+    fn model_name(&self) -> Option<&str> {
+        self.0.model_name()
+    }
+
     fn call_with_tools<'a>(
         &'a self,
         system_prompt: &'a str,
@@ -52,6 +56,24 @@ impl LlmProvider for GrokClient {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         self.0
             .call_with_tools_streaming(system_prompt, user_message, on_text)
+    }
+
+    fn answer<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        self.0.answer(system_prompt, user_message)
+    }
+
+    fn answer_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        self.0
+            .answer_streaming(system_prompt, user_message, on_text)
     }
 }
 

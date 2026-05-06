@@ -54,6 +54,7 @@ pub fn bold(text: &str) -> String {
 }
 
 /// Renders a slash command name in bold cyan.
+#[cfg(test)]
 #[must_use]
 pub fn command(text: &str) -> String {
     format!("{}", text.cyan().bold())
@@ -379,6 +380,12 @@ pub mod tui {
     /// Style for AI streaming / assistant output.
     #[must_use]
     pub fn out_ai() -> Style {
+        Style::default().fg(col(BLUE_INK))
+    }
+
+    /// Style for model-emitted thinking blocks in Query mode.
+    #[must_use]
+    pub fn out_thinking() -> Style {
         Style::default().fg(col(BLUE_INK))
     }
 

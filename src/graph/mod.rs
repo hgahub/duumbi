@@ -5,6 +5,7 @@
 //! all transformations are graph-to-graph.
 
 pub mod builder;
+pub mod describe;
 pub mod ownership;
 pub mod program;
 pub mod result_safety;

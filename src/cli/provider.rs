@@ -33,11 +33,11 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
 
     for (i, p) in providers.iter().enumerate() {
         let (auth_type, ready) = if let Some(ref token_env) = p.auth_token_env {
-            let token_ok = std::env::var(token_env).is_ok();
-            let key_ok = std::env::var(&p.api_key_env).is_ok();
+            let token_ok = credential_available(token_env);
+            let key_ok = credential_available(&p.api_key_env);
             ("bearer", if token_ok || key_ok { "yes" } else { "no" })
         } else {
-            let key_ok = std::env::var(&p.api_key_env).is_ok();
+            let key_ok = credential_available(&p.api_key_env);
             ("api-key", if key_ok { "yes" } else { "no" })
         };
         table.add_row(vec![
@@ -58,6 +58,15 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
         .lines()
         .map(|l| OutputLine::new(l.to_string(), OutputStyle::Normal))
         .collect()
+}
+
+fn credential_available(env_var_name: &str) -> bool {
+    std::env::var(env_var_name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || crate::credentials::load_api_key(env_var_name)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

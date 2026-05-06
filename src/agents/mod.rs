@@ -112,6 +112,19 @@ pub trait LlmProvider: Send + Sync {
     /// Returns the provider's display name (e.g. `"anthropic"`, `"grok"`).
     fn name(&self) -> &str;
 
+    /// Returns the concrete model identifier, when available.
+    fn model_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns a non-secret provider/model label for UI metadata.
+    fn model_label(&self) -> String {
+        match self.model_name() {
+            Some(model) if !model.trim().is_empty() => format!("{}/{}", self.name(), model),
+            _ => self.name().to_string(),
+        }
+    }
+
     /// Sends a prompt with graph context to the LLM and returns parsed [`PatchOp`] values.
     fn call_with_tools<'a>(
         &'a self,
@@ -129,6 +142,30 @@ pub trait LlmProvider: Send + Sync {
         user_message: &'a str,
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>>;
+
+    /// Sends a plain text prompt to the LLM and returns the assistant answer.
+    ///
+    /// Query mode uses this instead of graph-mutation tools so read-only
+    /// questions cannot accidentally produce patch operations.
+    fn answer<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        let _ = (system_prompt, user_message);
+        Box::pin(async { Err(AgentError::NoToolCalls) })
+    }
+
+    /// Sends a plain text prompt to the LLM and streams assistant text.
+    fn answer_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        let _ = (system_prompt, user_message, on_text);
+        Box::pin(async { Err(AgentError::NoToolCalls) })
+    }
 }
 
 /// Type alias for a boxed LLM provider — the primary way callers hold providers.
@@ -139,6 +176,14 @@ pub type LlmClient = Box<dyn LlmProvider>;
 impl LlmProvider for Box<dyn LlmProvider> {
     fn name(&self) -> &str {
         (**self).name()
+    }
+
+    fn model_name(&self) -> Option<&str> {
+        (**self).model_name()
+    }
+
+    fn model_label(&self) -> String {
+        (**self).model_label()
     }
 
     fn call_with_tools<'a>(
@@ -156,5 +201,22 @@ impl LlmProvider for Box<dyn LlmProvider> {
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         (**self).call_with_tools_streaming(system_prompt, user_message, on_text)
+    }
+
+    fn answer<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        (**self).answer(system_prompt, user_message)
+    }
+
+    fn answer_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        (**self).answer_streaming(system_prompt, user_message, on_text)
     }
 }

@@ -173,6 +173,34 @@ pub struct IntentModules {
     pub modify: Vec<String>,
 }
 
+/// Additional product and integration context clarified before intent execution.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IntentContext {
+    /// Scope of the request, such as whole app, module, function, or command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+
+    /// Entry point or caller that should invoke the behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+
+    /// Runtime surface, such as CLI, TUI, REST, library function, or internal graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_surface: Option<String>,
+
+    /// Existing modules, commands, screens, or functions where the change should be wired.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub integration_points: Vec<String>,
+
+    /// Important constraints for implementation and verification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+
+    /// Clarification questions and answers captured before spec generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clarification_log: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Execution metadata (appended on completion)
 // ---------------------------------------------------------------------------
@@ -223,6 +251,10 @@ pub struct IntentSpec {
     /// Names of external dependencies required by this intent.
     #[serde(default)]
     pub dependencies: Vec<String>,
+
+    /// Clarified product, integration, and execution context for this intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<IntentContext>,
 
     /// ISO-8601 creation timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,6 +311,7 @@ created_at: "2026-03-06T10:00:00Z"
         assert_eq!(spec.modules.create, vec!["calculator/ops"]);
         assert_eq!(spec.test_cases.len(), 2);
         assert_eq!(spec.test_cases[0].expected_return, 8);
+        assert_eq!(spec.context, None);
     }
 
     #[test]

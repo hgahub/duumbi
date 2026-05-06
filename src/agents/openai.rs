@@ -196,11 +196,58 @@ impl OpenAiClient {
         let response: serde_json::Value = resp.json().await?;
         parse_openai_response(&response)
     }
+
+    /// Sends a plain text message without graph-mutation tools.
+    async fn do_answer(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+    ) -> Result<String, AgentError> {
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_message }
+            ]
+        });
+
+        let mut req = self
+            .http
+            .post(&self.base_url)
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json");
+
+        for (key, value) in &self.extra_headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        let resp = req.json(&body).send().await?;
+
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(AgentError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let response: serde_json::Value = resp.json().await?;
+        response
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .ok_or_else(|| AgentError::Parse("Response has no choices[0].message.content".into()))
+    }
 }
 
 impl LlmProvider for OpenAiClient {
     fn name(&self) -> &str {
         &self.provider_name
+    }
+
+    fn model_name(&self) -> Option<&str> {
+        Some(&self.model)
     }
 
     fn call_with_tools<'a>(
@@ -220,6 +267,27 @@ impl LlmProvider for OpenAiClient {
         // Dual-path: if the model returns tool calls, parse them as PatchOps.
         // If it returns plain text (e.g. intent create), pass it through on_text.
         Box::pin(self.do_call_with_text_fallback(system_prompt, user_message, on_text))
+    }
+
+    fn answer<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        Box::pin(self.do_answer(system_prompt, user_message))
+    }
+
+    fn answer_streaming<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+        on_text: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let answer = self.do_answer(system_prompt, user_message).await?;
+            on_text(&answer);
+            Ok(answer)
+        })
     }
 }
 
@@ -338,5 +406,13 @@ mod tests {
     fn openai_client_with_provider_name() {
         let client = OpenAiClient::new("gpt-4", "key").with_provider_name("grok");
         assert_eq!(client.name(), "grok");
+    }
+
+    #[test]
+    fn openai_client_exposes_model_label() {
+        let client = OpenAiClient::new("gpt-4", "key");
+
+        assert_eq!(client.model_name(), Some("gpt-4"));
+        assert_eq!(client.model_label(), "openai/gpt-4");
     }
 }

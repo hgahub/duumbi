@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 
 use crate::knowledge::KnowledgeError;
 use crate::knowledge::types::{
-    DecisionRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION, TYPE_PATTERN,
-    TYPE_SUCCESS,
+    DecisionRecord, KnowledgeNode, PatternRecord, SuccessRecord, TYPE_DECISION, TYPE_FAILURE,
+    TYPE_PATTERN, TYPE_SUCCESS,
 };
+
+const KNOWLEDGE_SUBDIRS: &[&str] = &["success", "failure", "decision", "pattern"];
 
 /// File-based knowledge store rooted at `.duumbi/knowledge/`.
 pub struct KnowledgeStore {
@@ -32,11 +34,20 @@ impl KnowledgeStore {
         let root = workspace.join(".duumbi").join("knowledge");
         fs::create_dir_all(root.join("success"))
             .map_err(|e| KnowledgeError::Io(format!("creating knowledge/success dir: {e}")))?;
+        fs::create_dir_all(root.join("failure"))
+            .map_err(|e| KnowledgeError::Io(format!("creating knowledge/failure dir: {e}")))?;
         fs::create_dir_all(root.join("decision"))
             .map_err(|e| KnowledgeError::Io(format!("creating knowledge/decision dir: {e}")))?;
         fs::create_dir_all(root.join("pattern"))
             .map_err(|e| KnowledgeError::Io(format!("creating knowledge/pattern dir: {e}")))?;
         Ok(Self { root })
+    }
+
+    /// Opens the knowledge store without creating any directories.
+    #[must_use]
+    pub fn open_existing(workspace: &Path) -> Self {
+        let root = workspace.join(".duumbi").join("knowledge");
+        Self { root }
     }
 
     /// Saves a knowledge node to disk. Overwrites if the same `@id` exists.
@@ -61,7 +72,7 @@ impl KnowledgeStore {
     #[must_use]
     pub fn load_all(&self) -> Vec<KnowledgeNode> {
         let mut nodes = Vec::new();
-        for subdir in &["success", "decision", "pattern"] {
+        for subdir in KNOWLEDGE_SUBDIRS {
             let dir = self.root.join(subdir);
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -83,6 +94,7 @@ impl KnowledgeStore {
     pub fn query_by_type(&self, node_type: &str) -> Vec<KnowledgeNode> {
         let subdir = match node_type {
             TYPE_SUCCESS => "success",
+            TYPE_FAILURE => "failure",
             TYPE_DECISION => "decision",
             TYPE_PATTERN => "pattern",
             _ => return Vec::new(),
@@ -111,7 +123,7 @@ impl KnowledgeStore {
             .filter(|node| match node {
                 KnowledgeNode::Decision(d) => d.tags.iter().any(|t| t == tag),
                 KnowledgeNode::Pattern(p) => p.tags.iter().any(|t| t == tag),
-                KnowledgeNode::Success(_) => false,
+                KnowledgeNode::Success(_) | KnowledgeNode::Failure(_) => false,
             })
             .collect()
     }
@@ -123,7 +135,7 @@ impl KnowledgeStore {
     /// Returns an error if the file cannot be removed.
     pub fn remove_node(&self, id: &str) -> Result<bool, KnowledgeError> {
         // Search all subdirectories
-        for subdir in &["success", "decision", "pattern"] {
+        for subdir in KNOWLEDGE_SUBDIRS {
             let dir = self.root.join(subdir);
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -149,6 +161,7 @@ impl KnowledgeStore {
     pub fn stats(&self) -> KnowledgeStats {
         KnowledgeStats {
             successes: count_json_files(&self.root.join("success")),
+            failures: count_json_files(&self.root.join("failure")),
             decisions: count_json_files(&self.root.join("decision")),
             patterns: count_json_files(&self.root.join("pattern")),
         }
@@ -160,6 +173,8 @@ impl KnowledgeStore {
 pub struct KnowledgeStats {
     /// Number of success records.
     pub successes: usize,
+    /// Number of failure records.
+    pub failures: usize,
     /// Number of decision records.
     pub decisions: usize,
     /// Number of pattern records.
@@ -170,7 +185,7 @@ impl KnowledgeStats {
     /// Total number of knowledge nodes.
     #[must_use]
     pub fn total(&self) -> usize {
-        self.successes + self.decisions + self.patterns
+        self.successes + self.failures + self.decisions + self.patterns
     }
 }
 
@@ -190,6 +205,7 @@ fn count_json_files(dir: &Path) -> usize {
 fn node_path_parts(node: &KnowledgeNode) -> (&'static str, String) {
     let (subdir, id) = match node {
         KnowledgeNode::Success(r) => ("success", &r.id),
+        KnowledgeNode::Failure(r) => ("failure", &r.id),
         KnowledgeNode::Decision(r) => ("decision", &r.id),
         KnowledgeNode::Pattern(r) => ("pattern", &r.id),
     };
@@ -275,6 +291,7 @@ pub fn load_pattern_records(workspace: &Path) -> Vec<PatternRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::types::FailureRecord;
     use crate::knowledge::types::SuccessRecord;
     use tempfile::TempDir;
 
@@ -305,9 +322,16 @@ mod tests {
                 crate::knowledge::types::DecisionRecord::new("d1"),
             ))
             .expect("save");
+        store
+            .save_node(&KnowledgeNode::Failure(FailureRecord::new(
+                "r3", "t3", "timeout",
+            )))
+            .expect("save");
 
         let successes = store.query_by_type(TYPE_SUCCESS);
         assert_eq!(successes.len(), 1);
+        let failures = store.query_by_type(TYPE_FAILURE);
+        assert_eq!(failures.len(), 1);
         let decisions = store.query_by_type(TYPE_DECISION);
         assert_eq!(decisions.len(), 1);
         let patterns = store.query_by_type(TYPE_PATTERN);
@@ -345,6 +369,22 @@ mod tests {
     }
 
     #[test]
+    fn store_remove_failure_node() {
+        let tmp = TempDir::new().expect("temp dir");
+        let store = KnowledgeStore::new(tmp.path()).expect("create store");
+
+        let node = KnowledgeNode::Failure(FailureRecord::new("r", "t", "timeout"));
+        let id = node.id().to_string();
+        store.save_node(&node).expect("save");
+        assert_eq!(store.stats().failures, 1);
+
+        let removed = store.remove_node(&id).expect("remove");
+        assert!(removed);
+        assert_eq!(store.stats().failures, 0);
+        assert!(store.load_all().is_empty());
+    }
+
+    #[test]
     fn store_remove_nonexistent_returns_false() {
         let tmp = TempDir::new().expect("temp dir");
         let store = KnowledgeStore::new(tmp.path()).expect("create store");
@@ -368,12 +408,18 @@ mod tests {
                 crate::knowledge::types::DecisionRecord::new("d1"),
             ))
             .expect("save");
+        store
+            .save_node(&KnowledgeNode::Failure(FailureRecord::new(
+                "r3", "t3", "timeout",
+            )))
+            .expect("save");
 
         let stats = store.stats();
         assert_eq!(stats.successes, 2);
+        assert_eq!(stats.failures, 1);
         assert_eq!(stats.decisions, 1);
         assert_eq!(stats.patterns, 0);
-        assert_eq!(stats.total(), 3);
+        assert_eq!(stats.total(), 4);
     }
 
     #[test]

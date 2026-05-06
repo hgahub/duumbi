@@ -180,9 +180,19 @@ fn phase1_workspace_init_build_run() {
         "duumbi init failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
+    let init_stdout = String::from_utf8_lossy(&init_output.stdout);
+    let init_stderr = String::from_utf8_lossy(&init_output.stderr);
+    assert!(!init_stdout.contains("Next steps"));
+    assert!(!init_stderr.contains("Next steps"));
+    assert!(!init_stdout.contains("LLM provider not available"));
+    assert!(!init_stderr.contains("LLM provider not available"));
 
     assert!(tmp_dir.join(".duumbi/config.toml").exists());
     assert!(tmp_dir.join(".duumbi/graph/main.jsonld").exists());
+    let config = std::fs::read_to_string(tmp_dir.join(".duumbi/config.toml"))
+        .expect("invariant: config must be readable");
+    assert!(config.contains("name = \"duumbi_workspace_test\""));
+    assert!(config.contains("namespace = \"duumbi-workspace-test\""));
 
     // Build (workspace-aware — run duumbi from within the workspace dir)
     let build_output = Command::new(&duumbi_bin)

@@ -297,7 +297,6 @@ mod tests {
     use super::*;
     use crate::agents::model_access::ModelAccessStore;
     use crate::config::{ProviderConfigSource, merge_config_layers};
-    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -327,13 +326,10 @@ mod tests {
         }
     }
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        env_lock().lock().unwrap_or_else(|err| err.into_inner())
+        crate::cli::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     fn effective_with(

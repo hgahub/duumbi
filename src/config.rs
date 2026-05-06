@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Default number of validation retries after the first provider mutation response.
+pub const DEFAULT_MUTATION_RETRIES: u32 = 5;
+/// Default number of repair retries after verifier failures.
+pub const DEFAULT_REPAIR_RETRIES: u32 = 2;
+/// Default timeout for one mutation task, in seconds.
+pub const DEFAULT_MUTATION_TIMEOUT_SECS: u64 = 600;
+
 /// Errors that can occur when loading or validating the config file.
 #[allow(dead_code)] // Used in Issue #29/#30 when provider implementations call load_config
 #[derive(Debug, Error)]
@@ -112,6 +119,21 @@ impl fmt::Display for ProviderKind {
             ProviderKind::Grok => f.write_str("grok"),
             ProviderKind::OpenRouter => f.write_str("openrouter"),
             ProviderKind::MiniMax => f.write_str("minimax"),
+        }
+    }
+}
+
+impl ProviderKind {
+    /// Parses a provider display name into a provider kind.
+    #[must_use]
+    pub fn from_provider_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "anthropic" => Some(Self::Anthropic),
+            "openai" => Some(Self::OpenAI),
+            "grok" => Some(Self::Grok),
+            "openrouter" => Some(Self::OpenRouter),
+            "minimax" => Some(Self::MiniMax),
+            _ => None,
         }
     }
 }
@@ -369,6 +391,83 @@ impl Default for CostSection {
     }
 }
 
+fn default_mutation_retries() -> u32 {
+    DEFAULT_MUTATION_RETRIES
+}
+
+fn default_repair_retries() -> u32 {
+    DEFAULT_REPAIR_RETRIES
+}
+
+fn default_mutation_timeout_secs() -> u64 {
+    DEFAULT_MUTATION_TIMEOUT_SECS
+}
+
+/// Runtime agent mutation policy after global and provider-specific config are resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedAgentPolicy {
+    /// Number of validation retries after the first provider mutation response.
+    pub mutation_retries: u32,
+    /// Number of repair retries after verifier failures.
+    pub repair_retries: u32,
+    /// Timeout for one mutation task, in seconds.
+    pub mutation_timeout_secs: u64,
+}
+
+impl Default for ResolvedAgentPolicy {
+    fn default() -> Self {
+        Self {
+            mutation_retries: DEFAULT_MUTATION_RETRIES,
+            repair_retries: DEFAULT_REPAIR_RETRIES,
+            mutation_timeout_secs: DEFAULT_MUTATION_TIMEOUT_SECS,
+        }
+    }
+}
+
+/// Optional provider-specific overrides for agent mutation policy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ProviderAgentPolicy {
+    /// Number of validation retries after the first provider mutation response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_retries: Option<u32>,
+    /// Number of repair retries after verifier failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_retries: Option<u32>,
+    /// Timeout for one mutation task, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_timeout_secs: Option<u64>,
+}
+
+/// Optional `[agent]` section controlling LLM mutation retries and timeouts.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AgentSection {
+    /// Number of validation retries after the first provider mutation response.
+    #[serde(default = "default_mutation_retries")]
+    pub mutation_retries: u32,
+    /// Number of repair retries after verifier failures.
+    #[serde(default = "default_repair_retries")]
+    pub repair_retries: u32,
+    /// Timeout for one mutation task, in seconds.
+    #[serde(default = "default_mutation_timeout_secs")]
+    pub mutation_timeout_secs: u64,
+    /// Provider-specific overrides keyed by provider name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub providers: HashMap<String, ProviderAgentPolicy>,
+}
+
+impl Default for AgentSection {
+    fn default() -> Self {
+        Self {
+            mutation_retries: DEFAULT_MUTATION_RETRIES,
+            repair_retries: DEFAULT_REPAIR_RETRIES,
+            mutation_timeout_secs: DEFAULT_MUTATION_TIMEOUT_SECS,
+            providers: HashMap::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Logging configuration
 // ---------------------------------------------------------------------------
@@ -430,31 +529,40 @@ fn default_general_logging_enabled() -> bool {
 }
 
 /// General diagnostic logging configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct GeneralLoggingSection {
     /// Whether general diagnostic logging is enabled.
-    #[serde(default = "default_general_logging_enabled")]
-    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Minimum diagnostic level to write.
-    #[serde(default)]
-    pub level: LogLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<LogLevel>,
     /// Append or rewrite the log file.
-    #[serde(default)]
-    pub mode: LogMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<LogMode>,
     /// Optional path override. Relative paths are resolved by the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
 }
 
-impl Default for GeneralLoggingSection {
-    fn default() -> Self {
-        Self {
-            enabled: default_general_logging_enabled(),
-            level: LogLevel::Error,
-            mode: LogMode::Append,
-            path: None,
-        }
+impl GeneralLoggingSection {
+    /// Returns whether diagnostic logging is enabled after defaults.
+    #[must_use]
+    pub fn effective_enabled(&self) -> bool {
+        self.enabled.unwrap_or_else(default_general_logging_enabled)
+    }
+
+    /// Returns the effective diagnostic log level.
+    #[must_use]
+    pub fn effective_level(&self) -> LogLevel {
+        self.level.unwrap_or_default()
+    }
+
+    /// Returns the effective diagnostic log write mode.
+    #[must_use]
+    pub fn effective_mode(&self) -> LogMode {
+        self.mode.unwrap_or_default()
     }
 }
 
@@ -463,14 +571,28 @@ impl Default for GeneralLoggingSection {
 #[serde(rename_all = "kebab-case")]
 pub struct PerformanceLoggingSection {
     /// Whether command performance logging is enabled.
-    #[serde(default)]
-    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Append or rewrite the performance log file.
-    #[serde(default)]
-    pub mode: LogMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<LogMode>,
     /// Optional path override. Relative paths are resolved by the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+}
+
+impl PerformanceLoggingSection {
+    /// Returns whether performance logging is enabled after defaults.
+    #[must_use]
+    pub fn effective_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// Returns the effective performance log write mode.
+    #[must_use]
+    pub fn effective_mode(&self) -> LogMode {
+        self.mode.unwrap_or_default()
+    }
 }
 
 /// Logging configuration for workspace diagnostics and command timings.
@@ -503,6 +625,10 @@ pub struct VendorSection {
 pub struct DuumbiConfig {
     /// Workspace identity settings (name, namespace, default-registry).
     pub workspace: Option<WorkspaceSection>,
+
+    /// Command used to edit files from the TUI, for example `"code --wait"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
 
     /// External MCP server configurations for agent tool access.
     ///
@@ -573,6 +699,10 @@ pub struct DuumbiConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostSection>,
 
+    /// Agent mutation retry/repair policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSection>,
+
     /// Logging settings for diagnostics and command performance events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingSection>,
@@ -610,6 +740,33 @@ impl DuumbiConfig {
         }
 
         Vec::new()
+    }
+
+    /// Returns the resolved agent policy for an optional provider.
+    #[must_use]
+    pub fn effective_agent_policy(&self, provider: Option<&ProviderKind>) -> ResolvedAgentPolicy {
+        let agent = self.agent.clone().unwrap_or_default();
+        let mut resolved = ResolvedAgentPolicy {
+            mutation_retries: agent.mutation_retries,
+            repair_retries: agent.repair_retries,
+            mutation_timeout_secs: agent.mutation_timeout_secs,
+        };
+
+        if let Some(provider) = provider
+            && let Some(override_policy) = agent.providers.get(&provider.to_string())
+        {
+            if let Some(value) = override_policy.mutation_retries {
+                resolved.mutation_retries = value;
+            }
+            if let Some(value) = override_policy.repair_retries {
+                resolved.repair_retries = value;
+            }
+            if let Some(value) = override_policy.mutation_timeout_secs {
+                resolved.mutation_timeout_secs = value;
+            }
+        }
+
+        resolved
     }
 }
 
@@ -663,6 +820,74 @@ pub fn load_user_config() -> Result<DuumbiConfig, ConfigError> {
 #[must_use = "save errors should be handled"]
 pub fn save_user_config(config: &DuumbiConfig) -> Result<(), ConfigError> {
     save_config_file(&user_config_path(), config)
+}
+
+/// Detects a suitable editor command for TUI file editing.
+#[must_use]
+pub fn discover_editor_command() -> Option<String> {
+    for env_var in ["DUUMBI_EDITOR", "VISUAL", "EDITOR"] {
+        if let Ok(value) = std::env::var(env_var) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && editor_command_is_available(trimmed) {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    for (program, command) in [
+        ("code", "code --wait"),
+        ("cursor", "cursor --wait"),
+        ("zed", "zed --wait"),
+        ("subl", "subl -w"),
+        ("mate", "mate -w"),
+        ("nvim", "nvim"),
+        ("vim", "vim"),
+        ("vi", "vi"),
+    ] {
+        if program_is_available(program) {
+            return Some(command.to_string());
+        }
+    }
+
+    None
+}
+
+fn editor_command_is_available(command: &str) -> bool {
+    parse_editor_command(command)
+        .and_then(|parts| parts.into_iter().next())
+        .is_some_and(|program| program_is_available(&program))
+}
+
+/// Parses an editor command into program and argument parts.
+#[must_use]
+pub(crate) fn parse_editor_command(command: &str) -> Option<Vec<String>> {
+    shlex::split(command).filter(|parts| !parts.is_empty())
+}
+
+fn program_is_available(program: &str) -> bool {
+    let path = Path::new(program);
+    if path.is_absolute() || program.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable_file(path);
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| is_executable_file(&dir.join(program)))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Loads system, user, and workspace config layers and returns the effective runtime config.
@@ -743,6 +968,9 @@ fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     if overlay.workspace.is_some() {
         base.workspace = overlay.workspace.clone();
     }
+    if overlay.editor.is_some() {
+        base.editor = overlay.editor.clone();
+    }
     if !overlay.mcp_clients.is_empty() {
         base.mcp_clients = overlay.mcp_clients.clone();
     }
@@ -758,8 +986,38 @@ fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     if overlay.cost.is_some() {
         base.cost = overlay.cost.clone();
     }
-    if overlay.logging.is_some() {
-        base.logging = overlay.logging.clone();
+    if overlay.agent.is_some() {
+        base.agent = overlay.agent.clone();
+    }
+    if let Some(logging) = overlay.logging.as_ref() {
+        merge_logging_fields(&mut base.logging, logging);
+    }
+}
+
+fn merge_logging_fields(base: &mut Option<LoggingSection>, overlay: &LoggingSection) {
+    let base = base.get_or_insert_with(LoggingSection::default);
+
+    if overlay.general.enabled.is_some() {
+        base.general.enabled = overlay.general.enabled;
+    }
+    if overlay.general.level.is_some() {
+        base.general.level = overlay.general.level;
+    }
+    if overlay.general.mode.is_some() {
+        base.general.mode = overlay.general.mode;
+    }
+    if overlay.general.path.is_some() {
+        base.general.path = overlay.general.path.clone();
+    }
+
+    if overlay.performance.enabled.is_some() {
+        base.performance.enabled = overlay.performance.enabled;
+    }
+    if overlay.performance.mode.is_some() {
+        base.performance.mode = overlay.performance.mode;
+    }
+    if overlay.performance.path.is_some() {
+        base.performance.path = overlay.performance.path.clone();
     }
 }
 
@@ -1000,14 +1258,44 @@ output_dir = "build"
     }
 
     #[test]
+    fn load_config_editor_field() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+editor = "code --wait"
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config with editor must parse");
+        assert_eq!(cfg.editor.as_deref(), Some("code --wait"));
+    }
+
+    #[test]
+    fn workspace_editor_overrides_user_editor() {
+        let user = DuumbiConfig {
+            editor: Some("code --wait".to_string()),
+            ..DuumbiConfig::default()
+        };
+        let workspace = DuumbiConfig {
+            editor: Some("zed --wait".to_string()),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+
+        assert_eq!(effective.config.editor.as_deref(), Some("zed --wait"));
+    }
+
+    #[test]
     fn logging_config_defaults_match_user_config_policy() {
         let logging = LoggingSection::default();
 
-        assert!(logging.general.enabled);
-        assert_eq!(logging.general.level, LogLevel::Error);
-        assert_eq!(logging.general.mode, LogMode::Append);
-        assert!(!logging.performance.enabled);
-        assert_eq!(logging.performance.mode, LogMode::Append);
+        assert!(logging.general.effective_enabled());
+        assert_eq!(logging.general.effective_level(), LogLevel::Error);
+        assert_eq!(logging.general.effective_mode(), LogMode::Append);
+        assert!(!logging.performance.effective_enabled());
+        assert_eq!(logging.performance.effective_mode(), LogMode::Append);
     }
 
     #[test]
@@ -1031,13 +1319,13 @@ path = "custom-performance.jsonl"
 
         let cfg = load_config(tmp.path()).expect("config must parse");
         let logging = cfg.logging.expect("logging section");
-        assert_eq!(logging.general.level, LogLevel::Debug);
-        assert_eq!(logging.general.mode, LogMode::Rewrite);
+        assert_eq!(logging.general.level, Some(LogLevel::Debug));
+        assert_eq!(logging.general.mode, Some(LogMode::Rewrite));
         assert_eq!(
             logging.general.path.as_deref(),
             Some(Path::new("custom-general.log"))
         );
-        assert!(logging.performance.enabled);
+        assert_eq!(logging.performance.enabled, Some(true));
         assert_eq!(
             logging.performance.path.as_deref(),
             Some(Path::new("custom-performance.jsonl"))
@@ -1049,7 +1337,7 @@ path = "custom-performance.jsonl"
         let user = DuumbiConfig {
             logging: Some(LoggingSection {
                 general: GeneralLoggingSection {
-                    level: LogLevel::Warn,
+                    level: Some(LogLevel::Warn),
                     ..GeneralLoggingSection::default()
                 },
                 ..LoggingSection::default()
@@ -1059,7 +1347,7 @@ path = "custom-performance.jsonl"
         let workspace = DuumbiConfig {
             logging: Some(LoggingSection {
                 general: GeneralLoggingSection {
-                    level: LogLevel::Info,
+                    level: Some(LogLevel::Info),
                     ..GeneralLoggingSection::default()
                 },
                 ..LoggingSection::default()
@@ -1071,8 +1359,102 @@ path = "custom-performance.jsonl"
 
         assert_eq!(
             effective.config.logging.expect("logging").general.level,
-            LogLevel::Info
+            Some(LogLevel::Info)
         );
+    }
+
+    #[test]
+    fn effective_config_workspace_logging_preserves_unset_user_fields() {
+        let user = DuumbiConfig {
+            logging: Some(LoggingSection {
+                general: GeneralLoggingSection {
+                    level: Some(LogLevel::Debug),
+                    path: Some(PathBuf::from("user-general.log")),
+                    ..GeneralLoggingSection::default()
+                },
+                ..LoggingSection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+        let workspace = DuumbiConfig {
+            logging: Some(LoggingSection {
+                performance: PerformanceLoggingSection {
+                    enabled: Some(true),
+                    ..PerformanceLoggingSection::default()
+                },
+                ..LoggingSection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+        let logging = effective.config.logging.expect("logging");
+
+        assert_eq!(logging.general.level, Some(LogLevel::Debug));
+        assert_eq!(
+            logging.general.path.as_deref(),
+            Some(Path::new("user-general.log"))
+        );
+        assert_eq!(logging.performance.enabled, Some(true));
+    }
+
+    #[test]
+    fn agent_policy_defaults_when_section_omitted() {
+        let cfg = DuumbiConfig::default();
+        let policy = cfg.effective_agent_policy(None);
+
+        assert_eq!(policy.mutation_retries, DEFAULT_MUTATION_RETRIES);
+        assert_eq!(policy.repair_retries, DEFAULT_REPAIR_RETRIES);
+        assert_eq!(policy.mutation_timeout_secs, DEFAULT_MUTATION_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn agent_policy_parses_global_values() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[agent]
+mutation-retries = 7
+repair-retries = 3
+mutation-timeout-secs = 900
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let policy = cfg.effective_agent_policy(None);
+
+        assert_eq!(policy.mutation_retries, 7);
+        assert_eq!(policy.repair_retries, 3);
+        assert_eq!(policy.mutation_timeout_secs, 900);
+    }
+
+    #[test]
+    fn agent_policy_parses_minimax_provider_override() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[agent]
+mutation-retries = 5
+repair-retries = 2
+mutation-timeout-secs = 600
+
+[agent.providers.minimax]
+mutation-retries = 9
+repair-retries = 4
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let minimax = cfg.effective_agent_policy(Some(&ProviderKind::MiniMax));
+        let openai = cfg.effective_agent_policy(Some(&ProviderKind::OpenAI));
+
+        assert_eq!(minimax.mutation_retries, 9);
+        assert_eq!(minimax.repair_retries, 4);
+        assert_eq!(minimax.mutation_timeout_secs, 600);
+        assert_eq!(openai.mutation_retries, 5);
+        assert_eq!(openai.repair_retries, 2);
     }
 
     #[test]

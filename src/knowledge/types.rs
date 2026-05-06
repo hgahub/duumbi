@@ -1,7 +1,7 @@
 //! Knowledge node types for the DUUMBI learning system.
 //!
-//! Defines three knowledge record types: [`SuccessRecord`], [`DecisionRecord`],
-//! and [`PatternRecord`]. Each serializes to/from JSON with a `@type` tag
+//! Defines knowledge record types such as [`SuccessRecord`], [`FailureRecord`],
+//! [`DecisionRecord`], and [`PatternRecord`]. Each serializes to/from JSON with a `@type` tag
 //! following JSON-LD conventions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +17,8 @@ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// JSON-LD `@type` value for success records.
 pub const TYPE_SUCCESS: &str = "duumbi:Success";
+/// JSON-LD `@type` value for failure records.
+pub const TYPE_FAILURE: &str = "duumbi:Failure";
 /// JSON-LD `@type` value for decision records.
 pub const TYPE_DECISION: &str = "duumbi:Decision";
 /// JSON-LD `@type` value for pattern records.
@@ -96,6 +98,98 @@ impl SuccessRecord {
             retry_count: 0,
             module: String::new(),
             functions: Vec::new(),
+            timestamp: now,
+            schema_version: SCHEMA_VERSION,
+        }
+    }
+}
+
+/// A record of a failed LLM mutation or verification attempt.
+///
+/// Failure records are used to make subsequent retry prompts more concrete and
+/// to classify whether a Ralph loop failed because of code, provider quality,
+/// provider availability, or documentation mismatch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureRecord {
+    /// JSON-LD type tag.
+    #[serde(rename = "@type", default = "default_failure_type", skip_serializing)]
+    pub node_type: String,
+
+    /// Unique identifier (format: `duumbi:failure/<timestamp>`).
+    #[serde(rename = "@id")]
+    pub id: String,
+
+    /// The original user request or task description.
+    pub request: String,
+
+    /// Classified task type (e.g. "CreateModule", "ModifyMain").
+    pub task_type: String,
+
+    /// Provider display name.
+    #[serde(default)]
+    pub provider: String,
+
+    /// Non-secret provider/model label.
+    #[serde(default)]
+    pub model_label: String,
+
+    /// Target module name.
+    #[serde(default)]
+    pub module: String,
+
+    /// Function names related to the failure.
+    #[serde(default)]
+    pub functions: Vec<String>,
+
+    /// Broad failure category.
+    pub failure_category: String,
+
+    /// Number of retries attempted before this failure was recorded.
+    pub retry_count: u32,
+
+    /// DUUMBI or provider error codes encountered.
+    #[serde(default)]
+    pub error_codes: Vec<String>,
+
+    /// Sanitized, truncated error summary.
+    pub error_summary: String,
+
+    /// When this failure was recorded.
+    pub timestamp: DateTime<Utc>,
+
+    /// Schema version for forward compatibility.
+    pub schema_version: u32,
+}
+
+fn default_failure_type() -> String {
+    TYPE_FAILURE.to_string()
+}
+
+impl FailureRecord {
+    /// Creates a new failure record with the current timestamp.
+    #[must_use]
+    pub fn new(
+        request: impl Into<String>,
+        task_type: impl Into<String>,
+        failure_category: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let id = format!("duumbi:failure/{}-{seq}", now.timestamp_millis());
+        Self {
+            node_type: TYPE_FAILURE.to_string(),
+            id,
+            request: request.into(),
+            task_type: task_type.into(),
+            provider: String::new(),
+            model_label: String::new(),
+            module: String::new(),
+            functions: Vec::new(),
+            failure_category: failure_category.into(),
+            retry_count: 0,
+            error_codes: Vec::new(),
+            error_summary: String::new(),
             timestamp: now,
             schema_version: SCHEMA_VERSION,
         }
@@ -236,6 +330,9 @@ pub enum KnowledgeNode {
     /// A successful mutation record.
     #[serde(rename = "duumbi:Success")]
     Success(SuccessRecord),
+    /// A failed mutation or verifier attempt.
+    #[serde(rename = "duumbi:Failure")]
+    Failure(FailureRecord),
     /// A design decision record.
     #[serde(rename = "duumbi:Decision")]
     Decision(DecisionRecord),
@@ -250,6 +347,7 @@ impl KnowledgeNode {
     pub fn id(&self) -> &str {
         match self {
             KnowledgeNode::Success(r) => &r.id,
+            KnowledgeNode::Failure(r) => &r.id,
             KnowledgeNode::Decision(r) => &r.id,
             KnowledgeNode::Pattern(r) => &r.id,
         }
@@ -260,6 +358,7 @@ impl KnowledgeNode {
     pub fn node_type(&self) -> &str {
         match self {
             KnowledgeNode::Success(_) => TYPE_SUCCESS,
+            KnowledgeNode::Failure(_) => TYPE_FAILURE,
             KnowledgeNode::Decision(_) => TYPE_DECISION,
             KnowledgeNode::Pattern(_) => TYPE_PATTERN,
         }
@@ -292,6 +391,18 @@ mod tests {
     }
 
     #[test]
+    fn failure_record_new_sets_defaults() {
+        let r = FailureRecord::new("add function", "AddFunction", "no_tool_calls");
+        assert_eq!(r.node_type, TYPE_FAILURE);
+        assert!(r.id.starts_with("duumbi:failure/"));
+        assert_eq!(r.request, "add function");
+        assert_eq!(r.task_type, "AddFunction");
+        assert_eq!(r.failure_category, "no_tool_calls");
+        assert_eq!(r.retry_count, 0);
+        assert_eq!(r.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn decision_record_new_sets_defaults() {
         let d = DecisionRecord::new("use separate modules for math");
         assert_eq!(d.node_type, TYPE_DECISION);
@@ -315,6 +426,12 @@ mod tests {
         let node2: KnowledgeNode = serde_json::from_str(&json).expect("must deserialize");
         assert_eq!(node.id(), node2.id());
         assert_eq!(node.node_type(), TYPE_SUCCESS);
+
+        let node = KnowledgeNode::Failure(FailureRecord::new("test", "AddFunction", "timeout"));
+        let json = serde_json::to_string(&node).expect("must serialize");
+        let node2: KnowledgeNode = serde_json::from_str(&json).expect("must deserialize");
+        assert_eq!(node.id(), node2.id());
+        assert_eq!(node.node_type(), TYPE_FAILURE);
     }
 
     #[test]
@@ -322,6 +439,10 @@ mod tests {
         let s = KnowledgeNode::Success(SuccessRecord::new("r", "t"));
         assert!(s.id().starts_with("duumbi:success/"));
         assert_eq!(s.node_type(), TYPE_SUCCESS);
+
+        let f = KnowledgeNode::Failure(FailureRecord::new("r", "t", "timeout"));
+        assert!(f.id().starts_with("duumbi:failure/"));
+        assert_eq!(f.node_type(), TYPE_FAILURE);
 
         let d = KnowledgeNode::Decision(DecisionRecord::new("d"));
         assert!(d.id().starts_with("duumbi:decision/"));
