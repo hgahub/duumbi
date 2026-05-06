@@ -5,5 +5,10 @@
   },
   "terminal.integrated.env.linux": {
     "CARGO_HOME": "${env:HOME}/.cargo"
+  },
+  "chat.tools.terminal.autoApprove": {
+    "git add": true,
+    "git commit": true,
+    "git push": true
   }
 }
