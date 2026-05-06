@@ -22,7 +22,11 @@
     "containerEnv": {
         "CARGO_TERM_COLOR": "always",
         "RUST_BACKTRACE": "1",
-        "CARGO_HOME": "/home/vscode/.cargo"
+        "CARGO_HOME": "/home/vscode/.cargo",
+        "NPM_CONFIG_PREFIX": "/home/vscode/.local"
+    },
+    "remoteEnv": {
+        "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
     },
     "mounts": [
         "source=duumbi-cargo-registry,target=/home/vscode/.cargo/registry,type=volume",
