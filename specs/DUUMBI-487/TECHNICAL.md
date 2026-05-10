@@ -263,7 +263,7 @@ Add a dedicated String Utilities section to `docs/testing/phase15-walkthrough.md
 - CLI command:
 
 ```bash
-$DUUMBI phase15-e2e string-utils \
+duumbi phase15-e2e string-utils \
   --provider minimax \
   --attempts 1 \
   --output /tmp/duumbi-phase15-string-utils-report.json
