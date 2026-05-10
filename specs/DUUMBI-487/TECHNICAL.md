@@ -229,6 +229,7 @@ Failure categories:
 - `build_failed`
 - `run_failed`
 - `evidence_mismatch`
+- `docs_mismatch`
 - `studio_ux_failed`
 - `studio_http_failed`
 - `skipped_cli_failed`
@@ -446,7 +447,7 @@ Implementation is complete when:
 
 None blocking.
 
-Technical decisions made here for Stage 10:
+Technical decisions finalized by this Stage 8 spec for implementation:
 
 - Use `duumbi`, `ibmuud`, and `level` as canonical representative strings for String Utilities evidence.
 - Add String Utilities benchmark normalization because the generic intent prompt is i64-oriented and provider variability is material for a live E2E kill criterion.
