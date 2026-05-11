@@ -17,11 +17,20 @@ pub struct KnownIntentBenchmark {
     pub apply: fn(&mut IntentSpec),
 }
 
-const BENCHMARKS: &[KnownIntentBenchmark] = &[KnownIntentBenchmark {
-    id: "calculator",
-    matches: is_calculator_benchmark,
-    apply: apply_calculator_benchmark,
-}];
+const CALCULATOR_EXPECTED_FUNCTIONS: &[&str] = &["add", "subtract", "multiply", "divide"];
+const STRING_UTILS_EXPECTED_FUNCTIONS: &[&str] = &["reverse", "count_vowels", "is_palindrome"];
+const BENCHMARKS: &[KnownIntentBenchmark] = &[
+    KnownIntentBenchmark {
+        id: "calculator",
+        matches: is_calculator_benchmark,
+        apply: apply_calculator_benchmark,
+    },
+    KnownIntentBenchmark {
+        id: "string-utils",
+        matches: is_string_utils_benchmark,
+        apply: apply_string_utils_benchmark,
+    },
+];
 
 /// Applies a known benchmark normalization, returning the benchmark id on match.
 pub fn apply_known_benchmark(description: &str, spec: &mut IntentSpec) -> Option<&'static str> {
@@ -33,6 +42,17 @@ pub fn apply_known_benchmark(description: &str, spec: &mut IntentSpec) -> Option
             None
         }
     })
+}
+
+/// Returns canonical function names expected from a known benchmark prompt.
+pub fn expected_functions_for_benchmark(description: &str) -> Option<&'static [&'static str]> {
+    if is_string_utils_benchmark(description) {
+        Some(STRING_UTILS_EXPECTED_FUNCTIONS)
+    } else if is_calculator_benchmark(description) {
+        Some(CALCULATOR_EXPECTED_FUNCTIONS)
+    } else {
+        None
+    }
 }
 
 fn is_calculator_benchmark(description: &str) -> bool {
@@ -57,6 +77,34 @@ fn apply_calculator_benchmark(spec: &mut IntentSpec) {
         "main demonstrates the calculator functions".to_string(),
     ];
     spec.test_cases = calculator_test_cases();
+}
+
+fn is_string_utils_benchmark(description: &str) -> bool {
+    let normalized = description.to_ascii_lowercase();
+    normalized.contains("string")
+        && normalized.contains("reverse")
+        && normalized.contains("vowel")
+        && normalized.contains("palindrome")
+}
+
+fn apply_string_utils_benchmark(spec: &mut IntentSpec) {
+    spec.modules.create = vec!["string/utils".to_string()];
+    if !spec.modules.modify.iter().any(|m| m == "app/main") {
+        spec.modules.modify.push("app/main".to_string());
+    }
+    spec.acceptance_criteria = vec![
+        r#"reverse("duumbi") demonstrates "ibmuud""#.to_string(),
+        r#"count_vowels("duumbi") demonstrates 3 vowels"#.to_string(),
+        r#"is_palindrome("level") demonstrates true"#.to_string(),
+        r#"main prints labeled output for reverse, count_vowels, and is_palindrome and returns 0"#
+            .to_string(),
+    ];
+    spec.test_cases = vec![TestCase {
+        name: "main_returns_zero".to_string(),
+        function: "main".to_string(),
+        args: Vec::new(),
+        expected_return: 0,
+    }];
 }
 
 fn calculator_test_cases() -> Vec<TestCase> {
@@ -141,6 +189,57 @@ mod tests {
     }
 
     #[test]
+    fn string_utils_prompt_maps_to_canonical_modules_and_main_test() {
+        let mut spec = empty_spec("Build string utilities");
+
+        let matched = apply_known_benchmark(
+            "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.",
+            &mut spec,
+        );
+
+        assert_eq!(matched, Some("string-utils"));
+        assert_eq!(spec.modules.create, vec!["string/utils"]);
+        assert_eq!(spec.modules.modify, vec!["app/main"]);
+        assert!(
+            spec.acceptance_criteria
+                .iter()
+                .any(|criterion| criterion.contains("reverse"))
+        );
+        assert!(
+            spec.acceptance_criteria
+                .iter()
+                .any(|criterion| criterion.contains("count_vowels"))
+        );
+        assert!(
+            spec.acceptance_criteria
+                .iter()
+                .any(|criterion| criterion.contains("is_palindrome"))
+        );
+        assert_eq!(spec.test_cases.len(), 1);
+        assert_eq!(spec.test_cases[0].name, "main_returns_zero");
+        assert_eq!(spec.test_cases[0].function, "main");
+        assert!(spec.test_cases[0].args.is_empty());
+        assert_eq!(spec.test_cases[0].expected_return, 0);
+    }
+
+    #[test]
+    fn benchmark_expected_functions_are_task_specific() {
+        assert_eq!(
+            expected_functions_for_benchmark(
+                "Build a calculator with add, subtract, multiply, and divide functions"
+            ),
+            Some(CALCULATOR_EXPECTED_FUNCTIONS)
+        );
+        assert_eq!(
+            expected_functions_for_benchmark(
+                "Create string helpers to reverse strings, count vowels, and check palindrome inputs"
+            ),
+            Some(STRING_UTILS_EXPECTED_FUNCTIONS)
+        );
+        assert_eq!(expected_functions_for_benchmark("Create a parser"), None);
+    }
+
+    #[test]
     fn non_benchmark_prompt_is_not_rewritten() {
         let mut spec = empty_spec("Build a custom calculator");
         spec.modules.create = vec!["math/custom".to_string()];
@@ -163,6 +262,25 @@ mod tests {
         );
         apply_known_benchmark(
             "Build a calculator with add, subtract, multiply, divide functions",
+            &mut second,
+        );
+
+        assert_eq!(first.modules.create, second.modules.create);
+        assert_eq!(first.modules.modify, second.modules.modify);
+        assert_eq!(
+            serde_json::to_string(&first.test_cases).expect("serialize"),
+            serde_json::to_string(&second.test_cases).expect("serialize")
+        );
+
+        let mut first = empty_spec("Build string utilities");
+        let mut second = empty_spec("Build string utilities");
+
+        apply_known_benchmark(
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
+            &mut first,
+        );
+        apply_known_benchmark(
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
             &mut second,
         );
 

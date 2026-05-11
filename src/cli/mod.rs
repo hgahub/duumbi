@@ -255,10 +255,10 @@ pub enum Commands {
         baseline: Option<std::path::PathBuf>,
     },
 
-    /// Run the Phase 15 Calculator E2E validation harness.
+    /// Run the Phase 15 E2E validation harness.
     #[command(name = "phase15-e2e", hide = true)]
     Phase15E2e {
-        /// Task to validate. Only `calculator` is currently supported.
+        /// Task to validate: `calculator` or `string-utils`.
         task: String,
 
         /// Provider to use for live validation.
