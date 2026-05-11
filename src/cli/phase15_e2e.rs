@@ -196,7 +196,9 @@ pub async fn run(
         };
         let studio = if provider_available && cli.ok {
             match cli.workspace.as_deref() {
-                Some(workspace) => run_studio_leg(attempt, PathBuf::from(workspace), port).await,
+                Some(workspace) => {
+                    run_studio_leg(task, attempt, PathBuf::from(workspace), port).await
+                }
                 None => skipped_leg(
                     attempt,
                     "Studio",
@@ -441,7 +443,12 @@ async fn run_cli_leg(
     }
 }
 
-async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15LegReport {
+async fn run_studio_leg(
+    task: &Phase15Task,
+    attempt: u32,
+    workspace: PathBuf,
+    port: u16,
+) -> Phase15LegReport {
     let started = Instant::now();
 
     let mut child = match std::process::Command::new(std::env::current_exe().unwrap_or_default())
@@ -463,7 +470,7 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(LIVE_LEG_TIMEOUT_SECS),
-        run_studio_http_flow(port),
+        run_studio_http_flow(task, port),
     )
     .await
     .map_err(|_| anyhow::anyhow!("Studio HTTP flow timed out after {LIVE_LEG_TIMEOUT_SECS}s"))
@@ -475,7 +482,8 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
         Ok(evidence) => Phase15LegReport {
             ok: true,
             message: format!(
-                "Studio Calculator graph/build/run path passed on CLI-generated workspace (attempt {attempt})."
+                "Studio {} graph/build/run path passed on CLI-generated workspace (attempt {attempt}).",
+                task.display_name
             ),
             workspace: Some(workspace.display().to_string()),
             intent_slug: None,
@@ -499,7 +507,7 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
     }
 }
 
-async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
+async fn run_studio_http_flow(task: &Phase15Task, port: u16) -> Result<Vec<String>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
@@ -520,10 +528,7 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let has_calculator_ops = modules.iter().any(|m| m.as_str() == Some("calculator/ops"));
-    if !has_calculator_ops {
-        anyhow::bail!("graph context modules did not include calculator/ops: {modules:?}");
-    }
+    let graph_module_evidence = graph_module_evidence(task, &modules)?;
 
     let build: serde_json::Value = client
         .post(format!("{base}/api/build"))
@@ -545,13 +550,16 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         .get("stdout")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    if !output_mentions_calculator_results(stdout) {
-        anyhow::bail!("run output did not include calculator evidence: {run}");
+    if !(task.output_check)(stdout) {
+        anyhow::bail!(
+            "run output did not include {} evidence: {run}",
+            task.display_name
+        );
     }
 
     evidence.extend([
         "shared_backend_workspace=true".to_string(),
-        "graph_has_calculator_ops=true".to_string(),
+        graph_module_evidence,
         format!(
             "build_output_path={}",
             build.get("output_path").unwrap_or(&serde_json::Value::Null)
@@ -559,6 +567,22 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         format!("stdout={}", truncate(stdout, 500)),
     ]);
     Ok(evidence)
+}
+
+fn graph_module_evidence(task: &Phase15Task, modules: &[serde_json::Value]) -> Result<String> {
+    let has_module = modules
+        .iter()
+        .any(|module| module.as_str() == Some(task.module_path));
+    if !has_module {
+        anyhow::bail!(
+            "graph context modules did not include {}: {modules:?}",
+            task.module_path
+        );
+    }
+    Ok(format!(
+        "graph_has_{}=true",
+        task.module_path.replace('/', "_")
+    ))
 }
 
 async fn wait_for_studio(client: &reqwest::Client, base: &str) -> Result<()> {
@@ -1139,6 +1163,29 @@ mod tests {
             count_vowels("duumbi") = 3
             "#
         ));
+    }
+
+    #[test]
+    fn graph_module_evidence_uses_descriptor_module_path() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let modules = vec![
+            serde_json::Value::String("app/main".to_string()),
+            serde_json::Value::String("string/utils".to_string()),
+        ];
+
+        let evidence = graph_module_evidence(task, &modules).expect("graph evidence");
+
+        assert_eq!(evidence, "graph_has_string_utils=true");
+    }
+
+    #[test]
+    fn graph_module_evidence_rejects_missing_descriptor_module() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let modules = vec![serde_json::Value::String("calculator/ops".to_string())];
+
+        let error = graph_module_evidence(task, &modules).expect_err("missing module");
+
+        assert!(error.to_string().contains("string/utils"));
     }
 
     #[test]

@@ -950,20 +950,27 @@ fn archive_success(
 /// Returns the list of function names that a CreateModule task should produce,
 /// based on the intent spec's test cases.
 fn expected_exports_for_module(spec: &IntentSpec, task_kind: &TaskKind) -> Vec<String> {
-    let _module_name = match task_kind {
+    let module_name = match task_kind {
         TaskKind::CreateModule { module_name } => module_name,
         _ => return Vec::new(),
     };
 
-    // Collect all non-main function names from test cases
-    spec.test_cases
+    let mut expected: std::collections::HashSet<String> = spec
+        .test_cases
         .iter()
         .map(|tc| tc.function.as_str())
         .filter(|&f| f != "main")
         .map(|f| f.to_string())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect()
+        .collect();
+
+    if spec.modules.create.iter().any(|m| m == module_name)
+        && let Some(functions) =
+            crate::intent::benchmarks::expected_functions_for_benchmark(&spec.intent)
+    {
+        expected.extend(functions.iter().map(|function| (*function).to_string()));
+    }
+
+    expected.into_iter().collect()
 }
 
 /// Checks which expected function names are missing from a module's duumbi:functions.
@@ -992,7 +999,7 @@ fn find_missing_functions(module: &serde_json::Value, expected: &[String]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TaskKind, TestCase};
 
     #[test]
     fn build_task_prompt_includes_criteria() {
@@ -1031,5 +1038,68 @@ mod tests {
         let template = empty_module_template("calculator/ops");
         assert_eq!(template["@id"], "duumbi:calculator/ops");
         assert_eq!(template["duumbi:name"], "calculator/ops");
+    }
+
+    #[test]
+    fn string_utils_benchmark_expected_exports_include_canonical_functions() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["string/utils".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "main_returns_zero".to_string(),
+                function: "main".to_string(),
+                args: Vec::new(),
+                expected_return: 0,
+            }],
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let task_kind = TaskKind::CreateModule {
+            module_name: "string/utils".to_string(),
+        };
+
+        let mut exports = expected_exports_for_module(&spec, &task_kind);
+        exports.sort();
+
+        assert_eq!(exports, vec!["count_vowels", "is_palindrome", "reverse"]);
+    }
+
+    #[test]
+    fn main_only_non_benchmark_expected_exports_are_empty() {
+        let spec = IntentSpec {
+            intent: "Create a demo module".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["demo/ops".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "main_returns_zero".to_string(),
+                function: "main".to_string(),
+                args: Vec::new(),
+                expected_return: 0,
+            }],
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let task_kind = TaskKind::CreateModule {
+            module_name: "demo/ops".to_string(),
+        };
+
+        let exports = expected_exports_for_module(&spec, &task_kind);
+
+        assert!(exports.is_empty());
     }
 }
