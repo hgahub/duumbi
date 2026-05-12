@@ -1436,7 +1436,9 @@ fn compile_function(
                 &node.op,
                 Op::Alloc { .. }
                     | Op::Move { .. }
+                    | Op::Borrow { .. }
                     | Op::Drop { .. }
+                    | Op::Load { .. }
                     | Op::Return
                     | Op::Branch
                     | Op::Match { .. }
