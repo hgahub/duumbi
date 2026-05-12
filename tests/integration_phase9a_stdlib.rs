@@ -136,6 +136,57 @@ fn string_load_parameter_is_not_double_freed_in_cross_module_demo() {
     assert_eq!(run.stderr, "");
 }
 
+#[test]
+fn string_from_i64_accepts_bool_result() {
+    let json = r#"{
+        "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+        "@type": "duumbi:Module",
+        "@id": "duumbi:test",
+        "duumbi:name": "test",
+        "duumbi:functions": [{
+            "@type": "duumbi:Function",
+            "@id": "duumbi:test/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:test/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {"@type": "duumbi:Const", "@id": "duumbi:test/main/entry/0",
+                     "duumbi:value": "level", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:Const", "@id": "duumbi:test/main/entry/1",
+                     "duumbi:value": "level", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:StringEquals", "@id": "duumbi:test/main/entry/2",
+                     "duumbi:left": {"@id": "duumbi:test/main/entry/0"},
+                     "duumbi:right": {"@id": "duumbi:test/main/entry/1"},
+                     "duumbi:resultType": "bool"},
+                    {"@type": "duumbi:StringFromI64", "@id": "duumbi:test/main/entry/3",
+                     "duumbi:operand": {"@id": "duumbi:test/main/entry/2"},
+                     "duumbi:resultType": "string"},
+                    {"@type": "duumbi:Const", "@id": "duumbi:test/main/entry/4",
+                     "duumbi:value": "is_palindrome(level) = ", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:StringConcat", "@id": "duumbi:test/main/entry/5",
+                     "duumbi:left": {"@id": "duumbi:test/main/entry/4"},
+                     "duumbi:right": {"@id": "duumbi:test/main/entry/3"},
+                     "duumbi:resultType": "string"},
+                    {"@type": "duumbi:PrintString", "@id": "duumbi:test/main/entry/6",
+                     "duumbi:operand": {"@id": "duumbi:test/main/entry/5"}},
+                    {"@type": "duumbi:Const", "@id": "duumbi:test/main/entry/7",
+                     "duumbi:value": 0, "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Return", "@id": "duumbi:test/main/entry/8",
+                     "duumbi:operand": {"@id": "duumbi:test/main/entry/7"}}
+                ]
+            }]
+        }]
+    }"#;
+
+    let (stdout, exit_code) = compile_and_run_json(json);
+
+    assert_eq!(stdout, "is_palindrome(level) = 1");
+    assert_eq!(exit_code, 0);
+}
+
 // ===== StringTrim (#295) =====
 
 #[test]

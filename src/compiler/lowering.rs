@@ -1007,7 +1007,12 @@ fn compile_function(
                 }
                 Op::StringFromI64 => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
-                    let call = builder.ins().call(string_from_i64_ref, &[operand_val]);
+                    let formatted_val = if builder.func.dfg.value_type(operand_val) == types::I8 {
+                        builder.ins().uextend(types::I64, operand_val)
+                    } else {
+                        operand_val
+                    };
+                    let call = builder.ins().call(string_from_i64_ref, &[formatted_val]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
