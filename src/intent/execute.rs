@@ -471,7 +471,8 @@ pub async fn run_execute_with_progress(
                 emit!(chunks.concat());
             }
 
-            if let Ok(orchestrator::MutationOutcome::Success(mr)) = repair_result {
+            if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
+                cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path);
                 let patched_str = serde_json::to_string_pretty(&mr.patched)
                     .context("Serialize repaired graph")?;
                 std::fs::write(&path, &patched_str)
@@ -618,6 +619,15 @@ fn cleanup_create_module_output(module: &mut serde_json::Value, module_name: &st
     ensure_exports(module);
 }
 
+fn cleanup_repaired_module_output(module: &mut serde_json::Value, graph_dir: &Path, path: &Path) {
+    let Some(module_name) = graph_path_to_module_name(graph_dir, path) else {
+        return;
+    };
+    if !is_entry_module_name(&module_name) {
+        cleanup_create_module_output(module, &module_name);
+    }
+}
+
 fn is_entry_module_name(module_name: &str) -> bool {
     matches!(module_name.trim(), "main" | "app/main")
 }
@@ -655,6 +665,27 @@ fn module_name_to_relative_path(module_name: &str) -> PathBuf {
     }
     path.set_extension("jsonld");
     path
+}
+
+fn graph_path_to_module_name(graph_dir: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(graph_dir).ok()?;
+    if relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("jsonld")
+    {
+        return None;
+    }
+
+    let mut module_path = relative.to_path_buf();
+    module_path.set_extension("");
+    let segments: Option<Vec<&str>> = module_path.iter().map(|segment| segment.to_str()).collect();
+    let module_name = segments?.join("/");
+    if module_name.is_empty() {
+        None
+    } else {
+        Some(module_name)
+    }
 }
 
 /// Creates an empty module template for a new module.
@@ -1133,6 +1164,24 @@ mod tests {
     }
 
     #[test]
+    fn graph_path_to_module_name_preserves_nested_modules() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("string/utils.jsonld")),
+            Some("string/utils".to_string())
+        );
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("main.jsonld")),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("string/utils.json")),
+            None
+        );
+    }
+
+    #[test]
     fn empty_module_template_preserves_full_module_identity() {
         let template = empty_module_template("calculator/ops");
         assert_eq!(template["@id"], "duumbi:calculator/ops");
@@ -1167,6 +1216,62 @@ mod tests {
 
         assert_eq!(function_names, vec!["reverse", "count_vowels"]);
         assert_eq!(exports, vec!["reverse", "count_vowels"]);
+    }
+
+    #[test]
+    fn cleanup_repaired_module_output_removes_main_from_nested_library_module() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+        let path = graph_dir.join("string/utils.jsonld");
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "reverse" },
+                { "duumbi:name": "main" },
+                { "duumbi:name": "is_palindrome" }
+            ],
+            "duumbi:exports": ["main", "reverse"]
+        });
+
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["reverse", "is_palindrome"]);
+        assert_eq!(exports, vec!["reverse", "is_palindrome"]);
+    }
+
+    #[test]
+    fn cleanup_repaired_module_output_preserves_entry_module_main() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+        let path = graph_dir.join("main.jsonld");
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "main" },
+                { "duumbi:name": "helper" }
+            ]
+        });
+
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["main", "helper"]);
+        assert!(module.get("duumbi:exports").is_none());
     }
 
     #[test]
