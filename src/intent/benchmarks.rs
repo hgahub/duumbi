@@ -4,7 +4,7 @@
 //! cases. This module keeps those rules explicit and separate from generic
 //! intent creation, so ordinary user prompts are not rewritten by accident.
 
-use crate::intent::spec::{IntentSpec, TestCase};
+use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TestCase};
 
 /// A recognized benchmark intent and its deterministic normalization rule.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +51,30 @@ pub fn apply_known_benchmark(description: &str, spec: &mut IntentSpec) -> Option
             None
         }
     })
+}
+
+/// Builds a complete normalized spec for a known benchmark prompt.
+pub fn spec_for_benchmark(
+    description: &str,
+    created_at: Option<String>,
+) -> Option<(&'static str, IntentSpec)> {
+    let benchmark = BENCHMARKS
+        .iter()
+        .find(|benchmark| (benchmark.matches)(description))?;
+    let mut spec = IntentSpec {
+        intent: description.to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: Vec::new(),
+        modules: IntentModules::default(),
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        context: None,
+        created_at,
+        execution: None,
+    };
+    (benchmark.apply)(&mut spec);
+    Some((benchmark.id, spec))
 }
 
 /// Returns canonical function names expected from a known benchmark prompt.
@@ -275,6 +299,33 @@ mod tests {
             None
         );
         assert_eq!(guidance_for_benchmark("Create a parser"), None);
+    }
+
+    #[test]
+    fn benchmark_spec_fallback_builds_string_utils_spec() {
+        let (id, spec) = spec_for_benchmark(
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
+            Some("2026-01-01T00:00:00Z".to_string()),
+        )
+        .expect("string-utils spec");
+
+        assert_eq!(id, "string-utils");
+        assert_eq!(
+            spec.intent,
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs"
+        );
+        assert_eq!(spec.modules.create, vec!["string/utils"]);
+        assert_eq!(spec.modules.modify, vec!["app/main"]);
+        assert_eq!(spec.test_cases.len(), 1);
+        assert_eq!(spec.test_cases[0].name, "main_returns_zero");
+        assert_eq!(spec.test_cases[0].function, "main");
+        assert_eq!(spec.test_cases[0].expected_return, 0);
+        assert_eq!(spec.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn benchmark_spec_fallback_ignores_non_benchmark_prompt() {
+        assert!(spec_for_benchmark("Create a parser", None).is_none());
     }
 
     #[test]

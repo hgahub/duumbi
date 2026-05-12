@@ -325,13 +325,15 @@ async fn run_cli_leg(
         {
             Ok(slug) => slug,
             Err(e) => {
-                return failed_leg(
+                let mut report = failed_leg(
                     "CLI",
                     Some(&workspace),
                     started,
                     "provider_or_intent_error",
                     format!("intent create: {e}"),
                 );
+                report.evidence.extend(create_log_evidence(&create_log));
+                return report;
             }
         };
 
@@ -688,6 +690,18 @@ fn failed_leg_with_slug(
         evidence: Vec::new(),
         failure_category: Some(category.to_string()),
     }
+}
+
+fn create_log_evidence(create_log: &[String]) -> Vec<String> {
+    let mut evidence = vec![format!("create_log_lines={}", create_log.len())];
+    evidence.extend(
+        create_log
+            .iter()
+            .filter(|line| line.starts_with("intent_generation_source="))
+            .take(3)
+            .cloned(),
+    );
+    evidence
 }
 
 fn phase15_learning_cache_path(task: &str, provider: &str) -> PathBuf {
@@ -1292,6 +1306,25 @@ mod tests {
         let report = build_ux_report(&[result]);
         assert!(report.ok);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn create_log_evidence_keeps_sanitized_generation_source() {
+        let log = vec![
+            "Generating intent spec for: \"Create a parser\"…".to_string(),
+            "intent_generation_source=known_benchmark_fallback benchmark=string-utils reason=parse_failed"
+                .to_string(),
+            "Intent saved as '.duumbi/intents/example.yaml'".to_string(),
+        ];
+
+        let evidence = create_log_evidence(&log);
+
+        assert_eq!(evidence[0], "create_log_lines=3");
+        assert!(evidence.contains(
+            &"intent_generation_source=known_benchmark_fallback benchmark=string-utils reason=parse_failed"
+                .to_string()
+        ));
+        assert!(!evidence.iter().any(|line| line.contains("Create a parser")));
     }
 
     #[test]
