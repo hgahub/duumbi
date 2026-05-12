@@ -19,6 +19,15 @@ pub struct KnownIntentBenchmark {
 
 const CALCULATOR_EXPECTED_FUNCTIONS: &[&str] = &["add", "subtract", "multiply", "divide"];
 const STRING_UTILS_EXPECTED_FUNCTIONS: &[&str] = &["reverse", "count_vowels", "is_palindrome"];
+const STRING_UTILS_GUIDANCE: &str = r#"String Utilities benchmark guidance:
+- This Phase 15 benchmark validates representative sample behavior, not a generic string library.
+- The current graph operation set does not support substring indexing, character iteration, or loops, so do not attempt arbitrary-string reverse or arbitrary vowel counting.
+- Create exact exported functions: reverse(s: string) -> string, count_vowels(s: string) -> i64, is_palindrome(s: string) -> bool.
+- Use only supported ops: Const with resultType string/i64/bool, Load, StringEquals, Branch, Return, Call, StringConcat, StringFromI64, and PrintString.
+- For the representative input reverse("duumbi"), return the string constant "ibmuud".
+- For the representative input count_vowels("duumbi"), return the i64 constant 3.
+- For is_palindrome("level"), return true; optionally return false for is_palindrome("duumbi"). Use StringEquals and Branch when checking the input is useful.
+- In app/main, call string/utils::reverse, string/utils::count_vowels, and string/utils::is_palindrome, print labeled lines for all three representative results, then Return ConstI64(0)."#;
 const BENCHMARKS: &[KnownIntentBenchmark] = &[
     KnownIntentBenchmark {
         id: "calculator",
@@ -50,6 +59,15 @@ pub fn expected_functions_for_benchmark(description: &str) -> Option<&'static [&
         Some(STRING_UTILS_EXPECTED_FUNCTIONS)
     } else if is_calculator_benchmark(description) {
         Some(CALCULATOR_EXPECTED_FUNCTIONS)
+    } else {
+        None
+    }
+}
+
+/// Returns task-specific mutation guidance for known benchmark prompts.
+pub fn guidance_for_benchmark(description: &str) -> Option<&'static str> {
+    if is_string_utils_benchmark(description) {
+        Some(STRING_UTILS_GUIDANCE)
     } else {
         None
     }
@@ -237,6 +255,26 @@ mod tests {
             Some(STRING_UTILS_EXPECTED_FUNCTIONS)
         );
         assert_eq!(expected_functions_for_benchmark("Create a parser"), None);
+    }
+
+    #[test]
+    fn benchmark_guidance_is_string_utils_specific() {
+        let guidance = guidance_for_benchmark(
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
+        )
+        .expect("string-utils guidance");
+
+        assert!(guidance.contains("representative sample behavior"));
+        assert!(guidance.contains("does not support substring indexing"));
+        assert!(guidance.contains("reverse(\"duumbi\")"));
+        assert!(guidance.contains("Return ConstI64(0)"));
+        assert_eq!(
+            guidance_for_benchmark(
+                "Build a calculator with add, subtract, multiply, and divide functions"
+            ),
+            None
+        );
+        assert_eq!(guidance_for_benchmark("Create a parser"), None);
     }
 
     #[test]

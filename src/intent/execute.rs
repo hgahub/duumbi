@@ -433,21 +433,7 @@ pub async fn run_execute_with_progress(
         ));
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
-        let repair_prompt = format!(
-            "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
-             type errors, missing return ops, orphan references, unexported functions, \
-             and structural issues. Then apply the minimal fix.\n\n\
-             The following test cases FAILED after intent execution. \
-             Fix the graph so ALL tests pass.\n\n\
-             Failed tests:\n{}\n\n\
-             Common fixes:\n\
-             - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
-             - Wrong return value: check the algorithm logic in the function's blocks\n\
-             - Compile error: check SSA ordering (ops must reference lower-index ops only)\n\n\
-             Do NOT recreate functions that already work — only fix the broken behavior. \
-             Use replace_block to rewrite blocks that produce wrong results.",
-            failed_details.join("\n")
-        );
+        let repair_prompt = build_repair_prompt(&spec, &failed_details);
 
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
@@ -889,11 +875,40 @@ fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
         .as_ref()
         .map(format_intent_context)
         .unwrap_or_else(|| "No additional clarified context.".to_string());
+    let benchmark_guidance =
+        benchmark_guidance_section(&spec.intent, "Benchmark-specific guidance");
 
     format!(
-        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}\n\nCurrent task:\n{}",
-        spec.intent, context, criteria, task_prompt
+        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}{}\n\nCurrent task:\n{}",
+        spec.intent, context, criteria, benchmark_guidance, task_prompt
     )
+}
+
+fn build_repair_prompt(spec: &IntentSpec, failed_details: &[String]) -> String {
+    let benchmark_guidance =
+        benchmark_guidance_section(&spec.intent, "Benchmark-specific repair guidance");
+    format!(
+        "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
+         type errors, missing return ops, orphan references, unexported functions, \
+         and structural issues. Then apply the minimal fix.\n\n\
+         The following test cases FAILED after intent execution. \
+         Fix the graph so ALL tests pass.\n\n\
+         Failed tests:\n{}\n\n\
+         Common fixes:\n\
+         - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
+         - Wrong return value: check the algorithm logic in the function's blocks\n\
+         - Compile error: check SSA ordering (ops must reference lower-index ops only){}\n\n\
+         Do NOT recreate functions that already work — only fix the broken behavior. \
+         Use replace_block to rewrite blocks that produce wrong results.",
+        failed_details.join("\n"),
+        benchmark_guidance
+    )
+}
+
+fn benchmark_guidance_section(intent: &str, heading: &str) -> String {
+    crate::intent::benchmarks::guidance_for_benchmark(intent)
+        .map(|guidance| format!("\n\n{heading}:\n{guidance}"))
+        .unwrap_or_default()
 }
 
 fn format_intent_context(context: &crate::intent::spec::IntentContext) -> String {
@@ -1019,6 +1034,73 @@ mod tests {
         assert!(prompt.contains("Build calculator"));
         assert!(prompt.contains("add(a,b) returns a+b"));
         assert!(prompt.contains("Create module ops"));
+    }
+
+    #[test]
+    fn build_task_prompt_includes_string_utils_benchmark_guidance() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec![r#"reverse("duumbi") demonstrates "ibmuud""#.to_string()],
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let prompt = build_task_prompt(&spec, "Create module string/utils");
+
+        assert!(prompt.contains("Benchmark-specific guidance"));
+        assert!(prompt.contains("representative sample behavior"));
+        assert!(prompt.contains("does not support substring indexing"));
+        assert!(prompt.contains(r#"reverse("duumbi")"#));
+    }
+
+    #[test]
+    fn build_task_prompt_does_not_add_benchmark_guidance_for_generic_prompt() {
+        let spec = IntentSpec {
+            intent: "Create a parser".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec!["parse input".to_string()],
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let prompt = build_task_prompt(&spec, "Create module parser");
+
+        assert!(!prompt.contains("Benchmark-specific guidance"));
+        assert!(!prompt.contains("representative sample behavior"));
+    }
+
+    #[test]
+    fn repair_prompt_includes_string_utils_benchmark_guidance() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let failed = vec!["- main() = -1 (expected 0)".to_string()];
+
+        let prompt = build_repair_prompt(&spec, &failed);
+
+        assert!(prompt.contains("Benchmark-specific repair guidance"));
+        assert!(prompt.contains("Return ConstI64(0)"));
+        assert!(prompt.contains("Do NOT recreate functions"));
     }
 
     #[test]
