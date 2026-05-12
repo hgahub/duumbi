@@ -247,7 +247,9 @@ pub async fn run_execute_with_progress(
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 if is_create_module {
-                    ensure_exports(&mut mutation_result.patched);
+                    if let TaskKind::CreateModule { module_name } = &task.kind {
+                        cleanup_create_module_output(&mut mutation_result.patched, module_name);
+                    }
 
                     let expected_fns = expected_exports_for_module(&spec, &task.kind);
                     let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
@@ -292,7 +294,9 @@ pub async fn run_execute_with_progress(
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
                             retry_result
                         {
-                            ensure_exports(&mut retry_mr.patched);
+                            if let TaskKind::CreateModule { module_name } = &task.kind {
+                                cleanup_create_module_output(&mut retry_mr.patched, module_name);
+                            }
                             mutation_result = retry_mr;
                         }
                     }
@@ -603,6 +607,19 @@ fn ensure_exports(module: &mut serde_json::Value) {
         .unwrap_or_default();
 
     module["duumbi:exports"] = serde_json::Value::Array(function_names);
+}
+
+fn cleanup_create_module_output(module: &mut serde_json::Value, module_name: &str) {
+    if !is_entry_module_name(module_name)
+        && let Some(functions) = module["duumbi:functions"].as_array_mut()
+    {
+        functions.retain(|function| function["duumbi:name"].as_str() != Some("main"));
+    }
+    ensure_exports(module);
+}
+
+fn is_entry_module_name(module_name: &str) -> bool {
+    matches!(module_name.trim(), "main" | "app/main")
 }
 
 /// Converts a module name like `"calculator/ops"` to a nested graph path.
@@ -1120,6 +1137,60 @@ mod tests {
         let template = empty_module_template("calculator/ops");
         assert_eq!(template["@id"], "duumbi:calculator/ops");
         assert_eq!(template["duumbi:name"], "calculator/ops");
+    }
+
+    #[test]
+    fn cleanup_create_module_output_removes_main_from_library_module() {
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "reverse" },
+                { "duumbi:name": "main" },
+                { "duumbi:name": "count_vowels" }
+            ],
+            "duumbi:exports": ["main", "reverse"]
+        });
+
+        cleanup_create_module_output(&mut module, "string/utils");
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["reverse", "count_vowels"]);
+        assert_eq!(exports, vec!["reverse", "count_vowels"]);
+    }
+
+    #[test]
+    fn cleanup_create_module_output_preserves_main_for_entry_modules() {
+        for module_name in ["main", "app/main"] {
+            let mut module = json!({
+                "duumbi:functions": [
+                    { "duumbi:name": "main" },
+                    { "duumbi:name": "helper" }
+                ],
+                "duumbi:exports": []
+            });
+
+            cleanup_create_module_output(&mut module, module_name);
+
+            let function_names: Vec<&str> = module["duumbi:functions"]
+                .as_array()
+                .expect("functions")
+                .iter()
+                .filter_map(|function| function["duumbi:name"].as_str())
+                .collect();
+
+            assert_eq!(function_names, vec!["main", "helper"]);
+        }
     }
 
     #[test]
