@@ -247,9 +247,15 @@ pub async fn run_execute_with_progress(
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 if is_create_module {
-                    ensure_exports(&mut mutation_result.patched);
-
                     let expected_fns = expected_exports_for_module(&spec, &task.kind);
+                    if let TaskKind::CreateModule { module_name } = &task.kind {
+                        cleanup_create_module_output(
+                            &mut mutation_result.patched,
+                            module_name,
+                            should_remove_library_main_for_spec(&spec, module_name),
+                        );
+                    }
+
                     let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
 
                     if !missing.is_empty() {
@@ -292,7 +298,13 @@ pub async fn run_execute_with_progress(
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
                             retry_result
                         {
-                            ensure_exports(&mut retry_mr.patched);
+                            if let TaskKind::CreateModule { module_name } = &task.kind {
+                                cleanup_create_module_output(
+                                    &mut retry_mr.patched,
+                                    module_name,
+                                    should_remove_library_main_for_spec(&spec, module_name),
+                                );
+                            }
                             mutation_result = retry_mr;
                         }
                     }
@@ -433,21 +445,7 @@ pub async fn run_execute_with_progress(
         ));
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
-        let repair_prompt = format!(
-            "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
-             type errors, missing return ops, orphan references, unexported functions, \
-             and structural issues. Then apply the minimal fix.\n\n\
-             The following test cases FAILED after intent execution. \
-             Fix the graph so ALL tests pass.\n\n\
-             Failed tests:\n{}\n\n\
-             Common fixes:\n\
-             - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
-             - Wrong return value: check the algorithm logic in the function's blocks\n\
-             - Compile error: check SSA ordering (ops must reference lower-index ops only)\n\n\
-             Do NOT recreate functions that already work — only fix the broken behavior. \
-             Use replace_block to rewrite blocks that produce wrong results.",
-            failed_details.join("\n")
-        );
+        let repair_prompt = build_repair_prompt(&spec, &failed_details);
 
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
@@ -481,7 +479,8 @@ pub async fn run_execute_with_progress(
                 emit!(chunks.concat());
             }
 
-            if let Ok(orchestrator::MutationOutcome::Success(mr)) = repair_result {
+            if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
+                cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path, &spec);
                 let patched_str = serde_json::to_string_pretty(&mr.patched)
                     .context("Serialize repaired graph")?;
                 std::fs::write(&path, &patched_str)
@@ -619,6 +618,53 @@ fn ensure_exports(module: &mut serde_json::Value) {
     module["duumbi:exports"] = serde_json::Value::Array(function_names);
 }
 
+fn cleanup_create_module_output(
+    module: &mut serde_json::Value,
+    module_name: &str,
+    remove_library_main: bool,
+) {
+    if remove_library_main
+        && !is_entry_module_name(module_name)
+        && let Some(functions) = module["duumbi:functions"].as_array_mut()
+    {
+        functions.retain(|function| function["duumbi:name"].as_str() != Some("main"));
+    }
+    ensure_exports(module);
+}
+
+fn cleanup_repaired_module_output(
+    module: &mut serde_json::Value,
+    graph_dir: &Path,
+    path: &Path,
+    spec: &IntentSpec,
+) {
+    let Some(module_name) = graph_path_to_module_name(graph_dir, path) else {
+        return;
+    };
+    if !is_entry_module_name(&module_name) {
+        cleanup_create_module_output(
+            module,
+            &module_name,
+            should_remove_library_main_for_spec(spec, &module_name),
+        );
+    }
+}
+
+fn should_remove_library_main_for_spec(spec: &IntentSpec, module_name: &str) -> bool {
+    !is_entry_module_name(module_name)
+        && spec
+            .modules
+            .create
+            .iter()
+            .any(|module| module == module_name)
+        && crate::intent::benchmarks::expected_functions_for_benchmark(&spec.intent)
+            .is_some_and(|functions| !functions.contains(&"main"))
+}
+
+fn is_entry_module_name(module_name: &str) -> bool {
+    matches!(module_name.trim(), "main" | "app/main")
+}
+
 /// Converts a module name like `"calculator/ops"` to a nested graph path.
 fn module_name_to_path(graph_dir: &Path, module_name: &str) -> PathBuf {
     graph_dir.join(module_name_to_relative_path(module_name))
@@ -652,6 +698,27 @@ fn module_name_to_relative_path(module_name: &str) -> PathBuf {
     }
     path.set_extension("jsonld");
     path
+}
+
+fn graph_path_to_module_name(graph_dir: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(graph_dir).ok()?;
+    if relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("jsonld")
+    {
+        return None;
+    }
+
+    let mut module_path = relative.to_path_buf();
+    module_path.set_extension("");
+    let segments: Option<Vec<&str>> = module_path.iter().map(|segment| segment.to_str()).collect();
+    let module_name = segments?.join("/");
+    if module_name.is_empty() {
+        None
+    } else {
+        Some(module_name)
+    }
 }
 
 /// Creates an empty module template for a new module.
@@ -889,11 +956,40 @@ fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
         .as_ref()
         .map(format_intent_context)
         .unwrap_or_else(|| "No additional clarified context.".to_string());
+    let benchmark_guidance =
+        benchmark_guidance_section(&spec.intent, "Benchmark-specific guidance");
 
     format!(
-        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}\n\nCurrent task:\n{}",
-        spec.intent, context, criteria, task_prompt
+        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}{}\n\nCurrent task:\n{}",
+        spec.intent, context, criteria, benchmark_guidance, task_prompt
     )
+}
+
+fn build_repair_prompt(spec: &IntentSpec, failed_details: &[String]) -> String {
+    let benchmark_guidance =
+        benchmark_guidance_section(&spec.intent, "Benchmark-specific repair guidance");
+    format!(
+        "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
+         type errors, missing return ops, orphan references, unexported functions, \
+         and structural issues. Then apply the minimal fix.\n\n\
+         The following test cases FAILED after intent execution. \
+         Fix the graph so ALL tests pass.\n\n\
+         Failed tests:\n{}\n\n\
+         Common fixes:\n\
+         - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
+         - Wrong return value: check the algorithm logic in the function's blocks\n\
+         - Compile error: check SSA ordering (ops must reference lower-index ops only){}\n\n\
+         Do NOT recreate functions that already work — only fix the broken behavior. \
+         Use replace_block to rewrite blocks that produce wrong results.",
+        failed_details.join("\n"),
+        benchmark_guidance
+    )
+}
+
+fn benchmark_guidance_section(intent: &str, heading: &str) -> String {
+    crate::intent::benchmarks::guidance_for_benchmark(intent)
+        .map(|guidance| format!("\n\n{heading}:\n{guidance}"))
+        .unwrap_or_default()
 }
 
 fn format_intent_context(context: &crate::intent::spec::IntentContext) -> String {
@@ -950,20 +1046,27 @@ fn archive_success(
 /// Returns the list of function names that a CreateModule task should produce,
 /// based on the intent spec's test cases.
 fn expected_exports_for_module(spec: &IntentSpec, task_kind: &TaskKind) -> Vec<String> {
-    let _module_name = match task_kind {
+    let module_name = match task_kind {
         TaskKind::CreateModule { module_name } => module_name,
         _ => return Vec::new(),
     };
 
-    // Collect all non-main function names from test cases
-    spec.test_cases
+    let mut expected: std::collections::HashSet<String> = spec
+        .test_cases
         .iter()
         .map(|tc| tc.function.as_str())
         .filter(|&f| f != "main")
         .map(|f| f.to_string())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect()
+        .collect();
+
+    if spec.modules.create.iter().any(|m| m == module_name)
+        && let Some(functions) =
+            crate::intent::benchmarks::expected_functions_for_benchmark(&spec.intent)
+    {
+        expected.extend(functions.iter().map(|function| (*function).to_string()));
+    }
+
+    expected.into_iter().collect()
 }
 
 /// Checks which expected function names are missing from a module's duumbi:functions.
@@ -992,7 +1095,7 @@ fn find_missing_functions(module: &serde_json::Value, expected: &[String]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TaskKind, TestCase};
 
     #[test]
     fn build_task_prompt_includes_criteria() {
@@ -1015,6 +1118,73 @@ mod tests {
     }
 
     #[test]
+    fn build_task_prompt_includes_string_utils_benchmark_guidance() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec![r#"reverse("duumbi") demonstrates "ibmuud""#.to_string()],
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let prompt = build_task_prompt(&spec, "Create module string/utils");
+
+        assert!(prompt.contains("Benchmark-specific guidance"));
+        assert!(prompt.contains("representative sample behavior"));
+        assert!(prompt.contains("does not support substring indexing"));
+        assert!(prompt.contains(r#"reverse("duumbi")"#));
+    }
+
+    #[test]
+    fn build_task_prompt_does_not_add_benchmark_guidance_for_generic_prompt() {
+        let spec = IntentSpec {
+            intent: "Create a parser".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec!["parse input".to_string()],
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let prompt = build_task_prompt(&spec, "Create module parser");
+
+        assert!(!prompt.contains("Benchmark-specific guidance"));
+        assert!(!prompt.contains("representative sample behavior"));
+    }
+
+    #[test]
+    fn repair_prompt_includes_string_utils_benchmark_guidance() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let failed = vec!["- main() = -1 (expected 0)".to_string()];
+
+        let prompt = build_repair_prompt(&spec, &failed);
+
+        assert!(prompt.contains("Benchmark-specific repair guidance"));
+        assert!(prompt.contains("Return ConstI64(0)"));
+        assert!(prompt.contains("Do NOT recreate functions"));
+    }
+
+    #[test]
     fn module_name_to_relative_path_preserves_slash_modules() {
         assert_eq!(
             module_name_to_relative_path("calculator/ops"),
@@ -1027,9 +1197,249 @@ mod tests {
     }
 
     #[test]
+    fn graph_path_to_module_name_preserves_nested_modules() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("string/utils.jsonld")),
+            Some("string/utils".to_string())
+        );
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("main.jsonld")),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            graph_path_to_module_name(&graph_dir, &graph_dir.join("string/utils.json")),
+            None
+        );
+    }
+
+    #[test]
     fn empty_module_template_preserves_full_module_identity() {
         let template = empty_module_template("calculator/ops");
         assert_eq!(template["@id"], "duumbi:calculator/ops");
         assert_eq!(template["duumbi:name"], "calculator/ops");
+    }
+
+    #[test]
+    fn cleanup_create_module_output_removes_main_from_library_module() {
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "reverse" },
+                { "duumbi:name": "main" },
+                { "duumbi:name": "count_vowels" }
+            ],
+            "duumbi:exports": ["main", "reverse"]
+        });
+
+        cleanup_create_module_output(&mut module, "string/utils", true);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["reverse", "count_vowels"]);
+        assert_eq!(exports, vec!["reverse", "count_vowels"]);
+    }
+
+    #[test]
+    fn cleanup_repaired_module_output_removes_main_from_nested_library_module() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+        let path = graph_dir.join("string/utils.jsonld");
+        let spec = string_utils_spec();
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "reverse" },
+                { "duumbi:name": "main" },
+                { "duumbi:name": "is_palindrome" }
+            ],
+            "duumbi:exports": ["main", "reverse"]
+        });
+
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path, &spec);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["reverse", "is_palindrome"]);
+        assert_eq!(exports, vec!["reverse", "is_palindrome"]);
+    }
+
+    #[test]
+    fn cleanup_repaired_module_output_preserves_entry_module_main() {
+        let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
+        let path = graph_dir.join("main.jsonld");
+        let spec = string_utils_spec();
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "main" },
+                { "duumbi:name": "helper" }
+            ]
+        });
+
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path, &spec);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["main", "helper"]);
+        assert!(module.get("duumbi:exports").is_none());
+    }
+
+    #[test]
+    fn cleanup_create_module_output_preserves_main_for_entry_modules() {
+        for module_name in ["main", "app/main"] {
+            let mut module = json!({
+                "duumbi:functions": [
+                    { "duumbi:name": "main" },
+                    { "duumbi:name": "helper" }
+                ],
+                "duumbi:exports": []
+            });
+
+            cleanup_create_module_output(&mut module, module_name, true);
+
+            let function_names: Vec<&str> = module["duumbi:functions"]
+                .as_array()
+                .expect("functions")
+                .iter()
+                .filter_map(|function| function["duumbi:name"].as_str())
+                .collect();
+
+            assert_eq!(function_names, vec!["main", "helper"]);
+        }
+    }
+
+    #[test]
+    fn cleanup_create_module_output_preserves_main_for_generic_library_module() {
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "main" },
+                { "duumbi:name": "helper" }
+            ],
+            "duumbi:exports": []
+        });
+
+        cleanup_create_module_output(&mut module, "foo/utils", false);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["main", "helper"]);
+        assert_eq!(exports, vec!["main", "helper"]);
+    }
+
+    fn string_utils_spec() -> IntentSpec {
+        IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["string/utils".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        }
+    }
+
+    #[test]
+    fn string_utils_benchmark_expected_exports_include_canonical_functions() {
+        let spec = IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["string/utils".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "main_returns_zero".to_string(),
+                function: "main".to_string(),
+                args: Vec::new(),
+                expected_return: 0,
+            }],
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let task_kind = TaskKind::CreateModule {
+            module_name: "string/utils".to_string(),
+        };
+
+        let mut exports = expected_exports_for_module(&spec, &task_kind);
+        exports.sort();
+
+        assert_eq!(exports, vec!["count_vowels", "is_palindrome", "reverse"]);
+    }
+
+    #[test]
+    fn main_only_non_benchmark_expected_exports_are_empty() {
+        let spec = IntentSpec {
+            intent: "Create a demo module".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["demo/ops".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "main_returns_zero".to_string(),
+                function: "main".to_string(),
+                args: Vec::new(),
+                expected_return: 0,
+            }],
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        let task_kind = TaskKind::CreateModule {
+            module_name: "demo/ops".to_string(),
+        };
+
+        let exports = expected_exports_for_module(&spec, &task_kind);
+
+        assert!(exports.is_empty());
     }
 }

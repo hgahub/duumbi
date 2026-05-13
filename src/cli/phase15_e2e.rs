@@ -1,6 +1,6 @@
-//! Phase 15 Calculator E2E harness.
+//! Phase 15 E2E harness.
 //!
-//! Developer-only validation for issue #486. It runs one Ralph Loop per
+//! Developer-only validation for Phase 15 sample tasks. It runs one Ralph Loop per
 //! invocation and stops after reporting evidence and next-step guidance.
 
 use std::collections::HashSet;
@@ -17,7 +17,42 @@ use crate::knowledge::types::FailureRecord;
 
 const CALCULATOR_INTENT: &str =
     "Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers";
+const STRING_UTILS_INTENT: &str = "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.";
 const LIVE_LEG_TIMEOUT_SECS: u64 = 600;
+
+#[derive(Debug)]
+struct Phase15Task {
+    id: &'static str,
+    display_name: &'static str,
+    intent: &'static str,
+    module_path: &'static str,
+    expected_functions: &'static [&'static str],
+    output_check: fn(&str) -> bool,
+    failure_module: &'static str,
+}
+
+const CALCULATOR_FUNCTIONS: &[&str] = &["add", "subtract", "multiply", "divide"];
+const STRING_UTILS_FUNCTIONS: &[&str] = &["reverse", "count_vowels", "is_palindrome"];
+const PHASE15_TASKS: &[Phase15Task] = &[
+    Phase15Task {
+        id: "calculator",
+        display_name: "Calculator",
+        intent: CALCULATOR_INTENT,
+        module_path: "calculator/ops",
+        expected_functions: CALCULATOR_FUNCTIONS,
+        output_check: output_mentions_calculator_results,
+        failure_module: "calculator/ops",
+    },
+    Phase15Task {
+        id: "string-utils",
+        display_name: "String Utilities",
+        intent: STRING_UTILS_INTENT,
+        module_path: "string/utils",
+        expected_functions: STRING_UTILS_FUNCTIONS,
+        output_check: output_mentions_string_utils_results,
+        failure_module: "string/utils",
+    },
+];
 
 /// Phase 15 harness report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +73,7 @@ pub struct Phase15Report {
     pub ralph_gate: RalphGate,
 }
 
-/// One Calculator E2E attempt.
+/// One Phase 15 E2E attempt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Phase15AttemptReport {
     /// Attempt number, 1-based.
@@ -105,7 +140,7 @@ pub struct Phase15UxReport {
     pub issues: Vec<String>,
 }
 
-/// Runs the Phase 15 Calculator E2E harness.
+/// Runs the Phase 15 E2E harness.
 pub async fn run(
     task: &str,
     provider: &str,
@@ -113,14 +148,12 @@ pub async fn run(
     output: Option<PathBuf>,
     port: u16,
 ) -> Result<()> {
-    if task != "calculator" {
-        anyhow::bail!("Unsupported Phase 15 E2E task '{task}'. Only 'calculator' is implemented.");
-    }
+    let task = phase15_task(task)?;
 
     let provider_kind = parse_provider(provider)?;
     let key_env = provider_key_env(&provider_kind);
     let provider_available = std::env::var(key_env).is_ok_and(|v| !v.trim().is_empty());
-    let learning_cache = phase15_learning_cache_path(task, provider);
+    let learning_cache = phase15_learning_cache_path(task.id, provider);
     let bootstrapped_learning = bootstrap_learning_cache(&learning_cache);
 
     let mut attempts_results = Vec::new();
@@ -130,7 +163,7 @@ pub async fn run(
             let workspace = unique_workspace("duumbi-p15-cli", attempt);
             match tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_LEG_TIMEOUT_SECS),
-                run_cli_leg(&provider_kind, workspace.clone(), &learning_cache),
+                run_cli_leg(task, &provider_kind, workspace.clone(), &learning_cache),
             )
             .await
             {
@@ -143,6 +176,7 @@ pub async fn run(
                 }
                 Err(_) => {
                     record_phase15_failure(
+                        task,
                         &workspace,
                         &provider_kind,
                         "provider_timeout",
@@ -162,7 +196,9 @@ pub async fn run(
         };
         let studio = if provider_available && cli.ok {
             match cli.workspace.as_deref() {
-                Some(workspace) => run_studio_leg(attempt, PathBuf::from(workspace), port).await,
+                Some(workspace) => {
+                    run_studio_leg(task, attempt, PathBuf::from(workspace), port).await
+                }
                 None => skipped_leg(
                     attempt,
                     "Studio",
@@ -194,7 +230,7 @@ pub async fn run(
     print_ralph_gate(&gate);
 
     let report = Phase15Report {
-        task: task.to_string(),
+        task: task.id.to_string(),
         provider: provider.to_string(),
         attempts,
         attempts_results,
@@ -220,7 +256,28 @@ pub async fn run(
     Ok(())
 }
 
+fn phase15_task(task: &str) -> Result<&'static Phase15Task> {
+    PHASE15_TASKS
+        .iter()
+        .find(|candidate| candidate.id == task)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported Phase 15 E2E task '{task}'. Supported tasks: {}.",
+                supported_phase15_tasks()
+            )
+        })
+}
+
+fn supported_phase15_tasks() -> String {
+    PHASE15_TASKS
+        .iter()
+        .map(|task| task.id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 async fn run_cli_leg(
+    task: &Phase15Task,
     provider: &ProviderKind,
     workspace: PathBuf,
     learning_cache: &Path,
@@ -262,26 +319,23 @@ async fn run_cli_leg(
     };
 
     let mut create_log = Vec::new();
-    let slug = match intent::create::run_create(
-        &*client,
-        &workspace,
-        CALCULATOR_INTENT,
-        true,
-        &mut create_log,
-    )
-    .await
-    {
-        Ok(slug) => slug,
-        Err(e) => {
-            return failed_leg(
-                "CLI",
-                Some(&workspace),
-                started,
-                "provider_or_intent_error",
-                format!("intent create: {e}"),
-            );
-        }
-    };
+    let slug =
+        match intent::create::run_create(&*client, &workspace, task.intent, true, &mut create_log)
+            .await
+        {
+            Ok(slug) => slug,
+            Err(e) => {
+                let mut report = failed_leg(
+                    "CLI",
+                    Some(&workspace),
+                    started,
+                    "provider_or_intent_error",
+                    format!("intent create: {e}"),
+                );
+                report.evidence.extend(create_log_evidence(&create_log));
+                return report;
+            }
+        };
 
     let mut execute_log = Vec::new();
     match intent::execute::run_execute(&*client, &workspace, &slug, &mut execute_log).await {
@@ -348,34 +402,51 @@ async fn run_cli_leg(
     }
 
     let module_ok = workspace
-        .join(".duumbi/graph/calculator/ops.jsonld")
+        .join(".duumbi/graph")
+        .join(format!("{}.jsonld", task.module_path))
         .exists();
-    let stdout_ok = output_mentions_calculator_results(&run.stdout);
-    let ok = module_ok && stdout_ok;
+    let stdout_ok = (task.output_check)(&run.stdout);
+    let function_evidence = describe_function_evidence(task, &describe);
+    let functions_ok = describe_contains_expected_functions(task, &describe);
+    let ok = module_ok && stdout_ok && functions_ok;
     Phase15LegReport {
         ok,
         message: if ok {
-            "CLI Calculator path passed.".to_string()
+            format!("CLI {} path passed.", task.display_name)
         } else {
-            "CLI Calculator path completed but evidence checks failed.".to_string()
+            format!(
+                "CLI {} path completed but evidence checks failed.",
+                task.display_name
+            )
         },
         workspace: Some(workspace.display().to_string()),
         intent_slug: Some(slug),
         elapsed_secs: started.elapsed().as_secs_f64(),
-        evidence: vec![
-            format!("seeded_learning_records={seeded_learning}"),
-            format!("create_log_lines={}", create_log.len()),
-            format!("execute_log_lines={}", execute_log.len()),
-            format!("describe_contains_add={}", describe.contains("add")),
-            format!("module_calculator_ops_exists={module_ok}"),
-            format!("run_exit_code={}", run.exit_code),
-            format!("stdout={}", truncate(&run.stdout, 500)),
-        ],
+        evidence: [
+            function_evidence,
+            vec![
+                format!("seeded_learning_records={seeded_learning}"),
+                format!("create_log_lines={}", create_log.len()),
+                format!("execute_log_lines={}", execute_log.len()),
+                format!(
+                    "module_{}_exists={module_ok}",
+                    task.module_path.replace('/', "_")
+                ),
+                format!("run_exit_code={}", run.exit_code),
+                format!("stdout={}", truncate(&run.stdout, 500)),
+            ],
+        ]
+        .concat(),
         failure_category: (!ok).then(|| "evidence_mismatch".to_string()),
     }
 }
 
-async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15LegReport {
+async fn run_studio_leg(
+    task: &Phase15Task,
+    attempt: u32,
+    workspace: PathBuf,
+    port: u16,
+) -> Phase15LegReport {
     let started = Instant::now();
 
     let mut child = match std::process::Command::new(std::env::current_exe().unwrap_or_default())
@@ -397,7 +468,7 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(LIVE_LEG_TIMEOUT_SECS),
-        run_studio_http_flow(port),
+        run_studio_http_flow(task, port),
     )
     .await
     .map_err(|_| anyhow::anyhow!("Studio HTTP flow timed out after {LIVE_LEG_TIMEOUT_SECS}s"))
@@ -409,7 +480,8 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
         Ok(evidence) => Phase15LegReport {
             ok: true,
             message: format!(
-                "Studio Calculator graph/build/run path passed on CLI-generated workspace (attempt {attempt})."
+                "Studio {} graph/build/run path passed on CLI-generated workspace (attempt {attempt}).",
+                task.display_name
             ),
             workspace: Some(workspace.display().to_string()),
             intent_slug: None,
@@ -433,7 +505,7 @@ async fn run_studio_leg(attempt: u32, workspace: PathBuf, port: u16) -> Phase15L
     }
 }
 
-async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
+async fn run_studio_http_flow(task: &Phase15Task, port: u16) -> Result<Vec<String>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
@@ -454,10 +526,7 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let has_calculator_ops = modules.iter().any(|m| m.as_str() == Some("calculator/ops"));
-    if !has_calculator_ops {
-        anyhow::bail!("graph context modules did not include calculator/ops: {modules:?}");
-    }
+    let graph_module_evidence = graph_module_evidence(task, &modules)?;
 
     let build: serde_json::Value = client
         .post(format!("{base}/api/build"))
@@ -479,13 +548,16 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         .get("stdout")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    if !output_mentions_calculator_results(stdout) {
-        anyhow::bail!("run output did not include calculator evidence: {run}");
+    if !(task.output_check)(stdout) {
+        anyhow::bail!(
+            "run output did not include {} evidence: {run}",
+            task.display_name
+        );
     }
 
     evidence.extend([
         "shared_backend_workspace=true".to_string(),
-        "graph_has_calculator_ops=true".to_string(),
+        graph_module_evidence,
         format!(
             "build_output_path={}",
             build.get("output_path").unwrap_or(&serde_json::Value::Null)
@@ -493,6 +565,22 @@ async fn run_studio_http_flow(port: u16) -> Result<Vec<String>> {
         format!("stdout={}", truncate(stdout, 500)),
     ]);
     Ok(evidence)
+}
+
+fn graph_module_evidence(task: &Phase15Task, modules: &[serde_json::Value]) -> Result<String> {
+    let has_module = modules
+        .iter()
+        .any(|module| module.as_str() == Some(task.module_path));
+    if !has_module {
+        anyhow::bail!(
+            "graph context modules did not include {}: {modules:?}",
+            task.module_path
+        );
+    }
+    Ok(format!(
+        "graph_has_{}=true",
+        task.module_path.replace('/', "_")
+    ))
 }
 
 async fn wait_for_studio(client: &reqwest::Client, base: &str) -> Result<()> {
@@ -550,22 +638,22 @@ fn timeout_leg(attempt: u32, leg: &str, workspace: Option<&Path>) -> Phase15LegR
 }
 
 fn record_phase15_failure(
+    task: &Phase15Task,
     workspace: &Path,
     provider: &ProviderKind,
     category: &str,
     retry_count: u64,
     summary: String,
 ) {
-    let mut record = FailureRecord::new(CALCULATOR_INTENT, "Phase15E2E", category);
+    let mut record = FailureRecord::new(task.intent, "Phase15E2E", category);
     record.provider = provider.to_string();
     record.model_label = provider.to_string();
-    record.module = "calculator/ops".to_string();
-    record.functions = vec![
-        "add".to_string(),
-        "subtract".to_string(),
-        "multiply".to_string(),
-        "divide".to_string(),
-    ];
+    record.module = task.failure_module.to_string();
+    record.functions = task
+        .expected_functions
+        .iter()
+        .map(|function| (*function).to_string())
+        .collect();
     record.retry_count = retry_count.min(u64::from(u32::MAX)) as u32;
     record.error_summary = crate::knowledge::learning::sanitize_error_summary(&summary);
     let _ = crate::knowledge::learning::append_failure_with_user_cache(workspace, &record);
@@ -598,6 +686,18 @@ fn failed_leg_with_slug(
         evidence: Vec::new(),
         failure_category: Some(category.to_string()),
     }
+}
+
+fn create_log_evidence(create_log: &[String]) -> Vec<String> {
+    let mut evidence = vec![format!("create_log_lines={}", create_log.len())];
+    evidence.extend(
+        create_log
+            .iter()
+            .filter(|line| line.starts_with("intent_generation_source="))
+            .take(3)
+            .cloned(),
+    );
+    evidence
 }
 
 fn phase15_learning_cache_path(task: &str, provider: &str) -> PathBuf {
@@ -781,6 +881,46 @@ fn output_mentions_calculator_results(stdout: &str) -> bool {
     let compact = stdout.replace(' ', "");
     (compact.contains("3+5=8") || compact.contains("8"))
         && (compact.contains("10/2=5") || compact.contains("5"))
+}
+
+fn output_mentions_string_utils_results(stdout: &str) -> bool {
+    let compact = stdout
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+        .collect::<String>();
+    let has_reverse = compact.contains("duumbi") && compact.contains("ibmuud");
+    let has_vowels = compact.contains("count_vowels(duumbi)=3")
+        || compact.contains("vowels(duumbi)=3")
+        || compact.contains("duumbihas3vowels")
+        || compact.contains("vowelcount:3")
+        || compact.contains("vowels:3");
+    let has_palindrome = compact.contains("is_palindrome(level)=true")
+        || compact.contains("palindrome(level)=true")
+        || compact.contains("levelistrue")
+        || compact.contains("levelisapalindrome")
+        || compact.contains("is_palindrome(level)=1")
+        || compact.contains("palindrome(level)=1");
+
+    has_reverse && has_vowels && has_palindrome
+}
+
+fn describe_contains_expected_functions(task: &Phase15Task, describe: &str) -> bool {
+    task.expected_functions
+        .iter()
+        .all(|function| describe.contains(function))
+}
+
+fn describe_function_evidence(task: &Phase15Task, describe: &str) -> Vec<String> {
+    task.expected_functions
+        .iter()
+        .map(|function| {
+            format!(
+                "describe_contains_{function}={}",
+                describe.contains(function)
+            )
+        })
+        .collect()
 }
 
 fn studio_ux_evidence(html: &str) -> Result<Vec<String>> {
@@ -1005,6 +1145,96 @@ mod tests {
     use super::*;
 
     #[test]
+    fn phase15_task_lookup_supports_calculator_and_string_utils() {
+        let calculator = phase15_task("calculator").expect("calculator task");
+        assert_eq!(calculator.id, "calculator");
+        assert_eq!(calculator.module_path, "calculator/ops");
+        assert_eq!(calculator.expected_functions, CALCULATOR_FUNCTIONS);
+
+        let string_utils = phase15_task("string-utils").expect("string-utils task");
+        assert_eq!(string_utils.id, "string-utils");
+        assert_eq!(string_utils.module_path, "string/utils");
+        assert_eq!(string_utils.expected_functions, STRING_UTILS_FUNCTIONS);
+        assert!(string_utils.intent.contains("reverse a string"));
+    }
+
+    #[test]
+    fn phase15_task_lookup_lists_supported_tasks_on_error() {
+        let error = phase15_task("math-library").expect_err("unsupported task");
+        let message = error.to_string();
+
+        assert!(message.contains("Unsupported Phase 15 E2E task 'math-library'"));
+        assert!(message.contains("calculator, string-utils"));
+    }
+
+    #[test]
+    fn calculator_output_predicate_keeps_existing_shape() {
+        assert!(output_mentions_calculator_results("3 + 5 = 8\n10 / 2 = 5"));
+    }
+
+    #[test]
+    fn string_utils_output_predicate_accepts_representative_results() {
+        assert!(output_mentions_string_utils_results(
+            r#"
+            reverse("duumbi") = "ibmuud"
+            count_vowels("duumbi") = 3
+            is_palindrome("level") = true
+            "#
+        ));
+    }
+
+    #[test]
+    fn string_utils_output_predicate_rejects_missing_operation() {
+        assert!(!output_mentions_string_utils_results(
+            r#"
+            reverse("duumbi") = "ibmuud"
+            count_vowels("duumbi") = 3
+            "#
+        ));
+    }
+
+    #[test]
+    fn describe_function_gate_requires_all_expected_functions() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let complete = "Function reverse\nFunction count_vowels\nFunction is_palindrome";
+        let missing = "Function reverse\nFunction count_vowels";
+
+        assert!(describe_contains_expected_functions(task, complete));
+        assert!(!describe_contains_expected_functions(task, missing));
+        assert_eq!(
+            describe_function_evidence(task, missing),
+            vec![
+                "describe_contains_reverse=true",
+                "describe_contains_count_vowels=true",
+                "describe_contains_is_palindrome=false",
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_module_evidence_uses_descriptor_module_path() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let modules = vec![
+            serde_json::Value::String("app/main".to_string()),
+            serde_json::Value::String("string/utils".to_string()),
+        ];
+
+        let evidence = graph_module_evidence(task, &modules).expect("graph evidence");
+
+        assert_eq!(evidence, "graph_has_string_utils=true");
+    }
+
+    #[test]
+    fn graph_module_evidence_rejects_missing_descriptor_module() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let modules = vec![serde_json::Value::String("calculator/ops".to_string())];
+
+        let error = graph_module_evidence(task, &modules).expect_err("missing module");
+
+        assert!(error.to_string().contains("string/utils"));
+    }
+
+    #[test]
     fn studio_ux_evidence_accepts_phase15_shell() {
         let html = r#"
             <div class="footer-item"><span class="footer-label">Intents</span></div>
@@ -1108,6 +1338,25 @@ mod tests {
         let report = build_ux_report(&[result]);
         assert!(report.ok);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn create_log_evidence_keeps_sanitized_generation_source() {
+        let log = vec![
+            "Generating intent spec for: \"Create a parser\"…".to_string(),
+            "intent_generation_source=known_benchmark_fallback benchmark=string-utils reason=parse_failed"
+                .to_string(),
+            "Intent saved as '.duumbi/intents/example.yaml'".to_string(),
+        ];
+
+        let evidence = create_log_evidence(&log);
+
+        assert_eq!(evidence[0], "create_log_lines=3");
+        assert!(evidence.contains(
+            &"intent_generation_source=known_benchmark_fallback benchmark=string-utils reason=parse_failed"
+                .to_string()
+        ));
+        assert!(!evidence.iter().any(|line| line.contains("Create a parser")));
     }
 
     #[test]

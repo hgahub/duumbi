@@ -158,17 +158,82 @@ pub async fn generate_spec_with_llm(
     client: &dyn LlmProvider,
     description: &str,
 ) -> Result<IntentSpec> {
+    Ok(generate_spec_with_llm_report(client, description)
+        .await?
+        .spec)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IntentSpecGenerationSource {
+    Llm,
+    KnownBenchmarkFallback {
+        benchmark_id: &'static str,
+        reason: String,
+    },
+}
+
+impl IntentSpecGenerationSource {
+    fn evidence(&self) -> String {
+        match self {
+            Self::Llm => "intent_generation_source=llm".to_string(),
+            Self::KnownBenchmarkFallback {
+                benchmark_id,
+                reason,
+            } => format!(
+                "intent_generation_source=known_benchmark_fallback benchmark={benchmark_id} reason={reason}"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GeneratedIntentSpec {
+    pub spec: IntentSpec,
+    pub source: IntentSpecGenerationSource,
+}
+
+pub(crate) async fn generate_spec_with_llm_report(
+    client: &dyn LlmProvider,
+    description: &str,
+) -> Result<GeneratedIntentSpec> {
     let user_message = format!("Create an intent spec for this programming task:\n\n{description}");
 
     // Use the existing call_with_tools infrastructure. Since we need a plain
     // text/JSON response rather than graph patch tools, we call with an empty
     // tool list and parse the text response directly.
     // Note: this calls the LLM's chat completion path (no tool use).
-    let raw = call_plain_completion(client, INTENT_SYSTEM_PROMPT, &user_message).await?;
+    let raw = call_plain_completion(client, INTENT_SYSTEM_PROMPT, &user_message)
+        .await
+        .context("LLM intent spec generation failed")?;
 
-    let mut spec = parse_llm_response(description, &raw)?;
+    let mut spec = match parse_llm_response(description, &raw) {
+        Ok(spec) => spec,
+        Err(error) => return known_benchmark_fallback(description, "parse_failed", error),
+    };
     let _ = crate::intent::benchmarks::apply_known_benchmark(description, &mut spec);
-    Ok(spec)
+    Ok(GeneratedIntentSpec {
+        spec,
+        source: IntentSpecGenerationSource::Llm,
+    })
+}
+
+fn known_benchmark_fallback(
+    description: &str,
+    reason: &str,
+    error: anyhow::Error,
+) -> Result<GeneratedIntentSpec> {
+    if let Some((benchmark_id, spec)) =
+        crate::intent::benchmarks::spec_for_benchmark(description, Some(chrono_now()))
+    {
+        return Ok(GeneratedIntentSpec {
+            spec,
+            source: IntentSpecGenerationSource::KnownBenchmarkFallback {
+                benchmark_id,
+                reason: reason.to_string(),
+            },
+        });
+    }
+    Err(error)
 }
 
 /// Uses an LLM to decide whether a TUI intent request needs clarification first.
@@ -554,9 +619,11 @@ pub async fn run_create_with_context(
 ) -> Result<String> {
     log.push(format!("Generating intent spec for: \"{description}\"…"));
 
-    let mut spec = generate_spec_with_llm(client, description)
+    let generated = generate_spec_with_llm_report(client, description)
         .await
         .context("Failed to generate intent spec")?;
+    log.push(generated.source.evidence());
+    let mut spec = generated.spec;
     spec.context = context;
 
     // Show preview
@@ -778,6 +845,94 @@ This intent creates an addition function that..."#;
             .expect("tool fallback");
 
         assert_eq!(text, "{\"fallback\":true}");
+    }
+
+    #[tokio::test]
+    async fn generate_spec_with_llm_falls_back_for_known_benchmark_parse_failure() {
+        let provider = PlainMockProvider {
+            answer_text: Some("not json"),
+            tool_text: "",
+        };
+
+        let generated = generate_spec_with_llm_report(
+            &provider,
+            "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.",
+        )
+        .await
+        .expect("known benchmark fallback");
+
+        assert!(matches!(
+            generated.source,
+            IntentSpecGenerationSource::KnownBenchmarkFallback {
+                benchmark_id: "string-utils",
+                reason
+            } if reason == "parse_failed"
+        ));
+        assert_eq!(generated.spec.modules.create, vec!["string/utils"]);
+        assert_eq!(generated.spec.modules.modify, vec!["app/main"]);
+        assert_eq!(generated.spec.test_cases[0].name, "main_returns_zero");
+    }
+
+    #[tokio::test]
+    async fn generate_spec_with_llm_surfaces_known_benchmark_provider_failure() {
+        let provider = PlainMockProvider {
+            answer_text: None,
+            tool_text: "",
+        };
+
+        let result = generate_spec_with_llm_report(
+            &provider,
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("LLM intent spec generation failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_spec_with_llm_generic_parse_failure_still_errors() {
+        let provider = PlainMockProvider {
+            answer_text: Some("not json"),
+            tool_text: "",
+        };
+
+        let result = generate_spec_with_llm_report(&provider, "Create a parser").await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn generate_spec_with_llm_success_still_normalizes_known_benchmark() {
+        let provider = PlainMockProvider {
+            answer_text: Some(
+                r#"{
+  "acceptance_criteria": ["placeholder"],
+  "modules_create": ["wrong/module"],
+  "modules_modify": [],
+  "test_cases": [],
+  "dependencies": []
+}"#,
+            ),
+            tool_text: "",
+        };
+
+        let generated = generate_spec_with_llm_report(
+            &provider,
+            "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
+        )
+        .await
+        .expect("llm generation");
+
+        assert_eq!(generated.source, IntentSpecGenerationSource::Llm);
+        assert_eq!(generated.spec.modules.create, vec!["string/utils"]);
+        assert_eq!(generated.spec.modules.modify, vec!["app/main"]);
+        assert_eq!(generated.spec.test_cases[0].name, "main_returns_zero");
     }
 
     #[test]

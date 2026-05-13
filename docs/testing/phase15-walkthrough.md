@@ -1,13 +1,13 @@
-# Phase 15 Calculator E2E Walkthrough
+# Phase 15 E2E Walkthrough
 
-**Issue:** [#486](https://github.com/hgahub/duumbi/issues/486)  
-**Scope:** Calculator sample only. Do not expand into #487 or #488.  
+**Issues:** [#486](https://github.com/hgahub/duumbi/issues/486), [#487](https://github.com/hgahub/duumbi/issues/487)
+**Scope:** Calculator and String Utilities samples only. Do not expand into #488 or #489.
 **Provider for live validation:** MiniMax via `MINIMAX_API_KEY`.
 
-This document is both the manual protocol and the evidence log for the Phase 15
-Calculator kill criterion: a fresh user builds the Calculator sample in CLI REPL
-and Studio, sees `calculator/ops`, builds, runs, and gets correct representative
-output.
+This document is both the manual protocol and the evidence log for the approved
+Phase 15 kill-criterion samples. #486 proves Calculator. #487 proves String
+Utilities. #488 Math Library validation and #489 final all-samples protocol
+consolidation remain separate work.
 
 ## Expected Protocol
 
@@ -81,7 +81,98 @@ Pass criteria:
 - Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
 - Query chat mode is read-only. Switch to Agent mode before asking for mutation such as modulo/power; only Agent success refreshes the graph.
 
-## Automated Local Harness
+## String Utilities Protocol
+
+**Issue:** [#487](https://github.com/hgahub/duumbi/issues/487)
+**Scope:** String Utilities sample only. Do not expand into #488 Math Library or #489 final all-samples protocol consolidation.
+
+### CLI String Utilities Path
+
+```bash
+mkdir -p /tmp/duumbi-p15-string-utils-cli
+cd /tmp/duumbi-p15-string-utils-cli
+$DUUMBI init .
+$DUUMBI
+```
+
+In the REPL:
+
+```text
+/intent create "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main."
+y
+/intent execute <generated-slug>
+/describe
+/build
+/run
+```
+
+Pass criteria:
+
+- Intent creation saves a generated slug.
+- Intent execution creates `string/utils` and updates `app/main`.
+- `/describe` or graph evidence shows `reverse`, `count_vowels`, and `is_palindrome`.
+- `/build` writes `.duumbi/build/output`.
+- `/run` prints representative correct results:
+  - `reverse("duumbi") = "ibmuud"` or a labeled equivalent.
+  - `count_vowels("duumbi") = 3`.
+  - `is_palindrome("level") = true` or `1`.
+- Query mode remains read-only; mutation requires Agent mode or explicit Intent execution.
+- Total CLI elapsed time stays within the Phase 15 live leg timeout.
+
+### Studio String Utilities Path
+
+The Studio leg must reuse the CLI-generated workspace after the CLI leg passes.
+It must not spend a second provider-backed mutation.
+
+Pass criteria:
+
+- Footer has exactly three primary workflow items: `Intents`, `Graph`, `Build`.
+- Graph context data includes `string/utils`.
+- Build workflow calls `POST /api/build` and returns `{ ok, message, output_path }`.
+- Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
+- Run stdout satisfies the same String Utilities evidence checks as the CLI leg.
+- Query chat mode remains active and read-only by default; Agent mode remains available for mutation handoff.
+
+### Automated String Utilities Harness
+
+```bash
+$DUUMBI phase15-e2e string-utils \
+  --provider minimax \
+  --attempts 1 \
+  --output /tmp/duumbi-phase15-string-utils-report.json
+```
+
+Pass criteria:
+
+- Top-level report task is `string-utils`.
+- CLI evidence includes a fresh workspace, generated slug, `module_string_utils_exists=true`, function evidence for `reverse`, `count_vowels`, and `is_palindrome`, build result, run exit code, stdout, elapsed time, and failure category if any.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_string_utils=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode evidence.
+- Missing credentials produce `failure_category: "missing_provider_credentials"` with `missing_env=MINIMAX_API_KEY`.
+- Provider timeouts produce `provider_timeout`, not an ambiguous mutation or test failure.
+- Deterministic code, docs, and evidence mismatches remain separate categories.
+
+Latest approved live-provider evidence for this sample used Anthropic:
+
+```text
+/tmp/duumbi-phase15-string-utils-anthropic-cycle19-report.json
+```
+
+The MiniMax command above should write local evidence to:
+
+```text
+/tmp/duumbi-phase15-string-utils-report.json
+```
+
+If `MINIMAX_API_KEY` is missing, the expected blocked evidence is:
+
+```json
+{
+  "failure_category": "missing_provider_credentials",
+  "evidence": ["missing_env=MINIMAX_API_KEY"]
+}
+```
+
+## Automated Calculator Harness
 
 Run one Ralph Loop attempt:
 
