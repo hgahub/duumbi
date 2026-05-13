@@ -202,10 +202,9 @@ pub(crate) async fn generate_spec_with_llm_report(
     // text/JSON response rather than graph patch tools, we call with an empty
     // tool list and parse the text response directly.
     // Note: this calls the LLM's chat completion path (no tool use).
-    let raw = match call_plain_completion(client, INTENT_SYSTEM_PROMPT, &user_message).await {
-        Ok(raw) => raw,
-        Err(error) => return known_benchmark_fallback(description, "llm_call_failed", error),
-    };
+    let raw = call_plain_completion(client, INTENT_SYSTEM_PROMPT, &user_message)
+        .await
+        .context("LLM intent spec generation failed")?;
 
     let mut spec = match parse_llm_response(description, &raw) {
         Ok(spec) => spec,
@@ -875,27 +874,25 @@ This intent creates an addition function that..."#;
     }
 
     #[tokio::test]
-    async fn generate_spec_with_llm_falls_back_for_known_benchmark_provider_failure() {
+    async fn generate_spec_with_llm_surfaces_known_benchmark_provider_failure() {
         let provider = PlainMockProvider {
             answer_text: None,
             tool_text: "",
         };
 
-        let generated = generate_spec_with_llm_report(
+        let result = generate_spec_with_llm_report(
             &provider,
             "Create string helpers to reverse strings, count vowels, and check palindrome inputs",
         )
-        .await
-        .expect("known benchmark fallback");
+        .await;
 
-        assert!(matches!(
-            generated.source,
-            IntentSpecGenerationSource::KnownBenchmarkFallback {
-                benchmark_id: "string-utils",
-                reason
-            } if reason == "llm_call_failed"
-        ));
-        assert_eq!(generated.spec.modules.create, vec!["string/utils"]);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("LLM intent spec generation failed")
+        );
     }
 
     #[tokio::test]

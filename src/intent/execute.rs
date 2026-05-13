@@ -247,11 +247,15 @@ pub async fn run_execute_with_progress(
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
                 if is_create_module {
+                    let expected_fns = expected_exports_for_module(&spec, &task.kind);
                     if let TaskKind::CreateModule { module_name } = &task.kind {
-                        cleanup_create_module_output(&mut mutation_result.patched, module_name);
+                        cleanup_create_module_output(
+                            &mut mutation_result.patched,
+                            module_name,
+                            should_remove_library_main_for_spec(&spec, module_name),
+                        );
                     }
 
-                    let expected_fns = expected_exports_for_module(&spec, &task.kind);
                     let missing = find_missing_functions(&mutation_result.patched, &expected_fns);
 
                     if !missing.is_empty() {
@@ -295,7 +299,11 @@ pub async fn run_execute_with_progress(
                             retry_result
                         {
                             if let TaskKind::CreateModule { module_name } = &task.kind {
-                                cleanup_create_module_output(&mut retry_mr.patched, module_name);
+                                cleanup_create_module_output(
+                                    &mut retry_mr.patched,
+                                    module_name,
+                                    should_remove_library_main_for_spec(&spec, module_name),
+                                );
                             }
                             mutation_result = retry_mr;
                         }
@@ -472,7 +480,7 @@ pub async fn run_execute_with_progress(
             }
 
             if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
-                cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path);
+                cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path, &spec);
                 let patched_str = serde_json::to_string_pretty(&mr.patched)
                     .context("Serialize repaired graph")?;
                 std::fs::write(&path, &patched_str)
@@ -610,8 +618,13 @@ fn ensure_exports(module: &mut serde_json::Value) {
     module["duumbi:exports"] = serde_json::Value::Array(function_names);
 }
 
-fn cleanup_create_module_output(module: &mut serde_json::Value, module_name: &str) {
-    if !is_entry_module_name(module_name)
+fn cleanup_create_module_output(
+    module: &mut serde_json::Value,
+    module_name: &str,
+    remove_library_main: bool,
+) {
+    if remove_library_main
+        && !is_entry_module_name(module_name)
         && let Some(functions) = module["duumbi:functions"].as_array_mut()
     {
         functions.retain(|function| function["duumbi:name"].as_str() != Some("main"));
@@ -619,13 +632,33 @@ fn cleanup_create_module_output(module: &mut serde_json::Value, module_name: &st
     ensure_exports(module);
 }
 
-fn cleanup_repaired_module_output(module: &mut serde_json::Value, graph_dir: &Path, path: &Path) {
+fn cleanup_repaired_module_output(
+    module: &mut serde_json::Value,
+    graph_dir: &Path,
+    path: &Path,
+    spec: &IntentSpec,
+) {
     let Some(module_name) = graph_path_to_module_name(graph_dir, path) else {
         return;
     };
     if !is_entry_module_name(&module_name) {
-        cleanup_create_module_output(module, &module_name);
+        cleanup_create_module_output(
+            module,
+            &module_name,
+            should_remove_library_main_for_spec(spec, &module_name),
+        );
     }
+}
+
+fn should_remove_library_main_for_spec(spec: &IntentSpec, module_name: &str) -> bool {
+    !is_entry_module_name(module_name)
+        && spec
+            .modules
+            .create
+            .iter()
+            .any(|module| module == module_name)
+        && crate::intent::benchmarks::expected_functions_for_benchmark(&spec.intent)
+            .is_some_and(|functions| !functions.contains(&"main"))
 }
 
 fn is_entry_module_name(module_name: &str) -> bool {
@@ -1199,7 +1232,7 @@ mod tests {
             "duumbi:exports": ["main", "reverse"]
         });
 
-        cleanup_create_module_output(&mut module, "string/utils");
+        cleanup_create_module_output(&mut module, "string/utils", true);
 
         let function_names: Vec<&str> = module["duumbi:functions"]
             .as_array()
@@ -1222,6 +1255,7 @@ mod tests {
     fn cleanup_repaired_module_output_removes_main_from_nested_library_module() {
         let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
         let path = graph_dir.join("string/utils.jsonld");
+        let spec = string_utils_spec();
         let mut module = json!({
             "duumbi:functions": [
                 { "duumbi:name": "reverse" },
@@ -1231,7 +1265,7 @@ mod tests {
             "duumbi:exports": ["main", "reverse"]
         });
 
-        cleanup_repaired_module_output(&mut module, &graph_dir, &path);
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path, &spec);
 
         let function_names: Vec<&str> = module["duumbi:functions"]
             .as_array()
@@ -1254,6 +1288,7 @@ mod tests {
     fn cleanup_repaired_module_output_preserves_entry_module_main() {
         let graph_dir = PathBuf::from("/tmp/workspace/.duumbi/graph");
         let path = graph_dir.join("main.jsonld");
+        let spec = string_utils_spec();
         let mut module = json!({
             "duumbi:functions": [
                 { "duumbi:name": "main" },
@@ -1261,7 +1296,7 @@ mod tests {
             ]
         });
 
-        cleanup_repaired_module_output(&mut module, &graph_dir, &path);
+        cleanup_repaired_module_output(&mut module, &graph_dir, &path, &spec);
 
         let function_names: Vec<&str> = module["duumbi:functions"]
             .as_array()
@@ -1285,7 +1320,7 @@ mod tests {
                 "duumbi:exports": []
             });
 
-            cleanup_create_module_output(&mut module, module_name);
+            cleanup_create_module_output(&mut module, module_name, true);
 
             let function_names: Vec<&str> = module["duumbi:functions"]
                 .as_array()
@@ -1295,6 +1330,53 @@ mod tests {
                 .collect();
 
             assert_eq!(function_names, vec!["main", "helper"]);
+        }
+    }
+
+    #[test]
+    fn cleanup_create_module_output_preserves_main_for_generic_library_module() {
+        let mut module = json!({
+            "duumbi:functions": [
+                { "duumbi:name": "main" },
+                { "duumbi:name": "helper" }
+            ],
+            "duumbi:exports": []
+        });
+
+        cleanup_create_module_output(&mut module, "foo/utils", false);
+
+        let function_names: Vec<&str> = module["duumbi:functions"]
+            .as_array()
+            .expect("functions")
+            .iter()
+            .filter_map(|function| function["duumbi:name"].as_str())
+            .collect();
+        let exports: Vec<&str> = module["duumbi:exports"]
+            .as_array()
+            .expect("exports")
+            .iter()
+            .filter_map(|export| export.as_str())
+            .collect();
+
+        assert_eq!(function_names, vec!["main", "helper"]);
+        assert_eq!(exports, vec!["main", "helper"]);
+    }
+
+    fn string_utils_spec() -> IntentSpec {
+        IntentSpec {
+            intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules {
+                create: vec!["string/utils".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
         }
     }
 

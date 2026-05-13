@@ -406,13 +406,9 @@ async fn run_cli_leg(
         .join(format!("{}.jsonld", task.module_path))
         .exists();
     let stdout_ok = (task.output_check)(&run.stdout);
-    let ok = module_ok && stdout_ok;
-    let function_evidence = task.expected_functions.iter().map(|function| {
-        format!(
-            "describe_contains_{function}={}",
-            describe.contains(function)
-        )
-    });
+    let function_evidence = describe_function_evidence(task, &describe);
+    let functions_ok = describe_contains_expected_functions(task, &describe);
+    let ok = module_ok && stdout_ok && functions_ok;
     Phase15LegReport {
         ok,
         message: if ok {
@@ -427,7 +423,7 @@ async fn run_cli_leg(
         intent_slug: Some(slug),
         elapsed_secs: started.elapsed().as_secs_f64(),
         evidence: [
-            function_evidence.collect::<Vec<_>>(),
+            function_evidence,
             vec![
                 format!("seeded_learning_records={seeded_learning}"),
                 format!("create_log_lines={}", create_log.len()),
@@ -909,6 +905,24 @@ fn output_mentions_string_utils_results(stdout: &str) -> bool {
     has_reverse && has_vowels && has_palindrome
 }
 
+fn describe_contains_expected_functions(task: &Phase15Task, describe: &str) -> bool {
+    task.expected_functions
+        .iter()
+        .all(|function| describe.contains(function))
+}
+
+fn describe_function_evidence(task: &Phase15Task, describe: &str) -> Vec<String> {
+    task.expected_functions
+        .iter()
+        .map(|function| {
+            format!(
+                "describe_contains_{function}={}",
+                describe.contains(function)
+            )
+        })
+        .collect()
+}
+
 fn studio_ux_evidence(html: &str) -> Result<Vec<String>> {
     let labels = extract_footer_labels(html);
     let expected = ["Intents", "Graph", "Build"];
@@ -1177,6 +1191,24 @@ mod tests {
             count_vowels("duumbi") = 3
             "#
         ));
+    }
+
+    #[test]
+    fn describe_function_gate_requires_all_expected_functions() {
+        let task = phase15_task("string-utils").expect("string-utils task");
+        let complete = "Function reverse\nFunction count_vowels\nFunction is_palindrome";
+        let missing = "Function reverse\nFunction count_vowels";
+
+        assert!(describe_contains_expected_functions(task, complete));
+        assert!(!describe_contains_expected_functions(task, missing));
+        assert_eq!(
+            describe_function_evidence(task, missing),
+            vec![
+                "describe_contains_reverse=true",
+                "describe_contains_count_vowels=true",
+                "describe_contains_is_palindrome=false",
+            ]
+        );
     }
 
     #[test]

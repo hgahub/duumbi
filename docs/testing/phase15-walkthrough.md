@@ -136,7 +136,7 @@ Pass criteria:
 ### Automated String Utilities Harness
 
 ```bash
-duumbi phase15-e2e string-utils \
+$DUUMBI phase15-e2e string-utils \
   --provider minimax \
   --attempts 1 \
   --output /tmp/duumbi-phase15-string-utils-report.json
@@ -151,8 +151,13 @@ Pass criteria:
 - Provider timeouts produce `provider_timeout`, not an ambiguous mutation or test failure.
 - Deterministic code, docs, and evidence mismatches remain separate categories.
 
-Cycle 3 did not run live-provider validation. The approved non-live evidence path
-for the first local live run is:
+Latest approved live-provider evidence for this sample used Anthropic:
+
+```text
+/tmp/duumbi-phase15-string-utils-anthropic-cycle19-report.json
+```
+
+The MiniMax command above should write local evidence to:
 
 ```text
 /tmp/duumbi-phase15-string-utils-report.json
