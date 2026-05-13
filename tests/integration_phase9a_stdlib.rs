@@ -187,6 +187,94 @@ fn string_from_i64_accepts_bool_result() {
     assert_eq!(exit_code, 0);
 }
 
+#[test]
+fn string_concat_formats_bool_call_result() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let graph_dir = tmp.path().join(".duumbi/graph");
+    fs::create_dir_all(graph_dir.join("string")).expect("create graph dirs");
+
+    let main_json = r#"{
+        "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+        "@type": "duumbi:Module",
+        "@id": "duumbi:main",
+        "duumbi:name": "main",
+        "duumbi:functions": [{
+            "@type": "duumbi:Function",
+            "@id": "duumbi:main/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:main/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0",
+                     "duumbi:value": "level", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:Call", "@id": "duumbi:main/main/entry/1",
+                     "duumbi:function": "is_palindrome", "duumbi:module": "string/utils",
+                     "duumbi:args": [{"@id": "duumbi:main/main/entry/0"}],
+                     "duumbi:resultType": "bool"},
+                    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/2",
+                     "duumbi:value": "is_palindrome(level) = ", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:StringConcat", "@id": "duumbi:main/main/entry/3",
+                     "duumbi:left": {"@id": "duumbi:main/main/entry/2"},
+                     "duumbi:right": {"@id": "duumbi:main/main/entry/1"},
+                     "duumbi:resultType": "string"},
+                    {"@type": "duumbi:PrintString", "@id": "duumbi:main/main/entry/4",
+                     "duumbi:operand": {"@id": "duumbi:main/main/entry/3"}},
+                    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/5",
+                     "duumbi:value": 0, "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/6",
+                     "duumbi:operand": {"@id": "duumbi:main/main/entry/5"}}
+                ]
+            }]
+        }]
+    }"#;
+
+    let utils_json = r#"{
+        "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+        "@type": "duumbi:Module",
+        "@id": "duumbi:string/utils",
+        "duumbi:name": "string/utils",
+        "duumbi:exports": ["is_palindrome"],
+        "duumbi:functions": [{
+            "@type": "duumbi:Function",
+            "@id": "duumbi:string/utils/is_palindrome",
+            "duumbi:name": "is_palindrome",
+            "duumbi:params": [{"duumbi:name": "s", "duumbi:paramType": "string"}],
+            "duumbi:returnType": "bool",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:string/utils/is_palindrome/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {"@type": "duumbi:Load", "@id": "duumbi:string/utils/is_palindrome/entry/0",
+                     "duumbi:variable": "s", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:Const", "@id": "duumbi:string/utils/is_palindrome/entry/1",
+                     "duumbi:value": "level", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:StringEquals", "@id": "duumbi:string/utils/is_palindrome/entry/2",
+                     "duumbi:left": {"@id": "duumbi:string/utils/is_palindrome/entry/0"},
+                     "duumbi:right": {"@id": "duumbi:string/utils/is_palindrome/entry/1"},
+                     "duumbi:resultType": "bool"},
+                    {"@type": "duumbi:Return", "@id": "duumbi:string/utils/is_palindrome/entry/3",
+                     "duumbi:operand": {"@id": "duumbi:string/utils/is_palindrome/entry/2"}}
+                ]
+            }]
+        }]
+    }"#;
+
+    fs::write(graph_dir.join("main.jsonld"), main_json).expect("write main");
+    fs::write(graph_dir.join("string/utils.jsonld"), utils_json).expect("write utils");
+
+    let output = tmp.path().join(".duumbi/build/output");
+    build_workspace(tmp.path(), &output, false).expect("workspace must build");
+    let run = run_workspace_binary(tmp.path(), &[]).expect("workspace must run");
+
+    assert_eq!(run.exit_code, 0);
+    assert_eq!(run.stdout.trim(), "is_palindrome(level) = 1");
+    assert_eq!(run.stderr, "");
+}
+
 // ===== StringTrim (#295) =====
 
 #[test]

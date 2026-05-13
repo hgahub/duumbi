@@ -946,10 +946,34 @@ fn compile_function(
                 }
                 Op::StringConcat => {
                     let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let left_type = get_left_operand_type(graph, node_idx);
+                    let right_type = get_right_operand_type(graph, node_idx);
+                    let (left_val, free_left) = coerce_string_concat_operand(
+                        &mut builder,
+                        left_val,
+                        left_type,
+                        string_from_i64_ref,
+                        "left",
+                        &node.id,
+                    )?;
+                    let (right_val, free_right) = coerce_string_concat_operand(
+                        &mut builder,
+                        right_val,
+                        right_type,
+                        string_from_i64_ref,
+                        "right",
+                        &node.id,
+                    )?;
                     let call = builder
                         .ins()
                         .call(string_concat_ref, &[left_val, right_val]);
                     let result = builder.inst_results(call)[0];
+                    if free_left {
+                        builder.ins().call(string_free_ref, &[left_val]);
+                    }
+                    if free_right {
+                        builder.ins().call(string_free_ref, &[right_val]);
+                    }
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::StringEquals => {
@@ -1657,6 +1681,51 @@ fn get_left_operand_type(
         }
     }
     None
+}
+
+/// Gets the output type of the right operand of a binary node.
+fn get_right_operand_type(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+) -> Option<DuumbiType> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Right) {
+            let source_node = &graph.graph[edge_ref.source()];
+            return resolve_node_output_type(source_node);
+        }
+    }
+    None
+}
+
+fn coerce_string_concat_operand(
+    builder: &mut FunctionBuilder<'_>,
+    value: Value,
+    value_type: Option<DuumbiType>,
+    string_from_i64_ref: cranelift_codegen::ir::FuncRef,
+    side: &str,
+    concat_node_id: &NodeId,
+) -> Result<(Value, bool), CompileError> {
+    match value_type {
+        Some(DuumbiType::String) | None => Ok((value, false)),
+        Some(DuumbiType::I64 | DuumbiType::Bool) => {
+            let numeric_value = if builder.func.dfg.value_type(value) == types::I8 {
+                builder.ins().uextend(types::I64, value)
+            } else {
+                value
+            };
+            let call = builder.ins().call(string_from_i64_ref, &[numeric_value]);
+            Ok((builder.inst_results(call)[0], true))
+        }
+        Some(other) => Err(CompileError::Cranelift {
+            message: format!(
+                "StringConcat {} operand for node '{}' has unsupported type '{}'",
+                side, concat_node_id, other
+            ),
+        }),
+    }
 }
 
 /// Resolves the output type of a graph node for lowering decisions.
