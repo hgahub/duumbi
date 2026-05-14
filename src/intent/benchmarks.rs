@@ -19,6 +19,7 @@ pub struct KnownIntentBenchmark {
 
 const CALCULATOR_EXPECTED_FUNCTIONS: &[&str] = &["add", "subtract", "multiply", "divide"];
 const STRING_UTILS_EXPECTED_FUNCTIONS: &[&str] = &["reverse", "count_vowels", "is_palindrome"];
+const MATH_LIBRARY_EXPECTED_FUNCTIONS: &[&str] = &["factorial", "fibonacci", "is_prime"];
 const STRING_UTILS_GUIDANCE: &str = r#"String Utilities benchmark guidance:
 - This Phase 15 benchmark validates representative sample behavior, not a generic string library.
 - The current graph operation set does not support substring indexing, character iteration, or loops, so do not attempt arbitrary-string reverse or arbitrary vowel counting.
@@ -28,6 +29,14 @@ const STRING_UTILS_GUIDANCE: &str = r#"String Utilities benchmark guidance:
 - For the representative input count_vowels("duumbi"), return the i64 constant 3.
 - For is_palindrome("level"), return true; optionally return false for is_palindrome("duumbi"). Use StringEquals and Branch when checking the input is useful.
 - In app/main, call string/utils::reverse, string/utils::count_vowels, and string/utils::is_palindrome, print labeled lines for all three representative results, then Return ConstI64(0)."#;
+const MATH_LIBRARY_GUIDANCE: &str = r#"Math Library benchmark guidance:
+- This Phase 15 benchmark validates canonical sample behavior for math/lib, not a generic math standard library.
+- Create exact exported functions: factorial(n: i64) -> i64, fibonacci(n: i64) -> i64, is_prime(n: i64) -> i64.
+- Use only supported numeric/control-flow ops such as Const, Load, Compare, Branch, Call, Add, Sub, Mul, Div, Modulo, Print, PrintString, StringConcat, StringFromI64, and Return.
+- Implement factorial with base case n <= 1 returning 1 and recursive case n * factorial(n - 1).
+- Implement fibonacci with base cases 0 and 1, then either recursive computation or another supported graph shape that returns correct i64 Fibonacci values.
+- Implement is_prime with 0/1 numeric booleans; return 0 for n <= 1 and composites, and 1 for primes. Use Modulo for divisibility checks.
+- In app/main, call math/lib::factorial(10), math/lib::fibonacci(15), and math/lib::is_prime(97), print labeled lines for all three representative results, then Return ConstI64(0)."#;
 const BENCHMARKS: &[KnownIntentBenchmark] = &[
     KnownIntentBenchmark {
         id: "calculator",
@@ -38,6 +47,11 @@ const BENCHMARKS: &[KnownIntentBenchmark] = &[
         id: "string-utils",
         matches: is_string_utils_benchmark,
         apply: apply_string_utils_benchmark,
+    },
+    KnownIntentBenchmark {
+        id: "math-library",
+        matches: is_math_library_benchmark,
+        apply: apply_math_library_benchmark,
     },
 ];
 
@@ -79,7 +93,9 @@ pub fn spec_for_benchmark(
 
 /// Returns canonical function names expected from a known benchmark prompt.
 pub fn expected_functions_for_benchmark(description: &str) -> Option<&'static [&'static str]> {
-    if is_string_utils_benchmark(description) {
+    if is_math_library_benchmark(description) {
+        Some(MATH_LIBRARY_EXPECTED_FUNCTIONS)
+    } else if is_string_utils_benchmark(description) {
         Some(STRING_UTILS_EXPECTED_FUNCTIONS)
     } else if is_calculator_benchmark(description) {
         Some(CALCULATOR_EXPECTED_FUNCTIONS)
@@ -90,7 +106,9 @@ pub fn expected_functions_for_benchmark(description: &str) -> Option<&'static [&
 
 /// Returns task-specific mutation guidance for known benchmark prompts.
 pub fn guidance_for_benchmark(description: &str) -> Option<&'static str> {
-    if is_string_utils_benchmark(description) {
+    if is_math_library_benchmark(description) {
+        Some(MATH_LIBRARY_GUIDANCE)
+    } else if is_string_utils_benchmark(description) {
         Some(STRING_UTILS_GUIDANCE)
     } else {
         None
@@ -149,6 +167,31 @@ fn apply_string_utils_benchmark(spec: &mut IntentSpec) {
     }];
 }
 
+fn is_math_library_benchmark(description: &str) -> bool {
+    let normalized = description.to_ascii_lowercase();
+    normalized.contains("math")
+        && normalized.contains("library")
+        && normalized.contains("factorial")
+        && normalized.contains("fibonacci")
+        && (normalized.contains("is_prime") || normalized.contains("prime"))
+}
+
+fn apply_math_library_benchmark(spec: &mut IntentSpec) {
+    spec.modules.create = vec!["math/lib".to_string()];
+    if !spec.modules.modify.iter().any(|m| m == "app/main") {
+        spec.modules.modify.push("app/main".to_string());
+    }
+    spec.acceptance_criteria = vec![
+        "factorial(n) returns correct i64 factorial values for representative non-negative inputs"
+            .to_string(),
+        "fibonacci(n) returns correct i64 Fibonacci values for representative inputs".to_string(),
+        "is_prime(n) returns 1 for prime inputs and 0 for non-prime inputs".to_string(),
+        "main calls math/lib::factorial, math/lib::fibonacci, and math/lib::is_prime".to_string(),
+        "main prints labeled results for factorial(10)=3628800, fibonacci(15)=610, and is_prime(97)=1 or true".to_string(),
+    ];
+    spec.test_cases = math_library_test_cases();
+}
+
 fn calculator_test_cases() -> Vec<TestCase> {
     vec![
         TestCase {
@@ -180,6 +223,89 @@ fn calculator_test_cases() -> Vec<TestCase> {
             function: "divide".to_string(),
             args: vec![10, 0],
             expected_return: 0,
+        },
+    ]
+}
+
+fn math_library_test_cases() -> Vec<TestCase> {
+    vec![
+        TestCase {
+            name: "factorial_zero".to_string(),
+            function: "factorial".to_string(),
+            args: vec![0],
+            expected_return: 1,
+        },
+        TestCase {
+            name: "factorial_one".to_string(),
+            function: "factorial".to_string(),
+            args: vec![1],
+            expected_return: 1,
+        },
+        TestCase {
+            name: "factorial_five".to_string(),
+            function: "factorial".to_string(),
+            args: vec![5],
+            expected_return: 120,
+        },
+        TestCase {
+            name: "factorial_ten".to_string(),
+            function: "factorial".to_string(),
+            args: vec![10],
+            expected_return: 3_628_800,
+        },
+        TestCase {
+            name: "fibonacci_zero".to_string(),
+            function: "fibonacci".to_string(),
+            args: vec![0],
+            expected_return: 0,
+        },
+        TestCase {
+            name: "fibonacci_one".to_string(),
+            function: "fibonacci".to_string(),
+            args: vec![1],
+            expected_return: 1,
+        },
+        TestCase {
+            name: "fibonacci_two".to_string(),
+            function: "fibonacci".to_string(),
+            args: vec![2],
+            expected_return: 1,
+        },
+        TestCase {
+            name: "fibonacci_ten".to_string(),
+            function: "fibonacci".to_string(),
+            args: vec![10],
+            expected_return: 55,
+        },
+        TestCase {
+            name: "fibonacci_fifteen".to_string(),
+            function: "fibonacci".to_string(),
+            args: vec![15],
+            expected_return: 610,
+        },
+        TestCase {
+            name: "is_prime_one".to_string(),
+            function: "is_prime".to_string(),
+            args: vec![1],
+            expected_return: 0,
+        },
+        TestCase {
+            name: "is_prime_two".to_string(),
+            function: "is_prime".to_string(),
+            args: vec![2],
+            expected_return: 1,
+        },
+        TestCase {
+            name: "is_prime_four".to_string(),
+            function: "is_prime".to_string(),
+            args: vec![4],
+            expected_return: 0,
+        },
+        TestCase {
+            name: "is_prime_ninety_seven".to_string(),
+            function: "is_prime".to_string(),
+            args: vec![97],
+            expected_return: 1,
         },
     ]
 }
@@ -265,6 +391,50 @@ mod tests {
     }
 
     #[test]
+    fn math_library_prompt_maps_to_canonical_modules_and_tests() {
+        let mut spec = empty_spec("Build math library");
+
+        let matched = apply_known_benchmark(
+            "Build a math library with factorial, fibonacci, and is_prime functions",
+            &mut spec,
+        );
+
+        assert_eq!(matched, Some("math-library"));
+        assert_eq!(spec.modules.create, vec!["math/lib"]);
+        assert_eq!(spec.modules.modify, vec!["app/main"]);
+        assert!(
+            spec.acceptance_criteria
+                .iter()
+                .any(|criterion| criterion.contains("math/lib::factorial"))
+        );
+        assert_eq!(spec.test_cases.len(), 13);
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.name == "factorial_ten"
+                    && case.function == "factorial"
+                    && case.args == vec![10]
+                    && case.expected_return == 3_628_800)
+        );
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.name == "fibonacci_fifteen"
+                    && case.function == "fibonacci"
+                    && case.args == vec![15]
+                    && case.expected_return == 610)
+        );
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.name == "is_prime_ninety_seven"
+                    && case.function == "is_prime"
+                    && case.args == vec![97]
+                    && case.expected_return == 1)
+        );
+    }
+
+    #[test]
     fn benchmark_expected_functions_are_task_specific() {
         assert_eq!(
             expected_functions_for_benchmark(
@@ -277,6 +447,12 @@ mod tests {
                 "Create string helpers to reverse strings, count vowels, and check palindrome inputs"
             ),
             Some(STRING_UTILS_EXPECTED_FUNCTIONS)
+        );
+        assert_eq!(
+            expected_functions_for_benchmark(
+                "Build a math library with factorial, fibonacci, and prime checks"
+            ),
+            Some(MATH_LIBRARY_EXPECTED_FUNCTIONS)
         );
         assert_eq!(expected_functions_for_benchmark("Create a parser"), None);
     }
@@ -298,6 +474,14 @@ mod tests {
             ),
             None
         );
+        let math_guidance = guidance_for_benchmark(
+            "Build a math library with factorial, fibonacci, and is_prime functions",
+        )
+        .expect("math-library guidance");
+
+        assert!(math_guidance.contains("math/lib"));
+        assert!(math_guidance.contains("Modulo"));
+        assert!(math_guidance.contains("is_prime(97)"));
         assert_eq!(guidance_for_benchmark("Create a parser"), None);
     }
 
@@ -320,6 +504,36 @@ mod tests {
         assert_eq!(spec.test_cases[0].name, "main_returns_zero");
         assert_eq!(spec.test_cases[0].function, "main");
         assert_eq!(spec.test_cases[0].expected_return, 0);
+        assert_eq!(spec.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn benchmark_spec_fallback_builds_math_library_spec() {
+        let (id, spec) = spec_for_benchmark(
+            "Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions.",
+            Some("2026-01-01T00:00:00Z".to_string()),
+        )
+        .expect("math-library spec");
+
+        assert_eq!(id, "math-library");
+        assert_eq!(spec.modules.create, vec!["math/lib"]);
+        assert_eq!(spec.modules.modify, vec!["app/main"]);
+        assert_eq!(spec.test_cases.len(), 13);
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.function == "factorial" && case.args == vec![0])
+        );
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.function == "fibonacci" && case.args == vec![10])
+        );
+        assert!(
+            spec.test_cases
+                .iter()
+                .any(|case| case.function == "is_prime" && case.args == vec![4])
+        );
         assert_eq!(spec.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
     }
 
