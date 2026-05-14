@@ -235,7 +235,7 @@ pub async fn run(
         });
     }
 
-    let gate = build_ralph_gate(&attempts_results, key_env);
+    let gate = build_ralph_gate(task, &attempts_results, key_env);
     let performance = build_performance_report(&attempts_results);
     let user_experience = build_ux_report(&attempts_results);
     print_ralph_gate(&gate);
@@ -1114,7 +1114,11 @@ fn build_ux_report(results: &[Phase15AttemptReport]) -> Phase15UxReport {
     }
 }
 
-fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGate {
+fn build_ralph_gate(
+    task: &Phase15Task,
+    results: &[Phase15AttemptReport],
+    key_env: &str,
+) -> RalphGate {
     let all_ok = results.iter().all(|r| r.ok);
     let categories: Vec<&str> = results
         .iter()
@@ -1147,7 +1151,11 @@ fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGat
             "Provider change not recommended from this loop; evidence points to deterministic code or workflow behavior.".to_string()
         },
         opinion: if all_ok {
-            "Opinion: #486 evidence is strong enough for the Calculator path; repeat only if you want confidence across multiple live attempts.".to_string()
+            format!(
+                "Opinion: {} evidence is strong enough for the {} path; repeat only if you want confidence across multiple live attempts.",
+                task_issue_label(task),
+                task.display_name
+            )
         } else if missing_credentials {
             "Opinion: validation is blocked, not failed. The next useful action is setting the MiniMax key, not changing code.".to_string()
         } else if provider_issue {
@@ -1155,6 +1163,15 @@ fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGat
         } else {
             "Opinion: treat this as an implementation bug until the failure category proves provider instability.".to_string()
         },
+    }
+}
+
+fn task_issue_label(task: &Phase15Task) -> &'static str {
+    match task.id {
+        "calculator" => "#486",
+        "string-utils" => "#487",
+        "math-library" => "#488",
+        _ => "Phase 15",
     }
 }
 
@@ -1345,6 +1362,41 @@ mod tests {
         "#;
 
         assert!(studio_ux_evidence(html).is_err());
+    }
+
+    #[test]
+    fn ralph_gate_success_opinion_is_task_specific() {
+        let task = phase15_task("math-library").expect("math-library task");
+        let result = Phase15AttemptReport {
+            attempt: 1,
+            ok: true,
+            cli: Phase15LegReport {
+                ok: true,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 1.0,
+                evidence: Vec::new(),
+                failure_category: None,
+            },
+            studio: Phase15LegReport {
+                ok: true,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 1.0,
+                evidence: Vec::new(),
+                failure_category: None,
+            },
+            elapsed_secs: 2.0,
+        };
+
+        let gate = build_ralph_gate(task, &[result], "MINIMAX_API_KEY");
+
+        assert!(gate.opinion.contains("#488"));
+        assert!(gate.opinion.contains("Math Library"));
+        assert!(!gate.opinion.contains("#486"));
+        assert!(!gate.opinion.contains("Calculator"));
     }
 
     #[test]
