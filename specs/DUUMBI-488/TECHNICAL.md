@@ -459,7 +459,7 @@ The implementation is ready for PR review only when all of these are true:
 
 ## Open Questions
 
-None blocking.
+No blocking questions.
 
 Non-blocking items for Stage 9 or Ralph-cycle approval:
 

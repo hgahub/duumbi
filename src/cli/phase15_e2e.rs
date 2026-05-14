@@ -926,17 +926,35 @@ fn output_mentions_math_library_results(stdout: &str) -> bool {
         || (compact.contains("factorial") && compact.contains("10") && compact.contains("3628800"));
     let has_fibonacci = compact.contains("fibonacci(15)=610")
         || (compact.contains("fibonacci") && compact.contains("15") && compact.contains("610"));
-    let has_prime_label =
-        compact.contains("is_prime") || compact.contains("isprime") || compact.contains("prime");
-    let has_prime = has_prime_label
-        && compact.contains("97")
-        && (compact.contains("=true")
-            || compact.contains(":true")
-            || compact.contains("true")
-            || compact.contains("=1")
-            || compact.contains(":1"));
+    let has_prime = output_contains_prime_true_result(stdout);
 
     has_factorial && has_fibonacci && has_prime
+}
+
+fn output_contains_prime_true_result(stdout: &str) -> bool {
+    stdout.lines().any(|line| {
+        let normalized = line
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| *c != '"' && *c != '\'' && *c != '`')
+            .collect::<String>();
+        let has_prime_label = normalized.contains("is_prime")
+            || normalized.contains("isprime")
+            || normalized.contains("prime");
+
+        has_prime_label && normalized.contains("97") && line_has_truthy_result_token(&normalized)
+    })
+}
+
+fn line_has_truthy_result_token(line: &str) -> bool {
+    line.split(['=', ':']).skip(1).any(|candidate| {
+        let token = candidate
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<String>();
+        matches!(token.as_str(), "true" | "1")
+    })
 }
 
 fn describe_contains_expected_functions(task: &Phase15Task, describe: &str) -> bool {
@@ -1274,6 +1292,24 @@ mod tests {
             r#"
             factorial(10) = 3628800
             fibonacci(15) = 610
+            "#
+        ));
+    }
+
+    #[test]
+    fn math_library_output_predicate_rejects_non_truth_prime_prefix() {
+        assert!(!output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            is_prime(97) = 10
+            "#
+        ));
+        assert!(!output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            prime 97: 100
             "#
         ));
     }

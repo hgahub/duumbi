@@ -273,7 +273,7 @@ Pass criteria:
 
 ## Open Questions
 
-None blocking for product specification.
+No blocking questions for product specification.
 
 Non-blocking items for Stage 8:
 
