@@ -18,6 +18,7 @@ use crate::knowledge::types::FailureRecord;
 const CALCULATOR_INTENT: &str =
     "Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers";
 const STRING_UTILS_INTENT: &str = "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.";
+const MATH_LIBRARY_INTENT: &str = "Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions. The main function should compute factorial(10), fibonacci(15), and check if 97 is prime.";
 const LIVE_LEG_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug)]
@@ -33,6 +34,7 @@ struct Phase15Task {
 
 const CALCULATOR_FUNCTIONS: &[&str] = &["add", "subtract", "multiply", "divide"];
 const STRING_UTILS_FUNCTIONS: &[&str] = &["reverse", "count_vowels", "is_palindrome"];
+const MATH_LIBRARY_FUNCTIONS: &[&str] = &["factorial", "fibonacci", "is_prime"];
 const PHASE15_TASKS: &[Phase15Task] = &[
     Phase15Task {
         id: "calculator",
@@ -51,6 +53,15 @@ const PHASE15_TASKS: &[Phase15Task] = &[
         expected_functions: STRING_UTILS_FUNCTIONS,
         output_check: output_mentions_string_utils_results,
         failure_module: "string/utils",
+    },
+    Phase15Task {
+        id: "math-library",
+        display_name: "Math Library",
+        intent: MATH_LIBRARY_INTENT,
+        module_path: "math/lib",
+        expected_functions: MATH_LIBRARY_FUNCTIONS,
+        output_check: output_mentions_math_library_results,
+        failure_module: "math/lib",
     },
 ];
 
@@ -224,7 +235,7 @@ pub async fn run(
         });
     }
 
-    let gate = build_ralph_gate(&attempts_results, key_env);
+    let gate = build_ralph_gate(task, &attempts_results, key_env);
     let performance = build_performance_report(&attempts_results);
     let user_experience = build_ux_report(&attempts_results);
     print_ralph_gate(&gate);
@@ -905,6 +916,47 @@ fn output_mentions_string_utils_results(stdout: &str) -> bool {
     has_reverse && has_vowels && has_palindrome
 }
 
+fn output_mentions_math_library_results(stdout: &str) -> bool {
+    let compact = stdout
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+        .collect::<String>();
+    let has_factorial = compact.contains("factorial(10)=3628800")
+        || (compact.contains("factorial") && compact.contains("10") && compact.contains("3628800"));
+    let has_fibonacci = compact.contains("fibonacci(15)=610")
+        || (compact.contains("fibonacci") && compact.contains("15") && compact.contains("610"));
+    let has_prime = output_contains_prime_true_result(stdout);
+
+    has_factorial && has_fibonacci && has_prime
+}
+
+fn output_contains_prime_true_result(stdout: &str) -> bool {
+    stdout.lines().any(|line| {
+        let normalized = line
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| *c != '"' && *c != '\'' && *c != '`')
+            .collect::<String>();
+        let has_prime_label = normalized.contains("is_prime")
+            || normalized.contains("isprime")
+            || normalized.contains("prime");
+
+        has_prime_label && normalized.contains("97") && line_has_truthy_result_token(&normalized)
+    })
+}
+
+fn line_has_truthy_result_token(line: &str) -> bool {
+    line.split(['=', ':']).skip(1).any(|candidate| {
+        let token = candidate
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<String>();
+        matches!(token.as_str(), "true" | "1")
+    })
+}
+
 fn describe_contains_expected_functions(task: &Phase15Task, describe: &str) -> bool {
     task.expected_functions
         .iter()
@@ -1080,7 +1132,11 @@ fn build_ux_report(results: &[Phase15AttemptReport]) -> Phase15UxReport {
     }
 }
 
-fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGate {
+fn build_ralph_gate(
+    task: &Phase15Task,
+    results: &[Phase15AttemptReport],
+    key_env: &str,
+) -> RalphGate {
     let all_ok = results.iter().all(|r| r.ok);
     let categories: Vec<&str> = results
         .iter()
@@ -1113,7 +1169,11 @@ fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGat
             "Provider change not recommended from this loop; evidence points to deterministic code or workflow behavior.".to_string()
         },
         opinion: if all_ok {
-            "Opinion: #486 evidence is strong enough for the Calculator path; repeat only if you want confidence across multiple live attempts.".to_string()
+            format!(
+                "Opinion: {} evidence is strong enough for the {} path; repeat only if you want confidence across multiple live attempts.",
+                task_issue_label(task),
+                task.display_name
+            )
         } else if missing_credentials {
             "Opinion: validation is blocked, not failed. The next useful action is setting the MiniMax key, not changing code.".to_string()
         } else if provider_issue {
@@ -1121,6 +1181,15 @@ fn build_ralph_gate(results: &[Phase15AttemptReport], key_env: &str) -> RalphGat
         } else {
             "Opinion: treat this as an implementation bug until the failure category proves provider instability.".to_string()
         },
+    }
+}
+
+fn task_issue_label(task: &Phase15Task) -> &'static str {
+    match task.id {
+        "calculator" => "#486",
+        "string-utils" => "#487",
+        "math-library" => "#488",
+        _ => "Phase 15",
     }
 }
 
@@ -1145,7 +1214,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase15_task_lookup_supports_calculator_and_string_utils() {
+    fn phase15_task_lookup_supports_known_tasks() {
         let calculator = phase15_task("calculator").expect("calculator task");
         assert_eq!(calculator.id, "calculator");
         assert_eq!(calculator.module_path, "calculator/ops");
@@ -1156,15 +1225,21 @@ mod tests {
         assert_eq!(string_utils.module_path, "string/utils");
         assert_eq!(string_utils.expected_functions, STRING_UTILS_FUNCTIONS);
         assert!(string_utils.intent.contains("reverse a string"));
+
+        let math_library = phase15_task("math-library").expect("math-library task");
+        assert_eq!(math_library.id, "math-library");
+        assert_eq!(math_library.module_path, "math/lib");
+        assert_eq!(math_library.expected_functions, MATH_LIBRARY_FUNCTIONS);
+        assert!(math_library.intent.contains("factorial"));
     }
 
     #[test]
     fn phase15_task_lookup_lists_supported_tasks_on_error() {
-        let error = phase15_task("math-library").expect_err("unsupported task");
+        let error = phase15_task("matrix-library").expect_err("unsupported task");
         let message = error.to_string();
 
-        assert!(message.contains("Unsupported Phase 15 E2E task 'math-library'"));
-        assert!(message.contains("calculator, string-utils"));
+        assert!(message.contains("Unsupported Phase 15 E2E task 'matrix-library'"));
+        assert!(message.contains("calculator, string-utils, math-library"));
     }
 
     #[test]
@@ -1194,34 +1269,80 @@ mod tests {
     }
 
     #[test]
+    fn math_library_output_predicate_accepts_representative_results() {
+        assert!(output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            is_prime(97) = true
+            "#
+        ));
+        assert!(output_mentions_math_library_results(
+            r#"
+            factorial 10: 3628800
+            fibonacci 15: 610
+            prime 97: 1
+            "#
+        ));
+    }
+
+    #[test]
+    fn math_library_output_predicate_rejects_missing_operation() {
+        assert!(!output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            "#
+        ));
+    }
+
+    #[test]
+    fn math_library_output_predicate_rejects_non_truth_prime_prefix() {
+        assert!(!output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            is_prime(97) = 10
+            "#
+        ));
+        assert!(!output_mentions_math_library_results(
+            r#"
+            factorial(10) = 3628800
+            fibonacci(15) = 610
+            prime 97: 100
+            "#
+        ));
+    }
+
+    #[test]
     fn describe_function_gate_requires_all_expected_functions() {
-        let task = phase15_task("string-utils").expect("string-utils task");
-        let complete = "Function reverse\nFunction count_vowels\nFunction is_palindrome";
-        let missing = "Function reverse\nFunction count_vowels";
+        let task = phase15_task("math-library").expect("math-library task");
+        let complete = "Function factorial\nFunction fibonacci\nFunction is_prime";
+        let missing = "Function factorial\nFunction fibonacci";
 
         assert!(describe_contains_expected_functions(task, complete));
         assert!(!describe_contains_expected_functions(task, missing));
         assert_eq!(
             describe_function_evidence(task, missing),
             vec![
-                "describe_contains_reverse=true",
-                "describe_contains_count_vowels=true",
-                "describe_contains_is_palindrome=false",
+                "describe_contains_factorial=true",
+                "describe_contains_fibonacci=true",
+                "describe_contains_is_prime=false",
             ]
         );
     }
 
     #[test]
     fn graph_module_evidence_uses_descriptor_module_path() {
-        let task = phase15_task("string-utils").expect("string-utils task");
+        let task = phase15_task("math-library").expect("math-library task");
         let modules = vec![
             serde_json::Value::String("app/main".to_string()),
-            serde_json::Value::String("string/utils".to_string()),
+            serde_json::Value::String("math/lib".to_string()),
         ];
 
         let evidence = graph_module_evidence(task, &modules).expect("graph evidence");
 
-        assert_eq!(evidence, "graph_has_string_utils=true");
+        assert_eq!(evidence, "graph_has_math_lib=true");
     }
 
     #[test]
@@ -1277,6 +1398,41 @@ mod tests {
         "#;
 
         assert!(studio_ux_evidence(html).is_err());
+    }
+
+    #[test]
+    fn ralph_gate_success_opinion_is_task_specific() {
+        let task = phase15_task("math-library").expect("math-library task");
+        let result = Phase15AttemptReport {
+            attempt: 1,
+            ok: true,
+            cli: Phase15LegReport {
+                ok: true,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 1.0,
+                evidence: Vec::new(),
+                failure_category: None,
+            },
+            studio: Phase15LegReport {
+                ok: true,
+                message: String::new(),
+                workspace: None,
+                intent_slug: None,
+                elapsed_secs: 1.0,
+                evidence: Vec::new(),
+                failure_category: None,
+            },
+            elapsed_secs: 2.0,
+        };
+
+        let gate = build_ralph_gate(task, &[result], "MINIMAX_API_KEY");
+
+        assert!(gate.opinion.contains("#488"));
+        assert!(gate.opinion.contains("Math Library"));
+        assert!(!gate.opinion.contains("#486"));
+        assert!(!gate.opinion.contains("Calculator"));
     }
 
     #[test]
