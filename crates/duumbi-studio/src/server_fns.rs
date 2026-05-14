@@ -591,6 +591,7 @@ pub async fn get_intents() -> Result<Vec<IntentSummary>, ServerFnError> {
                         slug,
                         description,
                         status,
+                        log: Vec::new(),
                     });
                 }
             }
@@ -762,6 +763,7 @@ pub fn load_initial_data(workspace: &std::path::Path) -> InitialData {
                         slug,
                         description,
                         status,
+                        log: Vec::new(),
                     });
                 }
             }
@@ -1133,6 +1135,7 @@ pub async fn create_intent(description: String) -> Result<IntentSummary, ServerF
         slug: result.slug,
         description: spec.intent,
         status: format!("{:?}", spec.status),
+        log: result.log,
     })
 }
 
@@ -1184,6 +1187,129 @@ pub struct IntentExecuteApiResponse {
     pub message: String,
     /// Execution log emitted by the intent pipeline.
     pub log: Vec<String>,
+    /// Preflight lines extracted from the execution log for structured clients.
+    pub preflight: Vec<String>,
+}
+
+/// Renders the current preflight report for a Studio intent detail surface.
+#[cfg(feature = "ssr")]
+#[must_use]
+pub fn intent_preflight_lines(
+    workspace: &std::path::Path,
+    spec: &duumbi::intent::spec::IntentSpec,
+) -> Vec<String> {
+    let report = duumbi::intent::preflight::run_preflight(spec, workspace);
+    duumbi::intent::preflight::render_preflight_report(&report)
+}
+
+/// Extracts preflight evidence from workflow logs for Studio API responses.
+#[cfg(feature = "ssr")]
+#[must_use]
+pub fn preflight_lines_from_log(log: &[String]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut in_preflight_block = false;
+    for line in log {
+        if line.starts_with("Preflight:") {
+            in_preflight_block = true;
+            lines.push(line.clone());
+        } else if in_preflight_block && is_preflight_detail_line(line) {
+            lines.push(line.clone());
+        } else {
+            in_preflight_block = false;
+            if line.contains("Preflight blocked execution") {
+                lines.push(line.clone());
+            }
+        }
+    }
+    lines
+}
+
+#[cfg(feature = "ssr")]
+fn is_preflight_detail_line(line: &str) -> bool {
+    line.starts_with("  ")
+        || matches!(
+            line,
+            "Errors:" | "Warnings:" | "Info:" | "Reuse candidates:" | "Decomposition hints:"
+        )
+}
+
+/// Renders the Studio intent detail HTML, including text-readable preflight evidence.
+#[cfg(feature = "ssr")]
+#[must_use]
+pub fn render_intent_detail_html(
+    workspace: &std::path::Path,
+    slug: &str,
+    spec: &duumbi::intent::spec::IntentSpec,
+) -> String {
+    let mut html = format!("<h1>{}</h1>\n", escape_html(&spec.intent));
+    html.push_str(&format!(
+        "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
+        spec.status
+    ));
+    html.push_str(&format!(
+        "<p><button class=\"cip-btn cip-btn-create\" onclick=\"window.__studio.executeIntent('{}')\">Execute</button></p>\n",
+        escape_html(slug)
+    ));
+
+    if !spec.acceptance_criteria.is_empty() {
+        html.push_str("<h2>Acceptance Criteria</h2>\n<ul>\n");
+        for criterion in &spec.acceptance_criteria {
+            html.push_str(&format!("<li>{}</li>\n", escape_html(criterion)));
+        }
+        html.push_str("</ul>\n");
+    }
+
+    if !spec.test_cases.is_empty() {
+        html.push_str("<h2>Test Cases</h2>\n<ul>\n");
+        for test_case in &spec.test_cases {
+            html.push_str(&format!(
+                "<li><code>{}</code>({}) -> expected: {}</li>\n",
+                escape_html(&test_case.function),
+                test_case
+                    .args
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                test_case.expected_return
+            ));
+        }
+        html.push_str("</ul>\n");
+    }
+
+    if !spec.modules.create.is_empty() {
+        html.push_str("<h2>Modules to Create</h2>\n<ul>\n");
+        for module in &spec.modules.create {
+            html.push_str(&format!("<li><code>{}</code></li>\n", escape_html(module)));
+        }
+        html.push_str("</ul>\n");
+    }
+    if !spec.modules.modify.is_empty() {
+        html.push_str("<h2>Modules to Modify</h2>\n<ul>\n");
+        for module in &spec.modules.modify {
+            html.push_str(&format!("<li><code>{}</code></li>\n", escape_html(module)));
+        }
+        html.push_str("</ul>\n");
+    }
+
+    let preflight = intent_preflight_lines(workspace, spec);
+    if !preflight.is_empty() {
+        html.push_str("<h2>Preflight</h2>\n<pre>");
+        html.push_str(&escape_html(&preflight.join("\n")));
+        html.push_str("</pre>\n");
+    }
+
+    html
+}
+
+#[cfg(feature = "ssr")]
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Builds the current workspace for JSON API callers.
@@ -1230,6 +1356,32 @@ pub async fn execute_intent_for_api(
     workspace: &std::path::Path,
     slug: &str,
 ) -> IntentExecuteApiResponse {
+    let mut preflight_log = Vec::new();
+    match duumbi::intent::execute::run_execute_blocking_preflight(
+        workspace,
+        slug,
+        &mut preflight_log,
+    ) {
+        Ok(true) => {
+            let preflight = preflight_lines_from_log(&preflight_log);
+            return IntentExecuteApiResponse {
+                ok: false,
+                message: format!("Intent '{slug}' blocked by preflight."),
+                log: preflight_log,
+                preflight,
+            };
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return IntentExecuteApiResponse {
+                ok: false,
+                message: format!("Execute preflight: {e}"),
+                log: preflight_log,
+                preflight: Vec::new(),
+            };
+        }
+    }
+
     let effective = match duumbi::config::load_effective_config(workspace) {
         Ok(config) => config,
         Err(e) => {
@@ -1237,6 +1389,7 @@ pub async fn execute_intent_for_api(
                 ok: false,
                 message: format!("Config: {e}"),
                 log: Vec::new(),
+                preflight: Vec::new(),
             };
         }
     };
@@ -1250,24 +1403,30 @@ pub async fn execute_intent_for_api(
                 ok: false,
                 message: format!("Provider: {e}"),
                 log: Vec::new(),
+                preflight: Vec::new(),
             };
         }
     };
 
     match duumbi::workflow::execute_intent(&*client, workspace, slug).await {
-        Ok(result) => IntentExecuteApiResponse {
-            ok: result.ok,
-            message: if result.ok {
-                format!("Intent '{slug}' executed successfully — all tests passed.")
-            } else {
-                format!("Intent '{slug}' executed — some tests failed.")
-            },
-            log: result.log,
-        },
+        Ok(result) => {
+            let preflight = preflight_lines_from_log(&result.log);
+            IntentExecuteApiResponse {
+                ok: result.ok,
+                message: if result.ok {
+                    format!("Intent '{slug}' executed successfully — all tests passed.")
+                } else {
+                    format!("Intent '{slug}' executed — some tests failed.")
+                },
+                log: result.log,
+                preflight,
+            }
+        }
         Err(e) => IntentExecuteApiResponse {
             ok: false,
             message: format!("Execute: {e}"),
             log: Vec::new(),
+            preflight: Vec::new(),
         },
     }
 }

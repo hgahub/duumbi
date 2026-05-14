@@ -19,6 +19,7 @@ use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
 use crate::context;
 use crate::intent::coordinator;
+use crate::intent::preflight::{render_preflight_report, run_preflight};
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
@@ -53,6 +54,53 @@ pub async fn run_execute(
     run_execute_with_progress(client, workspace, slug, log, &|_| {}).await
 }
 
+/// Runs the provider-free execute preflight block check.
+///
+/// Returns `Ok(true)` when preflight blocks execution and emits the blocking
+/// report to `log`. Returns `Ok(false)` without emitting when pass/warn
+/// preflight should continue into the existing provider-backed execute path.
+#[must_use = "the bool indicates whether preflight blocked execution"]
+pub fn run_execute_blocking_preflight(
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+) -> Result<bool> {
+    run_execute_blocking_preflight_with_progress(workspace, slug, log, &|_| {})
+}
+
+/// Runs the provider-free execute preflight block check with progress output.
+///
+/// This is intended for command/API surfaces that must report blocking
+/// preflight before constructing an LLM provider. Warning-only reports are not
+/// emitted here; the normal execute path emits them after provider setup.
+#[must_use = "the bool indicates whether preflight blocked execution"]
+pub fn run_execute_blocking_preflight_with_progress(
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+    on_progress: &(dyn Fn(&str) + Send + Sync),
+) -> Result<bool> {
+    macro_rules! emit {
+        ($msg:expr) => {{
+            let s: String = $msg;
+            on_progress(&s);
+            log.push(s);
+        }};
+    }
+
+    let spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+    let preflight = run_preflight(&spec, workspace);
+    if !preflight.is_blocking() {
+        return Ok(false);
+    }
+
+    for line in render_preflight_report(&preflight) {
+        emit!(line);
+    }
+    emit!("Preflight blocked execution before mutation side effects.".to_string());
+    Ok(true)
+}
+
 /// Like [`run_execute`] but with a real-time progress callback.
 ///
 /// Each status line is passed to `on_progress` immediately when generated,
@@ -77,6 +125,16 @@ pub async fn run_execute_with_progress(
 
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+
+    let preflight = run_preflight(&spec, workspace);
+    for line in render_preflight_report(&preflight) {
+        emit!(line);
+    }
+    if preflight.is_blocking() {
+        emit!("Preflight blocked execution before mutation side effects.".to_string());
+        return Ok(false);
+    }
+
     let provider_kind = crate::config::ProviderKind::from_provider_name(client.name());
     let agent_policy = crate::config::load_effective_config(workspace)
         .map(|effective| {
@@ -1095,7 +1153,208 @@ fn find_missing_functions(module: &serde_json::Value, expected: &[String]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::AgentError;
     use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TaskKind, TestCase};
+    use crate::patch::PatchOp;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Default)]
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingProvider {
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl LlmProvider for CountingProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn call_with_tools<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn call_with_tools_streaming<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+            _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+    }
+
+    fn executable_spec() -> IntentSpec {
+        IntentSpec {
+            intent: "Build calculator".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec!["add(a, b) returns a + b".to_string()],
+            modules: IntentModules {
+                create: vec!["calculator/ops".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![TestCase {
+                name: "addition".to_string(),
+                function: "add".to_string(),
+                args: vec![3, 5],
+                expected_return: 8,
+            }],
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        }
+    }
+
+    fn write_main_graph(workspace: &Path, contents: &str) {
+        let graph_dir = workspace.join(".duumbi/graph");
+        std::fs::create_dir_all(&graph_dir).expect("invariant: graph dir");
+        std::fs::write(graph_dir.join("main.jsonld"), contents).expect("invariant: graph write");
+    }
+
+    #[test]
+    fn run_execute_blocking_preflight_reports_without_provider() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let spec = IntentSpec {
+            intent: "Weak spec".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        save_intent(tmp.path(), "weak", &spec).expect("save intent");
+        let mut log = Vec::new();
+
+        let blocked = run_execute_blocking_preflight(tmp.path(), "weak", &mut log)
+            .expect("provider-free preflight");
+
+        assert!(blocked);
+        assert!(log.iter().any(|line| line.contains("Preflight: BLOCK")));
+        assert!(log.iter().any(|line| line.contains("E_NO_MODULE_TARGETS")));
+        assert!(
+            log.iter()
+                .any(|line| line.contains("Preflight blocked execution"))
+        );
+        assert_eq!(
+            load_intent(tmp.path(), "weak").expect("load").status,
+            IntentStatus::Pending
+        );
+    }
+
+    #[test]
+    fn run_execute_blocking_preflight_leaves_warning_path_quiet() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut spec = executable_spec();
+        spec.modules.create.push("calculator/ops".to_string());
+        save_intent(tmp.path(), "warning", &spec).expect("save intent");
+        let mut log = Vec::new();
+
+        let blocked = run_execute_blocking_preflight(tmp.path(), "warning", &mut log)
+            .expect("provider-free preflight");
+
+        assert!(!blocked);
+        assert!(log.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_execute_blocking_preflight_stops_before_side_effects() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let provider = CountingProvider::default();
+        let spec = IntentSpec {
+            intent: "Weak spec".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        save_intent(tmp.path(), "weak", &spec).expect("save intent");
+        let original_graph = r#"{"@type":"duumbi:Module","duumbi:name":"main"}"#;
+        write_main_graph(tmp.path(), original_graph);
+        let mut log = Vec::new();
+
+        let result = run_execute(&provider, tmp.path(), "weak", &mut log)
+            .await
+            .expect("blocked preflight returns unsuccessful result");
+
+        assert!(!result);
+        assert!(log.iter().any(|line| line.contains("Preflight: BLOCK")));
+        assert!(log.iter().any(|line| line.contains("E_NO_MODULE_TARGETS")));
+        assert!(
+            log.iter()
+                .any(|line| line.contains("Preflight blocked execution"))
+        );
+        assert_eq!(provider.call_count(), 0);
+        assert_eq!(
+            load_intent(tmp.path(), "weak").expect("load").status,
+            IntentStatus::Pending
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".duumbi/graph/main.jsonld"))
+                .expect("read graph"),
+            original_graph
+        );
+        assert_eq!(
+            crate::snapshot::snapshot_count(tmp.path()).expect("snapshot count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_warning_preflight_reaches_existing_execute_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let provider = CountingProvider::default();
+        let mut spec = executable_spec();
+        spec.modules.create.push("calculator/ops".to_string());
+        save_intent(tmp.path(), "warning", &spec).expect("save intent");
+        let mut log = Vec::new();
+
+        let result = run_execute(&provider, tmp.path(), "warning", &mut log).await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(".duumbi/graph/main.jsonld")
+        );
+        assert!(log.iter().any(|line| line.contains("Preflight: WARN")));
+        assert!(
+            log.iter()
+                .any(|line| line.contains("W_DUPLICATE_MODULE_NAME"))
+        );
+        assert!(log.iter().any(|line| line.contains("Executing intent")));
+        assert_eq!(
+            load_intent(tmp.path(), "warning").expect("load").status,
+            IntentStatus::InProgress
+        );
+        assert_eq!(provider.call_count(), 0);
+    }
 
     #[test]
     fn build_task_prompt_includes_criteria() {
