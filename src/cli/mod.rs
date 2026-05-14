@@ -258,7 +258,7 @@ pub enum Commands {
     /// Run the Phase 15 E2E validation harness.
     #[command(name = "phase15-e2e", hide = true)]
     Phase15E2e {
-        /// Task to validate: `calculator` or `string-utils`.
+        /// Task to validate: `calculator`, `string-utils`, or `math-library`.
         task: String,
 
         /// Provider to use for live validation.

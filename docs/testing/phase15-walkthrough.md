@@ -1,13 +1,13 @@
 # Phase 15 E2E Walkthrough
 
-**Issues:** [#486](https://github.com/hgahub/duumbi/issues/486), [#487](https://github.com/hgahub/duumbi/issues/487)
-**Scope:** Calculator and String Utilities samples only. Do not expand into #488 or #489.
+**Issues:** [#486](https://github.com/hgahub/duumbi/issues/486), [#487](https://github.com/hgahub/duumbi/issues/487), [#488](https://github.com/hgahub/duumbi/issues/488)
+**Scope:** Calculator, String Utilities, and Math Library samples only. Do not expand into #489 final all-samples protocol consolidation.
 **Provider for live validation:** MiniMax via `MINIMAX_API_KEY`.
 
 This document is both the manual protocol and the evidence log for the approved
 Phase 15 kill-criterion samples. #486 proves Calculator. #487 proves String
-Utilities. #488 Math Library validation and #489 final all-samples protocol
-consolidation remain separate work.
+Utilities. #488 proves Math Library. #489 final all-samples protocol
+consolidation remains separate work.
 
 ## Expected Protocol
 
@@ -161,6 +161,92 @@ The MiniMax command above should write local evidence to:
 
 ```text
 /tmp/duumbi-phase15-string-utils-report.json
+```
+
+If `MINIMAX_API_KEY` is missing, the expected blocked evidence is:
+
+```json
+{
+  "failure_category": "missing_provider_credentials",
+  "evidence": ["missing_env=MINIMAX_API_KEY"]
+}
+```
+
+## Math Library Protocol
+
+**Issue:** [#488](https://github.com/hgahub/duumbi/issues/488)
+**Scope:** Math Library sample only. Do not perform #489 final all-samples protocol consolidation here.
+
+### CLI Math Library Path
+
+```bash
+mkdir -p /tmp/duumbi-p15-math-library-cli
+cd /tmp/duumbi-p15-math-library-cli
+$DUUMBI init .
+$DUUMBI
+```
+
+In the REPL:
+
+```text
+/intent create "Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions. The main function should compute factorial(10), fibonacci(15), and check if 97 is prime."
+y
+/intent execute <generated-slug>
+/describe
+/build
+/run
+```
+
+Pass criteria:
+
+- Intent creation saves a generated slug.
+- Intent execution creates `math/lib` and updates `app/main`.
+- `/describe` or graph evidence shows `factorial`, `fibonacci`, and `is_prime`.
+- `/build` writes `.duumbi/build/output`.
+- `/run` prints representative correct results:
+  - `factorial(10) = 3628800` or a labeled equivalent.
+  - `fibonacci(15) = 610`.
+  - `is_prime(97) = true` or `1`.
+- `app/main` calls or otherwise depends on functions from `math/lib`; direct print-only output from `app/main` is not sufficient evidence.
+- Query mode remains read-only; mutation requires Agent mode or explicit Intent execution.
+- Total CLI elapsed time stays within the Phase 15 live leg timeout.
+
+### Studio Math Library Path
+
+The Studio leg must reuse the CLI-generated workspace after the CLI leg passes.
+It must not spend a second provider-backed mutation.
+
+Pass criteria:
+
+- Footer has exactly three primary workflow items: `Intents`, `Graph`, `Build`.
+- Graph context data includes `math/lib`.
+- Build workflow calls `POST /api/build` and returns `{ ok, message, output_path }`.
+- Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
+- Run stdout satisfies the same Math Library evidence checks as the CLI leg.
+- Query chat mode remains active and read-only by default; Agent mode remains available for mutation handoff.
+
+### Automated Math Library Harness
+
+```bash
+$DUUMBI phase15-e2e math-library \
+  --provider minimax \
+  --attempts 1 \
+  --output /tmp/duumbi-phase15-math-library-report.json
+```
+
+Pass criteria:
+
+- Top-level report task is `math-library`.
+- CLI evidence includes a fresh workspace, generated slug, `module_math_lib_exists=true`, function evidence for `factorial`, `fibonacci`, and `is_prime`, build result, run exit code, stdout, elapsed time, and failure category if any.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_math_lib=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode evidence.
+- Missing credentials produce `failure_category: "missing_provider_credentials"` with `missing_env=MINIMAX_API_KEY`.
+- Provider auth, rate-limit, server, timeout, malformed-output, compiler, graph validation, Studio, docs, and evidence mismatches remain distinguishable in the report.
+- The sample is not passing if output is hardcoded only in `app/main` without usable `math/lib` function evidence.
+
+The MiniMax command above should write local evidence to:
+
+```text
+/tmp/duumbi-phase15-math-library-report.json
 ```
 
 If `MINIMAX_API_KEY` is missing, the expected blocked evidence is:
