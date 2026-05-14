@@ -12,7 +12,7 @@ Current evidence status:
 |---|---:|---|---|---|---|
 | Calculator | [#486](https://github.com/hgahub/duumbi/issues/486) | `calculator` | `calculator/ops` with `add`, `subtract`, `multiply`, `divide` | `3 + 5 = 8`, `10 / 2 = 5` | Accepted |
 | String Utilities | [#487](https://github.com/hgahub/duumbi/issues/487) | `string-utils` | `string/utils` with `reverse`, `count_vowels`, `is_palindrome` | `duumbi -> ibmuud`, vowel count `3`, `level` palindrome | Accepted |
-| Math Library | [#488](https://github.com/hgahub/duumbi/issues/488) | `math-library` | `math/lib` with `factorial`, `fibonacci`, `is_prime` | `factorial(10)=3628800`, `fibonacci(15)=610`, `is_prime(97)=true` or `1` | Accepted in #488; #489 final evidence integration pending |
+| Math Library | [#488](https://github.com/hgahub/duumbi/issues/488) | `math-library` | `math/lib` with `factorial`, `fibonacci`, `is_prime` | `factorial(10) = 3628800`, `fibonacci(15) = 610`, `is_prime(97) = 1` | Accepted in #488 via [PR #552](https://github.com/hgahub/duumbi/pull/552) |
 
 Do not use this document to claim Phase 15 completion until all three sample rows have accepted evidence and the final #489 implementation review confirms that the walkthrough matches real results.
 
@@ -180,9 +180,11 @@ Latest accepted evidence reference from #487 used Anthropic:
 ## Math Library
 
 **Issue:** [#488](https://github.com/hgahub/duumbi/issues/488)
+**Implementation PR:** [#552](https://github.com/hgahub/duumbi/pull/552)
 **Task id:** `math-library`
-**Timing target:** under 15 minutes for a normal single-sample run unless accepted #488 evidence justifies a different target.
-**Current #489 status:** accepted #488 evidence is available; final #489 evidence integration still needs a dedicated approved cycle.
+**Accepted provider:** MiniMax
+**Accepted report path:** `/tmp/duumbi-phase15-math-library-report.json`
+**Timing target:** under 15 minutes for a normal single-sample run.
 
 Canonical intent:
 
@@ -190,7 +192,7 @@ Canonical intent:
 Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions. The main function should compute factorial(10), fibonacci(15), and check if 97 is prime.
 ```
 
-Expected automated harness:
+Automated harness:
 
 ```bash
 $DUUMBI phase15-e2e math-library \
@@ -199,7 +201,7 @@ $DUUMBI phase15-e2e math-library \
   --output /tmp/duumbi-phase15-math-library-report.json
 ```
 
-Expected manual CLI path:
+Manual CLI path:
 
 ```bash
 mkdir -p /tmp/duumbi-p15-math-library-cli
@@ -232,7 +234,22 @@ Required evidence:
 - `app/main` calls or otherwise depends on functions from `math/lib`; direct print-only output from `app/main` is not sufficient evidence.
 - Studio evidence includes `shared_backend_workspace=true`, `graph_has_math_lib=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode availability.
 
-Do not mark #489 complete from this framework alone. A follow-up approved cycle must integrate the accepted #488 evidence metadata, including provider, report path, elapsed timing, and any accepted module or output deviations.
+Accepted #488 evidence:
+
+- Live evidence report: [Ralph Cycle 4 evidence](https://github.com/hgahub/duumbi/issues/488#issuecomment-4450913577).
+- Closure evidence: [Stage 12 closure comment](https://github.com/hgahub/duumbi/issues/488#issuecomment-4451303014).
+- Provider: `minimax`.
+- Report path: `/tmp/duumbi-phase15-math-library-report.json`.
+- Top-level report values: task `math-library`, provider `minimax`, attempts `1`, aggregate attempt passed.
+- CLI elapsed: `513.023s`; total elapsed: `517.212s`; Studio elapsed: `4.188s`.
+- CLI evidence includes `module_math_lib_exists=true`, `describe_contains_factorial=true`, `describe_contains_fibonacci=true`, and `describe_contains_is_prime=true`.
+- Run exit code was `0`.
+- Accepted stdout includes:
+  - `factorial(10) = 3628800`.
+  - `fibonacci(15) = 610`.
+  - `is_prime(97) = 1`.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_math_lib=true`, `ux_footer_items=Intents,Graph,Build`, `ux_query_default_active=true`, `ux_query_read_only=true`, and `ux_agent_mode_available=true`.
+- The live report's stale Calculator/#486 Ralph Gate wording was fixed before merge by #488 Cycle 5 and included in [PR #552](https://github.com/hgahub/duumbi/pull/552).
 
 ## Studio Validation
 
@@ -277,6 +294,13 @@ Minimum evidence to keep with the implementation PR or issue comments:
 - Commands/checks run and results.
 - Any deviations from timing targets, with accepted evidence explaining them.
 - Remaining risks or follow-up issues.
+
+Accepted implementation references:
+
+- String Utilities implementation: [PR #546](https://github.com/hgahub/duumbi/pull/546).
+- Math Library implementation and evidence fixes: [PR #552](https://github.com/hgahub/duumbi/pull/552).
+- Math Library live evidence: [#488 Cycle 4 evidence](https://github.com/hgahub/duumbi/issues/488#issuecomment-4450913577).
+- Math Library closure evidence: [#488 Stage 12 closure](https://github.com/hgahub/duumbi/issues/488#issuecomment-4451303014).
 
 ## Regression Checks
 
