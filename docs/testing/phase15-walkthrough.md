@@ -1,38 +1,93 @@
-# Phase 15 E2E Walkthrough
+# Phase 15 Final E2E Walkthrough Protocol
 
-**Issues:** [#486](https://github.com/hgahub/duumbi/issues/486), [#487](https://github.com/hgahub/duumbi/issues/487), [#488](https://github.com/hgahub/duumbi/issues/488)
-**Scope:** Calculator, String Utilities, and Math Library samples only. Do not expand into #489 final all-samples protocol consolidation.
-**Provider for live validation:** MiniMax via `MINIMAX_API_KEY`.
+**Canonical issue:** [#489](https://github.com/hgahub/duumbi/issues/489)
+**Sample issues:** [#486 Calculator](https://github.com/hgahub/duumbi/issues/486), [#487 String Utilities](https://github.com/hgahub/duumbi/issues/487), [#488 Math Library](https://github.com/hgahub/duumbi/issues/488)
+**Purpose:** provide one operational protocol for validating DUUMBI's Phase 15 CLI REPL and Studio workflow evidence.
 
-This document is both the manual protocol and the evidence log for the approved
-Phase 15 kill-criterion samples. #486 proves Calculator. #487 proves String
-Utilities. #488 proves Math Library. #489 final all-samples protocol
-consolidation remains separate work.
+This document is the reviewer-facing Phase 15 walkthrough. It replaces the older two-sample scope and is organized around the final all-samples protocol required by #489.
 
-## Expected Protocol
+Current evidence status:
 
-### Prerequisites
+| Sample | Issue | Task id | Module evidence | Representative output | Evidence status |
+|---|---:|---|---|---|---|
+| Calculator | [#486](https://github.com/hgahub/duumbi/issues/486) | `calculator` | `calculator/ops` with `add`, `subtract`, `multiply`, `divide` | `3 + 5 = 8`, `10 / 2 = 5` | Accepted |
+| String Utilities | [#487](https://github.com/hgahub/duumbi/issues/487) | `string-utils` | `string/utils` with `reverse`, `count_vowels`, `is_palindrome` | `duumbi -> ibmuud`, vowel count `3`, `level` palindrome | Accepted |
+| Math Library | [#488](https://github.com/hgahub/duumbi/issues/488) | `math-library` | `math/lib` with `factorial`, `fibonacci`, `is_prime` | `factorial(10)=3628800`, `fibonacci(15)=610`, `is_prime(97)=true` or `1` | Accepted in #488; #489 final evidence integration pending |
 
-- Rust toolchain: `rustup show`
-- C compiler on PATH: `cc --version`
-- Local binaries:
+Do not use this document to claim Phase 15 completion until all three sample rows have accepted evidence and the final #489 implementation review confirms that the walkthrough matches real results.
+
+## Prerequisites
+
+Run from a fresh DUUMBI source checkout unless a sample section explicitly says to reuse a generated workspace.
+
+Required local tools:
 
 ```bash
+rustup show
+cc --version
 cargo build
 cargo build -p duumbi-studio --features ssr
 export DUUMBI="$(pwd)/target/debug/duumbi"
 ```
 
-- Live provider credential:
+Provider setup:
+
+- Use `/provider` in the REPL or `duumbi provider add ...` for normal user-facing setup.
+- The Phase 15 harness also supports provider env vars. For the documented MiniMax path, set `MINIMAX_API_KEY` in the shell environment.
+- Never paste raw provider secrets into docs, issue comments, reports, screenshots, or logs.
+- Missing credentials are a blocked evidence condition, not a deterministic product failure.
+
+Example provider check shape:
 
 ```bash
-export MINIMAX_API_KEY="..."
+test -n "$MINIMAX_API_KEY" || echo "MINIMAX_API_KEY is not set"
 ```
 
-Use `/provider` in the REPL or `duumbi provider add ...` for normal provider
-setup. The E2E harness uses the env-var path and never logs raw secrets.
+Recommended report paths:
 
-### CLI Calculator Path
+```text
+/tmp/duumbi-phase15-calculator-report.json
+/tmp/duumbi-phase15-string-utils-report.json
+/tmp/duumbi-phase15-math-library-report.json
+```
+
+## Shared Review Flow
+
+For each sample:
+
+1. Verify prerequisites.
+2. Run the automated harness when the sample has accepted implementation support.
+3. Inspect the JSON report for task id, provider, workspace, generated slug, CLI evidence, Studio evidence, elapsed time, UX checks, failure category, and Ralph Gate guidance.
+4. Confirm graph/module evidence before trusting build or run output.
+5. Confirm Studio validates the same generated workspace through the shared backend after CLI generation passes.
+6. Confirm Query mode remains read-only and mutation remains Agent mode or explicit intent execution.
+7. Classify any failure using the troubleshooting table in this document.
+8. Record issue, PR, report, and evidence-comment links for Stage 11/12 review.
+
+The Studio leg should reuse the CLI-generated workspace after the CLI leg passes. It should not spend a second provider-backed mutation unless a later approved cycle explicitly changes that policy.
+
+## Calculator
+
+**Issue:** [#486](https://github.com/hgahub/duumbi/issues/486)
+**Task id:** `calculator`
+**Timing target:** under 10 minutes for a normal single-sample run.
+
+Canonical intent:
+
+```text
+Build a calculator with add, subtract, multiply, divide functions that work on i64 numbers
+```
+
+Automated harness:
+
+```bash
+$DUUMBI phase15-e2e calculator \
+  --provider minimax \
+  --attempts 1 \
+  --output /tmp/duumbi-phase15-calculator-report.json
+```
+
+Manual CLI path:
 
 ```bash
 mkdir -p /tmp/duumbi-p15-calculator-cli
@@ -52,41 +107,39 @@ y
 /run
 ```
 
-Pass criteria:
+Required evidence:
 
-- Intent creation saves a generated slug.
-- Intent execution creates `calculator/ops` and updates `app/main`.
-- `/describe` shows calculator functions.
-- `/build` writes `.duumbi/build/output`.
-- `/run` prints representative correct results, including `3 + 5 = 8` and `10 / 2 = 5` or equivalent.
-- Total CLI elapsed time is under 10 minutes.
+- Top-level report task is `calculator`.
+- CLI evidence includes a fresh workspace, generated slug, elapsed time, build/run result, stdout, and failure category if any.
+- Graph evidence includes `calculator/ops`.
+- Function evidence includes `add`, `subtract`, `multiply`, and `divide`.
+- Run output includes representative correct arithmetic results such as `3 + 5 = 8` and `10 / 2 = 5`.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_calculator_ops=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode availability.
+- The process exit code may be nonzero for Calculator because DUUMBI examples can return an i64 from `main`; stdout correctness is the sample evidence gate.
 
-### Studio Calculator Path
-
-```bash
-mkdir -p /tmp/duumbi-p15-calculator-studio
-cd /tmp/duumbi-p15-calculator-studio
-$DUUMBI init .
-$DUUMBI studio --port 8421
-```
-
-Open `http://localhost:8421`.
-
-Pass criteria:
-
-- Footer has exactly three primary workflow items: `Intents`, `Graph`, `Build`.
-- Intents workflow can create and execute the Calculator intent.
-- Graph context data includes `calculator/ops`.
-- Build workflow calls `POST /api/build` and returns `{ ok, message, output_path }`.
-- Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
-- Query chat mode is read-only. Switch to Agent mode before asking for mutation such as modulo/power; only Agent success refreshes the graph.
-
-## String Utilities Protocol
+## String Utilities
 
 **Issue:** [#487](https://github.com/hgahub/duumbi/issues/487)
-**Scope:** String Utilities sample only. Do not expand into #488 Math Library or #489 final all-samples protocol consolidation.
+**Implementation PR:** [#546](https://github.com/hgahub/duumbi/pull/546)
+**Task id:** `string-utils`
+**Timing target:** under 15 minutes for a normal single-sample run.
 
-### CLI String Utilities Path
+Canonical intent:
+
+```text
+Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.
+```
+
+Automated harness:
+
+```bash
+$DUUMBI phase15-e2e string-utils \
+  --provider minimax \
+  --attempts 1 \
+  --output /tmp/duumbi-phase15-string-utils-report.json
+```
+
+Manual CLI path:
 
 ```bash
 mkdir -p /tmp/duumbi-p15-string-utils-cli
@@ -106,78 +159,47 @@ y
 /run
 ```
 
-Pass criteria:
+Required evidence:
 
-- Intent creation saves a generated slug.
-- Intent execution creates `string/utils` and updates `app/main`.
-- `/describe` or graph evidence shows `reverse`, `count_vowels`, and `is_palindrome`.
-- `/build` writes `.duumbi/build/output`.
-- `/run` prints representative correct results:
+- Top-level report task is `string-utils`.
+- CLI evidence includes a fresh workspace, generated slug, elapsed time, build/run result, stdout, and failure category if any.
+- Graph evidence includes `string/utils`.
+- Function evidence includes `reverse`, `count_vowels`, and `is_palindrome`.
+- Run output demonstrates:
   - `reverse("duumbi") = "ibmuud"` or a labeled equivalent.
   - `count_vowels("duumbi") = 3`.
   - `is_palindrome("level") = true` or `1`.
-- Query mode remains read-only; mutation requires Agent mode or explicit Intent execution.
-- Total CLI elapsed time stays within the Phase 15 live leg timeout.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_string_utils=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode availability.
 
-### Studio String Utilities Path
-
-The Studio leg must reuse the CLI-generated workspace after the CLI leg passes.
-It must not spend a second provider-backed mutation.
-
-Pass criteria:
-
-- Footer has exactly three primary workflow items: `Intents`, `Graph`, `Build`.
-- Graph context data includes `string/utils`.
-- Build workflow calls `POST /api/build` and returns `{ ok, message, output_path }`.
-- Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
-- Run stdout satisfies the same String Utilities evidence checks as the CLI leg.
-- Query chat mode remains active and read-only by default; Agent mode remains available for mutation handoff.
-
-### Automated String Utilities Harness
-
-```bash
-$DUUMBI phase15-e2e string-utils \
-  --provider minimax \
-  --attempts 1 \
-  --output /tmp/duumbi-phase15-string-utils-report.json
-```
-
-Pass criteria:
-
-- Top-level report task is `string-utils`.
-- CLI evidence includes a fresh workspace, generated slug, `module_string_utils_exists=true`, function evidence for `reverse`, `count_vowels`, and `is_palindrome`, build result, run exit code, stdout, elapsed time, and failure category if any.
-- Studio evidence includes `shared_backend_workspace=true`, `graph_has_string_utils=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode evidence.
-- Missing credentials produce `failure_category: "missing_provider_credentials"` with `missing_env=MINIMAX_API_KEY`.
-- Provider timeouts produce `provider_timeout`, not an ambiguous mutation or test failure.
-- Deterministic code, docs, and evidence mismatches remain separate categories.
-
-Latest approved live-provider evidence for this sample used Anthropic:
+Latest accepted evidence reference from #487 used Anthropic:
 
 ```text
 /tmp/duumbi-phase15-string-utils-anthropic-cycle19-report.json
 ```
 
-The MiniMax command above should write local evidence to:
-
-```text
-/tmp/duumbi-phase15-string-utils-report.json
-```
-
-If `MINIMAX_API_KEY` is missing, the expected blocked evidence is:
-
-```json
-{
-  "failure_category": "missing_provider_credentials",
-  "evidence": ["missing_env=MINIMAX_API_KEY"]
-}
-```
-
-## Math Library Protocol
+## Math Library
 
 **Issue:** [#488](https://github.com/hgahub/duumbi/issues/488)
-**Scope:** Math Library sample only. Do not perform #489 final all-samples protocol consolidation here.
+**Task id:** `math-library`
+**Timing target:** under 15 minutes for a normal single-sample run unless accepted #488 evidence justifies a different target.
+**Current #489 status:** accepted #488 evidence is available; final #489 evidence integration still needs a dedicated approved cycle.
 
-### CLI Math Library Path
+Canonical intent:
+
+```text
+Build a math library with: factorial (recursive), fibonacci (iterative), and is_prime functions. The main function should compute factorial(10), fibonacci(15), and check if 97 is prime.
+```
+
+Expected automated harness:
+
+```bash
+$DUUMBI phase15-e2e math-library \
+  --provider minimax \
+  --attempts 1 \
+  --output /tmp/duumbi-phase15-math-library-report.json
+```
+
+Expected manual CLI path:
 
 ```bash
 mkdir -p /tmp/duumbi-p15-math-library-cli
@@ -197,216 +219,74 @@ y
 /run
 ```
 
-Pass criteria:
+Required evidence:
 
-- Intent creation saves a generated slug.
-- Intent execution creates `math/lib` and updates `app/main`.
-- `/describe` or graph evidence shows `factorial`, `fibonacci`, and `is_prime`.
-- `/build` writes `.duumbi/build/output`.
-- `/run` prints representative correct results:
+- Top-level report task is `math-library`.
+- CLI evidence includes a fresh workspace, generated slug, elapsed time, build/run result, stdout, and failure category if any.
+- Graph evidence includes `math/lib`.
+- Function evidence includes `factorial`, `fibonacci`, and `is_prime`.
+- Run output demonstrates:
   - `factorial(10) = 3628800` or a labeled equivalent.
   - `fibonacci(15) = 610`.
   - `is_prime(97) = true` or `1`.
 - `app/main` calls or otherwise depends on functions from `math/lib`; direct print-only output from `app/main` is not sufficient evidence.
-- Query mode remains read-only; mutation requires Agent mode or explicit Intent execution.
-- Total CLI elapsed time stays within the Phase 15 live leg timeout.
+- Studio evidence includes `shared_backend_workspace=true`, `graph_has_math_lib=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode availability.
 
-### Studio Math Library Path
+Do not mark #489 complete from this framework alone. A follow-up approved cycle must integrate the accepted #488 evidence metadata, including provider, report path, elapsed timing, and any accepted module or output deviations.
 
-The Studio leg must reuse the CLI-generated workspace after the CLI leg passes.
-It must not spend a second provider-backed mutation.
+## Studio Validation
 
-Pass criteria:
+For each sample, Studio validation should confirm:
 
 - Footer has exactly three primary workflow items: `Intents`, `Graph`, `Build`.
-- Graph context data includes `math/lib`.
-- Build workflow calls `POST /api/build` and returns `{ ok, message, output_path }`.
-- Run workflow calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
-- Run stdout satisfies the same Math Library evidence checks as the CLI leg.
-- Query chat mode remains active and read-only by default; Agent mode remains available for mutation handoff.
+- `Intents` can create and execute the sample intent when a live mutation is intended.
+- `Graph` can show the expected module evidence for the generated workspace.
+- `Build` calls `POST /api/build` and returns `{ ok, message, output_path }`.
+- Run calls `POST /api/run` and returns `{ ok, exit_code, stdout, stderr }`.
+- Run stdout satisfies the same sample evidence checks as the CLI leg.
+- Query chat mode is active/read-only by default.
+- Graph mutation requires Agent mode or explicit Intent execution.
 
-### Automated Math Library Harness
+When capturing screenshots later, capture deterministic states: Intents with the selected sample, Graph with the expected module visible, Build output after build, Run output after run, and Query mode showing read-only state.
 
-```bash
-$DUUMBI phase15-e2e math-library \
-  --provider minimax \
-  --attempts 1 \
-  --output /tmp/duumbi-phase15-math-library-report.json
-```
+## Failure Classification
 
-Pass criteria:
+| Failure class | Evidence signal | Interpretation | Next action |
+|---|---|---|---|
+| Missing credentials | `failure_category: "missing_provider_credentials"` and `missing_env=<PROVIDER_KEY>` | Blocked setup, not product failure | Configure provider through `/provider`, `duumbi provider add`, or the documented env var. Do not paste secrets into docs or comments. |
+| Provider authentication | auth-related provider error | Provider setup failed | Verify provider account/key outside committed artifacts. |
+| Provider rate limit/server/network | rate-limit, 5xx, network, or timeout evidence | Provider instability or quota issue | Record provider, retry only when approved, or switch provider with approval. |
+| Provider timeout | `provider_timeout` or timeout elapsed evidence | Live mutation exceeded budget | Inspect generated workspace and learning records before another paid run. |
+| Graph evidence mismatch | expected module/function evidence missing | Generated graph does not satisfy sample contract | Treat as deterministic implementation or generation-quality failure until provider evidence proves otherwise. |
+| Compiler/build failure | build result `ok=false` or compiler diagnostics | Graph could not compile | File or fix compiler/graph issue under a separate approved cycle if outside current scope. |
+| Run-output mismatch | build succeeds but stdout misses required values | Behavior mismatch | Compare graph functions and `app/main` calls with sample pass criteria. |
+| Report serialization failure | report missing or invalid JSON | Harness/report defect | Fix report path or serialization under an approved implementation cycle. |
+| Studio shared-backend failure | CLI passes but Studio graph/build/run fails on same workspace | Studio/server/shared workflow issue | Inspect `POST /api/build`, `POST /api/run`, and graph context evidence. |
+| Query/Agent mode regression | Query allows mutation or Agent unavailable | UX/safety regression | Stop and fix under approved Studio/REPL scope. |
+| Docs mismatch | walkthrough command or expected output contradicts accepted evidence | Documentation defect | Update the walkthrough to match source-backed evidence. |
 
-- Top-level report task is `math-library`.
-- CLI evidence includes a fresh workspace, generated slug, `module_math_lib_exists=true`, function evidence for `factorial`, `fibonacci`, and `is_prime`, build result, run exit code, stdout, elapsed time, and failure category if any.
-- Studio evidence includes `shared_backend_workspace=true`, `graph_has_math_lib=true`, build output path, run stdout, footer evidence, Query read-only evidence, and Agent mode evidence.
-- Missing credentials produce `failure_category: "missing_provider_credentials"` with `missing_env=MINIMAX_API_KEY`.
-- Provider auth, rate-limit, server, timeout, malformed-output, compiler, graph validation, Studio, docs, and evidence mismatches remain distinguishable in the report.
-- The sample is not passing if output is hardcoded only in `app/main` without usable `math/lib` function evidence.
+## Evidence And Traceability
 
-The MiniMax command above should write local evidence to:
+Minimum evidence to keep with the implementation PR or issue comments:
 
-```text
-/tmp/duumbi-phase15-math-library-report.json
-```
-
-If `MINIMAX_API_KEY` is missing, the expected blocked evidence is:
-
-```json
-{
-  "failure_category": "missing_provider_credentials",
-  "evidence": ["missing_env=MINIMAX_API_KEY"]
-}
-```
-
-## Automated Calculator Harness
-
-Run one Ralph Loop attempt:
-
-```bash
-$DUUMBI phase15-e2e calculator \
-  --provider minimax \
-  --attempts 1 \
-  --output /tmp/duumbi-phase15-calculator-report.json
-```
-
-The harness creates fresh temp workspaces for CLI and Studio legs, records
-timing, generated slug, graph/module evidence, build/run results, stdout/stderr,
-aggregate performance, Studio UX checks, and a Ralph Gate summary. Each
-provider-backed leg has an outer 600 second timeout so a stalled live call
-becomes structured evidence instead of hanging.
-
-After each run it prints:
-
-- `Continue?` with pass/fail and whether another paid loop is useful.
-- Provider-change guidance. If credentials are missing, it asks for the relevant env var instead of a raw key.
-- Engineering opinion: code bug, provider instability, docs mismatch, blocked, or inconclusive.
-
-## Evidence Log
-
-### Current Deterministic Implementation Evidence
-
-- Studio root shell is wired to the three-panel workflow: `Intents`, `Graph`, `Build`.
-- Static JSON endpoints are present:
-  - `POST /api/intent/{slug}/execute`
-  - `POST /api/build`
-  - `POST /api/run`
-- Studio module discovery scans `.duumbi/graph/**/*.jsonld`, so nested modules such as `calculator/ops` are discoverable.
-- Workspace program loading, intent verification, export summaries, and repair passes scan nested `.duumbi/graph/**/*.jsonld` files recursively.
-- Intent execution preserves slash-named modules on disk, so `calculator/ops` is written as `.duumbi/graph/calculator/ops.jsonld`.
-- The known Phase 15 Calculator sample normalizes provider-generated specs to the four representative #486 tests: `3 + 5 = 8`, `10 - 3 = 7`, `4 * 6 = 24`, and `10 / 2 = 5`.
-- Known sample handling now lives in `intent::benchmarks`; generic intent creation only applies Calculator normalization when the prompt matches the benchmark.
-- AI graph mutation uses a configurable `[agent]` policy. Defaults are `mutation-retries = 5`, `repair-retries = 2`, and `mutation-timeout-secs = 600`, with optional `[agent.providers.minimax]` overrides.
-- The Phase 15 harness seeds `.duumbi/learning/successes.jsonl` from prior Phase 15 temp workspaces, so successful partial work can inform later fresh workspaces.
-- Intent execution records successes to workspace-local learning and user-local `~/.duumbi/learning/successes.jsonl`; it records sanitized failures to workspace-local and user-local `failures.jsonl`.
-- Context assembly reads combined workspace-local and user-local success/failure records, deduplicated by record id, so later fresh workspaces can reuse previous lessons.
-- The shared `workflow` service exposes graph evidence, build, run, intent creation, and intent execution orchestration for CLI, Studio, and the Phase 15 harness.
-- The harness treats CLI as the provider-backed execution gate. After CLI passes, Studio validates graph visibility, build, and run against the CLI-generated workspace through the shared backend instead of performing a second live provider execution.
-- The Phase 15 harness accepts a calculator binary that returns a representative result such as `8`; stdout correctness is the kill criterion, not exit code zero.
-- Studio build uses the shared library workspace build helper, not `cargo run` from the user workspace.
-- Studio run returns structured stdout/stderr and a structured no-binary error.
-- Studio chat defaults to `Query`; mutation is routed through `Agent` mode and success frames request graph refresh.
-
-### Live MiniMax Evidence
-
-Live provider evidence must be generated locally because it depends on
-`MINIMAX_API_KEY`, model availability, and paid API calls.
-
-If `MINIMAX_API_KEY` is missing, the harness result is **blocked**, not failed:
-
-```json
-{
-  "failure_category": "missing_provider_credentials",
-  "evidence": ["missing_env=MINIMAX_API_KEY"]
-}
-```
-
-Observed reports:
-
-```text
-Report: /tmp/duumbi-phase15-calculator-report.json
-Result: failed pre-fix
-CLI elapsed: 277.547s
-CLI slug: build-a-calculator-with-add-subtract-mul
-CLI stdout: add(5, 3) = 8; divide(20, 4) = 5
-CLI failure: evidence_mismatch, because calculator functions were generated but calculator/ops was not visible at the required path
-Studio failure: config parse error, role = "Primary" should have been role = "primary"
-Fix applied: lowercase provider role in harness config, plus Calculator intent defaults require calculator/ops and app/main
-
-Report: /tmp/duumbi-phase15-calculator-report-r2.json
-Result: failed after first fix
-CLI failure: timeout after 180s
-Studio failure: timeout calling POST /api/intent/build-a-calculator-with-add-subtract-mul/execute
-Workspace evidence: generated calculator code existed, but the executor wrote .duumbi/graph/calculator_ops.jsonld instead of .duumbi/graph/calculator/ops.jsonld
-Fix applied: preserve slash module paths, create nested graph dirs, and recursively load/copy/discover graph JSON-LD files
-Ralph Gate opinion: code bug until the failure category proves provider instability
-
-Report: /tmp/duumbi-phase15-calculator-report-r3.json
-Result: failed after nested module fix
-CLI failure: timeout after 180s; workspace contained the generated intent but no calculator module yet
-Studio failure: timeout calling POST /api/intent/build-a-calculator-with-add-subtract-mul/execute
-Workspace evidence: Studio workspace did create .duumbi/graph/calculator/ops.jsonld, proving the nested path fix worked
-Provider evidence: MiniMax required multiple mutation retries and still exceeded the live harness timeout
-Fix applied: bound the known Calculator sample to four representative tests and update Ralph Gate timeout/provider classification
-
-Report: /tmp/duumbi-phase15-calculator-report-r4.json
-Result: failed after test-scope bounding
-CLI elapsed: 85.898s
-CLI result: passed with seeded_learning_records=5, module_calculator_ops_exists=true, and correct stdout
-CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
-Studio failure: second provider-backed intent execution timed out
-Fix applied: Studio harness leg now reuses the CLI-generated workspace and validates graph/build/run through shared backend endpoints
-
-Report: /tmp/duumbi-phase15-calculator-report-r5.json
-Result: passed
-CLI elapsed: 92.539s
-CLI slug: build-a-calculator-with-add-subtract-mul
-CLI evidence: seeded_learning_records=7, module_calculator_ops_exists=true, run_exit_code=8
-CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
-Studio elapsed: 3.858s
-Studio evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
-Learning cache: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/duumbi-phase15-calculator-minimax-learning.jsonl, 9 records after r5
-Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
-
-Report: /tmp/duumbi-phase15-calculator-report-recommended.json
-Result: failed after recommended-improvements pass
-CLI elapsed: 171.491s
-CLI generated calculator/ops and correct stdout, but the harness reported run_failed because the binary returned exit code 8
-Root cause: harness treated nonzero calculator return values as execution failure even though DUUMBI examples may use main's i64 return as process exit code
-Fix applied: Phase 15 harness now treats an executed binary with correct stdout as valid evidence, even when exit_code is nonzero
-
-Report: /tmp/duumbi-phase15-calculator-report-recommended-r2.json
-Result: passed
-CLI elapsed: 108.630s
-CLI slug: build-a-calculator-with-add-subtract-mul
-CLI evidence: seeded_learning_records=11, module_calculator_ops_exists=true, run_exit_code=8
-CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
-Studio elapsed: 4.119s
-Studio evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
-Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
-
-Report: /tmp/duumbi-phase15-calculator-report-final.json
-Result: passed on the final current binary after configurable mutation timeout enforcement
-CLI elapsed: 141.656s
-CLI slug: build-a-calculator-with-add-subtract-mul
-CLI evidence: seeded_learning_records=13, module_calculator_ops_exists=true, run_exit_code=8
-CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
-Studio elapsed: 4.369s
-Studio evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
-Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
-
-Report: /tmp/duumbi-phase15-calculator-report-9a93.json
-Result: passed after explicit performance and Studio UX reporting
-CLI elapsed: 95.021s
-Studio elapsed: 3.621s
-Total elapsed: 98.644s
-CLI evidence: seeded_learning_records=16, module_calculator_ops_exists=true, run_exit_code=8
-CLI stdout: add(3, 5) = 8; subtract(10, 3) = 7; multiply(4, 6) = 24; divide(10, 2) = 5
-Studio UX evidence: footer items were exactly Intents, Graph, Build; Query mode rendered as active/read-only; Agent mode was available for mutation handoff
-Studio backend evidence: shared_backend_workspace=true, graph_has_calculator_ops=true, build output path returned, run stdout matched CLI
-Ralph Gate opinion: #486 evidence is strong enough for the Calculator path; repeat only for confidence across multiple live attempts
-```
+- GitHub issue links: #486, #487, #488, #489.
+- Product spec: `specs/DUUMBI-489/PRODUCT.md`.
+- Technical spec: `specs/DUUMBI-489/TECHNICAL.md`.
+- Implementation PR links for each completed sample.
+- Report paths and provider used for each accepted run.
+- Commands/checks run and results.
+- Any deviations from timing targets, with accepted evidence explaining them.
+- Remaining risks or follow-up issues.
 
 ## Regression Checks
+
+Docs-only changes should at minimum run:
+
+```bash
+git diff --check
+```
+
+If a later approved cycle changes source code, harness behavior, Studio behavior, provider behavior, or tests, run the focused tests named in that cycle. Shared source changes should normally also run:
 
 ```bash
 cargo fmt --check
@@ -415,10 +295,4 @@ cargo test -p duumbi-studio --features ssr
 cargo clippy --all-targets -- -D warnings
 ```
 
-Focused coverage:
-
-- Studio root footer renders only `Intents`, `Graph`, `Build`.
-- Studio build/run endpoint helpers return structured responses.
-- No-binary run error is non-panicking and structured.
-- Module discovery includes nested workspace modules like `calculator/ops`.
-- Provider-facing guidance points users to `/provider` or `duumbi provider add ...`.
+Do not run live provider validation without explicit approval for that cycle.
