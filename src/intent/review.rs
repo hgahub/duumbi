@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::config::parse_editor_command;
 
+use super::preflight::{render_preflight_report, run_preflight, run_spec_checks};
 use super::spec::{IntentSpec, IntentStatus};
 use super::{IntentError, list_intents, load_intent};
 
@@ -42,12 +43,21 @@ pub fn print_intent_list(workspace: &Path) -> Result<(), IntentError> {
 /// Prints a detailed view of a single intent spec to stderr.
 pub fn print_intent_detail(workspace: &Path, slug: &str) -> Result<(), IntentError> {
     let spec = load_intent(workspace, slug)?;
-    print_spec_detail(slug, &spec);
+    print_spec_detail_with_workspace(slug, &spec, workspace);
     Ok(())
 }
 
 /// Renders a detailed intent spec to stderr.
 pub fn print_spec_detail(slug: &str, spec: &IntentSpec) {
+    print_spec_detail_lines(slug, spec, None);
+}
+
+/// Renders a detailed intent spec with workspace preflight evidence to stderr.
+pub fn print_spec_detail_with_workspace(slug: &str, spec: &IntentSpec, workspace: &Path) {
+    print_spec_detail_lines(slug, spec, Some(workspace));
+}
+
+fn print_spec_detail_lines(slug: &str, spec: &IntentSpec, workspace: Option<&Path>) {
     let status_icon = match spec.status {
         IntentStatus::Pending => "○",
         IntentStatus::InProgress => "◉",
@@ -118,6 +128,16 @@ pub fn print_spec_detail(slug: &str, spec: &IntentSpec) {
         }
     }
 
+    eprintln!();
+    eprintln!("Preflight:");
+    let report = workspace.map_or_else(
+        || run_spec_checks(spec),
+        |workspace| run_preflight(spec, workspace),
+    );
+    for line in render_preflight_report(&report) {
+        eprintln!("  {line}");
+    }
+
     if let Some(ref exec) = spec.execution {
         eprintln!();
         eprintln!("Execution:");
@@ -133,6 +153,25 @@ pub fn print_spec_detail(slug: &str, spec: &IntentSpec) {
 /// Same content as [`print_spec_detail`] but appends to `log` instead of
 /// writing to stderr.
 pub fn format_spec_detail(slug: &str, spec: &IntentSpec, log: &mut Vec<String>) {
+    format_spec_detail_with_preflight(slug, spec, None, log);
+}
+
+/// Formats a detailed intent spec with workspace preflight evidence.
+pub fn format_spec_detail_with_workspace(
+    slug: &str,
+    spec: &IntentSpec,
+    workspace: &Path,
+    log: &mut Vec<String>,
+) {
+    format_spec_detail_with_preflight(slug, spec, Some(workspace), log);
+}
+
+fn format_spec_detail_with_preflight(
+    slug: &str,
+    spec: &IntentSpec,
+    workspace: Option<&Path>,
+    log: &mut Vec<String>,
+) {
     let status_icon = match spec.status {
         IntentStatus::Pending => "○",
         IntentStatus::InProgress => "◉",
@@ -196,6 +235,15 @@ pub fn format_spec_detail(slug: &str, spec: &IntentSpec, log: &mut Vec<String>) 
                 tc.name, tc.function, args_str, tc.expected_return
             ));
         }
+    }
+
+    log.push("Preflight:".to_string());
+    let report = workspace.map_or_else(
+        || run_spec_checks(spec),
+        |workspace| run_preflight(spec, workspace),
+    );
+    for line in render_preflight_report(&report) {
+        log.push(format!("  {line}"));
     }
 }
 
@@ -291,6 +339,17 @@ mod tests {
             created_at: None,
             execution: None,
         }
+    }
+
+    #[test]
+    fn format_spec_detail_includes_preflight_report() {
+        let mut log = Vec::new();
+
+        format_spec_detail("calculator", &minimal_spec(), &mut log);
+
+        assert!(log.iter().any(|line| line == "Preflight:"));
+        assert!(log.iter().any(|line| line.contains("Preflight: BLOCK")));
+        assert!(log.iter().any(|line| line.contains("E_NO_MODULE_TARGETS")));
     }
 
     #[cfg(unix)]

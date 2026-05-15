@@ -578,7 +578,7 @@ async fn serve_studio_js() -> axum::response::Response {
 /// Creates a new intent from a description via LLM.
 ///
 /// `POST /api/intent/create` with `{"description": "Build a calculator..."}`
-/// Returns `{"slug": "calculator", "description": "...", "status": "Pending"}`
+/// Returns `{"slug": "calculator", "description": "...", "status": "Pending", "log": [...]}`
 #[cfg(feature = "ssr")]
 async fn api_create_intent(
     ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
@@ -626,19 +626,19 @@ async fn api_create_intent(
         }
     };
 
-    let mut log = Vec::new();
-    match duumbi::intent::create::run_create(&*client, &ws.root, &description, true, &mut log).await
-    {
-        Ok(slug) => {
-            let spec_desc = duumbi::intent::load_intent(&ws.root, &slug)
+    match duumbi::workflow::create_intent(&*client, &ws.root, &description, true).await {
+        Ok(result) => {
+            let spec_desc = duumbi::intent::load_intent(&ws.root, &result.slug)
                 .map(|s| s.intent)
                 .unwrap_or_else(|_| description.clone());
             (
                 [(http::header::CONTENT_TYPE, "application/json")],
                 serde_json::json!({
-                    "slug": slug,
+                    "slug": result.slug,
                     "description": spec_desc,
-                    "status": "Pending"
+                    "status": "Pending",
+                    "message": result.message,
+                    "log": result.log
                 })
                 .to_string(),
             )
@@ -668,56 +668,8 @@ async fn api_get_intent(
     let ws = ws.read().await;
     match duumbi::intent::load_intent(&ws.root, &slug) {
         Ok(spec) => {
-            // Build simple markdown-ish HTML for the md-panel
-            let mut html = format!("<h1>{}</h1>\n", spec.intent);
-            html.push_str(&format!(
-                "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
-                spec.status
-            ));
-            html.push_str(&format!(
-                "<p><button class=\"cip-btn cip-btn-create\" onclick=\"window.__studio.executeIntent('{}')\">Execute</button></p>\n",
-                slug
-            ));
-
-            if !spec.acceptance_criteria.is_empty() {
-                html.push_str("<h2>Acceptance Criteria</h2>\n<ul>\n");
-                for c in &spec.acceptance_criteria {
-                    html.push_str(&format!("<li>{c}</li>\n"));
-                }
-                html.push_str("</ul>\n");
-            }
-
-            if !spec.test_cases.is_empty() {
-                html.push_str("<h2>Test Cases</h2>\n<ul>\n");
-                for tc in &spec.test_cases {
-                    html.push_str(&format!(
-                        "<li><code>{}</code>({}) → expected: {}</li>\n",
-                        tc.function,
-                        tc.args
-                            .iter()
-                            .map(|a| a.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        tc.expected_return
-                    ));
-                }
-                html.push_str("</ul>\n");
-            }
-
-            if !spec.modules.create.is_empty() {
-                html.push_str("<h2>Modules to Create</h2>\n<ul>\n");
-                for m in &spec.modules.create {
-                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
-                }
-                html.push_str("</ul>\n");
-            }
-            if !spec.modules.modify.is_empty() {
-                html.push_str("<h2>Modules to Modify</h2>\n<ul>\n");
-                for m in &spec.modules.modify {
-                    html.push_str(&format!("<li><code>{m}</code></li>\n"));
-                }
-                html.push_str("</ul>\n");
-            }
+            let html = server_fns::render_intent_detail_html(&ws.root, &slug, &spec);
+            let preflight = server_fns::intent_preflight_lines(&ws.root, &spec);
 
             (
                 [(http::header::CONTENT_TYPE, "application/json")],
@@ -725,7 +677,8 @@ async fn api_get_intent(
                     "slug": slug,
                     "intent": spec.intent,
                     "status": format!("{:?}", spec.status),
-                    "html": html
+                    "html": html,
+                    "preflight": preflight
                 })
                 .to_string(),
             )
@@ -742,7 +695,8 @@ async fn api_get_intent(
 
 /// Executes an intent by slug.
 ///
-/// `POST /api/intent/{slug}/execute` → `{"ok": true, "message": "...", "log": [...]}`
+/// `POST /api/intent/{slug}/execute` →
+/// `{"ok": true, "message": "...", "log": [...], "preflight": [...]}`
 #[cfg(feature = "ssr")]
 async fn api_execute_intent(
     ws: std::sync::Arc<tokio::sync::RwLock<server_fns::WorkspaceContext>>,
@@ -762,7 +716,7 @@ async fn api_execute_intent(
         status,
         [(http::header::CONTENT_TYPE, "application/json")],
         serde_json::to_string(&response).unwrap_or_else(|_| {
-            r#"{"ok":false,"message":"serialization failed","log":[]}"#.to_string()
+            r#"{"ok":false,"message":"serialization failed","log":[],"preflight":[]}"#.to_string()
         }),
     )
         .into_response()

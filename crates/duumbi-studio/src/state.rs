@@ -104,6 +104,9 @@ pub struct IntentSummary {
     pub description: String,
     /// Current status.
     pub status: String,
+    /// Text log emitted when this summary was produced by a create workflow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<String>,
 }
 
 /// A node in the C4 graph view, serialized for the frontend.

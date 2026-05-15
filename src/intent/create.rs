@@ -626,8 +626,8 @@ pub async fn run_create_with_context(
     let mut spec = generated.spec;
     spec.context = context;
 
-    // Show preview
-    crate::intent::review::format_spec_detail("(preview)", &spec, log);
+    // Show preview, including preflight evidence, without changing save semantics.
+    crate::intent::review::format_spec_detail_with_workspace("(preview)", &spec, workspace, log);
 
     if !yes {
         eprint!("Save this intent? [Y/n] ");
@@ -845,6 +845,47 @@ This intent creates an addition function that..."#;
             .expect("tool fallback");
 
         assert_eq!(text, "{\"fallback\":true}");
+    }
+
+    #[tokio::test]
+    async fn run_create_yes_logs_preflight_without_blocking_save() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let provider = PlainMockProvider {
+            answer_text: Some(
+                r#"{
+  "acceptance_criteria": [],
+  "modules_create": [],
+  "modules_modify": [],
+  "test_cases": [],
+  "dependencies": []
+}"#,
+            ),
+            tool_text: "",
+        };
+        let mut log = Vec::new();
+
+        let slug = run_create(
+            &provider,
+            tmp.path(),
+            "Weak generated intent",
+            true,
+            &mut log,
+        )
+        .await
+        .expect("create saves weak spec for manual editing");
+
+        assert_eq!(slug, "weak-generated-intent");
+        assert!(
+            tmp.path()
+                .join(".duumbi/intents/weak-generated-intent.yaml")
+                .exists()
+        );
+        assert!(log.iter().any(|line| line == "Preflight:"));
+        assert!(log.iter().any(|line| line.contains("Preflight: BLOCK")));
+        assert!(log.iter().any(|line| line.contains("E_NO_MODULE_TARGETS")));
+        assert!(log.iter().any(|line| {
+            line.contains("Intent saved as '.duumbi/intents/weak-generated-intent.yaml'")
+        }));
     }
 
     #[tokio::test]

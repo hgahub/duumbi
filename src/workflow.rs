@@ -188,7 +188,51 @@ fn module_name_from_path(root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::AgentError;
+    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+    use crate::patch::PatchOp;
+    use std::future::Future;
+    use std::pin::Pin;
     use tempfile::TempDir;
+
+    struct MockProvider {
+        answer_text: Option<&'static str>,
+    }
+
+    impl LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn call_with_tools<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn call_with_tools_streaming<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+            _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn answer<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.answer_text
+                    .map(ToString::to_string)
+                    .ok_or(AgentError::NoToolCalls)
+            })
+        }
+    }
 
     #[test]
     fn graph_evidence_includes_nested_modules() {
@@ -212,5 +256,75 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.exit_code, -1);
         assert!(result.stderr.contains("No binary found"));
+    }
+
+    #[tokio::test]
+    async fn create_intent_preserves_preflight_log() {
+        let tmp = TempDir::new().expect("temp dir");
+        let provider = MockProvider {
+            answer_text: Some(
+                r#"{
+  "acceptance_criteria": [],
+  "modules_create": [],
+  "modules_modify": [],
+  "test_cases": [],
+  "dependencies": []
+}"#,
+            ),
+        };
+
+        let result = create_intent(&provider, tmp.path(), "Weak generated intent", true)
+            .await
+            .expect("create result");
+
+        assert_eq!(result.slug, "weak-generated-intent");
+        assert!(
+            result
+                .log
+                .iter()
+                .any(|line| line.contains("Preflight: BLOCK"))
+        );
+        assert!(
+            result
+                .log
+                .iter()
+                .any(|line| line.contains("E_NO_MODULE_TARGETS"))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_intent_preserves_blocking_preflight_log() {
+        let tmp = TempDir::new().expect("temp dir");
+        let provider = MockProvider { answer_text: None };
+        let spec = IntentSpec {
+            intent: "Weak generated intent".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        crate::intent::save_intent(tmp.path(), "weak-generated-intent", &spec)
+            .expect("save intent");
+
+        let result = execute_intent(&provider, tmp.path(), "weak-generated-intent")
+            .await
+            .expect("execute result");
+
+        assert!(!result.ok);
+        assert_eq!(result.message, "Intent 'weak-generated-intent' failed");
+        assert!(
+            result
+                .log
+                .iter()
+                .any(|line| line.contains("Preflight: BLOCK"))
+        );
+        assert!(result.log.iter().any(|line| {
+            line.contains("Preflight blocked execution before mutation side effects.")
+        }));
     }
 }

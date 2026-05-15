@@ -203,6 +203,118 @@ async fn studio_run_api_no_binary_error_is_structured() {
 }
 
 #[cfg(feature = "ssr")]
+#[tokio::test]
+async fn studio_execute_api_blocked_preflight_does_not_need_provider() {
+    use duumbi::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+
+    let root = unique_temp_dir("duumbi-studio-execute-preflight");
+    let spec = IntentSpec {
+        intent: "Weak generated intent".to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: Vec::new(),
+        modules: IntentModules::default(),
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        context: None,
+        created_at: None,
+        execution: None,
+    };
+    duumbi::intent::save_intent(&root, "weak", &spec).expect("save intent");
+
+    let response = duumbi_studio::server_fns::execute_intent_for_api(&root, "weak").await;
+
+    assert!(!response.ok);
+    assert_eq!(response.message, "Intent 'weak' blocked by preflight.");
+    assert!(
+        response
+            .log
+            .iter()
+            .any(|line| line.contains("Preflight: BLOCK"))
+    );
+    assert!(
+        response
+            .preflight
+            .iter()
+            .any(|line| line.contains("E_NO_MODULE_TARGETS"))
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_intent_detail_html_includes_preflight_report() {
+    use duumbi::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+
+    let root = unique_temp_dir("duumbi-studio-preflight-detail");
+    let spec = IntentSpec {
+        intent: "Weak generated intent".to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: Vec::new(),
+        modules: IntentModules::default(),
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        context: None,
+        created_at: None,
+        execution: None,
+    };
+
+    let html = duumbi_studio::server_fns::render_intent_detail_html(&root, "weak", &spec);
+
+    assert!(html.contains("<h2>Preflight</h2>"));
+    assert!(html.contains("Preflight: BLOCK"));
+    assert!(html.contains("E_NO_MODULE_TARGETS"));
+    assert!(html.contains("window.__studio.executeIntent(&quot;weak&quot;)"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_intent_detail_html_escapes_execute_slug_for_js_context() {
+    use duumbi::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+
+    let root = unique_temp_dir("duumbi-studio-preflight-slug");
+    let spec = IntentSpec {
+        intent: "Weak generated intent".to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: Vec::new(),
+        modules: IntentModules::default(),
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        context: None,
+        created_at: None,
+        execution: None,
+    };
+
+    let html =
+        duumbi_studio::server_fns::render_intent_detail_html(&root, "weak');alert(1);//", &spec);
+
+    assert!(html.contains("window.__studio.executeIntent(&quot;weak&#39;);alert(1);//&quot;)"));
+    assert!(!html.contains("executeIntent('weak');alert(1);//')"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_execution_api_extracts_preflight_from_log() {
+    let log = vec![
+        "Preflight:".to_string(),
+        "  - Preflight: BLOCK - missing implementation target modules.".to_string(),
+        "  - E_NO_MODULE_TARGETS: Intent must name at least one module.".to_string(),
+        "Preflight blocked execution before mutation side effects.".to_string(),
+    ];
+
+    let preflight = duumbi_studio::server_fns::preflight_lines_from_log(&log);
+
+    assert_eq!(preflight, log);
+}
+
+#[cfg(feature = "ssr")]
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

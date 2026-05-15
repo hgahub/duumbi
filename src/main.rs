@@ -660,8 +660,19 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
             })
         }
         cli::IntentSubcommand::Execute { name } => {
-            let client = require_llm_client(&workspace)?;
             let mut log = Vec::new();
+            if intent::execute::run_execute_blocking_preflight_with_progress(
+                &workspace,
+                &name,
+                &mut log,
+                &|line| {
+                    eprintln!("{line}");
+                },
+            )? {
+                return Ok(EXIT_FAILURE);
+            }
+
+            let client = require_llm_client(&workspace)?;
             let ok = intent::execute::run_execute_with_progress(
                 &client,
                 &workspace,
