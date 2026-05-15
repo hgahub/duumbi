@@ -1640,7 +1640,7 @@ async fn handle_intent_execute(
         Ok(true) => return,
         Ok(false) => {}
         Err(e) => {
-            app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
+            finish_intent_execute(app, slug, Err(e));
             return;
         }
     }
@@ -3215,6 +3215,30 @@ mod tests {
             intent::load_intent(dir.path(), slug).expect("load").status,
             IntentStatus::Pending
         );
+    }
+
+    #[test]
+    fn missing_intent_execute_preflight_clears_stale_focus() {
+        let dir = TempDir::new().expect("tempdir");
+        let slug = "missing";
+        let mut app = ReplApp::new(
+            DuumbiConfig::default(),
+            dir.path().to_path_buf(),
+            None,
+            None,
+            true,
+            false,
+        );
+        app.focused_intent = Some(slug.to_string());
+
+        let error = push_blocking_execute_preflight(&mut app, dir.path(), slug)
+            .expect_err("missing intent should fail preflight load");
+        finish_intent_execute(&mut app, slug, Err(error));
+
+        assert_eq!(app.focused_intent, None);
+        let output = status_output(&app);
+        assert!(output.contains(NO_INTENT_SELECTED_MESSAGE));
+        assert!(!output.contains("not found in .duumbi/intents"));
     }
 
     #[test]
