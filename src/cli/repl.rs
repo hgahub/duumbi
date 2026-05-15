@@ -1636,6 +1636,15 @@ async fn handle_intent_execute(
     slug: &str,
 ) {
     let workspace = app.workspace_root.clone();
+    match push_blocking_execute_preflight(app, &workspace, slug) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(e) => {
+            app.push_output(format!("Error: {e:#}"), OutputStyle::Error);
+            return;
+        }
+    }
+
     let context = intent_execute_model_context(&workspace, slug);
     let agent_role = context.agent_role.unwrap_or(AgentRole::Coder);
     let Some(client) = select_client_for_context(app, &context) else {
@@ -1658,6 +1667,22 @@ async fn handle_intent_execute(
     }
 
     finish_intent_execute(app, slug, result);
+}
+
+fn push_blocking_execute_preflight(
+    app: &mut ReplApp,
+    workspace: &Path,
+    slug: &str,
+) -> Result<bool> {
+    let mut log = Vec::new();
+    let blocked = intent::execute::run_execute_blocking_preflight(workspace, slug, &mut log)?;
+    if blocked {
+        for line in &log {
+            app.push_output(line, OutputStyle::Normal);
+        }
+        finish_intent_execute(app, slug, Ok(false));
+    }
+    Ok(blocked)
 }
 
 fn finish_intent_execute(app: &mut ReplApp, slug: &str, result: Result<bool>) {
@@ -3146,6 +3171,50 @@ mod tests {
 
         assert_eq!(app.focused_intent.as_deref(), Some(slug));
         assert!(status_output(&app).contains("Intent 'build-a-calculator' failed."));
+    }
+
+    #[test]
+    fn blocked_intent_execute_preflight_runs_without_provider_selection() {
+        use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+
+        let dir = TempDir::new().expect("tempdir");
+        let slug = "weak";
+        let spec = IntentSpec {
+            intent: "Weak generated intent".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        intent::save_intent(dir.path(), slug, &spec).expect("save intent");
+        let mut app = ReplApp::new(
+            DuumbiConfig::default(),
+            dir.path().to_path_buf(),
+            None,
+            None,
+            true,
+            false,
+        );
+        app.focused_intent = Some(slug.to_string());
+
+        let blocked =
+            push_blocking_execute_preflight(&mut app, dir.path(), slug).expect("preflight");
+
+        assert!(blocked);
+        let output = status_output(&app);
+        assert!(output.contains("Preflight: BLOCK"));
+        assert!(output.contains("E_NO_MODULE_TARGETS"));
+        assert!(!output.contains("AI not available"));
+        assert_eq!(app.focused_intent.as_deref(), Some(slug));
+        assert_eq!(
+            intent::load_intent(dir.path(), slug).expect("load").status,
+            IntentStatus::Pending
+        );
     }
 
     #[test]

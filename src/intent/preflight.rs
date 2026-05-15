@@ -938,7 +938,7 @@ fn push_reuse_scan_warning(
 ) {
     issues.push(IntentPreflightIssue::new(
         "W_REUSE_SCAN_UNAVAILABLE",
-        IntentPreflightSeverity::Warning,
+        IntentPreflightSeverity::Info,
         field_path,
         message,
         "continue with spec-only preflight evidence and inspect workspace graph files manually",
@@ -1908,13 +1908,22 @@ mod tests {
     }
 
     #[test]
-    fn preflight_reuse_scan_failure_warns_without_blocking_spec_checks() {
+    fn preflight_reuse_scan_failure_reports_info_without_blocking_spec_checks() {
         let workspace = TempDir::new().expect("invariant: tempdir");
         write_graph_module(&workspace, ".duumbi/graph/bad.jsonld", "{not valid JSON-LD");
 
         let report = run_preflight(&strong_spec(), workspace.path());
 
         assert!(issue_codes(&report).contains(&"W_REUSE_SCAN_UNAVAILABLE"));
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .find(|issue| issue.code == "W_REUSE_SCAN_UNAVAILABLE")
+                .expect("reuse scan issue")
+                .severity,
+            IntentPreflightSeverity::Info
+        );
         assert!(!report.is_blocking());
         assert!(report.reuse_candidates.is_empty());
     }

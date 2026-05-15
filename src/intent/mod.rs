@@ -25,6 +25,7 @@ pub mod coordinator;
 pub mod create;
 pub mod execute;
 pub mod modify;
+/// Deterministic provider-free readiness reports for intent specifications.
 pub mod preflight;
 pub mod review;
 pub mod spec;

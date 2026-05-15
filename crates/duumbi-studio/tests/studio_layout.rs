@@ -266,6 +266,35 @@ fn studio_intent_detail_html_includes_preflight_report() {
     assert!(html.contains("<h2>Preflight</h2>"));
     assert!(html.contains("Preflight: BLOCK"));
     assert!(html.contains("E_NO_MODULE_TARGETS"));
+    assert!(html.contains("window.__studio.executeIntent(&quot;weak&quot;)"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_intent_detail_html_escapes_execute_slug_for_js_context() {
+    use duumbi::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+
+    let root = unique_temp_dir("duumbi-studio-preflight-slug");
+    let spec = IntentSpec {
+        intent: "Weak generated intent".to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: Vec::new(),
+        modules: IntentModules::default(),
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        context: None,
+        created_at: None,
+        execution: None,
+    };
+
+    let html =
+        duumbi_studio::server_fns::render_intent_detail_html(&root, "weak');alert(1);//", &spec);
+
+    assert!(html.contains("window.__studio.executeIntent(&quot;weak&#39;);alert(1);//&quot;)"));
+    assert!(!html.contains("executeIntent('weak');alert(1);//')"));
 
     let _ = std::fs::remove_dir_all(root);
 }

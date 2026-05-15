@@ -1246,9 +1246,11 @@ pub fn render_intent_detail_html(
         "<p style=\"color:#908c82\">Status: <code>{:?}</code></p>\n",
         spec.status
     ));
+    let execute_slug_arg = serde_json::to_string(slug)
+        .expect("invariant: serializing a string slice to JSON cannot fail");
     html.push_str(&format!(
-        "<p><button class=\"cip-btn cip-btn-create\" onclick=\"window.__studio.executeIntent('{}')\">Execute</button></p>\n",
-        escape_html(slug)
+        "<p><button class=\"cip-btn cip-btn-create\" onclick=\"window.__studio.executeIntent({})\">Execute</button></p>\n",
+        escape_html(&execute_slug_arg)
     ));
 
     if !spec.acceptance_criteria.is_empty() {
@@ -1262,16 +1264,19 @@ pub fn render_intent_detail_html(
     if !spec.test_cases.is_empty() {
         html.push_str("<h2>Test Cases</h2>\n<ul>\n");
         for test_case in &spec.test_cases {
+            let escaped_args = test_case
+                .args
+                .iter()
+                .map(std::string::ToString::to_string)
+                .map(|arg| escape_html(&arg))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let escaped_expected = escape_html(&test_case.expected_return.to_string());
             html.push_str(&format!(
                 "<li><code>{}</code>({}) -> expected: {}</li>\n",
                 escape_html(&test_case.function),
-                test_case
-                    .args
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                test_case.expected_return
+                escaped_args,
+                escaped_expected
             ));
         }
         html.push_str("</ul>\n");
@@ -1382,14 +1387,21 @@ pub async fn execute_intent_for_api(
         }
     }
 
+    let mut setup_preflight = Vec::new();
+    if let Ok(spec) = duumbi::intent::load_intent(workspace, slug) {
+        let report = duumbi::intent::preflight::run_preflight(&spec, workspace);
+        setup_preflight = duumbi::intent::preflight::render_preflight_report(&report);
+    }
+    let setup_log = setup_preflight.clone();
+
     let effective = match duumbi::config::load_effective_config(workspace) {
         Ok(config) => config,
         Err(e) => {
             return IntentExecuteApiResponse {
                 ok: false,
                 message: format!("Config: {e}"),
-                log: Vec::new(),
-                preflight: Vec::new(),
+                log: setup_log,
+                preflight: setup_preflight,
             };
         }
     };
@@ -1402,8 +1414,8 @@ pub async fn execute_intent_for_api(
             return IntentExecuteApiResponse {
                 ok: false,
                 message: format!("Provider: {e}"),
-                log: Vec::new(),
-                preflight: Vec::new(),
+                log: setup_log,
+                preflight: setup_preflight,
             };
         }
     };
@@ -1425,8 +1437,8 @@ pub async fn execute_intent_for_api(
         Err(e) => IntentExecuteApiResponse {
             ok: false,
             message: format!("Execute: {e}"),
-            log: Vec::new(),
-            preflight: Vec::new(),
+            log: setup_log,
+            preflight: setup_preflight,
         },
     }
 }

@@ -72,7 +72,8 @@ pub fn run_execute_blocking_preflight(
 ///
 /// This is intended for command/API surfaces that must report blocking
 /// preflight before constructing an LLM provider. Warning-only reports are not
-/// emitted here; the normal execute path emits them after provider setup.
+/// emitted here; the normal execute path emits them before provider-dependent
+/// execution starts.
 #[must_use = "the bool indicates whether preflight blocked execution"]
 pub fn run_execute_blocking_preflight_with_progress(
     workspace: &Path,
@@ -88,7 +89,7 @@ pub fn run_execute_blocking_preflight_with_progress(
         }};
     }
 
-    let spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+    let spec = load_intent(workspace, slug).map_err(anyhow::Error::new)?;
     let preflight = run_preflight(&spec, workspace);
     if !preflight.is_blocking() {
         return Ok(false);
