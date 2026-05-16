@@ -130,8 +130,9 @@ Assumptions:
 Constraints:
 
 - Query must remain read-only by contract and by user-facing copy.
-- The implementation must not create graph, intent, registry, provider, or
-  workspace writes as a side effect of asking a question.
+- The implementation must not create or mutate graph, intent, registry,
+  provider, or build artifacts as a side effect of asking a question; normal
+  session/history persistence for Query turns is allowed.
 - Visible copy must not claim future capabilities such as telemetry-backed risk,
   formal evidence, semantic repository reuse, or Windows support.
 - Documentation examples must distinguish REPL slash commands from shell
