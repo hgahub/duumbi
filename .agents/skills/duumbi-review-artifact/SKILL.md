@@ -12,7 +12,7 @@ Your job is to handle Stage 11, the review and verification gate after Stage 10 
 This skill covers:
 
 - reading one implementation PR or GitHub Issue in `In Review`
-- verifying linked issue, approved product spec, approved technical spec, Stage 10 PR evidence, Ralph cycle approvals and evidence, CI/check status, changed files, and review threads
+- verifying linked issue, approved product spec, approved technical spec, Stage 10 PR evidence, Ralph cycle resource approvals and evidence, BDD/live E2E evidence, CI/check status, changed files, and review threads
 - reviewing the implementation diff against product-spec `Checks` and technical-spec completion criteria
 - producing a structured review artifact
 - classifying findings as `Blocking`, `Non-blocking`, `Question`, or `No issue`
@@ -63,10 +63,11 @@ Before reviewing:
 - GitHub issue title, body, comments, labels, Project status, and linked artifacts
 - implementation PR title, body, commits, changed files, review threads, and check/CI status
 - approved product spec and product-spec `Checks`
-- approved technical spec and completion criteria
+- approved product spec BDD scenarios
+- approved technical spec, BDD-to-test mapping, live E2E plan, and completion criteria
 - Stage 9 technical spec approval decision
 - Stage 10 branch/PR evidence
-- Ralph cycle approval requests and evidence reports
+- Ralph cycle resource approval requests and evidence reports
 - source repo `AGENTS.md`
 - directly relevant source files and tests when needed to understand the diff
 
@@ -80,8 +81,10 @@ Verify:
 - CI/checks required by the technical spec ran and passed, or failures are explained
 - changed files match the technical spec affected areas or approved Ralph cycles
 - product-spec `Checks` are covered by tests, manual evidence, screenshots, logs, or explicit rationale
+- product-spec BDD scenarios are covered by mapped evidence
+- live E2E evidence exists for the canonical interface when required by the technical spec
 - technical-spec completion criteria are satisfied
-- Ralph cycle approvals and evidence are present for implementation work
+- Ralph cycle resource approvals exist for any cycles that exceeded the resource gate, and evidence exists for all cycles
 - no unapproved scope expansion, broad refactor, or unrelated cleanup is present
 - risks and open questions are documented
 - review threads are resolved or explicitly tracked
@@ -111,13 +114,14 @@ Write or return:
 
 ## Spec-To-Evidence Mapping
 - Product check: <check> -> <test/log/screenshot/manual evidence/PR diff>
+- BDD scenario: <scenario> -> <test/live E2E/manual/review evidence>
 - Technical completion criterion: <criterion> -> <evidence>
 
 ## Ralph Cycle Evidence
-- Cycle <N>: <approval/evidence link and summary>
+- Cycle <N>: <resource approval when required/evidence link and summary>
 
 ## Changed Files Review
-- <file/module>: <expected by spec | approved cycle | unexpected> - <note>
+- <file/module>: <expected by spec | resource-approved or permitted cycle | unexpected> - <note>
 
 ## Findings
 ### Blocking
