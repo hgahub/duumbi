@@ -58,8 +58,7 @@ Start with:
 - `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
 - `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
 - `Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
-- `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Development Intake to Delivery Workflow.md`
-- active roadmap notes when choosing the next best engineering issue
+- `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Agentic Development Runbook.md`
 
 Load specific Dots, Maps, Works, source files, or GitHub items only when the source item needs them. Do not use archive notes as current guidance unless an active note explicitly points to them.
 
@@ -74,32 +73,20 @@ Accept one item or a bounded sweep:
 
 For sweeps, process items one by one. If the sweep is large, summarize the queue and ask the user which bounded batch to process first.
 
-## No Target Discovery Mode
+## Next-Issue Discovery Sweeps
 
-Use this mode only when the user asks for Stage 4 triage without a specific Inbox note, GitHub Issue, GitHub Discussion, or bounded source list.
+When the user asks for the next best engineering issue rather than naming one source item, treat the sweep as a discovery and selection task over raw and durable planning surfaces:
 
-Goal: propose exactly one next best engineering issue and route it to `Needs Human Acceptance`.
-
-Inspect:
-
-- Inbox notes under `Duumbi/00 Inbox (ToProcess)/`
-- GitHub Issues in intake, clarification, or `Todo` Project states
+- Inbox notes
+- GitHub Issues
 - GitHub Ideas Discussions
-- active DUUMBI Obsidian documentation, especially PRD, Glossary, Agentic Development Map, Development Intake to Delivery Workflow, and current roadmap notes
-- recent PRs, milestones, and directly relevant source files only as supporting evidence for duplicate risk, sequencing, feasibility, or whether work has already started
+- active Obsidian Atlas and roadmap notes
 
-Selection rules:
+Recent PRs, source files, milestones, and codebase inspection are supporting evidence only. Use them to verify duplicate risk, sequencing, feasibility, or whether work has already started. Do not define the sweep target as "recent PRs, the codebase, and open issues" because that biases triage toward already-active implementation work.
 
-- Prefer work that solves a concrete user, product, reliability, or developer-experience problem and is likely to deliver meaningful business value.
-- Prefer work that fits current roadmap sequencing and avoids starting lower-priority phases before active kill-criterion work is closed.
-- If selecting an existing GitHub Issue, it is eligible only when its verified DUUMBI Project Status is `Todo`.
-- Do not recommend an existing issue for development when its status is beyond `Todo`, including `Needs Human Acceptance`, `Spec Needed`, `Ready for Build`, `Cycle Authorization`, `In Progress`, `In Review`, `Blocked`, `Done`, `Deferred`, `Duplicate`, or `Closed`.
-- Treat issues beyond `Todo` only as related context, duplicate evidence, sequencing evidence, or proof that work has already started.
-- If suitable work is not already represented by an eligible `Todo` issue, create exactly one GitHub Issue in `hgahub/duumbi` with full description, clear scope, evidence, acceptance criteria, risks, and relevant links.
-- Connect the selected or newly created issue to the relevant milestone only when one is clearly applicable.
-- Route the selected or newly created issue to `Needs Human Acceptance`.
+If the recommendation should reuse an existing GitHub Issue as the next implementation candidate, only select issues whose DUUMBI Project Status is `Todo`. Do not select issues already in `Needs Human Acceptance`, `Spec Needed`, `Spec Review`, `Technical Spec Needed`, `Technical Spec Review`, `Ready for Build`, `Cycle Authorization`, `In Progress`, `In Review`, `Blocked`, `Done`, or any equivalent post-triage/post-acceptance state. If the strongest related issue has already moved beyond `Todo`, treat it as ineligible for next-issue discovery, record it as related context, and choose the best eligible `Todo` issue or create a new issue only when the work is not already represented.
 
-Do not mark it accepted, create product specs, create technical specs, create PRs, modify source code, start implementation, or recommend work already past `Todo` as the next development item.
+For an eligible existing `Todo` issue, update the canonical issue when useful, preserve source links, and route it to `Needs Human Acceptance`. For a new execution issue, create it with the GitHub Issue Contract and route it to `Needs Human Acceptance`.
 
 ## Triage Classification
 
@@ -126,8 +113,6 @@ Before creating or updating execution work, inspect GitHub for:
 - DUUMBI Project state when available
 
 Do not claim GitHub status unless verified from GitHub. If GitHub was not inspected, do not create an execution issue.
-
-In No Target Discovery Mode, do not select an existing issue unless its DUUMBI Project Status was verified as `Todo`. If the Project Status cannot be verified, treat the issue as ineligible for recommendation and either inspect another candidate or create a new proposed issue when justified.
 
 ## Write Rules
 
@@ -265,24 +250,6 @@ Triage complete:
 **Stage 5 recommendation:** <Needs Human Acceptance | Needs Clarification | Duplicate | Deferred | Rejected | Not applicable>
 **Open questions:** <none or list>
 **Assumptions:** <none or list>
-```
-
-In No Target Discovery Mode, report:
-
-```markdown
-Next issue discovery complete:
-
-**Recommended issue:** #<number>
-**Issue URL:** <url>
-**Why this is the next best engineering issue:** <short rationale>
-**Issue source:** <existing Todo issue | newly created issue>
-**Eligibility evidence:** <verified Todo status or newly created issue>
-**Evidence inspected:** <Inbox notes, GitHub Issues, GitHub Discussions, active docs, PRs, milestones, source files>
-**Related context not selected:** <issues beyond Todo, duplicates, started work, or none>
-**GitHub writes:** <created/updated issue, labels, Project fields, milestone, or none>
-**Obsidian writes:** <notes updated or created, or none>
-**Assumptions:** <none or list>
-**Open questions:** <none or list>
 ```
 
 ## Safety Rules
