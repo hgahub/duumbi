@@ -60,14 +60,7 @@ duumbi describe
 # Prints pseudocode representation of the current graph
 ```
 
-## 6. Visualize
-
-```bash
-duumbi viz
-# Opens http://localhost:8420 — Cytoscape.js graph view
-```
-
-## 7. Undo a change
+## 6. Undo a change
 
 ```bash
 duumbi undo

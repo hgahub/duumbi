@@ -84,5 +84,4 @@ cargo run -p duumbi-studio --features ssr --bin studio -- \
 
 ## See Also
 
-- [`duumbi viz`](viz.md) — lightweight Phase 3 graph visualizer (Cytoscape.js)
 - [`duumbi intent`](../intent/overview.md) — manage development intents

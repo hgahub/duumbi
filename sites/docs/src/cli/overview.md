@@ -28,7 +28,6 @@ suggested handoff when Agent or Intent is the better write-capable path.
 | [`duumbi describe`](describe.md) | Print pseudocode representation |
 | [`duumbi add "<request>"`](add.md) | AI-driven graph mutation |
 | [`duumbi undo`](undo.md) | Restore the previous graph snapshot |
-| [`duumbi viz`](viz.md) | Launch the web visualizer |
 
 ## Global flags
 

@@ -14,7 +14,7 @@ structurally impossible.
 ```
 
 The graph is the single source of truth. The compiler, validator, AI agent, and
-web visualizer all operate on the same representation.
+Studio surfaces all operate on the same representation.
 
 ## Status
 
@@ -23,8 +23,7 @@ web visualizer all operate on the same representation.
 | 0 | JSON-LD → native binary | ✅ Complete |
 | 1 | Usable CLI (fibonacci, branching) | ✅ Complete |
 | 2 | AI graph mutation (`duumbi add`) | ✅ Complete |
-| 3 | Web visualizer (`duumbi viz`) | ✅ Complete |
-| 4 | Interactive CLI & module system | 🔄 In progress |
+| 3 | Interactive CLI & module system | 🔄 In progress |
 
 ## Quick install
 
