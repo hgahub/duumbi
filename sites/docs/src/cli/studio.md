@@ -23,9 +23,11 @@ The Studio provides:
 - **C4 Drill-Down Graph** — four zoom levels: Context (modules), Container
   (functions), Component (blocks), Code (operations). Double-click any node
   to drill down; use breadcrumbs to navigate back.
-- **AI Chat Panel** — type a natural-language request to mutate the graph via
-  LLM. The workspace `[llm]` config is used for credentials. Changes are
-  applied automatically and snapshotted for undo.
+- **AI Chat Panel** — Query is the default read-only chat mode for asking what
+  exists, where behavior lives, and what risk a change may carry. Query answers
+  show metadata such as sources, confidence, model, and suggested handoff when
+  available. Switch to Agent mode only when you want a bounded graph mutation;
+  Agent changes are applied through the LLM pipeline and snapshotted for undo.
 - **Quick Search** — press the Search button (or `Ctrl+K`) to fuzzy-search
   nodes by id, label, or type.
 - **Sidebar** — File Explorer shows all modules; Intents panel shows active
@@ -37,7 +39,8 @@ The Studio provides:
 
 - A duumbi workspace must exist in the current directory (run `duumbi init`
   first).
-- A `[llm]` section in `.duumbi/config.toml` is needed for AI chat features.
+- A provider configuration in `.duumbi/config.toml` is needed for AI chat
+  features, including Query answers and Agent mutations.
 
 ## Example
 

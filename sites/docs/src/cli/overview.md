@@ -2,6 +2,21 @@
 
 DUUMBI is operated entirely through the `duumbi` command-line tool.
 
+Run `duumbi` with no subcommand to open the interactive TUI. Query mode is the
+default read-only mode for understanding a workspace before changing it. From
+inside the TUI, use `/query <question>` or `/ask <question>` for one-shot
+read-only questions from any mode.
+
+Query examples:
+
+```text
+/query "what functions exist?"
+/ask "where does main behavior live?"
+```
+
+Query answers may include metadata such as sources, confidence, model, and a
+suggested handoff when Agent or Intent is the better write-capable path.
+
 ## Commands
 
 | Command | Description |
