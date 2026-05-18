@@ -4127,8 +4127,8 @@ impl ReplApp {
         let is_empty = textarea.lines().iter().all(|line| line.is_empty());
         let placeholder = match self.mode {
             ReplMode::Query => "e.g. \"what modules exist?\" or /help",
-            ReplMode::Agent => "e.g. \"create a module that parses CSV\" or /help",
-            ReplMode::Intent => "describe a new intent, refine the active intent, or /intent",
+            ReplMode::Agent => "e.g. \"change the graph to parse CSV\" or /help",
+            ReplMode::Intent => "describe a feature intent, refine the active intent, or /intent",
         };
 
         if area.height >= 3 {

@@ -49,9 +49,6 @@ Phase 2 (implemented):
       ▼                                                             ▼
   Retry (max 1)                                          .duumbi/history/ snapshot
 
-Phase 3 additions:
-  Telemetry Engine  →  traceId injection  →  Web Visualizer (WASM + axum)
-
 Phase 5 (implemented):
   duumbi intent create "<description>"
       │
@@ -248,7 +245,6 @@ E034 unwrap without check · E035 wrong payload type
 | 0 | JSON-LD → native binary | `add(3,5)` prints `8` ✓ |
 | 1 | Usable CLI | External dev installs + runs in < 10 min ✓ |
 | 2 | AI graph mutation | > 70% correct on 20-cmd benchmark ✓ |
-| 3 | Web visualizer | 3/3 devs confirm faster than raw JSON-LD ✓ |
 | 4 | Interactive CLI + module system | `abs(-7) = 7` (init → 2-module → binary) ✓ |
 | 5 | Intent-Driven Development | Verifier passes `double(21)=42` via intent pipeline ✓ |
 | 6 | DUUMBI Studio | Leptos SSR web platform with graph visualization ✓ |

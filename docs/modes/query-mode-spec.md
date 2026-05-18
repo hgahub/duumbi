@@ -1,6 +1,6 @@
 # Query Mode Specification
 
-Status: proposed
+Status: delivered v1; future answer-schema hardening remains planned
 Date: 2026-05-01
 
 ## Summary
@@ -15,6 +15,35 @@ It lets the developer ask questions about the current workspace, graph, intent s
 - It may explain.
 - It may recommend.
 - It must not mutate project state.
+
+## Delivered V1
+
+PR #530 delivered Query mode across the CLI REPL and Studio chat. The current
+implementation includes:
+
+- a shared `query`, `agent`, and `intent` interaction-mode model
+- Query as the default REPL/TUI and Studio chat mode
+- `/mode query`, `/query <question>`, and `/ask <question>` in the REPL/TUI
+- provider-backed read-only answers through the Query engine
+- read-only context assembly from workspace modules, intents, knowledge, and
+  recent session turns
+- answer metadata for sources, confidence, model, and suggested handoff
+- mutation-like Query prompts returning explicit Agent or Intent handoff
+  suggestions instead of silently mutating the graph
+- Studio WebSocket `mode` support and Query answer frames that do not refresh
+  the graph
+
+This document remains the product and architecture contract for Query mode, but
+sections below may describe both delivered behavior and future work. Future work
+must not be presented as a runtime guarantee until implemented.
+
+## Future Work
+
+The standard answer schema remains a follow-up concern. Future hardening may add
+stable claim labels, source identifiers, graph node IDs or source symbols,
+evidence excerpts, dependency impact, risk summaries, and structured next
+actions. Current v1 surfaces should describe the metadata that exists today:
+answer text, sources, confidence, model, and suggested handoff.
 
 ## Goals
 

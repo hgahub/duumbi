@@ -26,3 +26,20 @@ The user experience should make mode boundaries obvious:
 - Mutation requests should create snapshots and remain undoable.
 - Larger feature work should route through intent specs, acceptance criteria, and verification.
 - Switching from understanding to action should preserve context, but require an explicit write-capable handoff.
+
+## Query Examples
+
+Use Query mode before Agent or Intent when you need to understand the workspace
+without changing it.
+
+Examples:
+
+- What exists: `/query "what functions exist in this workspace?"`
+- Where behavior lives: `/query "where does the main output behavior live?"`
+- Change risk: `/query "what should I check before changing the add function signature?"`
+
+Good Query answers should stay grounded in available DUUMBI state, show current
+metadata such as sources and confidence when exposed by the surface, and suggest
+Agent or Intent only as an explicit handoff. Query documentation should not
+promise future schema fields such as formal claim labels, telemetry-backed risk,
+or dependency-impact scoring until those contracts are implemented.
