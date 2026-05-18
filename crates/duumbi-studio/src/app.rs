@@ -174,7 +174,7 @@ pub fn App() -> impl IntoView {
                     </div>
                     <div class="chat-messages" id="chatMessages">
                         <div class="chat-msg ai">
-                            "Welcome! I can help you build, modify, and understand your semantic graph. Select an intent or ask me anything."
+                            "Welcome! Query mode is read-only: ask about this graph, then switch to Agent or Intent when you want a change."
                             <div class="msg-meta">"DUUMBI AI"</div>
                         </div>
                     </div>
