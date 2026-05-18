@@ -44,10 +44,14 @@ duumbi describe   # human-readable pseudo-code
 
 ---
 
-## AI Mutation
+## Query First
 
-Configure your LLM provider in `.duumbi/config.toml`. Duumbi selects concrete
-models internally per task and agent.
+Use DUUMBI's interactive mode to ask read-only questions before requesting graph
+changes. Query mode inspects the workspace and can explain what exists, where
+behavior lives, and when a request should hand off to Agent or Intent.
+
+Query requires an available LLM provider. Configure one in `.duumbi/config.toml`;
+DUUMBI selects concrete models internally per task and agent.
 
 ```toml
 [[providers]]
@@ -56,11 +60,33 @@ role = "primary"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
-Then describe changes in plain language:
+Then start the interactive TUI:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 
+duumbi
+```
+
+Inside the TUI, Query is the default read-only mode. Use slash commands for
+one-shot questions from any mode:
+
+```text
+/query "what functions exist?"
+/ask "where does main behavior live?"
+```
+
+Query answers include metadata such as sources, confidence, model, and suggested
+handoff when a write-capable Agent or Intent request is more appropriate.
+
+---
+
+## AI Mutation
+
+After you understand the workspace, use Agent mode or `duumbi add` for bounded
+write-capable graph changes:
+
+```bash
 duumbi add "change the constant 3 to 7"
 duumbi add --yes "multiply instead of add"
 duumbi undo   # restore the previous graph
