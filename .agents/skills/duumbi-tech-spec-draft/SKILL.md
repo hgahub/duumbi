@@ -16,9 +16,13 @@ This skill covers:
 - reading the approved product spec, Stage 7 review decision, GitHub issue, source links, relevant Obsidian notes, source code, tests, and repo `AGENTS.md`
 - identifying affected modules, contracts, data structures, commands, tests, docs, generated artifacts, UI/API surfaces, and CI paths
 - drafting `specs/DUUMBI-<issue-number>/TECHNICAL.md` in the relevant source repository
+- mapping product-spec BDD scenarios to concrete verification evidence
+- defining at least one live LLM-backed E2E path through the canonical interface when the work touches LLM behavior
+- defining the Ralph Cycle resource policy, approval thresholds, and autonomous batch cap
 - opening a draft PR for the technical spec artifact
 - linking the technical spec draft PR back to the GitHub Issue
 - moving the issue to `Technical Spec Review`, or to `Needs Clarification` when blocked
+- keeping the execution issue open by avoiding GitHub auto-close keywords in spec-only PR titles, bodies, and commit messages
 
 This skill does not:
 
@@ -105,6 +109,14 @@ Forbidden writes:
 
 Do not create new GitHub labels or Project fields. If a desired write is unavailable, mention it in the final report.
 
+Spec-only PR rule:
+
+- the technical spec PR is a review artifact, not the implementation completion PR
+- the execution issue must remain open after the technical spec PR is merged or closed so Stage 9 and Stage 10 can continue
+- do not use GitHub auto-close keywords such as `Closes #<issue>`, `Fixes #<issue>`, `Resolves #<issue>`, `Close #<issue>`, `Fix #<issue>`, or `Resolve #<issue>` in the PR title, PR body, branch name, commit message, or technical spec text when referring to the execution issue
+- use non-closing references such as `Related to #<issue>`, `Technical spec for #<issue>`, or `Supports #<issue>` instead
+- include a short workflow note in the PR body stating that the PR is specification-only and the execution issue must remain open for Stage 9 Technical Spec Review and Stage 10 implementation
+
 ## Technical Spec Location
 
 Create or update:
@@ -145,23 +157,39 @@ The intended implementation strategy, important boundaries, dependencies, and re
 ## Invariants
 What must remain true throughout implementation.
 
+## BDD-To-Test Mapping
+Map each product-spec BDD scenario to unit, integration, E2E, manual, or review
+evidence. Identify the command, fixture, assertion, screenshot/log, or PR evidence
+that proves the scenario. If a scenario cannot be automated, explain why and name
+the manual or review evidence required.
+
+## Live E2E Plan
+Define the canonical interface, defaulting to CLI unless the issue is UI-specific.
+List the real provider/LLM path, required credentials or environment variables,
+expected external LLM call count, estimated cost, command(s), artifacts, and
+pass/fail criteria. TUI or Studio need full E2E only when UI-specific behavior
+changes; otherwise require thin parity/smoke checks proving they call the same
+backend behavior.
+
 ## Ralph Cycle Protocol
 Each cycle must:
 1. summarize the current state and remaining unmet requirements
 2. propose one bounded implementation goal
 3. list intended file areas and commands
 4. estimate resource use and risk
-5. ask for explicit approval before starting
-6. implement only the approved goal
+5. check whether the resource gate requires human approval
+6. implement only the approved or resource-permitted goal
 7. run the agreed checks
 8. report evidence, failures, and remaining gaps
-9. stop if requirements are met or request approval for the next cycle
+9. stop if requirements are met, a blocker appears, resource thresholds are exceeded, scope changes, or the autonomous batch cap is reached
 
 ## Cycle Budget
 - Default cycle size: one bounded implementation goal per cycle.
 - Max files or modules per cycle:
 - Expected command budget:
-- Approval required before every cycle: yes.
+- Human approval required when planned external LLM usage exceeds USD 2, exceeds 10 calls, exceeds approved scope, adds risky dependencies or irreversible operations, or needs a product/architecture decision.
+- External LLM usage counted: DUUMBI live provider calls and external model/agent CLI calls. Codex internal reasoning usage is reported only as an estimate.
+- Autonomous batch cap:
 - When to stop and ask for human guidance:
 
 ## Task Breakdown
@@ -182,16 +210,19 @@ Questions that block implementation or require human trade-off decisions.
 
 Separate verified source facts from assumptions and implementation recommendations.
 
-## Ralph Cycle Requirements
+## Ralph Cycle Resource Policy
 
-Every technical spec must include a small bounded default cycle budget:
+Every technical spec must include a bounded resource policy:
 
 - one bounded implementation goal per cycle
-- explicit approval before each cycle
 - expected file or module area listed before work starts
 - planned commands and checks listed before work starts
+- expected external LLM calls and estimated external LLM cost
+- approval required above USD 2 or 10 external LLM calls
+- approval required for scope expansion, risky dependency changes, irreversible operations, blockers, or product/architecture decisions
+- default autonomous batch cap of three low-budget cycles unless the spec sets a lower cap
 - stop after evidence report
-- continue cycles only while approved and while requirements remain unmet
+- continue cycles only while below thresholds, inside scope, inside batch cap, and while requirements remain unmet
 
 ## GitHub Outcome Rules
 
@@ -202,6 +233,7 @@ After a successful technical spec artifact exists:
 - keep or add existing `needs-tech-spec` as appropriate
 - add existing `technical-spec-review` label when available
 - do not mark the technical spec approved
+- do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
 
 When blocked:
 
@@ -223,7 +255,9 @@ Technical spec draft complete:
 **GitHub status:** <Technical Spec Review | Needs Clarification | unchanged>
 **Affected areas:** <summary>
 **Verification plan:** <summary>
-**Cycle budget:** <summary>
+**BDD-to-test mapping:** <summary>
+**Live E2E plan:** <summary>
+**Ralph Cycle resource policy:** <summary>
 **Open questions:** <none or list>
 **Unavailable writes:** <labels/project fields unavailable, or none>
 **Next stage:** <Stage 9 Technical Specification Review | Needs Clarification>
@@ -236,5 +270,6 @@ Technical spec draft complete:
 - Do not modify implementation code, tests, migrations, generated outputs, or runtime assets.
 - Do not run Ralph cycles or implementation commands.
 - Do not approve your own technical spec.
+- Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the technical spec traceable to the approved product spec and source evidence.
 - Stop and ask the user if a requested write exceeds Stage 8.
