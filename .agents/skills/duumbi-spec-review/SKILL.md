@@ -78,10 +78,8 @@ Review the product spec for:
 - constraints separate facts from assumptions
 - decisions cite evidence or issue comments
 - behavior covers success, empty, error, retry, cancellation, and relevant accessibility/focus states
-- BDD scenarios are present, clear, written in English Gherkin-style language, and describe observable outcomes
 - tasks are small enough for Codex or Oz runs
 - checks map to acceptance criteria
-- checks map to BDD scenarios, including E2E expectations where relevant
 - open questions are resolved or explicitly accepted as risk
 - sources link back to issues, discussions, Slack captures, Obsidian notes, code, docs, or external references
 
@@ -108,10 +106,8 @@ If no explicit human decision is present, write or return a review report and st
 - Constraints separate facts from assumptions:
 - Decisions cite evidence:
 - Behavior covers required states:
-- BDD scenarios are clear and testable:
 - Tasks are appropriately sized:
 - Checks map to acceptance criteria:
-- Checks map to BDD scenarios:
 - Open questions are resolved or accepted as risk:
 - Sources are traceable:
 
@@ -211,7 +207,6 @@ Product spec review complete:
 **Review comment:** <link or "posted">
 **GitHub status:** <Technical Spec Needed | Spec Needed | Needs Clarification | Closed | Deferred | unchanged>
 **Labels changed:** <added/removed/none>
-**BDD readiness:** <ready | missing | blocked>
 **Blocking findings:** <none or list>
 **Open questions:** <none or list>
 **Unavailable writes:** <labels/project fields unavailable, or none>

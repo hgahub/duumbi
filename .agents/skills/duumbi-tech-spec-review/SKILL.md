@@ -85,10 +85,8 @@ Review the technical spec for:
 - affected areas are concrete enough for an AI agent to inspect and modify
 - technical approach separates verified source facts, assumptions, and recommendations
 - invariants and out-of-bounds areas are explicit
-- BDD-to-test mapping covers every product-spec BDD scenario
-- live E2E plan names the canonical interface, provider path, credentials/env requirements, expected external LLM calls, cost estimate, commands, artifacts, and pass/fail criteria
-- Ralph Cycle Protocol uses the resource gate and permits low-budget autonomous cycles
-- cycle budget is small, bounded, resource-aware, and includes an autonomous batch cap
+- Ralph Cycle Protocol requires approval before every cycle
+- cycle budget is small, bounded, and resource-aware
 - task breakdown is ordered and suitable for bounded implementation cycles
 - verification plan maps to product-spec `Checks` and technical completion criteria
 - completion criteria define what must be true before PR review
@@ -120,10 +118,8 @@ If no explicit human decision is present, write or return a review report and st
 - Affected areas are concrete:
 - Facts, assumptions, and recommendations are separated:
 - Invariants and out-of-bounds areas are explicit:
-- BDD-to-test mapping covers product BDD scenarios:
-- Live E2E plan is concrete and feasible:
-- Ralph cycle resource gate is correct:
-- Cycle budget and autonomous batch cap are bounded:
+- Ralph cycle approval is required before every cycle:
+- Cycle budget is bounded:
 - Task breakdown supports bounded cycles:
 - Verification plan maps to checks:
 - Completion criteria are clear:
@@ -230,8 +226,6 @@ Technical spec review complete:
 **Draft PR comment:** <link, "posted", or "not applicable">
 **GitHub status:** <Ready for Build | Technical Spec Needed | Needs Clarification | Closed | Deferred | unchanged>
 **Labels changed:** <added/removed/none>
-**BDD/live E2E readiness:** <ready | missing | blocked>
-**Resource policy readiness:** <ready | missing | blocked>
 **Blocking findings:** <none or list>
 **Open questions:** <none or list>
 **Unavailable writes:** <labels/project fields unavailable, or none>

@@ -16,12 +16,10 @@ This skill covers:
 - reading the Stage 5 decision comment, Stage 4 triage context, source links, related Discussions, PRD, Glossary, Agentic Development Map, relevant Dots, Maps, Works, and source code when implementation-facing
 - checking for existing related product specs before drafting a new one
 - drafting an English product spec
-- adding English Gherkin-style BDD scenarios that express observable behavior
 - writing the product spec as a GitHub issue comment for small issues
 - creating `specs/DUUMBI-<issue-number>/PRODUCT.md` in the relevant source repository and opening a draft PR for larger, architectural, cross-module, or durable specs
 - linking the spec artifact back to the GitHub Issue
 - moving the issue to `Spec Review`, or to `Needs Clarification` when blocked
-- keeping the execution issue open by avoiding GitHub auto-close keywords in spec-only PR titles, bodies, and commit messages
 
 This skill does not:
 
@@ -109,10 +107,6 @@ For file-based specs:
 - create or update only the spec file and minimal supporting metadata if required by the source repo
 - open a draft PR
 - link the draft PR and spec path from the GitHub Issue
-- treat the PR as a spec-review artifact only; it must not close the execution issue when merged or closed
-- do not use GitHub auto-close keywords such as `Closes #<issue>`, `Fixes #<issue>`, `Resolves #<issue>`, `Close #<issue>`, `Fix #<issue>`, or `Resolve #<issue>` in the PR title, PR body, branch name, commit message, or spec text when referring to the execution issue
-- use non-closing references such as `Related to #<issue>`, `Spec for #<issue>`, or `Supports #<issue>` instead
-- include a short workflow note in the PR body stating that the PR is specification-only and the execution issue must remain open for later workflow stages
 
 ## Product Spec Contract
 
@@ -143,18 +137,12 @@ What decisions are already made, by whom, and where is the evidence?
 Defaults, inputs, outputs, visible states, empty states, error states, cancellation,
 offline/retry behavior, race conditions, accessibility/focus rules, and invariants.
 
-## BDD Scenarios
-Use English Gherkin-style `Feature`, optional `Rule`, `Scenario`, `Given`, `When`,
-`Then`, `And`, and `But`. Scenarios should express initial context, user/system
-action, and observable outcome. Do not make `Then` steps depend on hidden
-implementation details unless that internal behavior is the user-visible contract.
-
 ## Tasks
 How should the work be broken down? Which parts can run independently?
 
 ## Checks
 What proves the work is correct? Include tests, CI, manual checks, review evidence,
-BDD scenario coverage, live E2E expectations when relevant, and expected artifacts.
+and expected artifacts.
 
 ## Open Questions
 
@@ -162,7 +150,7 @@ BDD scenario coverage, live E2E expectations when relevant, and expected artifac
 Links to issues, discussions, Slack captures, Obsidian notes, code, docs, or external references.
 ```
 
-The minimum six-question format is required but not sufficient by itself. Include `Problem`, `Behavior`, `BDD Scenarios`, `Open Questions`, and `Sources` for DUUMBI specs.
+The minimum six-question format is required but not sufficient by itself. Include `Problem`, `Behavior`, `Open Questions`, and `Sources` for DUUMBI specs.
 
 ## GitHub Outcome Rules
 
@@ -173,7 +161,6 @@ After a successful spec artifact exists:
 - keep or add existing `needs-spec` as appropriate
 - add existing `spec-review` label when available
 - do not mark the product spec approved
-- do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
 
 When blocked:
 
@@ -196,7 +183,6 @@ Product spec draft complete:
 **Placement:** <GitHub issue comment | source repo draft PR | blocked>
 **GitHub status:** <Spec Review | Needs Clarification | unchanged>
 **Context checked:** <issue, decision comment, DUUMBI notes, related GitHub/source context>
-**BDD scenarios:** <summary or none>
 **Open questions:** <none or list>
 **Unavailable writes:** <labels/project fields unavailable, or none>
 **Next stage:** <Stage 7 Spec Review | Needs Clarification>
@@ -208,6 +194,5 @@ Product spec draft complete:
 - Do not bury blocking questions in a draft spec.
 - Do not create technical specs, implementation code, PRs for implementation, or Ralph cycles.
 - Do not approve your own product spec.
-- Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the spec traceable to source links and decisions.
 - Stop and ask the user if a requested write exceeds Stage 6.
