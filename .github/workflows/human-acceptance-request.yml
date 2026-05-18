@@ -29,10 +29,10 @@ concurrency:
 
 jobs:
   notify:
-    name: Notify Slack
+    name: Ask Oz to notify Slack
     runs-on: ubuntu-latest
     steps:
-      - name: Validate request and build Slack payload
+      - name: Validate request and build Oz prompt
         id: request
         uses: actions/github-script@v9
         env:
@@ -104,7 +104,7 @@ jobs:
             const triggeredBy = String(payload.triggered_by || context.actor || "unknown");
             const correlationId = `${context.runId}-${issueNumber}`;
 
-            const ozPrompt = [
+            const acceptancePrompt = [
               "Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.",
               "",
               `Target issue: ${issueUrl}`,
@@ -117,57 +117,40 @@ jobs:
               "Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.",
             ].join("\n");
 
-            const slackPayload = {
-              text: `DUUMBI issue #${issueNumber} needs human acceptance: ${issue.title}`,
-              blocks: [
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issueNumber} ${issue.title}>\n*Trigger:* \`needs-human-review\` label\n*Status:* ${status}\n*Labels:* ${labels}\n*Triggered by:* ${triggeredBy}`,
-                  },
-                },
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: "*Reply in this thread with @Oz accepted: <short rationale>*",
-                  },
-                },
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: `When accepting, Oz must run in \`duumbi-vault-knowledge-env\` with this prompt:\n\`\`\`${ozPrompt}\`\`\``,
-                  },
-                },
-                {
-                  type: "context",
-                  elements: [
-                    {
-                      type: "mrkdwn",
-                      text: `Correlation: \`${correlationId}\``,
-                    },
-                  ],
-                },
-              ],
-            };
+            const ozPrompt = [
+              "Notify the DUUMBI human reviewer in Slack using the configured Warp/Oz Slack integration.",
+              "",
+              "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
+              "",
+              "Slack notification content:",
+              `- DUUMBI issue needs human acceptance: #${issueNumber} ${issue.title}`,
+              `- Issue: ${issueUrl}`,
+              "- Trigger: `needs-human-review` label",
+              `- Status: ${status}`,
+              `- Labels: ${labels}`,
+              `- Triggered by: ${triggeredBy}`,
+              `- Correlation: ${correlationId}`,
+              "",
+              "Tell the reviewer to reply in Slack with:",
+              "@Oz accepted: <short rationale>",
+              "",
+              "When the reviewer accepts, Oz must run in `duumbi-vault-knowledge-env` with this prompt:",
+              "```text",
+              acceptancePrompt,
+              "```",
+              "",
+              "If the Slack destination is ambiguous, use the configured DUUMBI/Warp default review destination. If no Slack destination is configured, report that clearly in the Oz run output.",
+            ].join("\n");
 
-            fs.writeFileSync("slack-payload.json", `${JSON.stringify(slackPayload)}\n`, "utf8");
+            fs.writeFileSync("oz-prompt.txt", ozPrompt, "utf8");
+            core.setOutput("oz_prompt", ozPrompt);
             core.setOutput("should_notify", "true");
 
-      - name: Post Slack notification
+      - name: Notify reviewer through Oz
         if: steps.request.outputs.should_notify == 'true'
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
-            echo "SLACK_WEBHOOK_URL is not configured." >&2
-            exit 1
-          fi
-
-          curl --fail --show-error --silent \
-            --request POST \
-            --header 'Content-type: application/json' \
-            --data @slack-payload.json \
-            "$SLACK_WEBHOOK_URL"
+        uses: warpdotdev/oz-agent-action@v1
+        with:
+          name: DUUMBI Human Acceptance Slack Notification
+          profile: duumbi-vault-knowledge-env
+          prompt: ${{ steps.request.outputs.oz_prompt }}
+          warp_api_key: ${{ secrets.WARP_API_KEY }}
