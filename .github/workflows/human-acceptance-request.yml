@@ -1,8 +1,8 @@
 name: Human Acceptance Request
 
 on:
-  repository_dispatch:
-    types: [duumbi-human-acceptance-needed]
+  issues:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_url:
@@ -14,25 +14,9 @@ on:
         required: true
         type: string
       status:
-        description: Project status that triggered the request
+        description: Human acceptance status
         required: false
         default: Needs Human Acceptance
-        type: string
-      project_item_id:
-        description: Optional GitHub Projects v2 item id
-        required: false
-        type: string
-      project_url:
-        description: Optional GitHub Projects v2 URL
-        required: false
-        type: string
-      triggered_by:
-        description: Optional actor that triggered the request
-        required: false
-        type: string
-      correlation_id:
-        description: Optional bridge correlation id
-        required: false
         type: string
 
 permissions:
@@ -40,7 +24,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: human-acceptance-${{ github.event.client_payload.issue_number || inputs.issue_number || github.run_id }}
+  group: human-acceptance-${{ github.event.issue.number || inputs.issue_number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -52,30 +36,33 @@ jobs:
         id: request
         uses: actions/github-script@v9
         env:
-          DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
           INPUT_STATUS: ${{ inputs.status || '' }}
-          INPUT_PROJECT_ITEM_ID: ${{ inputs.project_item_id || '' }}
-          INPUT_PROJECT_URL: ${{ inputs.project_url || '' }}
-          INPUT_TRIGGERED_BY: ${{ inputs.triggered_by || '' }}
-          INPUT_CORRELATION_ID: ${{ inputs.correlation_id || '' }}
         with:
           script: |
             const fs = require("fs");
 
-            const dispatchPayload = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
             const payload = context.eventName === "workflow_dispatch"
               ? {
                   issue_url: process.env.INPUT_ISSUE_URL,
                   issue_number: process.env.INPUT_ISSUE_NUMBER,
                   status: process.env.INPUT_STATUS || "Needs Human Acceptance",
-                  project_item_id: process.env.INPUT_PROJECT_ITEM_ID,
-                  project_url: process.env.INPUT_PROJECT_URL,
-                  triggered_by: process.env.INPUT_TRIGGERED_BY,
-                  correlation_id: process.env.INPUT_CORRELATION_ID,
+                  triggered_by: context.actor,
                 }
-              : dispatchPayload;
+              : {
+                  issue_url: context.payload.issue?.html_url,
+                  issue_number: context.payload.issue?.number,
+                  status: "Needs Human Acceptance",
+                  triggered_by: context.payload.sender?.login || context.actor,
+                  label: context.payload.label?.name,
+                };
+
+            if (context.eventName === "issues" && payload.label !== "needs-human-review") {
+              core.info(`Ignoring label "${payload.label}".`);
+              core.setOutput("should_notify", "false");
+              return;
+            }
 
             const status = String(payload.status || "").trim();
             if (status !== "Needs Human Acceptance") {
@@ -115,12 +102,7 @@ jobs:
               .filter(Boolean)
               .join(", ") || "none";
             const triggeredBy = String(payload.triggered_by || context.actor || "unknown");
-            const projectLine = payload.project_url
-              ? `*Project:* ${payload.project_url}`
-              : payload.project_item_id
-                ? `*Project item:* ${payload.project_item_id}`
-                : "*Project:* not provided";
-            const correlationId = String(payload.correlation_id || `${context.runId}-${issueNumber}`);
+            const correlationId = `${context.runId}-${issueNumber}`;
 
             const ozPrompt = [
               "Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.",
@@ -142,7 +124,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issueNumber} ${issue.title}>\n*Status:* ${status}\n*Labels:* ${labels}\n${projectLine}\n*Triggered by:* ${triggeredBy}`,
+                    text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issueNumber} ${issue.title}>\n*Trigger:* \`needs-human-review\` label\n*Status:* ${status}\n*Labels:* ${labels}\n*Triggered by:* ${triggeredBy}`,
                   },
                 },
                 {
