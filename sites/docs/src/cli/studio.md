@@ -39,8 +39,10 @@ The Studio provides:
 
 - A duumbi workspace must exist in the current directory (run `duumbi init`
   first).
-- A provider configuration in `.duumbi/config.toml` is needed for AI chat
-  features, including Query answers and Agent mutations.
+- A provider must be available in the effective configuration for AI chat
+  features, including Query answers and Agent mutations. Workspace `[[providers]]`
+  configuration is recommended; user-level config and legacy `[llm]` config are
+  also supported.
 
 ## Example
 

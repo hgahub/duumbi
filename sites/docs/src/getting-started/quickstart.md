@@ -24,7 +24,11 @@ Before asking DUUMBI to change the graph, use the interactive TUI's Query mode
 to inspect the current workspace. Query is read-only: it can explain what exists,
 where behavior lives, and when a request should hand off to Agent or Intent.
 
-Query uses your configured LLM provider. After provider setup, start the TUI:
+Query uses your configured LLM provider. The interactive TUI includes the
+`/provider` setup flow, so if no provider is configured yet, start `duumbi` and
+run `/provider` before asking Query questions.
+
+After provider setup, start or return to the TUI:
 
 ```bash
 duumbi
