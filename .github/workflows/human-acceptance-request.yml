@@ -1,0 +1,161 @@
+name: Human Acceptance Request
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: GitHub issue URL to request human acceptance for
+        required: true
+        type: string
+      issue_number:
+        description: GitHub issue number
+        required: true
+        type: number
+      status:
+        description: Human acceptance status
+        required: false
+        default: Needs Human Acceptance
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: human-acceptance-${{ github.event.issue.number || inputs.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Ask Oz to notify Slack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate request and build Oz prompt
+        id: request
+        uses: actions/github-script@v9
+        env:
+          INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
+          INPUT_STATUS: ${{ inputs.status || '' }}
+        with:
+          script: |
+            const fs = require("fs");
+
+            const payload = context.eventName === "workflow_dispatch"
+              ? {
+                  issue_url: process.env.INPUT_ISSUE_URL,
+                  issue_number: process.env.INPUT_ISSUE_NUMBER,
+                  status: process.env.INPUT_STATUS || "Needs Human Acceptance",
+                  triggered_by: context.actor,
+                }
+              : {
+                  issue_url: context.payload.issue?.html_url,
+                  issue_number: context.payload.issue?.number,
+                  status: "Needs Human Acceptance",
+                  triggered_by: context.payload.sender?.login || context.actor,
+                  label: context.payload.label?.name,
+                };
+
+            if (context.eventName === "issues" && payload.label !== "needs-human-review") {
+              core.info(`Ignoring label "${payload.label}".`);
+              core.setOutput("should_notify", "false");
+              return;
+            }
+
+            const status = String(payload.status || "").trim();
+            if (status !== "Needs Human Acceptance") {
+              core.info(`Ignoring request because status is "${status}".`);
+              core.setOutput("should_notify", "false");
+              return;
+            }
+
+            const issueNumber = Number(payload.issue_number || 0);
+            const issueUrl = String(payload.issue_url || "").trim();
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+              core.setFailed(`Invalid issue_number: ${payload.issue_number}`);
+              return;
+            }
+            const issueMatch = issueUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+            if (!issueMatch) {
+              core.setFailed(`Invalid issue_url: ${issueUrl}`);
+              return;
+            }
+            if (issueMatch[1] !== context.repo.owner || issueMatch[2] !== context.repo.repo) {
+              core.setFailed(`Issue URL must belong to ${context.repo.owner}/${context.repo.repo}: ${issueUrl}`);
+              return;
+            }
+            if (Number.parseInt(issueMatch[3], 10) !== issueNumber) {
+              core.setFailed(`issue_url and issue_number do not match: ${issueUrl} vs ${issueNumber}`);
+              return;
+            }
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+
+            const labels = issue.labels
+              .map((label) => typeof label === "string" ? label : label.name)
+              .filter(Boolean)
+              .join(", ") || "none";
+            const triggeredBy = String(payload.triggered_by || context.actor || "unknown");
+            const correlationId = `${context.runId}-${issueNumber}`;
+            const sanitizePromptField = (value) => String(value ?? "")
+              .replace(/```/g, "'''")
+              .replace(/`/g, "'")
+              .replace(/[\r\n]+/g, " ")
+              .trim();
+
+            const acceptancePrompt = [
+              "Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.",
+              "",
+              `Target issue: ${issueUrl}`,
+              "Human decision: Accept",
+              "Reviewer source: Slack",
+              "Rationale: <short human rationale>",
+              "",
+              "Goal: Record the structured Stage 5 decision, set the issue to Spec Needed, add accepted and needs-spec labels, and remove needs-human-review when available.",
+              "",
+              "Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.",
+            ].join("\n");
+
+            const ozPrompt = [
+              "Notify the DUUMBI human reviewer in Slack using the configured Warp/Oz Slack integration.",
+              "",
+              "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
+              "",
+              "Slack notification content:",
+              `- DUUMBI issue needs human acceptance: #${issueNumber} ${sanitizePromptField(issue.title)}`,
+              `- Issue: ${issueUrl}`,
+              "- Trigger: `needs-human-review` label",
+              `- Status: ${sanitizePromptField(status)}`,
+              `- Labels: ${sanitizePromptField(labels)}`,
+              `- Triggered by: ${sanitizePromptField(triggeredBy)}`,
+              `- Correlation: ${correlationId}`,
+              "",
+              "Tell the reviewer to reply in Slack with:",
+              "@Oz accepted: <short rationale>",
+              "",
+              "When the reviewer accepts, Oz must run in `duumbi-vault-knowledge-env` with this prompt:",
+              "```text",
+              acceptancePrompt,
+              "```",
+              "",
+              "If the Slack destination is ambiguous, use the configured DUUMBI/Warp default review destination. If no Slack destination is configured, report that clearly in the Oz run output.",
+            ].join("\n");
+
+            fs.writeFileSync("oz-prompt.txt", ozPrompt, "utf8");
+            core.setOutput("oz_prompt", ozPrompt);
+            core.setOutput("should_notify", "true");
+
+      - name: Notify reviewer through Oz
+        if: steps.request.outputs.should_notify == 'true'
+        uses: warpdotdev/oz-agent-action@v1
+        with:
+          name: DUUMBI Human Acceptance Slack Notification
+          profile: duumbi-vault-knowledge-env
+          prompt: ${{ steps.request.outputs.oz_prompt }}
+          warp_api_key: ${{ secrets.WARP_API_KEY }}
