@@ -15,7 +15,7 @@ updates performed by `duumbi-human-acceptance`.
 2. Stage 4 adds the existing `needs-human-review` label to the issue.
 3. `.github/workflows/human-acceptance-request.yml` runs on the GitHub
    `issues.labeled` event when the added label is `needs-human-review`.
-4. The workflow also runs every 15 minutes as a scheduled sweep for open
+4. The workflow also runs hourly as a scheduled sweep for open
    `needs-human-review` issues that were not already notified.
 5. The workflow starts `warpdotdev/oz-agent-action` with `WARP_API_KEY`.
 6. Oz runs with the `duumbi-vault-knowledge-env` profile and uses the configured
@@ -50,7 +50,7 @@ without an external webhook receiver. The no-server contract is therefore:
 
 - Project v2 Status may still be the human workflow state of record.
 - The GitHub Action trigger is the issue label `needs-human-review`.
-- A scheduled sweep runs every 15 minutes and catches open `needs-human-review`
+- A scheduled sweep runs hourly and catches open `needs-human-review`
   issues that have not yet received the notification marker.
 - Stage 4 must keep adding `needs-human-review` whenever it routes an issue to
   `Needs Human Acceptance`.
@@ -111,7 +111,7 @@ DUUMBI reviewer through Slack, then writes the notification marker comment. If
 
 1. Create or select an open test issue with `needs-human-review`.
 2. Ensure it does not contain the notification marker comment.
-3. Wait for the next 15-minute scheduled run.
+3. Wait for the next hourly scheduled run.
 4. Confirm that Oz starts and a notification marker comment is added.
 5. Confirm that a later scheduled run skips the same issue because the marker is
    present.
