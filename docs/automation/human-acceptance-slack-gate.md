@@ -1,10 +1,10 @@
 # DUUMBI Human Acceptance Slack Gate
 
 The Human Acceptance Slack Gate connects the DUUMBI Stage 4 triage label
-`needs-human-review` to the configured Warp/Oz Slack integration. This version
-intentionally uses only GitHub Actions, Slack, and Warp/Oz. It does not require
-a separate server, webhook bridge, Slack Incoming Webhook, GitHub App receiver,
-or Project v2 event listener.
+`needs-human-review` to a Slack review notification from GitHub Actions. This
+version intentionally uses only GitHub Actions, Slack, and Warp/Oz. It does not
+require a separate server, webhook bridge, Slack Incoming Webhook, GitHub App
+receiver, or Project v2 event listener.
 
 The durable Stage 5 decision remains the GitHub issue comment and Project/label
 updates performed by `duumbi-human-acceptance`.
@@ -17,22 +17,21 @@ updates performed by `duumbi-human-acceptance`.
    `issues.labeled` event when the added label is `needs-human-review`.
 4. The workflow also runs hourly as a scheduled sweep for open
    `needs-human-review` issues that were not already notified.
-5. The read-only notification job starts `warpdotdev/oz-agent-action` with
-   `WARP_API_KEY`.
-6. Oz uses the configured Warp/Oz Slack integration to notify the DUUMBI
-   reviewer. The workflow prompt names the `duumbi-vault-knowledge-env`
-   environment and its environment ID `eKLEWjD4PNqFC6j0EcDEYA`; it does not pass
-   that value as an Oz agent profile.
-7. After Oz succeeds, a separate marker job writes an operational marker comment
-   to the issue so future scheduled sweeps do not send duplicate notifications.
+5. The read-only notification job posts one Slack message per issue with the
+   Slack Web API `chat.postMessage`.
+6. The Slack message tells the reviewer to reply in-thread with
+   `@Oz accepted: <short rationale>`.
+7. After Slack posting succeeds, a separate marker job writes an operational
+   marker comment to the issue so future scheduled sweeps do not send duplicate
+   notifications.
 8. The reviewer replies in Slack with:
 
 ```text
 @Oz accepted: <short rationale>
 ```
 
-9. Warp/Oz Slack integration runs in the `duumbi-vault-knowledge-env`
-   environment and executes:
+9. The inbound Warp/Oz Slack integration handles the reviewer reply and runs in
+   the `duumbi-vault-knowledge-env` environment:
 
 ```text
 Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.
@@ -75,10 +74,17 @@ The marker is operational state only. It is not the Stage 5 decision record.
 
 ### GitHub Actions
 
-- `WARP_API_KEY`: Warp/Oz API key used by `warpdotdev/oz-agent-action`.
+- `SLACK_BOT_TOKEN`: Slack bot token with permission to post in the review
+  channel.
+- `SLACK_REVIEW_CHANNEL_ID`: Slack channel ID where review notifications should
+  be posted, for example the ID of `#duumbi-ops`.
 
-No `SLACK_WEBHOOK_URL` is required. Slack delivery is handled by the configured
-Warp/Oz Slack integration, visible in Slack under Apps -> Warp.
+No `SLACK_WEBHOOK_URL` is required. The workflow uses the Slack Web API directly
+from GitHub Actions. The Slack bot must be invited to the target review channel.
+
+The Warp/Oz Slack integration, visible in Slack under Apps -> Warp, remains
+required for the reviewer reply path: a human replies with
+`@Oz accepted: <short rationale>`, and that inbound Slack mention starts Oz.
 
 `duumbi-vault-knowledge-env` is an Oz environment, not an agent profile. Its
 environment ID is:
@@ -87,13 +93,12 @@ environment ID is:
 eKLEWjD4PNqFC6j0EcDEYA
 ```
 
-Do not pass the environment name through the action's `profile` input. That
+Do not pass the environment name through the Oz action's `profile` input. That
 input expects an agent profile and fails with `Agent profile "... " not found`
 when given the environment name.
 
-The Oz notification job uses `issues: read`. A separate marker job uses
-`issues: write` only after the Oz notification job succeeds, so Oz does not run
-with an issue-write-capable `GITHUB_TOKEN`.
+The Slack notification job uses `issues: read`. A separate marker job uses
+`issues: write` only after Slack posting succeeds.
 
 ## Manual Test
 
@@ -103,23 +108,23 @@ Run the workflow from GitHub Actions with:
 - `issue_number`: the matching issue number.
 - `status`: `Needs Human Acceptance`.
 
-Expected result: the workflow starts an Oz run, and Oz notifies the configured
-DUUMBI reviewer through Slack, then writes the notification marker comment. If
-`status` is any other value, the workflow exits without starting Oz.
+Expected result: the workflow posts a Slack notification to
+`SLACK_REVIEW_CHANNEL_ID`, then writes the notification marker comment. If
+`status` is any other value, the workflow exits without posting Slack.
 
 ## End-to-End Test
 
 1. Add the `needs-human-review` label to a test issue.
 2. Confirm that GitHub Actions runs `Human Acceptance Request`.
-3. Confirm that the workflow starts an Oz run.
-4. Confirm that the Warp app posts or delivers the Slack notification.
-5. Reply in Slack with:
+3. Confirm that the workflow posts a Slack notification.
+4. Reply in the Slack notification thread with:
 
 ```text
 @Oz accepted: <short rationale>
 ```
 
-6. Confirm that Oz routes the acceptance run to `duumbi-vault-knowledge-env`.
+6. Confirm that inbound Oz routes the acceptance run to
+   `duumbi-vault-knowledge-env`.
 7. Confirm that the issue receives the notification marker comment.
 8. Confirm that the issue receives a Stage 5 decision comment, is moved to
    `Spec Needed`, gets `accepted` and `needs-spec`, and loses
@@ -130,7 +135,8 @@ DUUMBI reviewer through Slack, then writes the notification marker comment. If
 1. Create or select an open test issue with `needs-human-review`.
 2. Ensure it does not contain the notification marker comment.
 3. Wait for the next hourly scheduled run.
-4. Confirm that Oz starts and a notification marker comment is added.
+4. Confirm that a Slack notification is posted and a notification marker comment
+   is added.
 5. Confirm that a later scheduled run skips the same issue because the marker is
    present.
 6. If more than 10 unnotified issues exist, confirm that only 10 are processed in
