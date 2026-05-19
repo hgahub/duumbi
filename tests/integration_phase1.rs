@@ -162,9 +162,12 @@ fn phase1_workspace_init_build_run() {
         .expect("invariant: cargo build must be runnable");
     assert!(build_status.status.success(), "cargo build failed");
 
-    let duumbi_bin = std::path::PathBuf::from("target/debug/duumbi")
-        .canonicalize()
-        .expect("invariant: duumbi binary must exist after build");
+    let duumbi_bin = std::path::PathBuf::from(format!(
+        "target/debug/duumbi{}",
+        std::env::consts::EXE_SUFFIX
+    ))
+    .canonicalize()
+    .expect("invariant: duumbi binary must exist after build");
 
     let tmp_dir = std::env::temp_dir().join("duumbi_workspace_test");
     let _ = std::fs::remove_dir_all(&tmp_dir);
