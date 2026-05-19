@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   notify:
-    name: Ask Oz to notify Slack
+    name: Notify Slack
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,7 +39,7 @@ jobs:
       issue_numbers: ${{ steps.request.outputs.issue_numbers }}
       should_notify: ${{ steps.request.outputs.should_notify }}
     steps:
-      - name: Validate request and build Oz prompt
+      - name: Validate request and build Slack payload
         id: request
         uses: actions/github-script@v9
         env:
@@ -48,8 +48,6 @@ jobs:
           INPUT_STATUS: ${{ inputs.status || '' }}
         with:
           script: |
-            const fs = require("fs");
-
             const marker = "<!-- duumbi-human-acceptance-slack-notified -->";
             const maxScheduledIssues = 10;
             const ozEnvironmentName = "duumbi-vault-knowledge-env";
@@ -60,6 +58,11 @@ jobs:
               .replace(/`/g, "'")
               .replace(/[\r\n]+/g, " ")
               .trim();
+            const sanitizeSlackField = (value) => sanitizePromptField(value)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/@/g, "@\u200b");
             const labelsFor = (issue) => issue.labels
               .map((label) => typeof label === "string" ? label : label.name)
               .filter(Boolean);
@@ -110,28 +113,42 @@ jobs:
               "Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.",
             ].join("\n");
 
-            const buildIssuePrompt = (issue, triggeredBy) => {
+            const buildSlackMessage = (issue, triggeredBy) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
               const labelNames = labelsFor(issue);
               const labels = labelNames.join(", ") || "none";
+              const title = sanitizeSlackField(issue.title);
+              const safeLabels = sanitizeSlackField(labels);
+              const safeTriggeredBy = sanitizeSlackField(triggeredBy);
               const correlationId = `${context.runId}-${issue.number}`;
-              return [
-                `- DUUMBI issue needs human acceptance: #${issue.number} ${sanitizePromptField(issue.title)}`,
-                `- Issue: ${issueUrl}`,
-                "- Trigger: `needs-human-review` label",
-                "- Status: Needs Human Acceptance",
-                `- Labels: ${sanitizePromptField(labels)}`,
-                `- Triggered by: ${sanitizePromptField(triggeredBy)}`,
-                `- Correlation: ${correlationId}`,
-                "",
-                "Tell the reviewer to reply in Slack with:",
-                "@Oz accepted: <short rationale>",
-                "",
-                `When the reviewer accepts, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:`,
-                "```text",
-                acceptancePromptFor(issueUrl),
-                "```",
-              ].join("\n");
+              const acceptancePrompt = acceptancePromptFor(issueUrl);
+
+              return {
+                text: `DUUMBI issue #${issue.number} needs human acceptance: ${title}`,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Trigger:* \`needs-human-review\` label\n*Status:* Needs Human Acceptance\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
+                    },
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: "*Reply in this thread with `@Oz accepted: <short rationale>`*",
+                    },
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `When accepting, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:\n\`\`\`text\n${acceptancePrompt}\n\`\`\``,
+                    },
+                  },
+                ],
+              };
             };
 
             let issuesToNotify = [];
@@ -215,36 +232,52 @@ jobs:
               return;
             }
 
-            const issuePrompts = issuesToNotify.map((issue) => buildIssuePrompt(issue, triggeredBy));
-            const ozPrompt = [
-              "Notify the DUUMBI human reviewer in Slack using the configured Warp/Oz Slack integration.",
-              "",
-              "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
-              `Use the Oz environment \`${ozEnvironmentName}\` with environment ID \`${ozEnvironmentId}\` when routing this Slack notification and any later acceptance run.`,
-              "",
-              "Send one separate Slack notification/thread for each issue below, so the reviewer acceptance reply is unambiguous.",
-              `This workflow caps scheduled sweeps at ${maxScheduledIssues} issues per run to keep notifications bounded.`,
-              "",
-              ...issuePrompts.map((issuePrompt, index) => [
-                `Issue notification ${index + 1}:`,
-                issuePrompt,
-              ].join("\n")),
-              "",
-              "If the Slack destination is ambiguous, use the configured DUUMBI/Warp default review destination. If no Slack destination is configured, report that clearly in the Oz run output.",
-            ].join("\n\n");
-
-            fs.writeFileSync("oz-prompt.txt", ozPrompt, "utf8");
-            core.setOutput("oz_prompt", ozPrompt);
+            const slackMessages = issuesToNotify.map((issue) => buildSlackMessage(issue, triggeredBy));
+            core.setOutput("slack_messages", JSON.stringify(slackMessages));
             core.setOutput("issue_numbers", JSON.stringify(issuesToNotify.map((issue) => issue.number)));
             core.setOutput("should_notify", "true");
 
-      - name: Notify reviewer through Oz
+      - name: Post Slack notifications
         if: success() && steps.request.outputs.should_notify == 'true'
-        uses: warpdotdev/oz-agent-action@v1
+        uses: actions/github-script@v9
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          SLACK_MESSAGES: ${{ steps.request.outputs.slack_messages }}
         with:
-          name: DUUMBI Human Acceptance Slack Notification
-          prompt: ${{ steps.request.outputs.oz_prompt }}
-          warp_api_key: ${{ secrets.WARP_API_KEY }}
+          script: |
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            const messages = JSON.parse(process.env.SLACK_MESSAGES || "[]");
+
+            if (!token) {
+              core.setFailed("SLACK_BOT_TOKEN is not configured.");
+              return;
+            }
+            if (!channel) {
+              core.setFailed("SLACK_REVIEW_CHANNEL_ID is not configured.");
+              return;
+            }
+
+            for (const message of messages) {
+              const response = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({
+                  channel,
+                  ...message,
+                }),
+              });
+              const body = await response.json();
+              if (!response.ok || !body.ok) {
+                core.setFailed(`Slack chat.postMessage failed: ${body.error || response.status}`);
+                return;
+              }
+              core.info(`Posted Slack notification ts=${body.ts}`);
+            }
 
   mark-notified:
     name: Mark notified issues
