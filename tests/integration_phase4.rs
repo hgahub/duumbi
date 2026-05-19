@@ -104,9 +104,13 @@ fn phase4_two_module_program_compiles_to_two_objects() {
         let is_macho = bytes.len() >= 4
             && (bytes[0..4] == [0xCF, 0xFA, 0xED, 0xFE] || bytes[0..4] == [0xFE, 0xED, 0xFA, 0xCF]);
         let is_elf = bytes.len() >= 4 && bytes[0..4] == [0x7F, 0x45, 0x4C, 0x46];
+        let is_coff = bytes.len() >= 2
+            && (bytes[0..2] == [0x4C, 0x01]
+                || bytes[0..2] == [0x64, 0x86]
+                || bytes[0..2] == [0x64, 0xAA]);
         assert!(
-            is_macho || is_elf,
-            "object for '{mod_name}' must be valid Mach-O or ELF"
+            is_macho || is_elf || is_coff,
+            "object for '{mod_name}' must be valid Mach-O, ELF, or COFF"
         );
     }
 }
