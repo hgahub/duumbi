@@ -65,6 +65,24 @@ Before preparing the brief or applying a decision, inspect:
 
 Do not claim duplicate, accepted, blocked, deferred, closed, or in-progress status unless verified from GitHub.
 
+## Project V2 Status Verification
+
+GitHub issue sidebar project membership is a GitHub Projects v2 item. Before
+reporting that an issue has no project item, verify it with GitHub data that can
+see Projects v2, for example `gh issue view <number> --json projectItems` or an
+equivalent GraphQL query.
+
+If `projectItems` shows a project item:
+
+- treat the project item as present, even if another API path did not find it
+- update the Status field on that Project v2 item when the target status option
+  exists
+- if the status update fails, report it as a Project v2 permission/API update
+  failure, not as "no project item attached"
+
+Only report "no project item attached" when a Projects v2-capable read verifies
+that no relevant project item exists.
+
 ## Acceptance Brief
 
 If no explicit human decision is present, prepare a brief and stop before writing status or label changes:

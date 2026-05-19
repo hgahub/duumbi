@@ -130,6 +130,16 @@ Expected result: the workflow posts a Slack notification to
    `Spec Needed`, gets `accepted` and `needs-spec`, and loses
    `needs-human-review` when that label is present.
 
+If labels update but the Project status does not, verify the issue's Projects v2
+item with:
+
+```sh
+gh issue view <number> --repo hgahub/duumbi --json projectItems
+```
+
+If `projectItems` contains `Duumbi project`, the item exists and the failure is a
+Project v2 status-update permission/API issue, not missing project membership.
+
 ## Scheduled Sweep Test
 
 1. Create or select an open test issue with `needs-human-review`.
