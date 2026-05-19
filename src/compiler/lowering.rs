@@ -347,7 +347,8 @@ fn make_func_signature(
 
 /// Compiles a validated semantic graph to a native object file.
 ///
-/// Returns the raw bytes of the object file (Mach-O on macOS, ELF on Linux).
+/// Returns the raw bytes of the native object file (Mach-O on macOS, ELF on
+/// Linux, COFF on Windows).
 /// For multi-module programs use [`compile_program`] instead.
 #[must_use = "compilation errors should be handled"]
 pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError> {
@@ -1945,9 +1946,11 @@ mod tests {
             && (obj_bytes[0..4] == [0xCF, 0xFA, 0xED, 0xFE]
                 || obj_bytes[0..4] == [0xFE, 0xED, 0xFA, 0xCF]);
         let is_elf = obj_bytes.len() >= 4 && obj_bytes[0..4] == [0x7F, 0x45, 0x4C, 0x46];
+        let is_coff = obj_bytes.len() >= 2
+            && matches!(&obj_bytes[0..2], [0x4C, 0x01] | [0x64, 0x86] | [0x64, 0xAA]);
         assert!(
-            is_macho || is_elf,
-            "Output should be a valid Mach-O or ELF object file"
+            is_macho || is_elf || is_coff,
+            "Output should be a valid Mach-O, ELF, or COFF object file"
         );
     }
 

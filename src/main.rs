@@ -521,7 +521,7 @@ fn resolve_output(explicit: Option<&Path>) -> Result<PathBuf> {
 
     let workspace_build = PathBuf::from(".duumbi/build");
     if workspace_build.exists() {
-        return Ok(workspace_build.join("output"));
+        return Ok(workspace::workspace_output_path(Path::new(".")));
     }
 
     Ok(PathBuf::from("output"))
