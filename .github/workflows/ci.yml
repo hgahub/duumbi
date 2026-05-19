@@ -32,16 +32,18 @@ jobs:
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
           changed_files="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)"
 
+          rust_relevant_pattern='^(src/|tests/|crates/|runtime/|Cargo\.toml$|Cargo\.lock$|\.cargo/|rust-toolchain(\.toml)?$|rustfmt\.toml$|clippy\.toml$|\.github/workflows/(ci|coverage)\.yml$)'
+
           if [[ -z "$changed_files" ]]; then
             echo "run_rust_checks=true" >> "$GITHUB_OUTPUT"
-          elif printf '%s\n' "$changed_files" | grep -Ev '^(docs/|specs/)' >/dev/null; then
+          elif printf '%s\n' "$changed_files" | grep -E "$rust_relevant_pattern" >/dev/null; then
             echo "run_rust_checks=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_rust_checks=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Documentation-only check
         if: steps.scope.outputs.run_rust_checks == 'false'
-        run: echo "Only docs/specs changed; Rust checks are not required for this PR."
+        run: echo "No Rust-relevant files changed; Rust checks are not required for this PR."
       - uses: dtolnay/rust-toolchain@stable
         if: steps.scope.outputs.run_rust_checks == 'true'
         with:

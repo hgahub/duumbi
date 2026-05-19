@@ -3,10 +3,33 @@ name: Coverage
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'crates/**'
+      - 'runtime/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - 'rustfmt.toml'
+      - 'clippy.toml'
+      - '.github/workflows/coverage.yml'
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - 'specs/**'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'crates/**'
+      - 'runtime/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - 'rustfmt.toml'
+      - 'clippy.toml'
+      - '.github/workflows/coverage.yml'
 
 env:
   CARGO_TERM_COLOR: always
