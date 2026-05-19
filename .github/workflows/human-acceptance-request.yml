@@ -12,7 +12,7 @@ on:
       issue_number:
         description: GitHub issue number
         required: true
-        type: string
+        type: number
       status:
         description: Human acceptance status
         required: false
@@ -71,7 +71,7 @@ jobs:
               return;
             }
 
-            const issueNumber = Number.parseInt(String(payload.issue_number || ""), 10);
+            const issueNumber = Number(payload.issue_number || 0);
             const issueUrl = String(payload.issue_url || "").trim();
             if (!Number.isInteger(issueNumber) || issueNumber < 1) {
               core.setFailed(`Invalid issue_number: ${payload.issue_number}`);
@@ -103,6 +103,11 @@ jobs:
               .join(", ") || "none";
             const triggeredBy = String(payload.triggered_by || context.actor || "unknown");
             const correlationId = `${context.runId}-${issueNumber}`;
+            const sanitizePromptField = (value) => String(value ?? "")
+              .replace(/```/g, "'''")
+              .replace(/`/g, "'")
+              .replace(/[\r\n]+/g, " ")
+              .trim();
 
             const acceptancePrompt = [
               "Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.",
@@ -123,12 +128,12 @@ jobs:
               "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
               "",
               "Slack notification content:",
-              `- DUUMBI issue needs human acceptance: #${issueNumber} ${issue.title}`,
+              `- DUUMBI issue needs human acceptance: #${issueNumber} ${sanitizePromptField(issue.title)}`,
               `- Issue: ${issueUrl}`,
               "- Trigger: `needs-human-review` label",
-              `- Status: ${status}`,
-              `- Labels: ${labels}`,
-              `- Triggered by: ${triggeredBy}`,
+              `- Status: ${sanitizePromptField(status)}`,
+              `- Labels: ${sanitizePromptField(labels)}`,
+              `- Triggered by: ${sanitizePromptField(triggeredBy)}`,
               `- Correlation: ${correlationId}`,
               "",
               "Tell the reviewer to reply in Slack with:",
