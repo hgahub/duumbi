@@ -162,9 +162,12 @@ fn phase1_workspace_init_build_run() {
         .expect("invariant: cargo build must be runnable");
     assert!(build_status.status.success(), "cargo build failed");
 
-    let duumbi_bin = std::path::PathBuf::from("target/debug/duumbi")
-        .canonicalize()
-        .expect("invariant: duumbi binary must exist after build");
+    let duumbi_bin = std::path::PathBuf::from(format!(
+        "target/debug/duumbi{}",
+        std::env::consts::EXE_SUFFIX
+    ))
+    .canonicalize()
+    .expect("invariant: duumbi binary must exist after build");
 
     let tmp_dir = std::env::temp_dir().join("duumbi_workspace_test");
     let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -207,10 +210,11 @@ fn phase1_workspace_init_build_run() {
         String::from_utf8_lossy(&build_output.stderr)
     );
 
-    assert!(tmp_dir.join(".duumbi/build/output").exists());
+    let workspace_output = duumbi::workspace::workspace_output_path(&tmp_dir);
+    assert!(workspace_output.exists());
 
     // Run the compiled binary
-    let binary_output = Command::new(tmp_dir.join(".duumbi/build/output"))
+    let binary_output = Command::new(&workspace_output)
         .output()
         .expect("invariant: compiled binary must be runnable");
 

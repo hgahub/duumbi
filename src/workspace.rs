@@ -79,6 +79,14 @@ pub struct BinaryRunOutput {
     pub stderr: String,
 }
 
+/// Returns the default native binary path for a workspace build.
+#[must_use]
+pub fn workspace_output_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".duumbi/build")
+        .join(format!("output{}", std::env::consts::EXE_SUFFIX))
+}
+
 /// Compiles all modules in a workspace and links them into `output`.
 ///
 /// When `offline` is true, dependency resolution skips the cache and registry
@@ -151,8 +159,9 @@ pub fn build_workspace(
 }
 
 /// Runs a compiled workspace binary, capturing stdout and stderr.
+#[must_use = "the captured process output should be inspected"]
 pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<BinaryRunOutput> {
-    let output_path = workspace_root.join(".duumbi/build/output");
+    let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
         anyhow::bail!(
             "No binary found at '{}'. Build first.",

@@ -319,8 +319,10 @@ fn default_editor_command() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::intent::save_intent;
     use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus};
+    #[cfg(unix)]
     use std::fs;
 
     #[cfg(unix)]
