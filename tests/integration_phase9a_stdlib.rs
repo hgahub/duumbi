@@ -127,7 +127,7 @@ fn string_load_parameter_is_not_double_freed_in_cross_module_demo() {
     fs::write(graph_dir.join("main.jsonld"), main_json).expect("write main");
     fs::write(graph_dir.join("string/utils.jsonld"), utils_json).expect("write utils");
 
-    let output = tmp.path().join(".duumbi/build/output");
+    let output = duumbi::workspace::workspace_output_path(tmp.path());
     build_workspace(tmp.path(), &output, false).expect("workspace must build");
     let run = run_workspace_binary(tmp.path(), &[]).expect("workspace must run");
 
@@ -266,7 +266,7 @@ fn string_concat_formats_bool_call_result() {
     fs::write(graph_dir.join("main.jsonld"), main_json).expect("write main");
     fs::write(graph_dir.join("string/utils.jsonld"), utils_json).expect("write utils");
 
-    let output = tmp.path().join(".duumbi/build/output");
+    let output = duumbi::workspace::workspace_output_path(tmp.path());
     build_workspace(tmp.path(), &output, false).expect("workspace must build");
     let run = run_workspace_binary(tmp.path(), &[]).expect("workspace must run");
 

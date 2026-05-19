@@ -415,7 +415,7 @@ async fn handle_slash(
     let arg = parts.next().unwrap_or("").trim();
 
     let graph_path = app.workspace_root.join(".duumbi/graph/main.jsonld");
-    let output_path = app.workspace_root.join(".duumbi/build/output");
+    let output_path = crate::workspace::workspace_output_path(&app.workspace_root);
 
     match cmd {
         "/build" => {
@@ -1110,7 +1110,7 @@ async fn handle_ai_request(
     app.push_output("Building…", OutputStyle::Dim);
     let _ = terminal.draw(|frame| app.render(frame, textarea));
 
-    let output_path = workspace.join(".duumbi/build/output");
+    let output_path = crate::workspace::workspace_output_path(&workspace);
     match commands::build(&graph_path, &output_path) {
         Ok(()) => {
             app.push_output(
@@ -2138,7 +2138,7 @@ fn handle_clear(app: &mut ReplApp, arg: &str) {
 /// Prints workspace status into the output buffer.
 fn print_status_to_buffer(app: &mut ReplApp) {
     let graph_path = app.workspace_root.join(".duumbi/graph/main.jsonld");
-    let output_path = app.workspace_root.join(".duumbi/build/output");
+    let output_path = crate::workspace::workspace_output_path(&app.workspace_root);
     let history_count = snapshot::snapshot_count(&app.workspace_root).unwrap_or(0);
     let mut hints = Vec::new();
 
@@ -3357,7 +3357,11 @@ mod tests {
         write_main_graph(&dir, minimal_graph());
         let build_dir = dir.path().join(".duumbi").join("build");
         fs::create_dir_all(&build_dir).expect("build dir must be created");
-        fs::write(build_dir.join("output"), b"binary").expect("binary must be written");
+        fs::write(
+            crate::workspace::workspace_output_path(dir.path()),
+            b"binary",
+        )
+        .expect("binary must be written");
 
         let mut config = DuumbiConfig {
             workspace: Some(WorkspaceSection {
@@ -3435,7 +3439,7 @@ mod tests {
     fn status_rejects_directory_build_output() {
         let dir = TempDir::new().expect("tempdir");
         write_main_graph(&dir, minimal_graph());
-        fs::create_dir_all(dir.path().join(".duumbi/build/output"))
+        fs::create_dir_all(crate::workspace::workspace_output_path(dir.path()))
             .expect("output directory must be created");
         let mut app = status_test_app(
             &dir,
@@ -3458,7 +3462,8 @@ mod tests {
         write_main_graph(&dir, minimal_graph());
         let build_dir = dir.path().join(".duumbi").join("build");
         fs::create_dir_all(&build_dir).expect("build dir must be created");
-        fs::write(build_dir.join("output"), b"").expect("empty output must be written");
+        fs::write(crate::workspace::workspace_output_path(dir.path()), b"")
+            .expect("empty output must be written");
         let mut app = status_test_app(
             &dir,
             DuumbiConfig::default(),

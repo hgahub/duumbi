@@ -210,10 +210,11 @@ fn phase1_workspace_init_build_run() {
         String::from_utf8_lossy(&build_output.stderr)
     );
 
-    assert!(tmp_dir.join(".duumbi/build/output").exists());
+    let workspace_output = duumbi::workspace::workspace_output_path(&tmp_dir);
+    assert!(workspace_output.exists());
 
     // Run the compiled binary
-    let binary_output = Command::new(tmp_dir.join(".duumbi/build/output"))
+    let binary_output = Command::new(&workspace_output)
         .output()
         .expect("invariant: compiled binary must be runnable");
 

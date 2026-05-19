@@ -114,7 +114,7 @@ pub fn graph_evidence(workspace: &Path) -> Result<GraphEvidence> {
 /// Builds the current workspace.
 #[must_use]
 pub fn build_workspace(workspace: &Path) -> BuildWorkflowResult {
-    let output = workspace.join(".duumbi/build/output");
+    let output = crate::workspace::workspace_output_path(workspace);
     match crate::workspace::build_workspace(workspace, &output, false) {
         Ok(path) => BuildWorkflowResult {
             ok: true,
