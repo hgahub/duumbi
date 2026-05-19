@@ -7,6 +7,7 @@ use std::path::PathBuf;
 fn credentials_path() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
         .or_else(dirs::home_dir)
         .map(|home| home.join(".duumbi").join("credentials.toml"))
 }

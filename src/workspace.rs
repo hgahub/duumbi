@@ -159,6 +159,7 @@ pub fn build_workspace(
 }
 
 /// Runs a compiled workspace binary, capturing stdout and stderr.
+#[must_use = "the captured process output should be inspected"]
 pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<BinaryRunOutput> {
     let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
