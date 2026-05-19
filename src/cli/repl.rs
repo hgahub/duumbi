@@ -2968,7 +2968,9 @@ mod tests {
         // of the developer/CI machine's global config.
         let _lock = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
         let home = TempDir::new().expect("home tempdir");
-        let _home = EnvGuard::set("HOME", home.path().to_str().expect("utf8 home"));
+        let home_path = home.path().to_str().expect("utf8 home");
+        let _home = EnvGuard::set("HOME", home_path);
+        let _userprofile = EnvGuard::set("USERPROFILE", home_path);
 
         let dir = TempDir::new().expect("tempdir");
         fs::create_dir_all(dir.path().join(".duumbi")).expect("duumbi dir");
@@ -3002,7 +3004,9 @@ mod tests {
     fn build_client_loads_credentials_file_without_file_key_storage() {
         let _lock = crate::cli::TEST_ENV_LOCK.lock().expect("env lock");
         let home = TempDir::new().expect("home tempdir");
-        let _home = EnvGuard::set("HOME", home.path().to_str().expect("utf8 home"));
+        let home_path = home.path().to_str().expect("utf8 home");
+        let _home = EnvGuard::set("HOME", home_path);
+        let _userprofile = EnvGuard::set("USERPROFILE", home_path);
         let _api_key = EnvGuard::remove("DUUMBI_TEST_REPL_KEYSTORE_API_KEY");
         crate::cli::keystore::store_api_key("DUUMBI_TEST_REPL_KEYSTORE_API_KEY", "secret")
             .expect("credential must store");
