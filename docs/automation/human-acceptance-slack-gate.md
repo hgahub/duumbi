@@ -17,11 +17,12 @@ updates performed by `duumbi-human-acceptance`.
    `issues.labeled` event when the added label is `needs-human-review`.
 4. The workflow also runs hourly as a scheduled sweep for open
    `needs-human-review` issues that were not already notified.
-5. The workflow starts `warpdotdev/oz-agent-action` with `WARP_API_KEY`.
+5. The read-only notification job starts `warpdotdev/oz-agent-action` with
+   `WARP_API_KEY`.
 6. Oz runs with the `duumbi-vault-knowledge-env` profile and uses the configured
    Warp/Oz Slack integration to notify the DUUMBI reviewer.
-7. After Oz succeeds, the workflow writes an operational marker comment to the
-   issue so future scheduled sweeps do not send duplicate notifications.
+7. After Oz succeeds, a separate marker job writes an operational marker comment
+   to the issue so future scheduled sweeps do not send duplicate notifications.
 8. The reviewer replies in Slack with:
 
 ```text
@@ -52,6 +53,8 @@ without an external webhook receiver. The no-server contract is therefore:
 - The GitHub Action trigger is the issue label `needs-human-review`.
 - A scheduled sweep runs hourly and catches open `needs-human-review`
   issues that have not yet received the notification marker.
+- A scheduled sweep processes at most 10 issues per run to keep the Oz prompt
+  and Slack notifications bounded.
 - Stage 4 must keep adding `needs-human-review` whenever it routes an issue to
   `Needs Human Acceptance`.
 
@@ -74,8 +77,9 @@ The marker is operational state only. It is not the Stage 5 decision record.
 No `SLACK_WEBHOOK_URL` is required. Slack delivery is handled by the configured
 Warp/Oz Slack integration, visible in Slack under Apps -> Warp.
 
-The workflow needs `issues: write` permission so it can write the notification
-marker comment after Oz successfully starts the Slack notification flow.
+The Oz notification job uses `issues: read`. A separate marker job uses
+`issues: write` only after the Oz notification job succeeds, so Oz does not run
+with an issue-write-capable `GITHUB_TOKEN`.
 
 ## Manual Test
 
@@ -115,3 +119,5 @@ DUUMBI reviewer through Slack, then writes the notification marker comment. If
 4. Confirm that Oz starts and a notification marker comment is added.
 5. Confirm that a later scheduled run skips the same issue because the marker is
    present.
+6. If more than 10 unnotified issues exist, confirm that only 10 are processed in
+   one hourly run and the rest remain eligible for later sweeps.

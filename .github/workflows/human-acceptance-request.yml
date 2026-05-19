@@ -23,7 +23,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: human-acceptance-${{ github.event.issue.number || inputs.issue_number || github.event_name }}
@@ -33,6 +32,12 @@ jobs:
   notify:
     name: Ask Oz to notify Slack
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue_numbers: ${{ steps.request.outputs.issue_numbers }}
+      should_notify: ${{ steps.request.outputs.should_notify }}
     steps:
       - name: Validate request and build Oz prompt
         id: request
@@ -46,6 +51,7 @@ jobs:
             const fs = require("fs");
 
             const marker = "<!-- duumbi-human-acceptance-slack-notified -->";
+            const maxScheduledIssues = 10;
             const status = String(process.env.INPUT_STATUS || "Needs Human Acceptance").trim();
             const sanitizePromptField = (value) => String(value ?? "")
               .replace(/```/g, "'''")
@@ -56,7 +62,6 @@ jobs:
               .map((label) => typeof label === "string" ? label : label.name)
               .filter(Boolean);
             const issueUrlFor = (number) => `https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${number}`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const hasNotificationMarker = async (issueNumber) => {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -151,6 +156,10 @@ jobs:
                   continue;
                 }
                 issuesToNotify.push(issue);
+                if (issuesToNotify.length >= maxScheduledIssues) {
+                  core.info(`Scheduled sweep capped at ${maxScheduledIssues} issues for this run.`);
+                  break;
+                }
               }
               triggeredBy = "scheduled sweep";
             } else {
@@ -211,6 +220,7 @@ jobs:
               "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
               "",
               "Send one separate Slack notification/thread for each issue below, so the reviewer acceptance reply is unambiguous.",
+              `This workflow caps scheduled sweeps at ${maxScheduledIssues} issues per run to keep notifications bounded.`,
               "",
               ...issuePrompts.map((issuePrompt, index) => [
                 `Issue notification ${index + 1}:`,
@@ -223,11 +233,10 @@ jobs:
             fs.writeFileSync("oz-prompt.txt", ozPrompt, "utf8");
             core.setOutput("oz_prompt", ozPrompt);
             core.setOutput("issue_numbers", JSON.stringify(issuesToNotify.map((issue) => issue.number)));
-            core.setOutput("marker", marker);
             core.setOutput("should_notify", "true");
 
       - name: Notify reviewer through Oz
-        if: steps.request.outputs.should_notify == 'true'
+        if: success() && steps.request.outputs.should_notify == 'true'
         uses: warpdotdev/oz-agent-action@v1
         with:
           name: DUUMBI Human Acceptance Slack Notification
@@ -235,12 +244,20 @@ jobs:
           prompt: ${{ steps.request.outputs.oz_prompt }}
           warp_api_key: ${{ secrets.WARP_API_KEY }}
 
+  mark-notified:
+    name: Mark notified issues
+    needs: notify
+    if: success() && needs.notify.outputs.should_notify == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
       - name: Mark notified issues
-        if: steps.request.outputs.should_notify == 'true'
         uses: actions/github-script@v9
         env:
-          ISSUE_NUMBERS: ${{ steps.request.outputs.issue_numbers }}
-          MARKER: ${{ steps.request.outputs.marker }}
+          ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers }}
+          MARKER: <!-- duumbi-human-acceptance-slack-notified -->
         with:
           script: |
             const issueNumbers = JSON.parse(process.env.ISSUE_NUMBERS || "[]");
