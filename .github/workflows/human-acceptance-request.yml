@@ -52,6 +52,8 @@ jobs:
 
             const marker = "<!-- duumbi-human-acceptance-slack-notified -->";
             const maxScheduledIssues = 10;
+            const ozEnvironmentName = "duumbi-vault-knowledge-env";
+            const ozEnvironmentId = "eKLEWjD4PNqFC6j0EcDEYA";
             const status = String(process.env.INPUT_STATUS || "Needs Human Acceptance").trim();
             const sanitizePromptField = (value) => String(value ?? "")
               .replace(/```/g, "'''")
@@ -125,7 +127,7 @@ jobs:
                 "Tell the reviewer to reply in Slack with:",
                 "@Oz accepted: <short rationale>",
                 "",
-                "When the reviewer accepts, Oz must run in `duumbi-vault-knowledge-env` with this prompt:",
+                `When the reviewer accepts, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:`,
                 "```text",
                 acceptancePromptFor(issueUrl),
                 "```",
@@ -218,6 +220,7 @@ jobs:
               "Notify the DUUMBI human reviewer in Slack using the configured Warp/Oz Slack integration.",
               "",
               "Do not use a Slack incoming webhook. Do not modify GitHub state. Do not run Stage 5 acceptance yet.",
+              `Use the Oz environment \`${ozEnvironmentName}\` with environment ID \`${ozEnvironmentId}\` when routing this Slack notification and any later acceptance run.`,
               "",
               "Send one separate Slack notification/thread for each issue below, so the reviewer acceptance reply is unambiguous.",
               `This workflow caps scheduled sweeps at ${maxScheduledIssues} issues per run to keep notifications bounded.`,
@@ -240,7 +243,6 @@ jobs:
         uses: warpdotdev/oz-agent-action@v1
         with:
           name: DUUMBI Human Acceptance Slack Notification
-          profile: duumbi-vault-knowledge-env
           prompt: ${{ steps.request.outputs.oz_prompt }}
           warp_api_key: ${{ secrets.WARP_API_KEY }}
 

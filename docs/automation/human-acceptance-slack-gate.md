@@ -19,8 +19,10 @@ updates performed by `duumbi-human-acceptance`.
    `needs-human-review` issues that were not already notified.
 5. The read-only notification job starts `warpdotdev/oz-agent-action` with
    `WARP_API_KEY`.
-6. Oz runs with the `duumbi-vault-knowledge-env` profile and uses the configured
-   Warp/Oz Slack integration to notify the DUUMBI reviewer.
+6. Oz uses the configured Warp/Oz Slack integration to notify the DUUMBI
+   reviewer. The workflow prompt names the `duumbi-vault-knowledge-env`
+   environment and its environment ID `eKLEWjD4PNqFC6j0EcDEYA`; it does not pass
+   that value as an Oz agent profile.
 7. After Oz succeeds, a separate marker job writes an operational marker comment
    to the issue so future scheduled sweeps do not send duplicate notifications.
 8. The reviewer replies in Slack with:
@@ -29,7 +31,8 @@ updates performed by `duumbi-human-acceptance`.
 @Oz accepted: <short rationale>
 ```
 
-9. Warp/Oz Slack integration runs in `duumbi-vault-knowledge-env` and executes:
+9. Warp/Oz Slack integration runs in the `duumbi-vault-knowledge-env`
+   environment and executes:
 
 ```text
 Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.
@@ -77,6 +80,17 @@ The marker is operational state only. It is not the Stage 5 decision record.
 No `SLACK_WEBHOOK_URL` is required. Slack delivery is handled by the configured
 Warp/Oz Slack integration, visible in Slack under Apps -> Warp.
 
+`duumbi-vault-knowledge-env` is an Oz environment, not an agent profile. Its
+environment ID is:
+
+```text
+eKLEWjD4PNqFC6j0EcDEYA
+```
+
+Do not pass the environment name through the action's `profile` input. That
+input expects an agent profile and fails with `Agent profile "... " not found`
+when given the environment name.
+
 The Oz notification job uses `issues: read`. A separate marker job uses
 `issues: write` only after the Oz notification job succeeds, so Oz does not run
 with an issue-write-capable `GITHUB_TOKEN`.
@@ -105,7 +119,7 @@ DUUMBI reviewer through Slack, then writes the notification marker comment. If
 @Oz accepted: <short rationale>
 ```
 
-6. Confirm that Oz runs in `duumbi-vault-knowledge-env`.
+6. Confirm that Oz routes the acceptance run to `duumbi-vault-knowledge-env`.
 7. Confirm that the issue receives the notification marker comment.
 8. Confirm that the issue receives a Stage 5 decision comment, is moved to
    `Spec Needed`, gets `accepted` and `needs-spec`, and loses
