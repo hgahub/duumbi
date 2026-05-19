@@ -5,7 +5,10 @@ use std::fs;
 use std::path::PathBuf;
 
 fn credentials_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".duumbi").join("credentials.toml"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .map(|home| home.join(".duumbi").join("credentials.toml"))
 }
 
 fn load_all() -> HashMap<String, String> {
