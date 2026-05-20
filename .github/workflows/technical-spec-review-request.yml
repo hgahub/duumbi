@@ -1,0 +1,376 @@
+name: Technical Spec Review Request
+
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: GitHub issue URL to request technical spec review for
+        required: true
+        type: string
+      issue_number:
+        description: GitHub issue number
+        required: true
+        type: number
+      status:
+        description: Technical spec review status
+        required: false
+        default: Technical Spec Review
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tech-spec-review-${{ github.event.issue.number || inputs.issue_number || github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue_numbers: ${{ steps.request.outputs.issue_numbers }}
+      should_notify: ${{ steps.request.outputs.should_notify }}
+    steps:
+      - name: Validate request and build Slack payload
+        id: request
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
+          INPUT_STATUS: ${{ inputs.status || '' }}
+        with:
+          script: |
+            const marker = "<!-- duumbi-tech-spec-review-slack-notified -->";
+            const maxScheduledIssues = 10;
+            const ozEnvironmentName = "duumbi-vault-knowledge-env";
+            const ozEnvironmentId = "eKLEWjD4PNqFC6j0EcDEYA";
+            const status = String(process.env.INPUT_STATUS || "Technical Spec Review").trim();
+            const completedReviewLabels = new Set([
+              "tech-spec-approved",
+              "technical-spec-approved",
+              "ready-for-build",
+            ]);
+            const sanitizePromptField = (value) => String(value ?? "")
+              .replace(/```/g, "'''")
+              .replace(/`/g, "'")
+              .replace(/[\r\n]+/g, " ")
+              .trim();
+            const sanitizeSlackField = (value) => sanitizePromptField(value)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/@/g, "@\u200b");
+            const labelsFor = (issue) => issue.labels
+              .map((label) => typeof label === "string" ? label : label.name)
+              .filter(Boolean);
+            const isCompletedReviewIssue = (issue) =>
+              labelsFor(issue).some((label) => completedReviewLabels.has(label));
+            const issueUrlFor = (number) => `https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${number}`;
+
+            const hasNotificationMarker = async (issueNumber) => {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+              return comments.some((comment) => comment.body?.includes(marker));
+            };
+
+            const fetchIssue = async (issueNumber) => {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+              });
+              return issue;
+            };
+
+            const validateIssueUrl = (issueUrl, issueNumber) => {
+              const issueMatch = issueUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?(?:[?#].*)?$/);
+              if (!issueMatch) {
+                throw new Error(`Invalid issue_url: ${issueUrl}`);
+              }
+              if (issueMatch[1] !== context.repo.owner || issueMatch[2] !== context.repo.repo) {
+                throw new Error(`Issue URL must belong to ${context.repo.owner}/${context.repo.repo}: ${issueUrl}`);
+              }
+              if (Number.parseInt(issueMatch[3], 10) !== issueNumber) {
+                throw new Error(`issue_url and issue_number do not match: ${issueUrl} vs ${issueNumber}`);
+              }
+            };
+
+            const findStage8Artifacts = async (issueNumber) => {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+
+              const stage8Comment = [...comments].reverse().find((comment) =>
+                /Stage 8 Technical Spec Draft/i.test(comment.body || "")
+              );
+
+              if (!stage8Comment) {
+                return {
+                  technicalSpecArtifact: "<missing: Stage 8 Technical Spec Draft artifact>",
+                  productSpecArtifact: "<missing: Stage 8 Product Spec artifact>",
+                };
+              }
+
+              const body = stage8Comment.body || "";
+              const urls = (body.match(/https:\/\/github\.com\/[^\s)]+/gi) || [])
+                .map((url) => url.replace(/[\]>.,;]+$/, ""));
+
+              return {
+                technicalSpecArtifact: urls[0] || stage8Comment.html_url,
+                productSpecArtifact: urls[1] || "<missing: Stage 8 Product Spec artifact>",
+              };
+            };
+
+            const reviewPromptFor = (issueUrl, technicalSpecArtifact, productSpecArtifact) => [
+              "Run DUUMBI Stage 9 Technical Spec Review with duumbi-tech-spec-review.",
+              "",
+              `Target issue: ${issueUrl}`,
+              `Technical spec artifact: ${technicalSpecArtifact}`,
+              `Product spec artifact: ${productSpecArtifact}`,
+              "Human decision: Approve",
+              "Reviewer source: Slack",
+              "Rationale: Reviewed and approved the technical specification; it is sufficiently bounded for Stage 10 Ralph-cycle implementation.",
+              "",
+              "Goal: Review BDD-to-test mapping, live E2E feasibility, and Ralph Cycle resource policy; record the structured Stage 9 decision, set the issue to Ready for Build, remove needs-tech-spec, and add tech-spec-approved.",
+              "",
+              "After an `@Oz approve: <short rationale>` reply, fix the code review message if needed so the decision is explicit and complete, then set the resolved flag.",
+              "Do not request a Ralph cycle or start implementation.",
+            ].join("\n");
+
+            const buildSlackMessage = (issue, triggeredBy, artifacts) => {
+              const issueUrl = issue.html_url || issueUrlFor(issue.number);
+              const labelNames = labelsFor(issue);
+              const labels = labelNames.join(", ") || "none";
+              const title = sanitizeSlackField(issue.title);
+              const safeLabels = sanitizeSlackField(labels);
+              const safeTriggeredBy = sanitizeSlackField(triggeredBy);
+              const correlationId = `${context.runId}-${issue.number}`;
+              const reviewPrompt = reviewPromptFor(issueUrl, artifacts.technicalSpecArtifact, artifacts.productSpecArtifact);
+
+              const technicalSpecLine = artifacts.technicalSpecArtifact.startsWith("http")
+                ? `<${artifacts.technicalSpecArtifact}|Stage 8 Technical Spec Draft>`
+                : artifacts.technicalSpecArtifact;
+              const productSpecLine = artifacts.productSpecArtifact.startsWith("http")
+                ? `<${artifacts.productSpecArtifact}|Product Spec Artifact>`
+                : artifacts.productSpecArtifact;
+
+              return {
+                text: `DUUMBI issue #${issue.number} needs technical spec review approval: ${title}`,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `*DUUMBI issue needs technical spec review approval*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Technical spec artifact:* ${technicalSpecLine}\n*Product spec artifact:* ${productSpecLine}\n*Trigger:* \`technical-spec-review\` label\n*Status:* Technical Spec Review\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
+                    },
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: "*Reply in this thread with `@Oz approve: <short rationale>`*",
+                    },
+                  },
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: `When approving, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:\n\`\`\`text\n${reviewPrompt}\n\`\`\``,
+                    },
+                  },
+                ],
+              };
+            };
+
+            let issuesToNotify = [];
+            let triggeredBy = context.actor || "unknown";
+
+            if (context.eventName === "schedule") {
+              const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                labels: "technical-spec-review",
+                per_page: 100,
+              });
+
+              for (const issue of openIssues) {
+                if (issue.pull_request) continue;
+                if (isCompletedReviewIssue(issue)) continue;
+                if (await hasNotificationMarker(issue.number)) continue;
+                issuesToNotify.push(issue);
+                if (issuesToNotify.length >= maxScheduledIssues) {
+                  core.info(`Scheduled sweep capped at ${maxScheduledIssues} issues for this run.`);
+                  break;
+                }
+              }
+              triggeredBy = "scheduled sweep";
+            } else {
+              const payload = context.eventName === "workflow_dispatch"
+                ? {
+                    issue_url: process.env.INPUT_ISSUE_URL,
+                    issue_number: Number(process.env.INPUT_ISSUE_NUMBER || 0),
+                    status,
+                    triggered_by: context.actor,
+                  }
+                : {
+                    issue_url: context.payload.issue?.html_url,
+                    issue_number: Number(context.payload.issue?.number || 0),
+                    status: "Technical Spec Review",
+                    triggered_by: context.payload.sender?.login || context.actor,
+                    label: context.payload.label?.name,
+                  };
+
+              if (context.eventName === "issues" && payload.label !== "technical-spec-review") {
+                core.info(`Ignoring label "${payload.label}".`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+
+              if (payload.status !== "Technical Spec Review") {
+                core.info(`Ignoring request because status is "${payload.status}".`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+
+              const issueNumber = payload.issue_number;
+              const issueUrl = String(payload.issue_url || "").trim();
+              if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+                core.setFailed(`Invalid issue_number: ${payload.issue_number}`);
+                return;
+              }
+              try {
+                validateIssueUrl(issueUrl, issueNumber);
+              } catch (error) {
+                core.setFailed(error.message);
+                return;
+              }
+
+              const issue = await fetchIssue(issueNumber);
+              if (issuesToNotify.some((existingIssue) => existingIssue.number === issue.number)) {
+                core.info(`Skipping issue #${issue.number}: already queued.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+              if (isCompletedReviewIssue(issue)) {
+                core.info(`Skipping issue #${issue.number}: already approved or ready for build.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+              if (await hasNotificationMarker(issue.number)) {
+                core.info(`Skipping issue #${issue.number}: already notified.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+
+              issuesToNotify.push(issue);
+              triggeredBy = String(payload.triggered_by || context.actor || "unknown");
+            }
+
+            if (issuesToNotify.length === 0) {
+              core.info("No unnotified issues need technical spec review.");
+              core.setOutput("should_notify", "false");
+              return;
+            }
+
+            const slackMessages = [];
+            for (const issue of issuesToNotify) {
+              const artifacts = await findStage8Artifacts(issue.number);
+              slackMessages.push(buildSlackMessage(issue, triggeredBy, artifacts));
+            }
+
+            core.setOutput("slack_messages", JSON.stringify(slackMessages));
+            core.setOutput("issue_numbers", JSON.stringify(issuesToNotify.map((issue) => issue.number)));
+            core.setOutput("should_notify", "true");
+
+      - name: Post Slack notifications
+        if: success() && steps.request.outputs.should_notify == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          SLACK_MESSAGES: ${{ steps.request.outputs.slack_messages }}
+        with:
+          script: |
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            const messages = JSON.parse(process.env.SLACK_MESSAGES || "[]");
+
+            if (!token) {
+              core.setFailed("SLACK_BOT_TOKEN is not configured.");
+              return;
+            }
+            if (!channel) {
+              core.setFailed("SLACK_REVIEW_CHANNEL_ID is not configured.");
+              return;
+            }
+
+            for (const message of messages) {
+              const response = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({
+                  channel,
+                  ...message,
+                }),
+              });
+              const body = await response.json();
+              if (!response.ok || !body.ok) {
+                core.setFailed(`Slack chat.postMessage failed: ${body.error || response.status}`);
+                return;
+              }
+              core.info(`Posted Slack notification ts=${body.ts}`);
+            }
+
+  mark-notified:
+    name: Mark notified issues
+    needs: notify
+    if: success() && needs.notify.outputs.should_notify == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Mark notified issues
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers }}
+          MARKER: <!-- duumbi-tech-spec-review-slack-notified -->
+        with:
+          script: |
+            const issueNumbers = JSON.parse(process.env.ISSUE_NUMBERS || "[]");
+            const marker = process.env.MARKER;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            for (const issueNumber of issueNumbers) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: [
+                  marker,
+                  "Technical spec review Slack notification requested through Oz.",
+                  "",
+                  `Workflow run: ${runUrl}`,
+                  `Source event: ${context.eventName}`,
+                ].join("\n"),
+              });
+            }
