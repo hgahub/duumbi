@@ -409,13 +409,13 @@ Non-blocking questions for Stage 8:
 - Non-TUI describe plain-output test reference: `src/cli/describe.rs`
 - CLI UX manual protocol: `docs/testing/phase11-cli-ux.md`
 - Dependency manifest: `Cargo.toml`
-- Active PRD:
+- External repo (`hgahub/duumbi-vault`) — Active PRD:
   `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
-- Glossary:
+- External repo (`hgahub/duumbi-vault`) — Glossary:
   `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
-- Agentic Development Map:
+- External repo (`hgahub/duumbi-vault`) — Agentic Development Map:
   `Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
-- Agentic Development Runbook:
+- External repo (`hgahub/duumbi-vault`) — Agentic Development Runbook:
   `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Agentic Development Runbook.md`
-- Phase 16 roadmap note:
+- External repo (`hgahub/duumbi-vault`) — Phase 16 roadmap note:
   `Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Phase 16 - Windows & Cross-Platform Support.md`
