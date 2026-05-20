@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: Validate request and build Slack payload
         id: request
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
@@ -53,6 +53,11 @@ jobs:
             const ozEnvironmentName = "duumbi-vault-knowledge-env";
             const ozEnvironmentId = "eKLEWjD4PNqFC6j0EcDEYA";
             const status = String(process.env.INPUT_STATUS || "Technical Spec Review").trim();
+            const completedReviewLabels = new Set([
+              "tech-spec-approved",
+              "technical-spec-approved",
+              "ready-for-build",
+            ]);
             const sanitizePromptField = (value) => String(value ?? "")
               .replace(/```/g, "'''")
               .replace(/`/g, "'")
@@ -66,6 +71,8 @@ jobs:
             const labelsFor = (issue) => issue.labels
               .map((label) => typeof label === "string" ? label : label.name)
               .filter(Boolean);
+            const isCompletedReviewIssue = (issue) =>
+              labelsFor(issue).some((label) => completedReviewLabels.has(label));
             const issueUrlFor = (number) => `https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${number}`;
 
             const hasNotificationMarker = async (issueNumber) => {
@@ -88,7 +95,7 @@ jobs:
             };
 
             const validateIssueUrl = (issueUrl, issueNumber) => {
-              const issueMatch = issueUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+              const issueMatch = issueUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?(?:[?#].*)?$/);
               if (!issueMatch) {
                 throw new Error(`Invalid issue_url: ${issueUrl}`);
               }
@@ -108,7 +115,7 @@ jobs:
                 per_page: 100,
               });
 
-              const stage8Comment = comments.find((comment) =>
+              const stage8Comment = [...comments].reverse().find((comment) =>
                 /Stage 8 Technical Spec Draft/i.test(comment.body || "")
               );
 
@@ -116,7 +123,6 @@ jobs:
                 return {
                   technicalSpecArtifact: "<missing: Stage 8 Technical Spec Draft artifact>",
                   productSpecArtifact: "<missing: Stage 8 Product Spec artifact>",
-                  sourceUrl: "",
                 };
               }
 
@@ -127,7 +133,6 @@ jobs:
               return {
                 technicalSpecArtifact: urls[0] || stage8Comment.html_url,
                 productSpecArtifact: urls[1] || "<missing: Stage 8 Product Spec artifact>",
-                sourceUrl: stage8Comment.html_url,
               };
             };
 
@@ -143,7 +148,7 @@ jobs:
               "",
               "Goal: Review BDD-to-test mapping, live E2E feasibility, and Ralph Cycle resource policy; record the structured Stage 9 decision, set the issue to Ready for Build, remove needs-tech-spec, and add tech-spec-approved.",
               "",
-              "If user send Approve, Oz Agent fix code review message if needed, set resolved flag.",
+              "After an `@Oz approve: <short rationale>` reply, fix the code review message if needed so the decision is explicit and complete, then set the resolved flag.",
               "Do not request a Ralph cycle or start implementation.",
             ].join("\n");
 
@@ -206,8 +211,7 @@ jobs:
 
               for (const issue of openIssues) {
                 if (issue.pull_request) continue;
-                const labelNames = labelsFor(issue);
-                if (labelNames.includes("tech-spec-approved") || labelNames.includes("ready-for-build")) continue;
+                if (isCompletedReviewIssue(issue)) continue;
                 if (await hasNotificationMarker(issue.number)) continue;
                 issuesToNotify.push(issue);
                 if (issuesToNotify.length >= maxScheduledIssues) {
@@ -257,7 +261,24 @@ jobs:
                 return;
               }
 
-              issuesToNotify.push(await fetchIssue(issueNumber));
+              const issue = await fetchIssue(issueNumber);
+              if (issuesToNotify.some((existingIssue) => existingIssue.number === issue.number)) {
+                core.info(`Skipping issue #${issue.number}: already queued.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+              if (isCompletedReviewIssue(issue)) {
+                core.info(`Skipping issue #${issue.number}: already approved or ready for build.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+              if (await hasNotificationMarker(issue.number)) {
+                core.info(`Skipping issue #${issue.number}: already notified.`);
+                core.setOutput("should_notify", "false");
+                return;
+              }
+
+              issuesToNotify.push(issue);
               triggeredBy = String(payload.triggered_by || context.actor || "unknown");
             }
 
@@ -279,7 +300,7 @@ jobs:
 
       - name: Post Slack notifications
         if: success() && steps.request.outputs.should_notify == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
@@ -329,7 +350,7 @@ jobs:
       issues: write
     steps:
       - name: Mark notified issues
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers }}
           MARKER: <!-- duumbi-tech-spec-review-slack-notified -->
