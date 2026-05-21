@@ -60,3 +60,4 @@ opencode.json
 *.swp
 myproject/
 docs/.obsidian/
+node_modules/
