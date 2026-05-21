@@ -7,8 +7,12 @@
 //! - The [`tui`] submodule returns `ratatui::Style` values for the full-screen
 //!   REPL, using the brand-aligned dark palette (rust + parchment + blue ink).
 //!
-//! Both honour `NO_COLOR`/`CLICOLOR` for graceful degradation on terminals
-//! that do not support truecolor.
+//! Non-TUI helpers disable ANSI styling when `NO_COLOR` is set,
+//! `CLICOLOR=0` is set, or stderr is not a terminal. `CLICOLOR_FORCE` with a
+//! non-empty, non-zero value re-enables ANSI styling for captured output unless
+//! `NO_COLOR` or `CLICOLOR=0` explicitly disable it. TUI helpers use truecolor
+//! only when the environment advertises support and otherwise fall back to
+//! named ANSI colors.
 
 use std::io::IsTerminal as _;
 
@@ -118,6 +122,8 @@ fn non_tui_color_enabled_from_env(
         return false;
     }
 
+    // `CLICOLOR_FORCE` intentionally overrides captured-output detection, but
+    // not the explicit opt-out variables handled above.
     if clicolor_force.is_some_and(|value| !value.is_empty() && value != "0") {
         return true;
     }
@@ -198,6 +204,13 @@ pub mod tui {
         )
     }
 
+    /// Determines whether truecolor (24-bit) styling should be enabled from
+    /// environment snapshots.
+    ///
+    /// `no_color` is the explicit opt-out flag, `colorterm` is the sampled
+    /// `COLORTERM` value, and `term_program` is the sampled `TERM_PROGRAM`
+    /// value. Returns `true` when the environment indicates truecolor support.
+    #[must_use]
     pub(super) fn detect_truecolor_from_env(
         no_color: bool,
         colorterm: Option<&str>,
