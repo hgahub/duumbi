@@ -53,6 +53,18 @@ Use this skill for:
 
 Do not process broad sweeps in this skill. Handle one issue and one explicit decision at a time.
 
+## Acceptance Fast Path
+
+When the prompt contains an explicit human decision (e.g. `Human decision: Accept`, or a Slack message like `accepted: issue: #N`) AND an issue number is identifiable, skip the full acceptance brief and execute the decision directly:
+
+1. `gh issue view <N> --json number,title,labels,body` — verify `needs-human-review` label is present
+2. Construct and post the Stage 5 Human Acceptance Decision Comment on the issue
+3. Update labels: remove `needs-human-review`, add `accepted` and `needs-spec`
+4. Attempt Project V2 status update to `Spec Needed`
+5. Report the final state
+
+Do NOT prepare an acceptance brief, inspect triage context, read unrelated skills, or re-fetch content already in context. Use `wait` mode for all `gh`/`git` commands.
+
 ## Context To Inspect
 
 Before preparing the brief or applying a decision, inspect:

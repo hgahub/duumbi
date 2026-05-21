@@ -113,6 +113,8 @@ jobs:
               "Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.",
             ].join("\n");
 
+            const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
+
             const buildSlackMessage = (issue, triggeredBy) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
               const labelNames = labelsFor(issue);
@@ -121,7 +123,12 @@ jobs:
               const safeLabels = sanitizeSlackField(labels);
               const safeTriggeredBy = sanitizeSlackField(triggeredBy);
               const correlationId = `${context.runId}-${issue.number}`;
-              const acceptancePrompt = acceptancePromptFor(issueUrl);
+
+              const buttonValue = (decision) => JSON.stringify({
+                stage: "5",
+                issue_number: issue.number,
+                decision,
+              });
 
               return {
                 text: `DUUMBI issue #${issue.number} needs human acceptance: ${title}`,
@@ -134,18 +141,51 @@ jobs:
                     },
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "*Reply in this thread with `@Oz accepted: <short rationale>`*",
-                    },
+                    type: "actions",
+                    block_id: `human_acceptance_${issue.number}`,
+                    elements: [
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "✅ Accept", emoji: true },
+                        style: "primary",
+                        action_id: "stage_approve",
+                        value: buttonValue("approve"),
+                        confirm: {
+                          title: { type: "plain_text", text: "Accept Issue" },
+                          text: { type: "mrkdwn", text: `Accept issue #${issue.number} for specification?\nThis will set the issue to *Spec Needed*.` },
+                          confirm: { type: "plain_text", text: "Accept" },
+                          deny: { type: "plain_text", text: "Cancel" },
+                        },
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "❓ Needs Clarification", emoji: true },
+                        action_id: "stage_needs_clarification",
+                        value: buttonValue("needs-clarification"),
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "🚫 Reject", emoji: true },
+                        style: "danger",
+                        action_id: "stage_reject",
+                        value: buttonValue("reject"),
+                        confirm: {
+                          title: { type: "plain_text", text: "Reject Issue" },
+                          text: { type: "mrkdwn", text: `Reject issue #${issue.number}? This will close the issue.` },
+                          confirm: { type: "plain_text", text: "Reject" },
+                          deny: { type: "plain_text", text: "Cancel" },
+                        },
+                      },
+                    ],
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: `When accepting, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:\n\`\`\`text\n${acceptancePrompt}\n\`\`\``,
-                    },
+                    type: "context",
+                    elements: [
+                      {
+                        type: "mrkdwn",
+                        text: `Buttons require the <${workflowDispatchUrl}|Slack approval bridge>. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=5, issue=${issue.number}).`,
+                      },
+                    ],
                   },
                 ],
               };

@@ -152,6 +152,8 @@ jobs:
               "Do not request a Ralph cycle or start implementation.",
             ].join("\n");
 
+            const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
+
             const buildSlackMessage = (issue, triggeredBy, artifacts) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
               const labelNames = labelsFor(issue);
@@ -160,7 +162,6 @@ jobs:
               const safeLabels = sanitizeSlackField(labels);
               const safeTriggeredBy = sanitizeSlackField(triggeredBy);
               const correlationId = `${context.runId}-${issue.number}`;
-              const reviewPrompt = reviewPromptFor(issueUrl, artifacts.technicalSpecArtifact, artifacts.productSpecArtifact);
 
               const technicalSpecLine = artifacts.technicalSpecArtifact.startsWith("http")
                 ? `<${artifacts.technicalSpecArtifact}|Stage 8 Technical Spec Draft>`
@@ -168,6 +169,17 @@ jobs:
               const productSpecLine = artifacts.productSpecArtifact.startsWith("http")
                 ? `<${artifacts.productSpecArtifact}|Product Spec Artifact>`
                 : artifacts.productSpecArtifact;
+
+              // Find associated PR number from tech spec artifact URL
+              const prMatch = artifacts.technicalSpecArtifact.match(/\/pull\/(\d+)/);
+              const prNum = prMatch ? Number(prMatch[1]) : 0;
+
+              const buttonValue = (decision) => JSON.stringify({
+                stage: "9",
+                issue_number: issue.number,
+                decision,
+                pr_number: prNum,
+              });
 
               return {
                 text: `DUUMBI issue #${issue.number} needs technical spec review approval: ${title}`,
@@ -180,18 +192,44 @@ jobs:
                     },
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "*Reply in this thread with `@Oz approve: <short rationale>`*",
-                    },
+                    type: "actions",
+                    block_id: `tech_spec_review_${issue.number}`,
+                    elements: [
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "✅ Approve", emoji: true },
+                        style: "primary",
+                        action_id: "stage_approve",
+                        value: buttonValue("approve"),
+                        confirm: {
+                          title: { type: "plain_text", text: "Approve Technical Spec" },
+                          text: { type: "mrkdwn", text: `Approve Stage 9 Technical Spec Review for issue #${issue.number}?\nThis will set the issue to *Ready for Build*.` },
+                          confirm: { type: "plain_text", text: "Approve" },
+                          deny: { type: "plain_text", text: "Cancel" },
+                        },
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "↩️ Request Changes", emoji: true },
+                        action_id: "stage_request_changes",
+                        value: buttonValue("request-changes"),
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "❓ Needs Clarification", emoji: true },
+                        action_id: "stage_needs_clarification",
+                        value: buttonValue("needs-clarification"),
+                      },
+                    ],
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: `When approving, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:\n\`\`\`text\n${reviewPrompt}\n\`\`\``,
-                    },
+                    type: "context",
+                    elements: [
+                      {
+                        type: "mrkdwn",
+                        text: `Buttons require the <${workflowDispatchUrl}|Slack approval bridge>. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=9, issue=${issue.number}).`,
+                      },
+                    ],
                   },
                 ],
               };
