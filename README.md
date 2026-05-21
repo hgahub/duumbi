@@ -20,7 +20,12 @@ Traditional compilers transform text → AST → machine code. DUUMBI skips the 
 
 ## Install
 
-**Requirements:** Rust stable (1.80+), a C compiler on `$PATH` (`cc` / Xcode CLT / `gcc`).
+**Requirements:**
+
+- Rust stable 1.80+ through `rustup`.
+- macOS: Xcode Command Line Tools or an equivalent C compiler/linker.
+- Linux: `build-essential` or an equivalent C compiler/linker.
+- Windows native: Windows 10 version 1903+ on `x86_64-pc-windows-msvc`, the stable MSVC Rust toolchain, Visual Studio Build Tools or equivalent MSVC C++ tools, Windows SDK, and a usable linker/C compiler environment.
 
 ```bash
 git clone git@github.com:hgahub/duumbi.git
@@ -116,7 +121,9 @@ cargo fmt
 | macOS | aarch64 (Apple Silicon) | Primary |
 | macOS | x86_64 | CI-tested |
 | Linux | x86_64 | CI-tested |
-| Windows | — | Not supported |
+| Windows | x86_64-pc-windows-msvc | Native target; MSVC tools required |
+
+Native Windows builds use the MSVC Rust target and do not require WSL2. The current Windows support boundary does not cover ARM64 Windows, MinGW, Cygwin, GNU Windows toolchains, installers, packaging, or release signing.
 
 ---
 
