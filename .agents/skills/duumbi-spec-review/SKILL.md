@@ -55,6 +55,20 @@ Use this skill for one issue that:
 
 If the issue is not in `Spec Review` or the spec artifact is missing, stop and report the missing gate.
 
+## Approval Fast Path
+
+When the prompt contains an explicit **Approve** decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N`) AND an issue number is identifiable, skip the full review analysis and execute the Approve decision directly. For other decisions (Request Changes, Needs Clarification, Reject), use the full review flow below.
+
+1. `gh issue view <N> --json number,title,labels,body` — verify `spec-review` label is present
+2. `gh issue view <N> --comments --json comments` — find the Stage 6 Product Spec Draft artifact link
+3. Construct and post the Stage 7 Decision Comment on the issue
+4. Post a short pointer comment on the draft PR (if identifiable)
+5. Update labels: remove `needs-spec` and `spec-review`, add `product-spec-approved` and `needs-tech-spec`
+6. Attempt Project V2 status update to `Technical Spec Needed`
+7. Report the final state
+
+Do NOT read the full PRODUCT.md, run the review checklist, read unrelated skills, or re-fetch content already in context. Use `wait` mode for all `gh`/`git` commands.
+
 ## Context To Inspect
 
 Before reviewing:

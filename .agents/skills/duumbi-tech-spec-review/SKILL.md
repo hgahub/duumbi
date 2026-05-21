@@ -58,6 +58,28 @@ Use this skill for one issue that:
 
 If the issue is not in `Technical Spec Review`, the approved product spec is missing, or the technical spec draft PR is missing, stop and report the missing gate.
 
+## Approval Fast Path
+
+When the prompt contains an explicit **Approve** decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N, PR: #M`) AND an issue number is identifiable, skip the full review analysis and execute the Approve decision directly. For other decisions (Request Changes, Needs Clarification, Reject), use the full review flow below.
+
+1. `gh issue view <N> --json number,title,labels,body` — verify `technical-spec-review` label is present
+2. `gh issue view <N> --comments --json comments` — find the Stage 8 Technical Spec Draft artifact link and product spec link from existing comments (search for "Stage 8 Technical Spec Draft" and "Stage 6 Product Spec Draft")
+3. Construct and post the Stage 9 Decision Comment on the issue (use the Decision Comment template below)
+4. Post a short pointer comment on the tech spec PR (if identifiable from the artifact URL)
+5. Update labels: remove `needs-tech-spec` and `technical-spec-review`, add `tech-spec-approved`
+6. Attempt Project V2 status update to `Ready for Build` (if `GH_PROJECT_PAT` is available, use `GH_TOKEN=$GH_PROJECT_PAT gh api graphql`; otherwise skip and note in the report)
+7. Report the final state
+
+Do NOT:
+- Read the full TECHNICAL.md content (the human already reviewed and approved it)
+- Run the review checklist
+- Read unrelated skills (e.g. `duumbi-review-artifact`)
+- Use interact-mode subagents for simple `gh` or `git` commands
+- Fetch TECHNICAL.md more than once
+- List all repository labels
+
+This fast path applies when the decision is already explicit. If the prompt asks for a review (no decision present), use the full review flow below.
+
 ## Context To Inspect
 
 Before reviewing:
@@ -74,6 +96,13 @@ Before reviewing:
 - source code and tests only when needed to evaluate affected areas, constraints, invariants, verification, cycle boundaries, or implementation risk
 
 Do not claim GitHub status, source feasibility, affected areas, test coverage, or duplicate coverage unless verified.
+
+## Efficiency Rules
+
+- Use `wait` mode shell commands for non-interactive operations like `git show` and `gh` queries. Do NOT use `interact` mode for simple git/gh commands.
+- Batch independent queries in parallel when possible (e.g., issue view + PR view in a single tool call).
+- Read TECHNICAL.md at most once. Do not re-fetch content already in context.
+- Do not read skills unrelated to the current stage. If the issue label says `technical-spec-review`, use only `duumbi-tech-spec-review`.
 
 ## Review Checklist
 

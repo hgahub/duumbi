@@ -1,0 +1,454 @@
+name: Stage Approval
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'DUUMBI stage (5 = Human Acceptance, 7 = Spec Review, 9 = Tech Spec Review)'
+        required: true
+        type: choice
+        options: ['5', '7', '9']
+      issue_number:
+        description: 'GitHub issue number'
+        required: true
+        type: number
+      decision:
+        description: 'Approval decision'
+        required: true
+        type: choice
+        options: ['approve', 'request-changes', 'needs-clarification', 'reject']
+      rationale:
+        description: 'Short rationale for the decision'
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: 'Associated PR number (stages 7/9, 0 to auto-detect)'
+        required: false
+        type: number
+        default: 0
+  repository_dispatch:
+    types: [stage-approval]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: stage-approval-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    name: Execute approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute decision
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          INPUT_SLACK_RESPONSE_URL: ${{ github.event.client_payload.slack_response_url || '' }}
+        with:
+          script: |
+            // ── Inputs ──────────────────────────────────────────────
+            const raw = context.eventName === 'repository_dispatch'
+              ? context.payload.client_payload
+              : {
+                  stage: String(context.payload.inputs.stage),
+                  issue_number: Number(context.payload.inputs.issue_number),
+                  decision: String(context.payload.inputs.decision),
+                  rationale: String(context.payload.inputs.rationale || ''),
+                  pr_number: Number(context.payload.inputs.pr_number || 0),
+                  reviewer: context.actor,
+                };
+
+            const stage = String(raw.stage);
+            const issueNumber = Number(raw.issue_number);
+            const decision = String(raw.decision);
+            const rationale = raw.rationale || `Recorded via Stage Approval workflow (decision: ${decision}).`;
+            let prNumber = Number(raw.pr_number || 0);
+            const reviewer = raw.reviewer || context.actor;
+            const { owner, repo } = context.repo;
+            const issueUrl = `https://github.com/${owner}/${repo}/issues/${issueNumber}`;
+            const today = new Date().toISOString().split('T')[0];
+
+            core.info(`Stage ${stage} | ${decision} | issue #${issueNumber}`);
+
+            // ── Stage decision matrix ───────────────────────────────
+            const matrix = {
+              '5': {
+                title: 'Stage 5 Human Acceptance Decision',
+                approve: {
+                  label: 'Accept',
+                  add: ['accepted', 'needs-spec'],
+                  remove: ['needs-human-review'],
+                  projectStatus: 'Spec Needed',
+                  nextState: 'Spec Needed',
+                  nextStage: 'Stage 6 Spec Preparation',
+                },
+                'needs-clarification': {
+                  label: 'Needs Clarification',
+                  add: ['needs-clarification'],
+                  remove: [],
+                  projectStatus: 'Needs Clarification',
+                  nextState: 'Needs Clarification',
+                  nextStage: 'Needs Clarification',
+                },
+                reject: {
+                  label: 'Reject',
+                  add: [],
+                  remove: ['needs-human-review'],
+                  projectStatus: 'Closed',
+                  nextState: 'Closed',
+                  nextStage: 'Closed',
+                },
+              },
+              '7': {
+                title: 'Stage 7 Product Spec Review Decision',
+                approve: {
+                  label: 'Approve',
+                  add: ['product-spec-approved', 'needs-tech-spec'],
+                  remove: ['needs-spec', 'spec-review'],
+                  projectStatus: 'Technical Spec Needed',
+                  nextState: 'Technical Spec Needed',
+                  nextStage: 'Stage 8 Technical Specification Preparation',
+                },
+                'request-changes': {
+                  label: 'Request Changes',
+                  add: ['needs-spec'],
+                  remove: ['spec-review'],
+                  projectStatus: 'Spec Needed',
+                  nextState: 'Spec Needed',
+                  nextStage: 'Stage 6 Spec Preparation',
+                },
+                'needs-clarification': {
+                  label: 'Needs Clarification',
+                  add: ['needs-clarification'],
+                  remove: ['spec-review'],
+                  projectStatus: 'Needs Clarification',
+                  nextState: 'Needs Clarification',
+                  nextStage: 'Needs Clarification',
+                },
+                reject: {
+                  label: 'Reject / No Longer Needed',
+                  add: [],
+                  remove: ['needs-spec', 'spec-review'],
+                  projectStatus: 'Closed',
+                  nextState: 'Closed',
+                  nextStage: 'Closed',
+                },
+              },
+              '9': {
+                title: 'Stage 9 Technical Spec Review Decision',
+                approve: {
+                  label: 'Approve',
+                  add: ['tech-spec-approved'],
+                  remove: ['needs-tech-spec', 'technical-spec-review'],
+                  projectStatus: 'Ready for Build',
+                  nextState: 'Ready for Build',
+                  nextStage: 'Stage 10 Ralph-Cycle Implementation',
+                },
+                'request-changes': {
+                  label: 'Request Changes',
+                  add: ['needs-tech-spec'],
+                  remove: ['technical-spec-review'],
+                  projectStatus: 'Technical Spec Needed',
+                  nextState: 'Technical Spec Needed',
+                  nextStage: 'Stage 8 Technical Specification Preparation',
+                },
+                'needs-clarification': {
+                  label: 'Needs Clarification',
+                  add: ['needs-clarification'],
+                  remove: ['technical-spec-review'],
+                  projectStatus: 'Needs Clarification',
+                  nextState: 'Needs Clarification',
+                  nextStage: 'Needs Clarification',
+                },
+                reject: {
+                  label: 'Reject / No Longer Needed',
+                  add: [],
+                  remove: ['needs-tech-spec', 'technical-spec-review'],
+                  projectStatus: 'Closed',
+                  nextState: 'Closed',
+                  nextStage: 'Closed',
+                },
+              },
+            };
+
+            const stageConfig = matrix[stage];
+            if (!stageConfig) { core.setFailed(`Unknown stage: ${stage}`); return; }
+            const dc = stageConfig[decision];
+            if (!dc) { core.setFailed(`"${decision}" not supported for Stage ${stage}`); return; }
+
+            // ── Fetch issue ─────────────────────────────────────────
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number: issueNumber,
+            });
+            const labels = issue.labels.map(l => (typeof l === 'string' ? l : l.name)).filter(Boolean);
+
+            // ── Find artifacts from existing comments ───────────────
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: issueNumber, per_page: 100,
+            });
+
+            const extractUrls = (text) =>
+              (text.match(/https:\/\/github\.com\/[^\s)>\]]+/gi) || [])
+                .map(u => u.replace(/[\]>.,;:]+$/, ''));
+
+            const findComment = (pattern) =>
+              [...comments].reverse().find(c => pattern.test(c.body || ''));
+
+            let techSpecArtifact = '';
+            let productSpecArtifact = '';
+
+            if (stage === '9') {
+              const s8 = findComment(/Stage 8 Technical Spec Draft/i);
+              if (s8) {
+                const urls = extractUrls(s8.body || '');
+                techSpecArtifact = urls[0] || s8.html_url;
+                productSpecArtifact = urls[1] || '';
+              }
+              if (!productSpecArtifact) {
+                const s6 = findComment(/Stage 6 Product Spec Draft/i);
+                if (s6) productSpecArtifact = extractUrls(s6.body || '')[0] || s6.html_url;
+              }
+              if (!prNumber && techSpecArtifact) {
+                const m = techSpecArtifact.match(/\/pull\/(\d+)/);
+                if (m) prNumber = Number(m[1]);
+              }
+            } else if (stage === '7') {
+              const s6 = findComment(/Stage 6 Product Spec Draft/i);
+              if (s6) productSpecArtifact = extractUrls(s6.body || '')[0] || s6.html_url;
+              if (!prNumber && productSpecArtifact) {
+                const m = productSpecArtifact.match(/\/pull\/(\d+)/);
+                if (m) prNumber = Number(m[1]);
+              }
+            }
+
+            // ── Build decision comment ──────────────────────────────
+            const lines = [`## ${stageConfig.title}`, ''];
+            lines.push(`**Decision:** ${dc.label}`);
+            lines.push(`**Reviewer source:** ${reviewer}`);
+
+            if (stage === '5') {
+              lines.push(`**Rationale:** ${rationale}`);
+              lines.push(`**Stage 4 recommendation considered:** yes`);
+              lines.push(`**Remaining open questions:** none`);
+              lines.push(`**Canonical duplicate:** none`);
+              lines.push(`**Review date:** ${today}`);
+            } else if (stage === '7') {
+              lines.push(`**Spec artifact:** ${productSpecArtifact || 'not found'}`);
+              lines.push(`**Rationale:** ${rationale}`);
+              lines.push(`**Blocking findings:** none`);
+              lines.push(`**Non-blocking findings:** none`);
+              lines.push(`**Remaining open questions:** none`);
+            } else if (stage === '9') {
+              lines.push(`**Technical spec:** ${techSpecArtifact || 'not found'}`);
+              lines.push(`**Product spec:** ${productSpecArtifact || 'not found'}`);
+              lines.push(`**Rationale:** ${rationale}`);
+              lines.push(`**Blocking findings:** none`);
+              lines.push(`**Non-blocking findings:** none`);
+              lines.push(`**Remaining open questions:** none`);
+            }
+            lines.push(`**Next state:** ${dc.nextState}`);
+
+            // ── Post decision comment ───────────────────────────────
+            const { data: posted } = await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber, body: lines.join('\n'),
+            });
+            core.info(`Decision comment: ${posted.html_url}`);
+
+            // ── Post PR pointer comment (stages 7/9) ────────────────
+            let prCommentUrl = '';
+            if (prNumber && (stage === '7' || stage === '9')) {
+              try {
+                const { data: prc } = await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber,
+                  body: [
+                    `## ${stageConfig.title}`,
+                    '',
+                    `**Decision:** ${dc.label}`,
+                    `**Issue:** ${issueUrl}`,
+                    `**Decision comment:** ${posted.html_url}`,
+                  ].join('\n'),
+                });
+                prCommentUrl = prc.html_url;
+                core.info(`PR comment: ${prCommentUrl}`);
+              } catch (err) {
+                core.warning(`PR #${prNumber} comment failed: ${err.message}`);
+              }
+            }
+
+            // ── Close issue on reject ────────────────────────────────
+            if (decision === 'reject') {
+              try {
+                await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed' });
+                core.info(`Issue #${issueNumber} closed.`);
+              } catch (err) {
+                core.warning(`Close issue failed: ${err.message}`);
+              }
+            }
+
+            // ── Update labels ───────────────────────────────────────
+            const currentLabels = new Set(labels);
+            for (const rm of dc.remove) {
+              if (currentLabels.has(rm)) {
+                try {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: rm });
+                  core.info(`Label removed: ${rm}`);
+                } catch (err) {
+                  core.warning(`Remove label "${rm}": ${err.message}`);
+                }
+              }
+            }
+            for (const add of dc.add) {
+              if (!currentLabels.has(add)) {
+                try {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: [add] });
+                  core.info(`Label added: ${add}`);
+                } catch (err) {
+                  core.warning(`Add label "${add}": ${err.message}`);
+                }
+              }
+            }
+
+            // ── Project V2 status update ────────────────────────────
+            let projectUpdated = false;
+            const projectPat = process.env.GH_PROJECT_PAT;
+            if (projectPat && dc.projectStatus) {
+              try {
+                const gql = async (query, variables) => {
+                  const res = await fetch('https://api.github.com/graphql', {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `bearer ${projectPat}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query, variables }),
+                  });
+                  const json = await res.json();
+                  if (json.errors) throw new Error(json.errors.map(e => e.message).join('; '));
+                  return json.data;
+                };
+
+                // Find project items for the issue
+                const itemsData = await gql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $number) {
+                        projectItems(first: 10) {
+                          nodes { id project { id title } }
+                        }
+                      }
+                    }
+                  }`, { owner, repo, number: issueNumber });
+
+                const items = itemsData.repository?.issue?.projectItems?.nodes || [];
+                for (const item of items) {
+                  // Find the Status field and target option
+                  const fieldsData = await gql(`
+                    query($pid: ID!) {
+                      node(id: $pid) {
+                        ... on ProjectV2 {
+                          fields(first: 30) {
+                            nodes {
+                              ... on ProjectV2SingleSelectField { id name options { id name } }
+                            }
+                          }
+                        }
+                      }
+                    }`, { pid: item.project.id });
+
+                  const statusField = fieldsData.node?.fields?.nodes?.find(f => f.name === 'Status');
+                  if (!statusField) continue;
+
+                  const opt = statusField.options.find(o => o.name === dc.projectStatus);
+                  if (!opt) {
+                    core.warning(`Status option "${dc.projectStatus}" not found in "${item.project.title}".`);
+                    continue;
+                  }
+
+                  await gql(`
+                    mutation($pid: ID!, $iid: ID!, $fid: ID!, $oid: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $pid, itemId: $iid, fieldId: $fid,
+                        value: { singleSelectOptionId: $oid }
+                      }) { projectV2Item { id } }
+                    }`, { pid: item.project.id, iid: item.id, fid: statusField.id, oid: opt.id });
+
+                  projectUpdated = true;
+                  core.info(`Project "${item.project.title}" → ${dc.projectStatus}`);
+                }
+              } catch (err) {
+                core.warning(`Project V2 update failed: ${err.message}`);
+              }
+            } else if (!projectPat) {
+              core.info('GH_PROJECT_PAT not set — skipping Project V2 update.');
+            }
+
+            // ── Notify Slack ────────────────────────────────────────
+            const decisionEmoji = {
+              approve: '✅', 'request-changes': '✏️',
+              'needs-clarification': '❓', reject: '🚫',
+            }[decision] || 'ℹ️';
+            const slackEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const safeTitle = slackEscape(issue.title).slice(0, 60);
+            const summary = [
+              `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
+              `• Decision comment: ${posted.html_url}`,
+              prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
+              `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,
+              `• Project: ${projectUpdated ? dc.projectStatus : '_not updated_'}`,
+              `• Next: ${dc.nextStage}`,
+            ].filter(Boolean).join('\n');
+
+            // Reply in Slack thread via response_url (from button click)
+            const slackResponseUrl = process.env.INPUT_SLACK_RESPONSE_URL;
+            if (slackResponseUrl) {
+              try {
+                await fetch(slackResponseUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: summary, replace_original: false }),
+                });
+              } catch (err) {
+                core.warning(`Slack response_url failed: ${err.message}`);
+              }
+            }
+
+            // Post to review channel
+            const slackToken = process.env.SLACK_BOT_TOKEN;
+            const slackChannel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            if (slackToken && slackChannel) {
+              try {
+                const res = await fetch('https://slack.com/api/chat.postMessage', {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${slackToken}`,
+                    'Content-Type': 'application/json; charset=utf-8',
+                  },
+                  body: JSON.stringify({ channel: slackChannel, text: summary }),
+                });
+                const body = await res.json();
+                if (!body.ok) core.warning(`Slack: ${body.error}`);
+              } catch (err) {
+                core.warning(`Slack notification failed: ${err.message}`);
+              }
+            }
+
+            // ── Workflow summary ─────────────────────────────────────
+            core.summary
+              .addHeading(`Stage ${stage} ${dc.label} — #${issueNumber}`, 2)
+              .addTable([
+                [{data: 'Field', header: true}, {data: 'Value', header: true}],
+                ['Decision', dc.label],
+                ['Comment', posted.html_url],
+                ['Labels added', dc.add.join(', ') || 'none'],
+                ['Labels removed', dc.remove.join(', ') || 'none'],
+                ['Project V2', projectUpdated ? dc.projectStatus : 'not updated'],
+                ['Next stage', dc.nextStage],
+              ])
+              .write();

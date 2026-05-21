@@ -125,20 +125,7 @@ jobs:
               return stage6Comment.html_url;
             };
 
-            const reviewPromptFor = (issueUrl, specArtifact) => [
-              "Run DUUMBI Stage 7 Product Spec Review with duumbi-spec-review.",
-              "",
-              `Target issue: ${issueUrl}`,
-              `Product spec artifact: ${specArtifact}`,
-              "Human decision: Approve",
-              "Reviewer source: Slack",
-              "Rationale: Reviewed and approved the PRODUCT spec; it is clear enough to proceed to technical specification.",
-              "",
-              "Goal: Review the product spec including BDD scenario clarity/testability, record the structured Stage 7 decision, set the issue to Technical Spec Needed, remove needs-spec, and add product-spec-approved and needs-tech-spec.",
-              "",
-              "If needed, fix the code review message so the decision is explicit and complete, and set the resolved flag.",
-              "Do not create a technical spec or implementation changes.",
-            ].join("\n");
+            const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
             const buildSlackMessage = (issue, triggeredBy, specArtifact) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
@@ -148,7 +135,16 @@ jobs:
               const safeLabels = sanitizeSlackField(labels);
               const safeTriggeredBy = sanitizeSlackField(triggeredBy);
               const correlationId = `${context.runId}-${issue.number}`;
-              const reviewPrompt = reviewPromptFor(issueUrl, specArtifact);
+
+              const prMatch = specArtifact.match(/\/pull\/(\d+)/);
+              const prNum = prMatch ? Number(prMatch[1]) : 0;
+
+              const buttonValue = (decision) => JSON.stringify({
+                stage: "7",
+                issue_number: issue.number,
+                decision,
+                pr_number: prNum,
+              });
 
               return {
                 text: `DUUMBI issue #${issue.number} needs product spec review approval: ${title}`,
@@ -161,18 +157,44 @@ jobs:
                     },
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: "*Reply in this thread with `@Oz approve: <short rationale>`*",
-                    },
+                    type: "actions",
+                    block_id: `spec_review_${issue.number}`,
+                    elements: [
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "✅ Approve", emoji: true },
+                        style: "primary",
+                        action_id: "stage_approve",
+                        value: buttonValue("approve"),
+                        confirm: {
+                          title: { type: "plain_text", text: "Approve Product Spec" },
+                          text: { type: "mrkdwn", text: `Approve Stage 7 Product Spec Review for issue #${issue.number}?\nThis will set the issue to *Technical Spec Needed*.` },
+                          confirm: { type: "plain_text", text: "Approve" },
+                          deny: { type: "plain_text", text: "Cancel" },
+                        },
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "↩️ Request Changes", emoji: true },
+                        action_id: "stage_request_changes",
+                        value: buttonValue("request-changes"),
+                      },
+                      {
+                        type: "button",
+                        text: { type: "plain_text", text: "❓ Needs Clarification", emoji: true },
+                        action_id: "stage_needs_clarification",
+                        value: buttonValue("needs-clarification"),
+                      },
+                    ],
                   },
                   {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: `When approving, Oz must run in the \`${ozEnvironmentName}\` environment with ID \`${ozEnvironmentId}\` and this prompt:\n\`\`\`text\n${reviewPrompt}\n\`\`\``,
-                    },
+                    type: "context",
+                    elements: [
+                      {
+                        type: "mrkdwn",
+                        text: `Buttons are handled by the Slack approval bridge. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=7, issue=${issue.number}).`,
+                      },
+                    ],
                   },
                 ],
               };
