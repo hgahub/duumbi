@@ -100,19 +100,6 @@ jobs:
               }
             };
 
-            const acceptancePromptFor = (issueUrl) => [
-              "Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.",
-              "",
-              `Target issue: ${issueUrl}`,
-              "Human decision: Accept",
-              "Reviewer source: Slack",
-              "Rationale: <short human rationale>",
-              "",
-              "Goal: Record the structured Stage 5 decision, set the issue to Spec Needed, add accepted and needs-spec labels, and remove needs-human-review when available.",
-              "",
-              "Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.",
-            ].join("\n");
-
             const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
             const buildSlackMessage = (issue, triggeredBy) => {
@@ -183,7 +170,7 @@ jobs:
                     elements: [
                       {
                         type: "mrkdwn",
-                        text: `Buttons require the <${workflowDispatchUrl}|Slack approval bridge>. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=5, issue=${issue.number}).`,
+                        text: `Buttons are handled by the Slack approval bridge. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=5, issue=${issue.number}).`,
                       },
                     ],
                   },

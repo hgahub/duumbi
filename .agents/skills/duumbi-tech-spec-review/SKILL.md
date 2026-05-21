@@ -60,7 +60,7 @@ If the issue is not in `Technical Spec Review`, the approved product spec is mis
 
 ## Approval Fast Path
 
-When the prompt contains an explicit human decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N, PR: #M`) AND an issue number is identifiable, skip the full review analysis and execute the decision directly:
+When the prompt contains an explicit **Approve** decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N, PR: #M`) AND an issue number is identifiable, skip the full review analysis and execute the Approve decision directly. For other decisions (Request Changes, Needs Clarification, Reject), use the full review flow below.
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `technical-spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 8 Technical Spec Draft artifact link and product spec link from existing comments (search for "Stage 8 Technical Spec Draft" and "Stage 6 Product Spec Draft")

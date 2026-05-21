@@ -125,21 +125,6 @@ jobs:
               return stage6Comment.html_url;
             };
 
-            const reviewPromptFor = (issueUrl, specArtifact) => [
-              "Run DUUMBI Stage 7 Product Spec Review with duumbi-spec-review.",
-              "",
-              `Target issue: ${issueUrl}`,
-              `Product spec artifact: ${specArtifact}`,
-              "Human decision: Approve",
-              "Reviewer source: Slack",
-              "Rationale: Reviewed and approved the PRODUCT spec; it is clear enough to proceed to technical specification.",
-              "",
-              "Goal: Review the product spec including BDD scenario clarity/testability, record the structured Stage 7 decision, set the issue to Technical Spec Needed, remove needs-spec, and add product-spec-approved and needs-tech-spec.",
-              "",
-              "If needed, fix the code review message so the decision is explicit and complete, and set the resolved flag.",
-              "Do not create a technical spec or implementation changes.",
-            ].join("\n");
-
             const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
             const buildSlackMessage = (issue, triggeredBy, specArtifact) => {
@@ -207,7 +192,7 @@ jobs:
                     elements: [
                       {
                         type: "mrkdwn",
-                        text: `Buttons require the <${workflowDispatchUrl}|Slack approval bridge>. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=7, issue=${issue.number}).`,
+                        text: `Buttons are handled by the Slack approval bridge. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=7, issue=${issue.number}).`,
                       },
                     ],
                   },

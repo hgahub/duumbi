@@ -57,7 +57,7 @@ If the issue is not in `Spec Review` or the spec artifact is missing, stop and r
 
 ## Approval Fast Path
 
-When the prompt contains an explicit human decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N`) AND an issue number is identifiable, skip the full review analysis and execute the decision directly:
+When the prompt contains an explicit **Approve** decision (e.g. `Human decision: Approve`, or a Slack message like `approved: issue: #N`) AND an issue number is identifiable, skip the full review analysis and execute the Approve decision directly. For other decisions (Request Changes, Needs Clarification, Reject), use the full review flow below.
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 6 Product Spec Draft artifact link

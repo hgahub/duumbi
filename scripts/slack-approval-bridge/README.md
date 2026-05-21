@@ -10,7 +10,7 @@ credits to ~30 seconds / 0 credits.
 
 ## Architecture
 
-```
+```text
 Slack button click
   → Slack sends interaction payload to Azure Function URL
     → Function verifies Slack signing secret

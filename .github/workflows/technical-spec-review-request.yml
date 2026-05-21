@@ -136,22 +136,6 @@ jobs:
               };
             };
 
-            const reviewPromptFor = (issueUrl, technicalSpecArtifact, productSpecArtifact) => [
-              "Run DUUMBI Stage 9 Technical Spec Review with duumbi-tech-spec-review.",
-              "",
-              `Target issue: ${issueUrl}`,
-              `Technical spec artifact: ${technicalSpecArtifact}`,
-              `Product spec artifact: ${productSpecArtifact}`,
-              "Human decision: Approve",
-              "Reviewer source: Slack",
-              "Rationale: Reviewed and approved the technical specification; it is sufficiently bounded for Stage 10 Ralph-cycle implementation.",
-              "",
-              "Goal: Review BDD-to-test mapping, live E2E feasibility, and Ralph Cycle resource policy; record the structured Stage 9 decision, set the issue to Ready for Build, remove needs-tech-spec, and add tech-spec-approved.",
-              "",
-              "After an `@Oz approve: <short rationale>` reply, fix the code review message if needed so the decision is explicit and complete, then set the resolved flag.",
-              "Do not request a Ralph cycle or start implementation.",
-            ].join("\n");
-
             const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
             const buildSlackMessage = (issue, triggeredBy, artifacts) => {
@@ -227,7 +211,7 @@ jobs:
                     elements: [
                       {
                         type: "mrkdwn",
-                        text: `Buttons require the <${workflowDispatchUrl}|Slack approval bridge>. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=9, issue=${issue.number}).`,
+                        text: `Buttons are handled by the Slack approval bridge. Fallback: run <${workflowDispatchUrl}|Stage Approval> workflow manually (stage=9, issue=${issue.number}).`,
                       },
                     ],
                   },

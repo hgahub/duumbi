@@ -55,7 +55,7 @@ Do not process broad sweeps in this skill. Handle one issue and one explicit dec
 
 ## Acceptance Fast Path
 
-When the prompt contains an explicit human decision (e.g. `Human decision: Accept`, or a Slack message like `accepted: issue: #N`) AND an issue number is identifiable, skip the full acceptance brief and execute the decision directly:
+When the prompt contains an explicit **Accept** decision (e.g. `Human decision: Accept`, or a Slack message like `accepted: issue: #N`) AND an issue number is identifiable, skip the full acceptance brief and execute the Accept decision directly. For other decisions (Needs Clarification, Duplicate, Defer, Reject), use the full review flow below.
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `needs-human-review` label is present
 2. Construct and post the Stage 5 Human Acceptance Decision Comment on the issue

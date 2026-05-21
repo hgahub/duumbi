@@ -68,7 +68,7 @@ jobs:
             const stage = String(raw.stage);
             const issueNumber = Number(raw.issue_number);
             const decision = String(raw.decision);
-            const rationale = raw.rationale || 'Approved via Stage Approval workflow.';
+            const rationale = raw.rationale || `Recorded via Stage Approval workflow (decision: ${decision}).`;
             let prNumber = Number(raw.pr_number || 0);
             const reviewer = raw.reviewer || context.actor;
             const { owner, repo } = context.repo;
@@ -282,6 +282,16 @@ jobs:
               }
             }
 
+            // ── Close issue on reject ────────────────────────────────
+            if (decision === 'reject') {
+              try {
+                await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed' });
+                core.info(`Issue #${issueNumber} closed.`);
+              } catch (err) {
+                core.warning(`Close issue failed: ${err.message}`);
+              }
+            }
+
             // ── Update labels ───────────────────────────────────────
             const currentLabels = new Set(labels);
             for (const rm of dc.remove) {
@@ -380,8 +390,14 @@ jobs:
             }
 
             // ── Notify Slack ────────────────────────────────────────
+            const decisionEmoji = {
+              approve: '✅', 'request-changes': '✏️',
+              'needs-clarification': '❓', reject: '🚫',
+            }[decision] || 'ℹ️';
+            const slackEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const safeTitle = slackEscape(issue.title).slice(0, 60);
             const summary = [
-              `✅ Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${issue.title.slice(0, 60)}>`,
+              `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
               `• Decision comment: ${posted.html_url}`,
               prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
               `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,

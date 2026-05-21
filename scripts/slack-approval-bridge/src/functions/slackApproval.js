@@ -27,7 +27,15 @@ app.http("slack-approval", {
     }
 
     const params = new URLSearchParams(body);
-    const payload = JSON.parse(params.get("payload"));
+    let payload;
+    try {
+      payload = JSON.parse(params.get("payload") || "{}");
+    } catch {
+      return { status: 400, jsonBody: { text: "Invalid Slack payload." } };
+    }
+    if (!payload || typeof payload !== "object") {
+      return { status: 400, jsonBody: { text: "Invalid Slack payload." } };
+    }
 
     if (payload.type !== "block_actions") {
       return { jsonBody: { text: "Unsupported interaction type." } };
@@ -47,10 +55,36 @@ app.http("slack-approval", {
 
     const user = payload.user;
     const reviewer = `Slack (${user.name || user.real_name || user.id})`;
+    const decisionLabel = String(actionData.decision || "unknown").replace(/-/g, " ");
+    const fallbackRationale = `${decisionLabel.charAt(0).toUpperCase() + decisionLabel.slice(1)} by ${reviewer}`;
 
-    // Trigger GitHub repository_dispatch
+    // Acknowledge Slack immediately (must respond within 3 seconds)
+    // Then dispatch to GitHub asynchronously.
+    const responseUrl = payload.response_url;
     const githubRepo = process.env.GITHUB_REPO || "hgahub/duumbi";
-    const dispatchRes = await fetch(
+    const clientPayload = {
+      stage: actionData.stage,
+      issue_number: actionData.issue_number,
+      decision: actionData.decision,
+      rationale: actionData.rationale || fallbackRationale,
+      pr_number: actionData.pr_number || 0,
+      reviewer,
+      slack_response_url: responseUrl,
+    };
+
+    // Fire-and-forget: dispatch to GitHub + post Slack thread update
+    dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context);
+
+    // Return 200 immediately so Slack doesn't retry
+    return { status: 200, body: "" };
+  },
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context) {
+  try {
+    const res = await fetch(
       `https://api.github.com/repos/${githubRepo}/dispatches`,
       {
         method: "POST",
@@ -61,41 +95,28 @@ app.http("slack-approval", {
           "Content-Type": "application/json",
           "User-Agent": "duumbi-slack-approval-bridge/1.0",
         },
-        body: JSON.stringify({
-          event_type: "stage-approval",
-          client_payload: {
-            stage: actionData.stage,
-            issue_number: actionData.issue_number,
-            decision: actionData.decision,
-            rationale: actionData.rationale || `Approved by ${reviewer}`,
-            pr_number: actionData.pr_number || 0,
-            reviewer,
-            slack_response_url: payload.response_url,
-          },
-        }),
+        body: JSON.stringify({ event_type: "stage-approval", client_payload: clientPayload }),
       },
     );
 
-    if (!dispatchRes.ok) {
-      const errText = await dispatchRes.text();
-      context.error("GitHub dispatch failed:", dispatchRes.status, errText);
-
-      if (payload.response_url) {
-        await fetch(payload.response_url, {
+    if (!res.ok) {
+      const errText = await res.text();
+      context.error("GitHub dispatch failed:", res.status, errText);
+      if (responseUrl) {
+        await fetch(responseUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             replace_original: false,
-            text: `⚠️ Approval workflow trigger failed (HTTP ${dispatchRes.status}). Please use the manual workflow dispatch as fallback.`,
+            text: `⚠️ Approval workflow trigger failed (HTTP ${res.status}). Please use the manual workflow dispatch as fallback.`,
           }),
         });
       }
-      return { jsonBody: { text: "Dispatch failed." } };
+      return;
     }
 
-    // Acknowledge in Slack thread
-    if (payload.response_url) {
-      await fetch(payload.response_url, {
+    if (responseUrl) {
+      await fetch(responseUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -104,24 +125,26 @@ app.http("slack-approval", {
         }),
       });
     }
-
-    // Slack expects a 200 within 3 seconds for interactions
-    return { status: 200, body: "" };
-  },
-});
-
-// ── Helpers ──────────────────────────────────────────────────────
+  } catch (err) {
+    context.error("dispatchAsync error:", err);
+  }
+}
 
 function verifySlackSignature(body, timestamp, signature, signingSecret) {
   if (!timestamp || !signature || !signingSecret) return false;
 
-  // Reject requests older than 5 minutes
+  // Reject non-numeric or stale timestamps (>5 minutes)
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) return false;
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(timestamp)) > 300) return false;
+  if (Math.abs(now - ts) > 300) return false;
 
   const baseString = `v0:${timestamp}:${body}`;
   const computed =
     "v0=" + crypto.createHmac("sha256", signingSecret).update(baseString).digest("hex");
 
-  return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
+  const a = Buffer.from(computed);
+  const b = Buffer.from(signature);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
