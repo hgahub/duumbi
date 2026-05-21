@@ -7,8 +7,14 @@
 //! - The [`tui`] submodule returns `ratatui::Style` values for the full-screen
 //!   REPL, using the brand-aligned dark palette (rust + parchment + blue ink).
 //!
-//! Both honour `NO_COLOR`/`CLICOLOR` for graceful degradation on terminals
-//! that do not support truecolor.
+//! Non-TUI helpers disable ANSI styling when `NO_COLOR` is set,
+//! `CLICOLOR=0` is set, or stderr is not a terminal. `CLICOLOR_FORCE` with a
+//! non-empty, non-zero value re-enables ANSI styling for captured output unless
+//! `NO_COLOR` or `CLICOLOR=0` explicitly disable it. TUI helpers use truecolor
+//! only when the environment advertises support and otherwise fall back to
+//! named ANSI colors.
+
+use std::io::IsTerminal as _;
 
 use owo_colors::OwoColorize;
 
@@ -19,57 +25,57 @@ use owo_colors::OwoColorize;
 /// Renders text in red (errors, failures).
 #[must_use]
 pub fn error(text: &str) -> String {
-    format!("{}", text.red().bold())
+    style_if_color_enabled(text, |text| format!("{}", text.red().bold()))
 }
 
 /// Renders text in green (success, pass).
 #[must_use]
 pub fn success(text: &str) -> String {
-    format!("{}", text.green().bold())
+    style_if_color_enabled(text, |text| format!("{}", text.green().bold()))
 }
 
 /// Renders text in yellow (warnings).
 #[must_use]
 #[allow(dead_code)]
 pub fn warning(text: &str) -> String {
-    format!("{}", text.yellow())
+    style_if_color_enabled(text, |text| format!("{}", text.yellow()))
 }
 
 /// Renders text in cyan (informational highlights).
 #[must_use]
 pub fn info(text: &str) -> String {
-    format!("{}", text.cyan())
+    style_if_color_enabled(text, |text| format!("{}", text.cyan()))
 }
 
 /// Renders text in dim/grey (secondary information).
 #[must_use]
 pub fn dim(text: &str) -> String {
-    format!("{}", text.dimmed())
+    style_if_color_enabled(text, |text| format!("{}", text.dimmed()))
 }
 
 /// Renders text in bold (emphasis).
 #[must_use]
 pub fn bold(text: &str) -> String {
-    format!("{}", text.bold())
+    style_if_color_enabled(text, |text| format!("{}", text.bold()))
 }
 
 /// Renders a slash command name in bold cyan.
 #[cfg(test)]
 #[must_use]
 pub fn command(text: &str) -> String {
-    format!("{}", text.cyan().bold())
+    style_if_color_enabled(text, |text| format!("{}", text.cyan().bold()))
 }
 
 /// Renders an error code (e.g. "E001") in bold red.
 #[must_use]
 pub fn error_code(text: &str) -> String {
-    format!("{}", text.red().bold())
+    style_if_color_enabled(text, |text| format!("{}", text.red().bold()))
 }
 
 /// Renders a node ID in blue.
 #[must_use]
 pub fn node_id(text: &str) -> String {
-    format!("{}", text.blue())
+    style_if_color_enabled(text, |text| format!("{}", text.blue()))
 }
 
 /// Renders a check mark in green.
@@ -82,6 +88,47 @@ pub fn check_mark() -> String {
 #[must_use]
 pub fn cross_mark() -> String {
     error("\u{2717}")
+}
+
+fn style_if_color_enabled<F>(text: &str, apply: F) -> String
+where
+    F: FnOnce(&str) -> String,
+{
+    if non_tui_color_enabled() {
+        apply(text)
+    } else {
+        text.to_string()
+    }
+}
+
+fn non_tui_color_enabled() -> bool {
+    let clicolor = std::env::var("CLICOLOR").ok();
+    let clicolor_force = std::env::var("CLICOLOR_FORCE").ok();
+    non_tui_color_enabled_from_env(
+        std::env::var_os("NO_COLOR").is_some(),
+        clicolor.as_deref(),
+        clicolor_force.as_deref(),
+        std::io::stderr().is_terminal(),
+    )
+}
+
+fn non_tui_color_enabled_from_env(
+    no_color: bool,
+    clicolor: Option<&str>,
+    clicolor_force: Option<&str>,
+    stream_is_terminal: bool,
+) -> bool {
+    if no_color || clicolor == Some("0") {
+        return false;
+    }
+
+    // `CLICOLOR_FORCE` intentionally overrides captured-output detection, but
+    // not the explicit opt-out variables handled above.
+    if clicolor_force.is_some_and(|value| !value.is_empty() && value != "0") {
+        return true;
+    }
+
+    stream_is_terminal
 }
 
 // ---------------------------------------------------------------------------
@@ -148,18 +195,40 @@ pub mod tui {
     }
 
     fn detect_truecolor() -> bool {
-        if std::env::var_os("NO_COLOR").is_some() {
+        let colorterm = std::env::var("COLORTERM").ok();
+        let term_program = std::env::var("TERM_PROGRAM").ok();
+        detect_truecolor_from_env(
+            std::env::var_os("NO_COLOR").is_some(),
+            colorterm.as_deref(),
+            term_program.as_deref(),
+        )
+    }
+
+    /// Determines whether truecolor (24-bit) styling should be enabled from
+    /// environment snapshots.
+    ///
+    /// `no_color` is the explicit opt-out flag, `colorterm` is the sampled
+    /// `COLORTERM` value, and `term_program` is the sampled `TERM_PROGRAM`
+    /// value. Returns `true` when the environment indicates truecolor support.
+    #[must_use]
+    pub(super) fn detect_truecolor_from_env(
+        no_color: bool,
+        colorterm: Option<&str>,
+        term_program: Option<&str>,
+    ) -> bool {
+        if no_color {
             return false;
         }
-        match std::env::var("COLORTERM") {
-            Ok(v) => {
-                let lower = v.to_lowercase();
+
+        match colorterm {
+            Some(value) => {
+                let lower = value.to_lowercase();
                 lower.contains("truecolor") || lower.contains("24bit")
             }
-            Err(_) => {
+            None => {
                 // Common modern terminals (kitty, wezterm, alacritty, vscode)
                 // export `TERM_PROGRAM` even without COLORTERM.
-                std::env::var("TERM_PROGRAM").is_ok()
+                term_program.is_some()
             }
         }
     }
@@ -581,6 +650,25 @@ mod tests {
     }
 
     #[test]
+    fn non_tui_color_policy_honors_no_color_and_capture() {
+        assert!(!non_tui_color_enabled_from_env(true, None, Some("1"), true));
+        assert!(!non_tui_color_enabled_from_env(
+            false,
+            Some("0"),
+            Some("1"),
+            true
+        ));
+        assert!(!non_tui_color_enabled_from_env(false, None, None, false));
+        assert!(non_tui_color_enabled_from_env(
+            false,
+            None,
+            Some("1"),
+            false
+        ));
+        assert!(non_tui_color_enabled_from_env(false, None, None, true));
+    }
+
+    #[test]
     fn check_and_cross_contain_unicode() {
         // The raw strings contain the Unicode characters (possibly wrapped in ANSI)
         let cm = check_mark();
@@ -649,6 +737,28 @@ mod tests {
         assert_eq!(tui::fallback(tui::HAIRLINE_DIM), Color::Gray);
         assert_eq!(tui::fallback(tui::TOKEN_STRING), Color::Green);
         assert_eq!(tui::fallback(tui::TOKEN_URL), Color::Yellow);
+    }
+
+    #[test]
+    fn truecolor_detection_is_deterministic_from_env_snapshot() {
+        assert!(!tui::detect_truecolor_from_env(
+            true,
+            Some("truecolor"),
+            Some("vscode")
+        ));
+        assert!(!tui::detect_truecolor_from_env(false, None, None));
+        assert!(tui::detect_truecolor_from_env(
+            false,
+            Some("truecolor"),
+            None
+        ));
+        assert!(tui::detect_truecolor_from_env(false, Some("24bit"), None));
+        assert!(tui::detect_truecolor_from_env(false, None, Some("vscode")));
+        assert!(!tui::detect_truecolor_from_env(
+            false,
+            Some("256color"),
+            None
+        ));
     }
 
     #[test]
