@@ -95,8 +95,9 @@ Verified source facts:
   `sites/docs/src`.
 - `sites/docs/src/SUMMARY.md` already includes the installation page; no summary
   edit is needed for this issue.
-- `.github/workflows/ci.yml` runs a docs/spec-only skip path for pull requests
-  whose changed files do not match Rust-relevant paths.
+- `.github/workflows/ci.yml` runs a non-Rust-relevant skip path (controlled by
+  the `rust_relevant_pattern` shell variable in `.github/workflows/ci.yml`) for
+  pull requests whose changed files do not match Rust-relevant paths.
 - README and `sites/docs/**` changes are not Rust-relevant under the current
   `.github/workflows/ci.yml` pattern, so the implementation PR should exercise
   the documentation-only CI path rather than Rust checks.
@@ -304,7 +305,7 @@ Recommended static commands for Stage 10 evidence:
 ```sh
 git diff --check
 git diff --name-only
-rg -n "Windows .*Not supported|Windows is not supported" README.md sites/docs/src/getting-started/installation.md
+rg -n -e "\| Windows \|.*\| Not supported \|" -e "Windows is not supported in the current release" README.md sites/docs/src/getting-started/installation.md
 rg -n "Windows 10 version 1903\\+|x86_64-pc-windows-msvc|MSVC|Visual Studio Build Tools|Windows SDK|WSL2|ARM64|MinGW|Cygwin" README.md sites/docs/src/getting-started/installation.md
 ```
 
@@ -447,7 +448,7 @@ Required local/static checks:
 - `git diff --check`
 - `git diff --name-only`
 - Targeted stale-text scan:
-  `rg -n "Windows .*Not supported|Windows is not supported" README.md sites/docs/src/getting-started/installation.md`
+  `rg -n -e "\| Windows \|.*\| Not supported \|" -e "Windows is not supported in the current release" README.md sites/docs/src/getting-started/installation.md`
 - Targeted requirements scan:
   `rg -n "Windows 10 version 1903\\+|x86_64-pc-windows-msvc|MSVC|Visual Studio Build Tools|Windows SDK|WSL2|ARM64|MinGW|Cygwin" README.md sites/docs/src/getting-started/installation.md`
 
