@@ -127,6 +127,10 @@ pub enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
+        /// Compile with local telemetry trace instrumentation.
+        #[arg(long)]
+        trace: bool,
+
         /// Restrict dependency resolution to workspace and vendor layers only.
         /// Fails if any dependency is only available in the cache.
         #[arg(long)]
@@ -585,5 +589,13 @@ mod tests {
 
         assert_eq!(cli.log_level, Some(CliLogLevel::Off));
         assert!(matches!(cli.command, Commands::Check { .. }));
+    }
+
+    #[test]
+    fn build_trace_flag_parses() {
+        let cli = Cli::try_parse_from(["duumbi", "build", "--trace"])
+            .expect("CLI must parse trace build flag");
+
+        assert!(matches!(cli.command, Commands::Build { trace: true, .. }));
     }
 }

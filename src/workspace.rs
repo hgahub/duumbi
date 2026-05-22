@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::compiler::{linker, lowering};
 use crate::deps;
+use crate::telemetry::BuildOptions;
 
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/duumbi_runtime.c");
 
@@ -52,6 +53,9 @@ pub enum WorkspaceBuildError {
     /// Runtime compilation or native linking failed.
     #[error("Failed to link binary: {0}")]
     Link(#[source] anyhow::Error),
+    /// Local telemetry artifact generation failed.
+    #[error("Telemetry artifact generation failed: {0}")]
+    Telemetry(#[source] crate::telemetry::TelemetryError),
 }
 
 impl WorkspaceBuildError {
@@ -64,6 +68,7 @@ impl WorkspaceBuildError {
                 WorkspaceBuildErrorKind::Compilation
             }
             Self::Link(_) => WorkspaceBuildErrorKind::Link,
+            Self::Telemetry(_) => WorkspaceBuildErrorKind::Compilation,
         }
     }
 }
@@ -96,6 +101,15 @@ pub fn build_workspace(
     output: &Path,
     offline: bool,
 ) -> std::result::Result<PathBuf, WorkspaceBuildError> {
+    build_workspace_with_options(workspace_root, output, BuildOptions::offline(offline))
+}
+
+/// Compiles all modules in a workspace with explicit build options.
+pub fn build_workspace_with_options(
+    workspace_root: &Path,
+    output: &Path,
+    options: BuildOptions,
+) -> std::result::Result<PathBuf, WorkspaceBuildError> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|source| WorkspaceBuildError::BuildIo {
             context: format!("Failed to create build directory '{}'", parent.display()),
@@ -103,7 +117,7 @@ pub fn build_workspace(
         })?;
     }
 
-    let program = deps::load_program_with_deps_opts(workspace_root, offline)
+    let program = deps::load_program_with_deps_opts(workspace_root, options.offline)
         .map_err(WorkspaceBuildError::Graph)?;
 
     let objects = lowering::compile_program(&program).map_err(WorkspaceBuildError::Compilation)?;
@@ -153,6 +167,21 @@ pub fn build_workspace(
     linker::link_multi(&object_path_refs, &runtime_o, output)
         .context("Failed to link binary")
         .map_err(WorkspaceBuildError::Link)?;
+
+    if options.telemetry.is_trace() {
+        let section = crate::config::load_effective_config(workspace_root)
+            .map_err(|source| WorkspaceBuildError::CompilationInternal {
+                message: format!("Failed to load telemetry config: {source}"),
+            })?
+            .config
+            .telemetry
+            .unwrap_or_default();
+        let telemetry_dir = section.effective_artifact_dir(workspace_root);
+        let trace_map = crate::telemetry::TraceMap::from_program(&program)
+            .map_err(WorkspaceBuildError::Telemetry)?;
+        crate::telemetry::write_trace_map(&trace_map, &telemetry_dir)
+            .map_err(WorkspaceBuildError::Telemetry)?;
+    }
 
     let _ = fs::remove_dir_all(&tmp_dir);
     Ok(output.to_path_buf())

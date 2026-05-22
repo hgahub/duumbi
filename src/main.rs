@@ -35,6 +35,7 @@ mod registry;
 #[allow(dead_code)] // Binary uses a subset; full API used via lib crate
 mod session;
 mod snapshot;
+#[allow(dead_code)] // Library and later telemetry cycles use the full module surface.
 mod telemetry;
 mod tools;
 mod types;
@@ -346,6 +347,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Commands::Build {
             input,
             output,
+            trace,
             offline,
         } => {
             if offline {
@@ -353,10 +355,16 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            success_exit(cli::commands::build_with_opts(
+            let telemetry = if trace {
+                telemetry::TelemetryBuildMode::Trace
+            } else {
+                telemetry::TelemetryBuildMode::Off
+            };
+            let options = telemetry::BuildOptions::new(offline, telemetry);
+            success_exit(cli::commands::build_with_options(
                 &input_path,
                 &output_path,
-                offline,
+                options,
             ))
         }
         Commands::Run { args } => {

@@ -4,7 +4,7 @@
 //! CLI dispatch in `main.rs` and the interactive REPL in `repl.rs`.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -13,6 +13,7 @@ use crate::deps;
 use crate::errors::Diagnostic;
 use crate::graph::{self, builder, program::ProgramError, validator};
 use crate::parser;
+use crate::telemetry::BuildOptions;
 use crate::types;
 
 use super::theme;
@@ -86,8 +87,13 @@ pub(crate) fn build(input: &Path, output: &Path) -> Result<()> {
 ///
 /// When `offline` is `true`, dependency resolution skips the cache layer.
 pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Result<()> {
+    build_with_options(input, output, BuildOptions::offline(offline))
+}
+
+/// Builds a program with explicit build options.
+pub(crate) fn build_with_options(input: &Path, output: &Path, options: BuildOptions) -> Result<()> {
     if let Some(workspace_root) = workspace_root_for_graph_input(input) {
-        return build_workspace_program(&workspace_root, output, offline);
+        return build_workspace_program(&workspace_root, output, options);
     }
 
     let semantic_graph = parse_and_validate(input)?;
@@ -120,6 +126,10 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
         })
         .context("Failed to link binary")?;
 
+    if options.telemetry.is_trace() {
+        write_trace_map_for_graph(Path::new("."), &semantic_graph)?;
+    }
+
     let _ = fs::remove_dir_all(&tmp_dir);
 
     eprintln!(
@@ -131,11 +141,17 @@ pub(crate) fn build_with_opts(input: &Path, output: &Path, offline: bool) -> Res
 }
 
 /// Compiles all modules in a workspace (including declared dependencies) and links them.
-fn build_workspace_program(workspace_root: &Path, output: &Path, offline: bool) -> Result<()> {
-    crate::workspace::build_workspace(workspace_root, output, offline).map_err(|e| {
-        emit_error_suggestions(error_kind_for_workspace_build(&e));
-        anyhow::Error::new(e)
-    })?;
+fn build_workspace_program(
+    workspace_root: &Path,
+    output: &Path,
+    options: BuildOptions,
+) -> Result<()> {
+    crate::workspace::build_workspace_with_options(workspace_root, output, options).map_err(
+        |e| {
+            emit_error_suggestions(error_kind_for_workspace_build(&e));
+            anyhow::Error::new(e)
+        },
+    )?;
 
     eprintln!(
         "{} Build successful: {}",
@@ -151,6 +167,26 @@ fn error_kind_for_workspace_build(error: &crate::workspace::WorkspaceBuildError)
         crate::workspace::WorkspaceBuildErrorKind::Compilation => ErrorKind::Compilation,
         crate::workspace::WorkspaceBuildErrorKind::Link => ErrorKind::Link,
     }
+}
+
+fn write_trace_map_for_graph(
+    workspace_root: &Path,
+    graph: &graph::SemanticGraph,
+) -> Result<PathBuf> {
+    let artifact_dir = telemetry_artifact_dir(workspace_root)?;
+    let map = crate::telemetry::TraceMap::from_graph(graph)
+        .context("Failed to generate telemetry trace map")?;
+    crate::telemetry::write_trace_map(&map, &artifact_dir)
+        .context("Failed to write telemetry trace map")
+}
+
+fn telemetry_artifact_dir(workspace_root: &Path) -> Result<PathBuf> {
+    let section = crate::config::load_effective_config(workspace_root)
+        .context("Failed to load telemetry config")?
+        .config
+        .telemetry
+        .unwrap_or_default();
+    Ok(section.effective_artifact_dir(workspace_root))
 }
 
 /// Validates a graph file without compiling.

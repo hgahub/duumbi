@@ -4,14 +4,247 @@
 //! uninstrumented while giving traced runs a deterministic local artifact
 //! location when later build and runtime cycles wire the feature through.
 
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::graph::program::Program;
+use crate::graph::{BlockInfo, FunctionInfo, SemanticGraph};
 
 /// Environment variable overriding the local telemetry artifact directory.
 pub const TELEMETRY_DIR_ENV: &str = "DUUMBI_TELEMETRY_DIR";
 
+/// Trace map artifact file name.
+pub const TRACE_MAP_FILE: &str = "trace_map.json";
+
+/// Schema version for trace-to-graph map artifacts.
+pub const TRACE_MAP_SCHEMA_VERSION: &str = "duumbi.telemetry.trace_map.v1";
+
 const DEFAULT_ARTIFACT_DIR: &str = ".duumbi/telemetry";
+const TRACE_ID_DOMAIN: &[u8] = b"duumbi-trace-v1\0";
+
+/// Telemetry mode selected for one build invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TelemetryBuildMode {
+    /// Compile without telemetry instrumentation.
+    #[default]
+    Off,
+    /// Compile with local function/block trace instrumentation.
+    Trace,
+}
+
+impl TelemetryBuildMode {
+    /// Returns true when the build should emit local trace instrumentation.
+    #[must_use]
+    pub fn is_trace(self) -> bool {
+        matches!(self, Self::Trace)
+    }
+}
+
+/// Build options shared by CLI, workspace, and workflow build surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BuildOptions {
+    /// Restrict dependency resolution to workspace and vendor layers only.
+    pub offline: bool,
+    /// Telemetry mode selected for this build invocation.
+    pub telemetry: TelemetryBuildMode,
+}
+
+/// Telemetry artifact and trace-map errors.
+#[derive(Debug, Error)]
+pub enum TelemetryError {
+    /// Two graph identities produced the same trace identifier.
+    #[error(
+        "trace ID collision for {trace_id}: {existing_kind} '{existing_graph_id}' and {new_kind} '{new_graph_id}'"
+    )]
+    TraceIdCollision {
+        /// Colliding trace identifier.
+        trace_id: u64,
+        /// Existing entry kind.
+        existing_kind: TraceMapKind,
+        /// Existing entry graph identifier.
+        existing_graph_id: String,
+        /// New entry kind.
+        new_kind: TraceMapKind,
+        /// New entry graph identifier.
+        new_graph_id: String,
+    },
+    /// Trace-map artifact serialization failed.
+    #[error("failed to serialize trace map: {0}")]
+    Serialize(#[source] serde_json::Error),
+    /// Trace-map artifact filesystem write failed.
+    #[error("{context}: {source}")]
+    Io {
+        /// Human-readable artifact write step.
+        context: String,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Trace-map entry kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceMapKind {
+    /// Function trace identifier.
+    Function,
+    /// Basic block trace identifier.
+    Block,
+}
+
+impl TraceMapKind {
+    fn as_trace_kind(self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Block => "block",
+        }
+    }
+}
+
+impl std::fmt::Display for TraceMapKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_trace_kind())
+    }
+}
+
+/// One graph identity to trace identifier mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TraceMapEntry {
+    /// Stable runtime trace identifier.
+    pub trace_id: u64,
+    /// Mapped graph element kind.
+    pub kind: TraceMapKind,
+    /// Graph `@id` represented by this trace identifier.
+    pub graph_id: String,
+    /// Owning module name.
+    pub module: String,
+    /// Owning function name.
+    pub function: String,
+    /// Optional block label for block entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
+}
+
+/// Deterministic trace-to-graph mapping artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TraceMap {
+    /// Trace map schema version.
+    pub schema_version: String,
+    /// Optional future program hash or build identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program_hash: Option<String>,
+    /// Function and block mapping entries.
+    pub entries: Vec<TraceMapEntry>,
+}
+
+impl TraceMap {
+    /// Creates a trace map after sorting and collision validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError::TraceIdCollision`] if two different graph
+    /// identities produce the same runtime trace identifier.
+    pub fn new(mut entries: Vec<TraceMapEntry>) -> Result<Self, TelemetryError> {
+        entries.sort_by(|left, right| {
+            left.kind
+                .as_trace_kind()
+                .cmp(right.kind.as_trace_kind())
+                .then_with(|| left.graph_id.cmp(&right.graph_id))
+        });
+        check_trace_id_collisions(&entries)?;
+
+        Ok(Self {
+            schema_version: TRACE_MAP_SCHEMA_VERSION.to_string(),
+            program_hash: None,
+            entries,
+        })
+    }
+
+    /// Creates a trace map for one semantic graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
+    /// inside this graph.
+    pub fn from_graph(graph: &SemanticGraph) -> Result<Self, TelemetryError> {
+        Self::new(entries_for_graph(graph))
+    }
+
+    /// Creates a combined trace map for all modules in a program.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
+    /// inside the compiled program.
+    pub fn from_program(program: &Program) -> Result<Self, TelemetryError> {
+        let entries = program
+            .modules
+            .values()
+            .flat_map(entries_for_graph)
+            .collect();
+        Self::new(entries)
+    }
+}
+
+/// Generates a stable signed-`int64_t` compatible trace ID.
+#[must_use]
+pub fn trace_id(kind: TraceMapKind, graph_id: &str) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(TRACE_ID_DOMAIN);
+    hasher.update(kind.as_trace_kind().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(graph_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes) & 0x7fff_ffff_ffff_ffff
+}
+
+/// Writes a trace map artifact to the supplied telemetry directory.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] if the directory cannot be created, the map
+/// cannot be serialized, or the artifact cannot be written.
+pub fn write_trace_map(map: &TraceMap, telemetry_dir: &Path) -> Result<PathBuf, TelemetryError> {
+    fs::create_dir_all(telemetry_dir).map_err(|source| TelemetryError::Io {
+        context: format!(
+            "Failed to create telemetry directory '{}'",
+            telemetry_dir.display()
+        ),
+        source,
+    })?;
+
+    let bytes = serde_json::to_vec_pretty(map).map_err(TelemetryError::Serialize)?;
+    let path = telemetry_dir.join(TRACE_MAP_FILE);
+    fs::write(&path, bytes).map_err(|source| TelemetryError::Io {
+        context: format!("Failed to write trace map '{}'", path.display()),
+        source,
+    })?;
+    Ok(path)
+}
+
+impl BuildOptions {
+    /// Creates build options for the supplied offline and telemetry settings.
+    #[must_use]
+    pub fn new(offline: bool, telemetry: TelemetryBuildMode) -> Self {
+        Self { offline, telemetry }
+    }
+
+    /// Creates default build options with offline mode optionally enabled.
+    #[must_use]
+    pub fn offline(offline: bool) -> Self {
+        Self {
+            offline,
+            ..Self::default()
+        }
+    }
+}
 
 /// Optional local telemetry settings from the `[telemetry]` config section.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -73,6 +306,94 @@ impl TelemetrySection {
     }
 }
 
+fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
+    let mut entries = Vec::new();
+
+    for function in &graph.functions {
+        let function_graph_id = function_graph_id(graph, function);
+        entries.push(TraceMapEntry {
+            trace_id: trace_id(TraceMapKind::Function, &function_graph_id),
+            kind: TraceMapKind::Function,
+            graph_id: function_graph_id,
+            module: graph.module_name.0.clone(),
+            function: function.name.0.clone(),
+            block: None,
+        });
+
+        for block in &function.blocks {
+            let block_graph_id = block_graph_id(graph, function, block);
+            entries.push(TraceMapEntry {
+                trace_id: trace_id(TraceMapKind::Block, &block_graph_id),
+                kind: TraceMapKind::Block,
+                graph_id: block_graph_id,
+                module: graph.module_name.0.clone(),
+                function: function.name.0.clone(),
+                block: Some(block.label.0.clone()),
+            });
+        }
+    }
+
+    entries
+}
+
+fn function_graph_id(graph: &SemanticGraph, function: &FunctionInfo) -> String {
+    function
+        .blocks
+        .iter()
+        .find_map(|block| graph_id_from_first_node(graph, block, 2))
+        .unwrap_or_else(|| format!("duumbi:{}/{}", graph.module_name.0, function.name.0))
+}
+
+fn block_graph_id(graph: &SemanticGraph, function: &FunctionInfo, block: &BlockInfo) -> String {
+    graph_id_from_first_node(graph, block, 1).unwrap_or_else(|| {
+        format!(
+            "duumbi:{}/{}/{}",
+            graph.module_name.0, function.name.0, block.label.0
+        )
+    })
+}
+
+fn graph_id_from_first_node(
+    graph: &SemanticGraph,
+    block: &BlockInfo,
+    parent_segments: usize,
+) -> Option<String> {
+    let node_id = block
+        .nodes
+        .first()
+        .and_then(|node_index| graph.graph.node_weight(*node_index))
+        .map(|node| node.id.0.as_str())?;
+
+    parent_graph_id(node_id, parent_segments)
+}
+
+fn parent_graph_id(node_id: &str, parent_segments: usize) -> Option<String> {
+    let mut end = node_id.len();
+    for _ in 0..parent_segments {
+        end = node_id[..end].rfind('/')?;
+    }
+    Some(node_id[..end].to_string())
+}
+
+fn check_trace_id_collisions(entries: &[TraceMapEntry]) -> Result<(), TelemetryError> {
+    let mut seen: HashMap<u64, (TraceMapKind, &str)> = HashMap::new();
+    for entry in entries {
+        if let Some((existing_kind, existing_graph_id)) =
+            seen.insert(entry.trace_id, (entry.kind, &entry.graph_id))
+            && (existing_kind != entry.kind || existing_graph_id != entry.graph_id)
+        {
+            return Err(TelemetryError::TraceIdCollision {
+                trace_id: entry.trace_id,
+                existing_kind,
+                existing_graph_id: existing_graph_id.to_string(),
+                new_kind: entry.kind,
+                new_graph_id: entry.graph_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +411,133 @@ mod tests {
             section.configured_artifact_dir(),
             Path::new(DEFAULT_ARTIFACT_DIR)
         );
+    }
+
+    #[test]
+    fn build_options_default_to_uninstrumented() {
+        let options = BuildOptions::default();
+
+        assert!(!options.offline);
+        assert_eq!(options.telemetry, TelemetryBuildMode::Off);
+        assert!(!options.telemetry.is_trace());
+    }
+
+    #[test]
+    fn build_options_can_select_trace_mode() {
+        let options = BuildOptions::new(true, TelemetryBuildMode::Trace);
+
+        assert!(options.offline);
+        assert!(options.telemetry.is_trace());
+    }
+
+    #[test]
+    fn trace_ids_are_deterministic_and_int64_compatible() {
+        let first = trace_id(TraceMapKind::Function, "duumbi:t/main");
+        let second = trace_id(TraceMapKind::Function, "duumbi:t/main");
+        let different_kind = trace_id(TraceMapKind::Block, "duumbi:t/main");
+
+        assert_eq!(first, second);
+        assert_ne!(first, different_kind);
+        assert_eq!(first & 0x8000_0000_0000_0000, 0);
+    }
+
+    #[test]
+    fn trace_map_entries_sort_by_kind_then_graph_id() {
+        let map = TraceMap::new(vec![
+            TraceMapEntry {
+                trace_id: 3,
+                kind: TraceMapKind::Function,
+                graph_id: "duumbi:t/z".to_string(),
+                module: "t".to_string(),
+                function: "z".to_string(),
+                block: None,
+            },
+            TraceMapEntry {
+                trace_id: 1,
+                kind: TraceMapKind::Block,
+                graph_id: "duumbi:t/a/entry".to_string(),
+                module: "t".to_string(),
+                function: "a".to_string(),
+                block: Some("entry".to_string()),
+            },
+            TraceMapEntry {
+                trace_id: 2,
+                kind: TraceMapKind::Function,
+                graph_id: "duumbi:t/a".to_string(),
+                module: "t".to_string(),
+                function: "a".to_string(),
+                block: None,
+            },
+        ])
+        .expect("trace map entries should not collide");
+
+        let ordered: Vec<&str> = map
+            .entries
+            .iter()
+            .map(|entry| entry.graph_id.as_str())
+            .collect();
+        assert_eq!(
+            ordered,
+            vec!["duumbi:t/a/entry", "duumbi:t/a", "duumbi:t/z"]
+        );
+    }
+
+    #[test]
+    fn trace_map_rejects_colliding_ids() {
+        let result = TraceMap::new(vec![
+            TraceMapEntry {
+                trace_id: 42,
+                kind: TraceMapKind::Function,
+                graph_id: "duumbi:t/main".to_string(),
+                module: "t".to_string(),
+                function: "main".to_string(),
+                block: None,
+            },
+            TraceMapEntry {
+                trace_id: 42,
+                kind: TraceMapKind::Block,
+                graph_id: "duumbi:t/main/entry".to_string(),
+                module: "t".to_string(),
+                function: "main".to_string(),
+                block: Some("entry".to_string()),
+            },
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(TelemetryError::TraceIdCollision { .. })
+        ));
+    }
+
+    #[test]
+    fn trace_map_from_graph_contains_function_and_block_ids() {
+        let graph = test_graph();
+        let map = TraceMap::from_graph(&graph).expect("trace map should be generated");
+
+        assert!(map.entries.iter().any(|entry| {
+            entry.kind == TraceMapKind::Function
+                && entry.graph_id == "duumbi:t/main"
+                && entry.function == "main"
+                && entry.block.is_none()
+        }));
+        assert!(map.entries.iter().any(|entry| {
+            entry.kind == TraceMapKind::Block
+                && entry.graph_id == "duumbi:t/main/entry"
+                && entry.function == "main"
+                && entry.block.as_deref() == Some("entry")
+        }));
+    }
+
+    #[test]
+    fn write_trace_map_creates_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+
+        let path = write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let content = std::fs::read_to_string(path).expect("trace map should be readable");
+
+        assert!(content.contains(TRACE_MAP_SCHEMA_VERSION));
+        assert!(content.contains("duumbi:t/main/entry"));
     }
 
     #[test]
@@ -132,5 +580,40 @@ mod tests {
         unsafe {
             std::env::remove_var(TELEMETRY_DIR_ENV);
         }
+    }
+
+    fn test_graph() -> crate::graph::SemanticGraph {
+        let source = r#"{
+            "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+            "@type": "duumbi:Module",
+            "@id": "duumbi:t",
+            "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": "duumbi:t/main",
+                "duumbi:name": "main",
+                "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block",
+                    "@id": "duumbi:t/main/entry",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {
+                            "@type": "duumbi:Const",
+                            "@id": "duumbi:t/main/entry/0",
+                            "duumbi:value": 0,
+                            "duumbi:resultType": "i64"
+                        },
+                        {
+                            "@type": "duumbi:Return",
+                            "@id": "duumbi:t/main/entry/1",
+                            "duumbi:operand": {"@id": "duumbi:t/main/entry/0"}
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+        let ast = crate::parser::parse_jsonld(source).expect("fixture should parse");
+        crate::graph::builder::build_graph(&ast).expect("fixture should build")
     }
 }

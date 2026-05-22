@@ -3,6 +3,30 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+#define DUUMBI_MKDIR(path) _mkdir(path)
+#define DUUMBI_PATH_SEP '\\'
+#else
+#define DUUMBI_MKDIR(path) mkdir(path, 0777)
+#define DUUMBI_PATH_SEP '/'
+#endif
+
+#if defined(_MSC_VER)
+#define DUUMBI_THREAD_LOCAL __declspec(thread)
+#else
+#define DUUMBI_THREAD_LOCAL _Thread_local
+#endif
+
+#define DUUMBI_TELEMETRY_DIR_ENV "DUUMBI_TELEMETRY_DIR"
+#define DUUMBI_DEFAULT_TELEMETRY_DIR ".duumbi/telemetry"
+#define DUUMBI_TRACE_SCHEMA_VERSION "duumbi.telemetry.trace.v1"
+#define DUUMBI_CRASH_SCHEMA_VERSION "duumbi.telemetry.crash.v1"
+#define DUUMBI_PATH_BUFFER_LEN 4096
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -18,9 +42,194 @@ typedef struct {
     char     data[];
 } DuumbiArray;
 
+/* ── Trace telemetry ───────────────────────────────────────────────── */
+
+static DUUMBI_THREAD_LOCAL int duumbi_trace_active = 0;
+static DUUMBI_THREAD_LOCAL int64_t duumbi_current_function_id = 0;
+static DUUMBI_THREAD_LOCAL int64_t duumbi_current_block_id = 0;
+
+static const char *duumbi_telemetry_dir(void) {
+    const char *dir = getenv(DUUMBI_TELEMETRY_DIR_ENV);
+    if (dir != NULL && dir[0] != '\0') {
+        return dir;
+    }
+    return DUUMBI_DEFAULT_TELEMETRY_DIR;
+}
+
+static int duumbi_mkdir_p(const char *dir) {
+    char path[DUUMBI_PATH_BUFFER_LEN];
+    size_t len = strlen(dir);
+    if (len == 0 || len >= sizeof(path)) {
+        return -1;
+    }
+
+    memcpy(path, dir, len + 1);
+    for (char *p = path + 1; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') {
+            char saved = *p;
+            *p = '\0';
+            if (DUUMBI_MKDIR(path) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *p = saved;
+        }
+    }
+
+    if (DUUMBI_MKDIR(path) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+static int duumbi_telemetry_path(char *buffer, size_t buffer_len, const char *file_name) {
+    const char *dir = duumbi_telemetry_dir();
+    if (duumbi_mkdir_p(dir) != 0) {
+        return -1;
+    }
+
+    size_t dir_len = strlen(dir);
+    const char *separator = "";
+    if (dir_len > 0 && dir[dir_len - 1] != '/' && dir[dir_len - 1] != '\\') {
+        separator = (const char[]){DUUMBI_PATH_SEP, '\0'};
+    }
+
+    int written = snprintf(buffer, buffer_len, "%s%s%s", dir, separator, file_name);
+    if (written < 0 || (size_t)written >= buffer_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static FILE *duumbi_open_telemetry_file(const char *file_name) {
+    char path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_telemetry_path(path, sizeof(path), file_name) != 0) {
+        fprintf(stderr, "duumbi telemetry warning: failed to resolve telemetry path\n");
+        return NULL;
+    }
+
+    FILE *file = fopen(path, "a");
+    if (file == NULL) {
+        fprintf(stderr, "duumbi telemetry warning: failed to open %s\n", path);
+    }
+    return file;
+}
+
+static void duumbi_write_json_string(FILE *file, const char *value) {
+    fputc('"', file);
+    for (const unsigned char *p = (const unsigned char *)value; *p != '\0'; p++) {
+        switch (*p) {
+        case '"':
+            fputs("\\\"", file);
+            break;
+        case '\\':
+            fputs("\\\\", file);
+            break;
+        case '\n':
+            fputs("\\n", file);
+            break;
+        case '\r':
+            fputs("\\r", file);
+            break;
+        case '\t':
+            fputs("\\t", file);
+            break;
+        default:
+            if (*p < 0x20) {
+                fprintf(file, "\\u%04x", *p);
+            } else {
+                fputc(*p, file);
+            }
+            break;
+        }
+    }
+    fputc('"', file);
+}
+
+static void duumbi_write_trace_event(const char *event, int64_t trace_id) {
+    if (!duumbi_trace_active) {
+        return;
+    }
+
+    FILE *file = duumbi_open_telemetry_file("traces.jsonl");
+    if (file == NULL) {
+        return;
+    }
+
+    fprintf(file,
+            "{\"schema_version\":\"%s\",\"event\":\"%s\",\"trace_id\":%lld,\"timestamp_ns\":0}\n",
+            DUUMBI_TRACE_SCHEMA_VERSION,
+            event,
+            (long long)trace_id);
+    fclose(file);
+}
+
+void duumbi_trace_init(void) {
+    duumbi_trace_active = 1;
+    duumbi_current_function_id = 0;
+    duumbi_current_block_id = 0;
+}
+
+void duumbi_trace_function_enter(int64_t function_id) {
+    duumbi_current_function_id = function_id;
+    duumbi_write_trace_event("function_enter", function_id);
+}
+
+void duumbi_trace_function_exit(int64_t function_id) {
+    duumbi_write_trace_event("function_exit", function_id);
+    if (duumbi_current_function_id == function_id) {
+        duumbi_current_function_id = 0;
+    }
+}
+
+void duumbi_trace_block_enter(int64_t block_id) {
+    duumbi_current_block_id = block_id;
+    duumbi_write_trace_event("block_enter", block_id);
+}
+
+void duumbi_trace_block_exit(int64_t block_id) {
+    duumbi_write_trace_event("block_exit", block_id);
+    if (duumbi_current_block_id == block_id) {
+        duumbi_current_block_id = 0;
+    }
+}
+
+void duumbi_trace_panic(const char *msg) {
+    if (!duumbi_trace_active) {
+        return;
+    }
+
+    FILE *trace_file = duumbi_open_telemetry_file("traces.jsonl");
+    if (trace_file != NULL) {
+        fprintf(trace_file,
+                "{\"schema_version\":\"%s\",\"event\":\"panic\",\"function_id\":%lld,\"block_id\":%lld,\"message\":",
+                DUUMBI_TRACE_SCHEMA_VERSION,
+                (long long)duumbi_current_function_id,
+                (long long)duumbi_current_block_id);
+        duumbi_write_json_string(trace_file, msg);
+        fputs("}\n", trace_file);
+        fclose(trace_file);
+    }
+
+    FILE *crash_file = duumbi_open_telemetry_file("crash_dump.jsonl");
+    if (crash_file == NULL) {
+        return;
+    }
+
+    fprintf(crash_file,
+            "{\"schema_version\":\"%s\",\"event\":\"panic\",\"message\":",
+            DUUMBI_CRASH_SCHEMA_VERSION);
+    duumbi_write_json_string(crash_file, msg);
+    fprintf(crash_file,
+            ",\"function_id\":%lld,\"block_id\":%lld,\"trace_active\":true}\n",
+            (long long)duumbi_current_function_id,
+            (long long)duumbi_current_block_id);
+    fclose(crash_file);
+}
+
 /* ── Panic ─────────────────────────────────────────────────────────── */
 
 void duumbi_panic(const char *msg) {
+    duumbi_trace_panic(msg);
     fprintf(stderr, "duumbi panic: %s\n", msg);
     exit(1);
 }

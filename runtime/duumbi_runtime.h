@@ -8,6 +8,15 @@
 /** Print message to stderr and exit(1). */
 void duumbi_panic(const char *msg);
 
+/* ── Trace telemetry ───────────────────────────────────────────────── */
+
+void duumbi_trace_init(void);
+void duumbi_trace_function_enter(int64_t function_id);
+void duumbi_trace_function_exit(int64_t function_id);
+void duumbi_trace_block_enter(int64_t block_id);
+void duumbi_trace_block_exit(int64_t block_id);
+void duumbi_trace_panic(const char *msg);
+
 /* ── Print ─────────────────────────────────────────────────────────── */
 
 void duumbi_print_i64(int64_t val);
