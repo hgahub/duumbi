@@ -149,7 +149,7 @@ jobs:
                   remove: ['needs-tech-spec', 'technical-spec-review'],
                   projectStatus: 'Ready for Build',
                   nextState: 'Ready for Build',
-                  nextStage: 'Stage 10 Ralph-Cycle Implementation',
+                  nextStage: 'Stage 10 Implementation Coordination',
                 },
                 'request-changes': {
                   label: 'Request Changes',
@@ -228,6 +228,64 @@ jobs:
               }
             }
 
+            const missingProductSpec = '<missing: product spec artifact>';
+            const missingTechnicalSpec = '<missing: technical spec artifact>';
+            const knownProductSpec = productSpecArtifact || missingProductSpec;
+            const knownTechSpec = techSpecArtifact || missingTechnicalSpec;
+            const promptBlock = (prompt) => prompt ? ['', '## Next Codex Prompt', '', '```text', prompt, '```'] : [];
+            const buildNextCodexPrompt = () => {
+              if (decision !== 'approve') return null;
+
+              if (stage === '5') {
+                return [
+                  'Run DUUMBI Stage 6 Product Spec Draft with duumbi-spec-draft.',
+                  '',
+                  `Target issue: ${issueUrl}`,
+                  `Expected artifact: specs/DUUMBI-${issueNumber}/PRODUCT.md, unless the skill determines that an issue-comment spec is sufficient.`,
+                  '',
+                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a draft spec PR if file-based, link it from the issue, and move the issue to Spec Review.',
+                  '',
+                  `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
+                  '',
+                  'Do not create technical specs, implementation code, or Ralph cycles.',
+                ].join('\n');
+              }
+
+              if (stage === '7') {
+                return [
+                  'Run DUUMBI Stage 8 Technical Spec Draft with duumbi-tech-spec-draft.',
+                  '',
+                  `Target issue: ${issueUrl}`,
+                  `Product spec artifact: ${knownProductSpec}`,
+                  `Expected artifact: specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
+                  '',
+                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a draft PR, link it from the issue, and move the issue to Technical Spec Review.',
+                  '',
+                  `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Technical spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
+                  '',
+                  'Do not modify implementation code, tests, generated artifacts, runtime assets, or product specs. Do not approve the technical spec or run Ralph cycles.',
+                ].join('\n');
+              }
+
+              if (stage === '9') {
+                return [
+                  'Run DUUMBI Stage 10 Implementation Coordination with duumbi-implementation.',
+                  '',
+                  `Target issue: ${issueUrl}`,
+                  'Mode: coordinate Stage 10 branch, PR, blocker, or evidence state',
+                  `Product spec artifact: ${knownProductSpec}`,
+                  `Technical spec artifact: ${knownTechSpec}`,
+                  '',
+                  'Goal: Verify Ready for Build context, manage branch and PR readiness, consolidate Ralph-cycle evidence when relevant, choose the next routed action, and delegate implementation edits only through bounded Ralph cycles.',
+                  '',
+                  'Do not exceed the approved product or technical specs, skip resource gates, perform Stage 12 closure, merge PRs, or mark the issue done.',
+                ].join('\n');
+              }
+
+              return null;
+            };
+            const nextCodexPrompt = buildNextCodexPrompt();
+
             // ── Build decision comment ──────────────────────────────
             const lines = [`## ${stageConfig.title}`, ''];
             lines.push(`**Decision:** ${dc.label}`);
@@ -254,6 +312,7 @@ jobs:
               lines.push(`**Remaining open questions:** none`);
             }
             lines.push(`**Next state:** ${dc.nextState}`);
+            lines.push(...promptBlock(nextCodexPrompt));
 
             // ── Post decision comment ───────────────────────────────
             const { data: posted } = await github.rest.issues.createComment({
@@ -403,6 +462,7 @@ jobs:
               `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,
               `• Project: ${projectUpdated ? dc.projectStatus : '_not updated_'}`,
               `• Next: ${dc.nextStage}`,
+              nextCodexPrompt ? ['', 'Next Codex prompt:', '```text', nextCodexPrompt, '```'].join('\n') : null,
             ].filter(Boolean).join('\n');
 
             // Reply in Slack thread via response_url (from button click)
@@ -440,7 +500,7 @@ jobs:
             }
 
             // ── Workflow summary ─────────────────────────────────────
-            core.summary
+            const summaryBuilder = core.summary
               .addHeading(`Stage ${stage} ${dc.label} — #${issueNumber}`, 2)
               .addTable([
                 [{data: 'Field', header: true}, {data: 'Value', header: true}],
@@ -450,5 +510,10 @@ jobs:
                 ['Labels removed', dc.remove.join(', ') || 'none'],
                 ['Project V2', projectUpdated ? dc.projectStatus : 'not updated'],
                 ['Next stage', dc.nextStage],
-              ])
-              .write();
+              ]);
+            if (nextCodexPrompt) {
+              summaryBuilder
+                .addHeading('Next Codex Prompt', 3)
+                .addCodeBlock(nextCodexPrompt, 'text');
+            }
+            summaryBuilder.write();
