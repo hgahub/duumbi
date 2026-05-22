@@ -19,7 +19,8 @@ use petgraph::visit::EdgeRef;
 use target_lexicon::Triple;
 
 use crate::graph::program::Program;
-use crate::graph::{FunctionInfo, GraphEdge, SemanticGraph};
+use crate::graph::{BlockInfo, FunctionInfo, GraphEdge, SemanticGraph};
+use crate::telemetry::{TelemetryBuildMode, TraceMapKind};
 use crate::types::{CompareOp, DuumbiType, FunctionName, NodeId, Op};
 
 use super::CompileError;
@@ -84,6 +85,27 @@ struct RuntimeFuncs {
     string_to_upper: FuncId,
     string_to_lower: FuncId,
     string_replace: FuncId,
+    trace: Option<RuntimeTraceFuncs>,
+}
+
+struct RuntimeTraceFuncs {
+    init: FuncId,
+    function_enter: FuncId,
+    function_exit: FuncId,
+    block_enter: FuncId,
+    block_exit: FuncId,
+    #[allow(dead_code)] // Declared for ABI completeness; runtime calls it from duumbi_panic.
+    panic: FuncId,
+}
+
+struct RuntimeTraceRefs {
+    init: cranelift_codegen::ir::FuncRef,
+    function_enter: cranelift_codegen::ir::FuncRef,
+    function_exit: cranelift_codegen::ir::FuncRef,
+    block_enter: cranelift_codegen::ir::FuncRef,
+    block_exit: cranelift_codegen::ir::FuncRef,
+    #[allow(dead_code)] // See RuntimeTraceFuncs::panic.
+    panic: cranelift_codegen::ir::FuncRef,
 }
 
 #[derive(Debug, Clone)]
@@ -143,10 +165,30 @@ fn declare_runtime_fn(
 }
 
 /// Declares all C runtime functions in the object module.
-fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, CompileError> {
+fn declare_all_runtime_fns(
+    module: &mut ObjectModule,
+    telemetry: TelemetryBuildMode,
+) -> Result<RuntimeFuncs, CompileError> {
     let i64t = types::I64;
     let f64t = types::F64;
     let i8t = types::I8;
+    let trace = if telemetry.is_trace() {
+        Some(RuntimeTraceFuncs {
+            init: declare_runtime_fn(module, "duumbi_trace_init", &[], &[])?,
+            function_enter: declare_runtime_fn(
+                module,
+                "duumbi_trace_function_enter",
+                &[i64t],
+                &[],
+            )?,
+            function_exit: declare_runtime_fn(module, "duumbi_trace_function_exit", &[i64t], &[])?,
+            block_enter: declare_runtime_fn(module, "duumbi_trace_block_enter", &[i64t], &[])?,
+            block_exit: declare_runtime_fn(module, "duumbi_trace_block_exit", &[i64t], &[])?,
+            panic: declare_runtime_fn(module, "duumbi_trace_panic", &[i64t], &[])?,
+        })
+    } else {
+        None
+    };
 
     Ok(RuntimeFuncs {
         // Print functions
@@ -242,6 +284,7 @@ fn declare_all_runtime_fns(module: &mut ObjectModule) -> Result<RuntimeFuncs, Co
             &[i64t, i64t, i64t],
             &[i64t],
         )?,
+        trace,
     })
 }
 
@@ -352,7 +395,16 @@ fn make_func_signature(
 /// For multi-module programs use [`compile_program`] instead.
 #[must_use = "compilation errors should be handled"]
 pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError> {
-    compile_to_object_impl(graph, &HashSet::new(), &[])
+    compile_to_object_with_telemetry(graph, TelemetryBuildMode::Off)
+}
+
+/// Compiles a validated semantic graph with an explicit telemetry mode.
+#[must_use = "compilation errors should be handled"]
+pub fn compile_to_object_with_telemetry(
+    graph: &SemanticGraph,
+    telemetry: TelemetryBuildMode,
+) -> Result<Vec<u8>, CompileError> {
+    compile_to_object_impl(graph, &HashSet::new(), &[], telemetry)
 }
 
 /// Compiles a multi-module [`Program`] to per-module native object files.
@@ -368,6 +420,16 @@ pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError>
 #[allow(dead_code)] // Called by CLI in upcoming phase (#61)
 #[must_use = "compilation errors should be handled"]
 pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, CompileError> {
+    compile_program_with_telemetry(program, TelemetryBuildMode::Off)
+}
+
+/// Compiles a multi-module [`Program`] with an explicit telemetry mode.
+#[allow(dead_code)] // Called by CLI when traced builds are requested.
+#[must_use = "compilation errors should be handled"]
+pub fn compile_program_with_telemetry(
+    program: &Program,
+    telemetry: TelemetryBuildMode,
+) -> Result<HashMap<String, Vec<u8>>, CompileError> {
     // Build a cross-module function info lookup: (module_name, fn_name) → &FunctionInfo
     let all_fn_info: HashMap<(String, String), &FunctionInfo> = program
         .modules
@@ -446,7 +508,7 @@ pub fn compile_program(program: &Program) -> Result<HashMap<String, Vec<u8>>, Co
 
         let imported_list: Vec<ImportedFunction<'_>> = imported.into_values().collect();
 
-        let obj_bytes = compile_to_object_impl(sg, &exported_fns, &imported_list)?;
+        let obj_bytes = compile_to_object_impl(sg, &exported_fns, &imported_list, telemetry)?;
         objects.insert(module_name.0.clone(), obj_bytes);
     }
 
@@ -463,11 +525,12 @@ fn compile_to_object_impl(
     graph: &SemanticGraph,
     exported_fns: &HashSet<String>,
     imported_fns: &[ImportedFunction<'_>],
+    telemetry: TelemetryBuildMode,
 ) -> Result<Vec<u8>, CompileError> {
     let mut obj_module = create_object_module()?;
 
     // Declare all C runtime functions
-    let runtime = declare_all_runtime_fns(&mut obj_module)?;
+    let runtime = declare_all_runtime_fns(&mut obj_module, telemetry)?;
 
     // Collect and embed string constants as data sections
     let string_data = embed_string_constants(graph, &mut obj_module)?;
@@ -679,6 +742,17 @@ fn compile_function(
     let string_to_lower_ref =
         obj_module.declare_func_in_func(runtime.string_to_lower, builder.func);
     let string_replace_ref = obj_module.declare_func_in_func(runtime.string_replace, builder.func);
+    let trace_refs = runtime.trace.as_ref().map(|trace| RuntimeTraceRefs {
+        init: obj_module.declare_func_in_func(trace.init, builder.func),
+        function_enter: obj_module.declare_func_in_func(trace.function_enter, builder.func),
+        function_exit: obj_module.declare_func_in_func(trace.function_exit, builder.func),
+        block_enter: obj_module.declare_func_in_func(trace.block_enter, builder.func),
+        block_exit: obj_module.declare_func_in_func(trace.block_exit, builder.func),
+        panic: obj_module.declare_func_in_func(trace.panic, builder.func),
+    });
+    let function_trace_id = trace_refs
+        .as_ref()
+        .map(|_| trace_id_for_function(graph, func_info) as i64);
 
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -734,6 +808,25 @@ fn compile_function(
                 builder.def_var(var, param_val);
                 var_map.insert(param.name.clone(), var);
             }
+        }
+
+        if let Some(trace) = trace_refs.as_ref() {
+            if block_idx == 0 {
+                if func_info.name.0 == "main" {
+                    builder.ins().call(trace.init, &[]);
+                }
+                let Some(function_id) = function_trace_id else {
+                    return Err(CompileError::Cranelift {
+                        message: format!("Missing trace ID for function '{}'", func_info.name),
+                    });
+                };
+                emit_trace_event_call(&mut builder, trace.function_enter, function_id);
+            }
+            emit_trace_event_call(
+                &mut builder,
+                trace.block_enter,
+                trace_id_for_block(graph, func_info, block_info) as i64,
+            );
         }
 
         // Emit instructions for each node
@@ -808,6 +901,13 @@ fn compile_function(
                         }
                     })?;
 
+                    if let Some(trace) = trace_refs.as_ref() {
+                        emit_trace_event_call(
+                            &mut builder,
+                            trace.block_exit,
+                            trace_id_for_block(graph, func_info, block_info) as i64,
+                        );
+                    }
                     builder
                         .ins()
                         .brif(cond_val, true_block, &[], false_block, &[]);
@@ -914,6 +1014,23 @@ fn compile_function(
                         }
                     }
                     heap_allocs.clear();
+
+                    if let Some(trace) = trace_refs.as_ref() {
+                        emit_trace_event_call(
+                            &mut builder,
+                            trace.block_exit,
+                            trace_id_for_block(graph, func_info, block_info) as i64,
+                        );
+                        let Some(function_id) = function_trace_id else {
+                            return Err(CompileError::Cranelift {
+                                message: format!(
+                                    "Missing trace ID for function '{}'",
+                                    func_info.name
+                                ),
+                            });
+                        };
+                        emit_trace_event_call(&mut builder, trace.function_exit, function_id);
+                    }
 
                     // If the declared return type is i64 but the value is i8 (from
                     // StringContains/StringEquals/Compare/ConstBool), zero-extend so
@@ -1374,6 +1491,13 @@ fn compile_function(
                     })?;
 
                     // Branch: non-zero discriminant → ok_block, zero → err_block
+                    if let Some(trace) = trace_refs.as_ref() {
+                        emit_trace_event_call(
+                            &mut builder,
+                            trace.block_exit,
+                            trace_id_for_block(graph, func_info, block_info) as i64,
+                        );
+                    }
                     builder
                         .ins()
                         .brif(discriminant, ok_cl_block, &[], err_cl_block, &[]);
@@ -1486,6 +1610,29 @@ fn compile_function(
     builder.finalize();
 
     Ok(())
+}
+
+fn emit_trace_event_call(
+    builder: &mut FunctionBuilder<'_>,
+    func_ref: cranelift_codegen::ir::FuncRef,
+    trace_id: i64,
+) {
+    let trace_id_value = builder.ins().iconst(types::I64, trace_id);
+    builder.ins().call(func_ref, &[trace_id_value]);
+}
+
+fn trace_id_for_function(graph: &SemanticGraph, func_info: &FunctionInfo) -> u64 {
+    let graph_id = crate::telemetry::function_trace_graph_id(graph, func_info);
+    crate::telemetry::trace_id(TraceMapKind::Function, &graph_id)
+}
+
+fn trace_id_for_block(
+    graph: &SemanticGraph,
+    func_info: &FunctionInfo,
+    block_info: &BlockInfo,
+) -> u64 {
+    let graph_id = crate::telemetry::block_trace_graph_id(graph, func_info, block_info);
+    crate::telemetry::trace_id(TraceMapKind::Block, &graph_id)
 }
 
 /// Resolves the left and right operand SSA values for a binary operation node.
@@ -1954,6 +2101,12 @@ mod tests {
         );
     }
 
+    fn object_contains(obj_bytes: &[u8], needle: &str) -> bool {
+        obj_bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
     #[test]
     fn symbol_component_mangling_is_injective_for_escape_like_names() {
         assert_ne!(
@@ -1972,6 +2125,30 @@ mod tests {
         let sg = build_graph(&module).expect("invariant: fixture must build");
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
         assert_valid_object(&obj_bytes);
+    }
+
+    #[test]
+    fn default_compile_does_not_reference_trace_hooks() {
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let sg = build_graph(&module).expect("invariant: fixture must build");
+        let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
+
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_init"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+    }
+
+    #[test]
+    fn traced_compile_references_trace_hooks() {
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let sg = build_graph(&module).expect("invariant: fixture must build");
+        let obj_bytes = compile_to_object_with_telemetry(&sg, TelemetryBuildMode::Trace)
+            .expect("traced compilation should succeed");
+
+        assert_valid_object(&obj_bytes);
+        assert!(object_contains(&obj_bytes, "duumbi_trace_init"));
+        assert!(object_contains(&obj_bytes, "duumbi_trace_function_enter"));
+        assert!(object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+        assert!(object_contains(&obj_bytes, "duumbi_trace_function_exit"));
     }
 
     #[test]

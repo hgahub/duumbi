@@ -120,7 +120,8 @@ pub fn build_workspace_with_options(
     let program = deps::load_program_with_deps_opts(workspace_root, options.offline)
         .map_err(WorkspaceBuildError::Graph)?;
 
-    let objects = lowering::compile_program(&program).map_err(WorkspaceBuildError::Compilation)?;
+    let objects = lowering::compile_program_with_telemetry(&program, options.telemetry)
+        .map_err(WorkspaceBuildError::Compilation)?;
 
     let unique_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

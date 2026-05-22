@@ -21,8 +21,14 @@ pub const TELEMETRY_DIR_ENV: &str = "DUUMBI_TELEMETRY_DIR";
 /// Trace map artifact file name.
 pub const TRACE_MAP_FILE: &str = "trace_map.json";
 
+/// Crash artifact file name.
+pub const CRASH_DUMP_FILE: &str = "crash_dump.jsonl";
+
 /// Schema version for trace-to-graph map artifacts.
 pub const TRACE_MAP_SCHEMA_VERSION: &str = "duumbi.telemetry.trace_map.v1";
+
+/// Schema version for crash dump artifacts.
+pub const CRASH_SCHEMA_VERSION: &str = "duumbi.telemetry.crash.v1";
 
 const DEFAULT_ARTIFACT_DIR: &str = ".duumbi/telemetry";
 const TRACE_ID_DOMAIN: &[u8] = b"duumbi-trace-v1\0";
@@ -85,6 +91,21 @@ pub enum TelemetryError {
         #[source]
         source: std::io::Error,
     },
+    /// Required telemetry evidence was not available.
+    #[error("missing telemetry evidence: {0}")]
+    MissingEvidence(String),
+    /// A telemetry artifact could not be parsed.
+    #[error("failed to parse telemetry artifact '{path}': {source}")]
+    Parse {
+        /// Artifact path.
+        path: String,
+        /// Underlying parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Crash IDs did not map to graph context.
+    #[error("trace evidence is unmapped: {0}")]
+    Unmapped(String),
 }
 
 /// Trace-map entry kind.
@@ -140,6 +161,45 @@ pub struct TraceMap {
     pub program_hash: Option<String>,
     /// Function and block mapping entries.
     pub entries: Vec<TraceMapEntry>,
+}
+
+/// One crash evidence entry from `crash_dump.jsonl`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CrashArtifact {
+    /// Crash artifact schema version.
+    pub schema_version: String,
+    /// Event kind.
+    pub event: String,
+    /// Panic message.
+    pub message: String,
+    /// Current function trace ID at crash time.
+    pub function_id: u64,
+    /// Current block trace ID at crash time.
+    pub block_id: u64,
+    /// Whether tracing was active when the crash was written.
+    pub trace_active: bool,
+}
+
+/// Human-readable mapped crash evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectReport {
+    /// Crash message.
+    pub message: String,
+    /// Mapped function graph ID.
+    pub function_graph_id: String,
+    /// Mapped block graph ID.
+    pub block_graph_id: String,
+}
+
+impl InspectReport {
+    /// Formats the report for CLI output.
+    #[must_use]
+    pub fn to_cli_output(&self) -> String {
+        format!(
+            "Crash: {}\nFunction: {}\nBlock: {}\nExact node evidence: unavailable in v1",
+            self.message, self.function_graph_id, self.block_graph_id
+        )
+    }
 }
 
 impl TraceMap {
@@ -229,6 +289,95 @@ pub fn write_trace_map(map: &TraceMap, telemetry_dir: &Path) -> Result<PathBuf, 
     Ok(path)
 }
 
+/// Inspects crash evidence and maps it to function/block graph context.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when crash/map evidence is missing, malformed, or
+/// cannot map the crash trace IDs to graph entries.
+pub fn inspect_crash_artifacts(
+    telemetry_dir: &Path,
+    crash_path: Option<&Path>,
+    map_path: Option<&Path>,
+) -> Result<InspectReport, TelemetryError> {
+    let crash_path = crash_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| telemetry_dir.join(CRASH_DUMP_FILE));
+    let map_path = map_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| telemetry_dir.join(TRACE_MAP_FILE));
+    let crash = read_latest_crash(&crash_path)?;
+    let trace_map = read_trace_map(&map_path)?;
+
+    if !crash.trace_active {
+        return Err(TelemetryError::MissingEvidence(
+            "crash artifact was not written from an active traced run".to_string(),
+        ));
+    }
+
+    let function = trace_map
+        .entries
+        .iter()
+        .find(|entry| entry.kind == TraceMapKind::Function && entry.trace_id == crash.function_id)
+        .ok_or_else(|| {
+            TelemetryError::Unmapped(format!(
+                "function trace ID {} was not found in '{}'",
+                crash.function_id,
+                map_path.display()
+            ))
+        })?;
+    let block = trace_map
+        .entries
+        .iter()
+        .find(|entry| entry.kind == TraceMapKind::Block && entry.trace_id == crash.block_id)
+        .ok_or_else(|| {
+            TelemetryError::Unmapped(format!(
+                "block trace ID {} was not found in '{}'",
+                crash.block_id,
+                map_path.display()
+            ))
+        })?;
+
+    Ok(InspectReport {
+        message: crash.message,
+        function_graph_id: function.graph_id.clone(),
+        block_graph_id: block.graph_id.clone(),
+    })
+}
+
+fn read_trace_map(path: &Path) -> Result<TraceMap, TelemetryError> {
+    let content = fs::read_to_string(path).map_err(|source| TelemetryError::Io {
+        context: format!("Failed to read trace map '{}'", path.display()),
+        source,
+    })?;
+    serde_json::from_str(&content).map_err(|source| TelemetryError::Parse {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+fn read_latest_crash(path: &Path) -> Result<CrashArtifact, TelemetryError> {
+    let content = fs::read_to_string(path).map_err(|source| TelemetryError::Io {
+        context: format!("Failed to read crash artifact '{}'", path.display()),
+        source,
+    })?;
+    let latest = content
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| {
+            TelemetryError::MissingEvidence(format!(
+                "crash artifact '{}' did not contain any JSONL entries",
+                path.display()
+            ))
+        })?;
+
+    serde_json::from_str(latest).map_err(|source| TelemetryError::Parse {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
 impl BuildOptions {
     /// Creates build options for the supplied offline and telemetry settings.
     #[must_use]
@@ -310,7 +459,7 @@ fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
     let mut entries = Vec::new();
 
     for function in &graph.functions {
-        let function_graph_id = function_graph_id(graph, function);
+        let function_graph_id = function_trace_graph_id(graph, function);
         entries.push(TraceMapEntry {
             trace_id: trace_id(TraceMapKind::Function, &function_graph_id),
             kind: TraceMapKind::Function,
@@ -321,7 +470,7 @@ fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
         });
 
         for block in &function.blocks {
-            let block_graph_id = block_graph_id(graph, function, block);
+            let block_graph_id = block_trace_graph_id(graph, function, block);
             entries.push(TraceMapEntry {
                 trace_id: trace_id(TraceMapKind::Block, &block_graph_id),
                 kind: TraceMapKind::Block,
@@ -336,7 +485,9 @@ fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
     entries
 }
 
-fn function_graph_id(graph: &SemanticGraph, function: &FunctionInfo) -> String {
+/// Returns the graph identity used for a function trace entry.
+#[must_use]
+pub fn function_trace_graph_id(graph: &SemanticGraph, function: &FunctionInfo) -> String {
     function
         .blocks
         .iter()
@@ -344,7 +495,13 @@ fn function_graph_id(graph: &SemanticGraph, function: &FunctionInfo) -> String {
         .unwrap_or_else(|| format!("duumbi:{}/{}", graph.module_name.0, function.name.0))
 }
 
-fn block_graph_id(graph: &SemanticGraph, function: &FunctionInfo, block: &BlockInfo) -> String {
+/// Returns the graph identity used for a block trace entry.
+#[must_use]
+pub fn block_trace_graph_id(
+    graph: &SemanticGraph,
+    function: &FunctionInfo,
+    block: &BlockInfo,
+) -> String {
     graph_id_from_first_node(graph, block, 1).unwrap_or_else(|| {
         format!(
             "duumbi:{}/{}/{}",
@@ -538,6 +695,63 @@ mod tests {
 
         assert!(content.contains(TRACE_MAP_SCHEMA_VERSION));
         assert!(content.contains("duumbi:t/main/entry"));
+    }
+
+    #[test]
+    fn inspect_crash_artifacts_maps_function_and_block() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let function = map
+            .entries
+            .iter()
+            .find(|entry| entry.kind == TraceMapKind::Function)
+            .expect("function entry should exist");
+        let block = map
+            .entries
+            .iter()
+            .find(|entry| entry.kind == TraceMapKind::Block)
+            .expect("block entry should exist");
+        let crash = serde_json::json!({
+            "schema_version": CRASH_SCHEMA_VERSION,
+            "event": "panic",
+            "message": "called Option::unwrap() on a None value",
+            "function_id": function.trace_id,
+            "block_id": block.trace_id,
+            "trace_active": true
+        });
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+
+        let report = inspect_crash_artifacts(dir.path(), None, None)
+            .expect("crash artifacts should map to graph context");
+
+        assert_eq!(report.function_graph_id, "duumbi:t/main");
+        assert_eq!(report.block_graph_id, "duumbi:t/main/entry");
+        assert!(
+            report
+                .to_cli_output()
+                .contains("Exact node evidence: unavailable in v1")
+        );
+    }
+
+    #[test]
+    fn inspect_crash_artifacts_rejects_missing_map() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let crash = serde_json::json!({
+            "schema_version": CRASH_SCHEMA_VERSION,
+            "event": "panic",
+            "message": "failure",
+            "function_id": 1,
+            "block_id": 2,
+            "trace_active": true
+        });
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+
+        let result = inspect_crash_artifacts(dir.path(), None, None);
+
+        assert!(matches!(result, Err(TelemetryError::Io { .. })));
     }
 
     #[test]

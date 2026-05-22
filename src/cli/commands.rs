@@ -98,7 +98,7 @@ pub(crate) fn build_with_options(input: &Path, output: &Path, options: BuildOpti
 
     let semantic_graph = parse_and_validate(input)?;
 
-    let obj_bytes = lowering::compile_to_object(&semantic_graph)
+    let obj_bytes = lowering::compile_to_object_with_telemetry(&semantic_graph, options.telemetry)
         .map_err(|e| {
             emit_error_suggestions(ErrorKind::Compilation);
             anyhow::Error::new(e)

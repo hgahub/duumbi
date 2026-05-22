@@ -228,6 +228,13 @@ pub enum Commands {
         yes: bool,
     },
 
+    /// Inspect local telemetry artifacts.
+    Telemetry {
+        /// Telemetry subcommand.
+        #[command(subcommand)]
+        subcommand: TelemetrySubcommand,
+    },
+
     /// Migrate a Phase 4-5 workspace to Phase 7 format.
     Upgrade,
 
@@ -326,6 +333,25 @@ pub enum Commands {
         /// Port for SSE transport (default: 8421).
         #[arg(long, default_value_t = 8421)]
         port: u16,
+    },
+}
+
+/// Subcommands for `duumbi telemetry`.
+#[derive(Subcommand, Debug)]
+pub enum TelemetrySubcommand {
+    /// Inspect crash evidence and map it to graph function/block context.
+    Inspect {
+        /// Telemetry artifact directory.
+        #[arg(long)]
+        telemetry_dir: Option<PathBuf>,
+
+        /// Explicit crash artifact path.
+        #[arg(long)]
+        crash: Option<PathBuf>,
+
+        /// Explicit trace map artifact path.
+        #[arg(long = "map")]
+        map_path: Option<PathBuf>,
     },
 }
 
@@ -597,5 +623,28 @@ mod tests {
             .expect("CLI must parse trace build flag");
 
         assert!(matches!(cli.command, Commands::Build { trace: true, .. }));
+    }
+
+    #[test]
+    fn telemetry_inspect_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "telemetry",
+            "inspect",
+            "--telemetry-dir",
+            "tmp/telemetry",
+            "--crash",
+            "tmp/crash.jsonl",
+            "--map",
+            "tmp/trace_map.json",
+        ])
+        .expect("CLI must parse telemetry inspect");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Telemetry {
+                subcommand: TelemetrySubcommand::Inspect { .. }
+            }
+        ));
     }
 }
