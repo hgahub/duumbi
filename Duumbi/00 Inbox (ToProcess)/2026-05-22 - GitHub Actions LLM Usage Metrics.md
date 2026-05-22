@@ -3,8 +3,8 @@
 ## Source
 - Source: Codex
 - Surface: Codex
-- Conversation context: Slack thread in `C08SK7E6R7T` (`p1779433792156479`), user asked to use `duumbi-codex-intake` skill and capture an idea.
-- Submitted by: `<@U4SMDRG9M>`
+- Conversation context: Slack thread (internal), user asked to use `duumbi-codex-intake` skill and capture an idea.
+- Submitted by: internal Slack user
 
 ## Raw input
 Collect metrics in GitHub Actions about LLM call consumption and run times so later workflow executions can be optimized.
