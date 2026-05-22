@@ -35,6 +35,7 @@ mod registry;
 #[allow(dead_code)] // Binary uses a subset; full API used via lib crate
 mod session;
 mod snapshot;
+mod telemetry;
 mod tools;
 mod types;
 #[allow(dead_code)] // Library workflow API is also compiled into the binary crate.

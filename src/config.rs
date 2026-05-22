@@ -706,6 +706,10 @@ pub struct DuumbiConfig {
     /// Logging settings for diagnostics and command performance events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingSection>,
+
+    /// Local runtime telemetry settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<crate::telemetry::TelemetrySection>,
 }
 
 impl DuumbiConfig {
@@ -992,6 +996,9 @@ fn merge_non_provider_fields(base: &mut DuumbiConfig, overlay: &DuumbiConfig) {
     if let Some(logging) = overlay.logging.as_ref() {
         merge_logging_fields(&mut base.logging, logging);
     }
+    if let Some(telemetry) = overlay.telemetry.as_ref() {
+        merge_telemetry_fields(&mut base.telemetry, telemetry);
+    }
 }
 
 fn merge_logging_fields(base: &mut Option<LoggingSection>, overlay: &LoggingSection) {
@@ -1018,6 +1025,23 @@ fn merge_logging_fields(base: &mut Option<LoggingSection>, overlay: &LoggingSect
     }
     if overlay.performance.path.is_some() {
         base.performance.path = overlay.performance.path.clone();
+    }
+}
+
+fn merge_telemetry_fields(
+    base: &mut Option<crate::telemetry::TelemetrySection>,
+    overlay: &crate::telemetry::TelemetrySection,
+) {
+    let base = base.get_or_insert_with(crate::telemetry::TelemetrySection::default);
+
+    if overlay.enabled.is_some() {
+        base.enabled = overlay.enabled;
+    }
+    if overlay.artifact_dir.is_some() {
+        base.artifact_dir = overlay.artifact_dir.clone();
+    }
+    if overlay.capture_values.is_some() {
+        base.capture_values = overlay.capture_values;
     }
 }
 
@@ -1396,6 +1420,59 @@ path = "custom-performance.jsonl"
             Some(Path::new("user-general.log"))
         );
         assert_eq!(logging.performance.enabled, Some(true));
+    }
+
+    #[test]
+    fn telemetry_config_roundtrip() {
+        let tmp = TempDir::new().expect("invariant: temp dir creation must succeed");
+        write_config(
+            &tmp,
+            r#"
+[telemetry]
+enabled = true
+artifact-dir = "custom-telemetry"
+capture-values = false
+"#,
+        );
+
+        let cfg = load_config(tmp.path()).expect("config must parse");
+        let telemetry = cfg.telemetry.expect("telemetry section");
+
+        assert!(telemetry.effective_enabled());
+        assert_eq!(
+            telemetry.configured_artifact_dir(),
+            Path::new("custom-telemetry")
+        );
+        assert!(!telemetry.effective_capture_values());
+    }
+
+    #[test]
+    fn effective_config_workspace_telemetry_preserves_unset_user_fields() {
+        let user = DuumbiConfig {
+            telemetry: Some(crate::telemetry::TelemetrySection {
+                enabled: Some(true),
+                artifact_dir: Some(PathBuf::from("user-telemetry")),
+                ..crate::telemetry::TelemetrySection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+        let workspace = DuumbiConfig {
+            telemetry: Some(crate::telemetry::TelemetrySection {
+                capture_values: Some(true),
+                ..crate::telemetry::TelemetrySection::default()
+            }),
+            ..DuumbiConfig::default()
+        };
+
+        let effective = merge_config_layers(DuumbiConfig::default(), user, workspace);
+        let telemetry = effective.config.telemetry.expect("telemetry");
+
+        assert_eq!(telemetry.enabled, Some(true));
+        assert_eq!(
+            telemetry.artifact_dir.as_deref(),
+            Some(Path::new("user-telemetry"))
+        );
+        assert_eq!(telemetry.capture_values, Some(true));
     }
 
     #[test]

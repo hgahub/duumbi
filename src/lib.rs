@@ -28,6 +28,7 @@ pub mod query;
 pub mod registry;
 pub mod session;
 pub mod snapshot;
+pub mod telemetry;
 pub mod tools;
 pub mod types;
 pub mod workflow;
