@@ -462,7 +462,7 @@ jobs:
               `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,
               `• Project: ${projectUpdated ? dc.projectStatus : '_not updated_'}`,
               `• Next: ${dc.nextStage}`,
-              nextCodexPrompt ? ['', 'Next Codex prompt:', '```text', nextCodexPrompt, '```'].join('\n') : null,
+              nextCodexPrompt ? ['', 'Next Codex prompt:', '```', nextCodexPrompt, '```'].join('\n') : null,
             ].filter(Boolean).join('\n');
 
             // Reply in Slack thread via response_url (from button click)
@@ -516,4 +516,4 @@ jobs:
                 .addHeading('Next Codex Prompt', 3)
                 .addCodeBlock(nextCodexPrompt, 'text');
             }
-            summaryBuilder.write();
+            await summaryBuilder.write();
