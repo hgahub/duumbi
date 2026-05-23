@@ -314,29 +314,57 @@ jobs:
             }
             lines.push(`**Next state:** ${dc.nextState}`);
             lines.push(...promptBlock(nextCodexPrompt));
+            const decisionCommentBody = lines.join('\n');
 
-            // ── Post decision comment ───────────────────────────────
-            const { data: posted } = await github.rest.issues.createComment({
-              owner, repo, issue_number: issueNumber, body: lines.join('\n'),
-            });
-            core.info(`Decision comment: ${posted.html_url}`);
+            const matchingDecisionComment = (comment) => {
+              const body = comment.body || '';
+              return body.includes(`## ${stageConfig.title}`)
+                && body.includes(`**Decision:** ${dc.label}`)
+                && body.includes(`**Next state:** ${dc.nextState}`);
+            };
+
+            // ── Post or reuse decision comment ──────────────────────
+            let posted = [...comments].reverse().find(matchingDecisionComment);
+            if (posted) {
+              core.info(`Decision comment already exists: ${posted.html_url}`);
+            } else {
+              const { data } = await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber, body: decisionCommentBody,
+              });
+              posted = data;
+              core.info(`Decision comment: ${posted.html_url}`);
+            }
 
             // ── Post PR pointer comment (stages 7/9) ────────────────
             let prCommentUrl = '';
             if (prNumber && (stage === '7' || stage === '9')) {
               try {
-                const { data: prc } = await github.rest.issues.createComment({
-                  owner, repo, issue_number: prNumber,
-                  body: [
-                    `## ${stageConfig.title}`,
-                    '',
-                    `**Decision:** ${dc.label}`,
-                    `**Issue:** ${issueUrl}`,
-                    `**Decision comment:** ${posted.html_url}`,
-                  ].join('\n'),
+                const prPointerBody = [
+                  `## ${stageConfig.title}`,
+                  '',
+                  `**Decision:** ${dc.label}`,
+                  `**Issue:** ${issueUrl}`,
+                  `**Decision comment:** ${posted.html_url}`,
+                ].join('\n');
+                const prComments = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: prNumber, per_page: 100,
                 });
-                prCommentUrl = prc.html_url;
-                core.info(`PR comment: ${prCommentUrl}`);
+                const existingPrComment = [...prComments].reverse().find((comment) => {
+                  const body = comment.body || '';
+                  return body.includes(`## ${stageConfig.title}`)
+                    && body.includes(`**Decision:** ${dc.label}`)
+                    && body.includes(`**Issue:** ${issueUrl}`);
+                });
+                if (existingPrComment) {
+                  prCommentUrl = existingPrComment.html_url;
+                  core.info(`PR comment already exists: ${prCommentUrl}`);
+                } else {
+                  const { data: prc } = await github.rest.issues.createComment({
+                    owner, repo, issue_number: prNumber, body: prPointerBody,
+                  });
+                  prCommentUrl = prc.html_url;
+                  core.info(`PR comment: ${prCommentUrl}`);
+                }
               } catch (err) {
                 core.warning(`PR #${prNumber} comment failed: ${err.message}`);
               }
