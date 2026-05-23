@@ -12,7 +12,7 @@ Stage 10 resource-gated Ralph Cycle request
   -> explicit Stage 10 authorization decision
   -> durable GitHub issue comment and state update
 
-Stage 10 implementation ready for review
+Stage 11 review handoff for implementation ready for review
   -> Slack notification
   -> ready-to-run Stage 11 Review Artifact prompt
   -> durable GitHub marker
@@ -246,7 +246,7 @@ on:
         required: false
         type: string
       issue_number:
-        required: true
+        required: false
         type: number
       request_comment_id:
         required: false
@@ -267,9 +267,13 @@ Workflow behavior:
 3. Cap scheduled processing at 10 issues per run.
 4. For each issue, fetch comments and find the latest valid
    `## Ralph Cycle <N> Resource Approval Request`.
-5. If `request_comment_id` is supplied, evaluate that comment first and fail if
+5. For `workflow_dispatch`, require at least one of `issue_number` or
+   `issue_url`. If both are supplied, validate that they identify the same
+   issue. URL-only manual dispatch is valid and must parse the issue number from
+   the URL.
+6. If `request_comment_id` is supplied, evaluate that comment first and fail if
    it is missing or malformed.
-6. Validate required fields from the product spec:
+7. Validate required fields from the product spec:
    - `Issue`
    - `Product spec`
    - `Technical spec`
@@ -281,12 +285,12 @@ Workflow behavior:
    - `Resource Estimate`
    - `Approval Trigger`
    - `Stop Condition`
-7. Extract cycle number from the heading with
+8. Extract cycle number from the heading with
    `/^## Ralph Cycle (\\d+) Resource Approval Request\\s*$/m`.
-8. Treat missing required fields as a workflow failure for manual/dispatch runs
+9. Treat missing required fields as a workflow failure for manual/dispatch runs
    and as a skipped issue with warning during scheduled sweeps.
-9. Do not post Slack when parsing fails.
-10. Build a Slack card with:
+10. Do not post Slack when parsing fails.
+11. Build a Slack card with:
     - issue link
     - cycle number
     - request comment link
@@ -298,11 +302,11 @@ Workflow behavior:
     - approval trigger
     - stop condition
     - fallback link to `stage-10-authorization.yml`
-11. Include three buttons:
+12. Include three buttons:
     - `Approve Cycle`
     - `Narrow Scope`
     - `Reject / Defer`
-12. Button values must include:
+13. Button values must include:
 
 ```json
 {
@@ -315,19 +319,19 @@ Workflow behavior:
 }
 ```
 
-13. Use `decision: "narrow-scope"` and `decision: "reject-defer"` for the other
+14. Use `decision: "narrow-scope"` and `decision: "reject-defer"` for the other
     buttons.
-14. Post Slack through `chat.postMessage` using `SLACK_BOT_TOKEN` and
+15. Post Slack through `chat.postMessage` using `SLACK_BOT_TOKEN` and
     `SLACK_REVIEW_CHANNEL_ID`.
-15. Write a marker comment only after Slack delivery succeeds.
-16. Marker format:
+16. Write a marker comment only after Slack delivery succeeds.
+17. Marker format:
 
 ```html
 <!-- duumbi-ralph-cycle-approval-slack-notified:v1 issue=595 cycle=2 request_comment_id=123456789 -->
 ```
 
-17. Include workflow run URL and source event in the marker comment body.
-18. Emit a metadata-only metrics artifact using the v1 pattern from issue #610.
+18. Include workflow run URL and source event in the marker comment body.
+19. Emit a metadata-only metrics artifact using the v1 pattern from issue #610.
 
 The workflow may use a `notify`, `mark-notified`, and `metrics` job shape like
 the existing review request workflows.
@@ -476,7 +480,7 @@ on:
         required: false
         type: string
       issue_number:
-        required: true
+        required: false
         type: number
       pr_number:
         required: false
@@ -498,7 +502,15 @@ Workflow behavior:
    unavailable and exit successfully without posting Slack.
 3. Cap scheduled processing at 10 issues or PRs per run.
 4. Resolve issue and PR:
-   - workflow/dispatch inputs may provide both.
+   - workflow/dispatch inputs may provide issue URL, issue number, PR number,
+     or any non-conflicting combination.
+   - For `workflow_dispatch`, require at least one of `issue_url`,
+     `issue_number`, or `pr_number`.
+   - PR-only manual dispatch is valid and must resolve the linked issue from
+     the PR body, linked issue metadata, or issue comments. If the PR maps to
+     multiple candidate issues, fail with a clear ambiguity diagnostic.
+   - If issue and PR inputs are both supplied, validate that the PR is linked to
+     the supplied issue before posting Slack.
    - PR-triggered runs should parse issue references from the PR body using
      non-completing references such as `Related to #N`, `Supports #N`, or
      `Technical spec for #N`.
