@@ -4,6 +4,22 @@
 
 use std::process::Command;
 
+fn duumbi_bin() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_duumbi"))
+}
+
+fn native_output_path(path: &std::path::Path) -> std::path::PathBuf {
+    if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
+        return path.to_path_buf();
+    }
+
+    std::path::PathBuf::from(format!(
+        "{}{}",
+        path.display(),
+        std::env::consts::EXE_SUFFIX
+    ))
+}
+
 /// Helper: compile a fixture and return the output binary path.
 fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
     let tmp_dir = std::env::temp_dir().join("duumbi_phase1_tests");
@@ -29,7 +45,153 @@ fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
         String::from_utf8_lossy(&duumbi_output.stderr)
     );
 
-    output_binary
+    native_output_path(&output_binary)
+}
+
+#[test]
+fn phase1_build_help_lists_trace_flag() {
+    let output = Command::new(duumbi_bin())
+        .args(["build", "--help"])
+        .output()
+        .expect("invariant: duumbi help must be runnable");
+
+    assert!(
+        output.status.success(),
+        "duumbi build --help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--trace"));
+    assert!(stdout.contains("local traced build"));
+}
+
+#[test]
+fn phase1_trace_single_file_build_accepts_defaults() {
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir");
+    let output_binary = tmp.path().join("hello-traced");
+
+    let output = Command::new(duumbi_bin())
+        .args([
+            "build",
+            "--trace",
+            "tests/fixtures/hello.jsonld",
+            "-o",
+            &output_binary.to_string_lossy(),
+        ])
+        .output()
+        .expect("invariant: duumbi build must be runnable");
+
+    assert!(
+        output.status.success(),
+        "duumbi build --trace failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(native_output_path(&output_binary).exists());
+    assert!(!tmp.path().join(".duumbi/telemetry/traces.jsonl").exists());
+    assert!(
+        !tmp.path()
+            .join(".duumbi/telemetry/crash_dump.jsonl")
+            .exists()
+    );
+}
+
+#[test]
+fn phase1_config_semantic_errors_only_block_trace_builds() {
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir");
+    let duumbi_dir = tmp.path().join(".duumbi");
+    std::fs::create_dir_all(&duumbi_dir).expect("invariant: .duumbi must be creatable");
+    std::fs::write(
+        duumbi_dir.join("config.toml"),
+        r#"
+[telemetry]
+sample-rate = 2.0
+"#,
+    )
+    .expect("invariant: config must be writable");
+
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.jsonld");
+    let default_binary = tmp.path().join("hello-default");
+    let default_output = Command::new(duumbi_bin())
+        .args([
+            "build",
+            &fixture.to_string_lossy(),
+            "-o",
+            &default_binary.to_string_lossy(),
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .expect("invariant: duumbi build must be runnable");
+
+    assert!(
+        default_output.status.success(),
+        "default build should ignore telemetry semantic errors: {}",
+        String::from_utf8_lossy(&default_output.stderr)
+    );
+    assert!(native_output_path(&default_binary).exists());
+
+    let traced_binary = tmp.path().join("hello-traced");
+    let traced_output = Command::new(duumbi_bin())
+        .args([
+            "build",
+            "--trace",
+            &fixture.to_string_lossy(),
+            "-o",
+            &traced_binary.to_string_lossy(),
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .expect("invariant: duumbi build must be runnable");
+
+    assert!(
+        !traced_output.status.success(),
+        "traced build should reject invalid telemetry config"
+    );
+    let stderr = String::from_utf8_lossy(&traced_output.stderr);
+    assert!(stderr.contains("sample-rate"), "{stderr}");
+    assert!(stderr.contains("0.0 and 1.0"), "{stderr}");
+}
+
+#[test]
+fn phase1_trace_rejects_invalid_sample_rate_before_compilation() {
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir");
+    let duumbi_dir = tmp.path().join(".duumbi");
+    std::fs::create_dir_all(&duumbi_dir).expect("invariant: .duumbi must be creatable");
+    std::fs::write(
+        duumbi_dir.join("config.toml"),
+        r#"
+[telemetry]
+sample-rate = 2.0
+"#,
+    )
+    .expect("invariant: config must be writable");
+
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.jsonld");
+    let traced_binary = tmp.path().join("hello-traced");
+    let traced_output = Command::new(duumbi_bin())
+        .args([
+            "build",
+            "--trace",
+            &fixture.to_string_lossy(),
+            "-o",
+            &traced_binary.to_string_lossy(),
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .expect("invariant: duumbi build must be runnable");
+
+    assert!(
+        !traced_output.status.success(),
+        "traced build should reject invalid telemetry config"
+    );
+    let stderr = String::from_utf8_lossy(&traced_output.stderr);
+    assert!(stderr.contains("sample-rate"), "{stderr}");
+    assert!(stderr.contains("0.0 and 1.0"), "{stderr}");
+    assert!(
+        !stderr.contains("Failed to link binary"),
+        "validation should fail before linking: {stderr}"
+    );
 }
 
 #[test]
@@ -226,4 +388,50 @@ fn phase1_workspace_init_build_run() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn phase1_workspace_trace_build_supports_offline() {
+    let duumbi_path = duumbi_bin();
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir");
+    let workspace = tmp.path().join("ws");
+
+    let init_output = Command::new(&duumbi_path)
+        .args(["init", &workspace.to_string_lossy()])
+        .output()
+        .expect("invariant: duumbi init must be runnable");
+    assert!(
+        init_output.status.success(),
+        "duumbi init failed: {}",
+        String::from_utf8_lossy(&init_output.stderr)
+    );
+    std::fs::write(
+        workspace.join(".duumbi/config.toml"),
+        r#"
+[workspace]
+name = "ws"
+namespace = "ws"
+"#,
+    )
+    .expect("invariant: dependency-free config must be writable");
+
+    let build_output = Command::new(&duumbi_path)
+        .args(["build", "--trace", "--offline"])
+        .current_dir(&workspace)
+        .output()
+        .expect("invariant: duumbi build must be runnable");
+    assert!(
+        build_output.status.success(),
+        "workspace duumbi build --trace --offline failed: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let workspace_output = duumbi::workspace::workspace_output_path(&workspace);
+    assert!(workspace_output.exists());
+    assert!(!workspace.join(".duumbi/telemetry/traces.jsonl").exists());
+    assert!(
+        !workspace
+            .join(".duumbi/telemetry/crash_dump.jsonl")
+            .exists()
+    );
 }

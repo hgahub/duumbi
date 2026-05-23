@@ -29,6 +29,12 @@ pub enum WorkspaceBuildErrorKind {
 /// Error produced while building a workspace binary.
 #[derive(Debug, Error)]
 pub enum WorkspaceBuildError {
+    /// Runtime config could not be loaded for traced build validation.
+    #[error("Failed to load telemetry config: {0}")]
+    Config(#[source] crate::config::ConfigError),
+    /// Telemetry config is invalid for a traced build.
+    #[error("Invalid telemetry config: {0}")]
+    TelemetryConfig(#[source] crate::telemetry::TelemetryValidationError),
     /// Program loading, graph construction, or validation failed.
     #[error("Graph construction failed: {0}")]
     Graph(#[source] deps::DepsError),
@@ -63,6 +69,7 @@ impl WorkspaceBuildError {
     #[must_use]
     pub fn kind(&self) -> WorkspaceBuildErrorKind {
         match self {
+            Self::Config(_) | Self::TelemetryConfig(_) => WorkspaceBuildErrorKind::Compilation,
             Self::Graph(_) => WorkspaceBuildErrorKind::Graph,
             Self::Compilation(_) | Self::CompilationInternal { .. } | Self::BuildIo { .. } => {
                 WorkspaceBuildErrorKind::Compilation
@@ -117,6 +124,8 @@ pub fn build_workspace_with_options(
         })?;
     }
 
+    let telemetry_config = validate_trace_config(workspace_root, options.telemetry)?;
+
     let program = deps::load_program_with_deps_opts(workspace_root, options.offline)
         .map_err(WorkspaceBuildError::Graph)?;
 
@@ -170,22 +179,38 @@ pub fn build_workspace_with_options(
         .map_err(WorkspaceBuildError::Link)?;
 
     if options.telemetry.is_trace() {
-        let section = crate::config::load_effective_config(workspace_root)
-            .map_err(|source| WorkspaceBuildError::CompilationInternal {
-                message: format!("Failed to load telemetry config: {source}"),
-            })?
-            .config
-            .telemetry
-            .unwrap_or_default();
-        let telemetry_dir = section.effective_artifact_dir(workspace_root);
         let trace_map = crate::telemetry::TraceMap::from_program(&program)
             .map_err(WorkspaceBuildError::Telemetry)?;
+        let telemetry_dir = telemetry_config
+            .as_ref()
+            .expect("invariant: trace config is present when telemetry mode is trace")
+            .artifact_dir
+            .clone();
         crate::telemetry::write_trace_map(&trace_map, &telemetry_dir)
             .map_err(WorkspaceBuildError::Telemetry)?;
     }
 
     let _ = fs::remove_dir_all(&tmp_dir);
     Ok(output.to_path_buf())
+}
+
+fn validate_trace_config(
+    workspace_root: &Path,
+    telemetry: crate::telemetry::TelemetryBuildMode,
+) -> std::result::Result<Option<crate::telemetry::ResolvedTelemetryConfig>, WorkspaceBuildError> {
+    if !telemetry.is_trace() {
+        return Ok(None);
+    }
+
+    let section = crate::config::load_effective_config(workspace_root)
+        .map_err(WorkspaceBuildError::Config)?
+        .config
+        .telemetry
+        .unwrap_or_default();
+    section
+        .resolve_for_trace(workspace_root)
+        .map(Some)
+        .map_err(WorkspaceBuildError::TelemetryConfig)
 }
 
 /// Runs a compiled workspace binary, capturing stdout and stderr.

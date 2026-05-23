@@ -96,6 +96,7 @@ pub(crate) fn build_with_options(input: &Path, output: &Path, options: BuildOpti
         return build_workspace_program(&workspace_root, output, options);
     }
 
+    validate_single_file_trace_config(options.telemetry)?;
     let semantic_graph = parse_and_validate(input)?;
 
     let obj_bytes = lowering::compile_to_object_with_telemetry(&semantic_graph, options.telemetry)
@@ -186,7 +187,30 @@ fn telemetry_artifact_dir(workspace_root: &Path) -> Result<PathBuf> {
         .config
         .telemetry
         .unwrap_or_default();
-    Ok(section.effective_artifact_dir(workspace_root))
+    let resolved = section
+        .resolve_for_trace(workspace_root)
+        .context("Invalid telemetry config")?;
+    Ok(resolved.artifact_dir)
+}
+
+fn validate_single_file_trace_config(
+    telemetry: crate::telemetry::TelemetryBuildMode,
+) -> Result<()> {
+    if !telemetry.is_trace() {
+        return Ok(());
+    }
+
+    let workspace_root =
+        std::env::current_dir().context("Failed to resolve current directory for telemetry")?;
+    let section = crate::config::load_effective_config(&workspace_root)
+        .context("Failed to load telemetry config")?
+        .config
+        .telemetry
+        .unwrap_or_default();
+    section
+        .resolve_for_trace(&workspace_root)
+        .context("Invalid telemetry config")?;
+    Ok(())
 }
 
 /// Validates a graph file without compiling.
