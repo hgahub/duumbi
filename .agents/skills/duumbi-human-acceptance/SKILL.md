@@ -55,13 +55,26 @@ Do not process broad sweeps in this skill. Handle one issue and one explicit dec
 
 ## Acceptance Fast Path
 
-When the prompt contains an explicit **Accept** decision (e.g. `Human decision: Accept`, or a Slack message like `accepted: issue: #N`) AND an issue number is identifiable, skip the full acceptance brief and execute the Accept decision directly. For other decisions (Needs Clarification, Duplicate, Defer, Reject), use the full review flow below.
+When the prompt contains an explicit **Accept** decision (e.g. `Human decision: Accept`, or a Slack message like `accepted: issue: #N`) AND an issue number is identifiable, skip the full acceptance brief and route the decision through the canonical Stage Approval workflow. For other decisions (Needs Clarification, Duplicate, Defer, Reject), use the full review flow below.
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `needs-human-review` label is present
-2. Construct and post the Stage 5 Human Acceptance Decision Comment on the issue
-3. Update labels: remove `needs-human-review`, add `accepted` and `needs-spec`
-4. Attempt Project V2 status update to `Spec Needed`
-5. Report the final state
+2. Trigger `.github/workflows/stage-approval.yml` with `stage=5`, `issue_number=<N>`, `decision=approve`, the provided rationale when available, and `pr_number=0`
+3. Wait for the workflow run to complete when the tool/CLI supports it
+4. Verify the resulting issue labels and Project V2 status when readable
+5. Report the workflow run, final state, and any unavailable verification
+
+The Stage Approval workflow is the canonical write path for accepted Stage 5 decisions because it owns the decision comment, label transition, Project V2 `Spec Needed` update, Slack decision summary, and next-stage prompt. Do not directly post the decision comment, change labels, or attempt Project V2 status updates in the Accept fast path unless the user explicitly asks for a break-glass fallback after the workflow cannot be triggered.
+
+If no workflow dispatch or repository dispatch capability is available, stop before writing GitHub state and report the exact manual workflow inputs:
+
+```text
+workflow: Stage Approval
+stage: 5
+issue_number: <N>
+decision: approve
+rationale: <provided rationale or short acceptance rationale>
+pr_number: 0
+```
 
 Do NOT prepare an acceptance brief, inspect triage context, read unrelated skills, or re-fetch content already in context. Use `wait` mode for all `gh`/`git` commands.
 
