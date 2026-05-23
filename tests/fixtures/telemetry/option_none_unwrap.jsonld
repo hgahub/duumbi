@@ -1,0 +1,41 @@
+{
+    "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:telemetry",
+    "duumbi:name": "telemetry",
+    "duumbi:functions": [{
+        "@type": "duumbi:Function",
+        "@id": "duumbi:telemetry/main",
+        "duumbi:name": "main",
+        "duumbi:returnType": "i64",
+        "duumbi:blocks": [{
+            "@type": "duumbi:Block",
+            "@id": "duumbi:telemetry/main/entry",
+            "duumbi:label": "entry",
+            "duumbi:ops": [
+                {
+                    "@type": "duumbi:OptionNone",
+                    "@id": "duumbi:telemetry/main/entry/0",
+                    "duumbi:resultType": "option<i64>"
+                },
+                {
+                    "@type": "duumbi:OptionIsSome",
+                    "@id": "duumbi:telemetry/main/entry/1",
+                    "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/0"},
+                    "duumbi:resultType": "bool"
+                },
+                {
+                    "@type": "duumbi:OptionUnwrap",
+                    "@id": "duumbi:telemetry/main/entry/2",
+                    "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/0"},
+                    "duumbi:resultType": "i64"
+                },
+                {
+                    "@type": "duumbi:Return",
+                    "@id": "duumbi:telemetry/main/entry/3",
+                    "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/2"}
+                }
+            ]
+        }]
+    }]
+}

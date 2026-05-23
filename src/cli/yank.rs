@@ -179,6 +179,7 @@ mod tests {
             agent: None,
             editor: None,
             logging: None,
+            telemetry: None,
             mcp_clients: HashMap::new(),
         }
     }

@@ -35,6 +35,8 @@ mod registry;
 #[allow(dead_code)] // Binary uses a subset; full API used via lib crate
 mod session;
 mod snapshot;
+#[allow(dead_code)] // Library and later telemetry cycles use the full module surface.
+mod telemetry;
 mod tools;
 mod types;
 #[allow(dead_code)] // Library workflow API is also compiled into the binary crate.
@@ -215,6 +217,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Registry { .. } => "registry",
         Commands::Publish { .. } => "publish",
         Commands::Yank { .. } => "yank",
+        Commands::Telemetry { .. } => "telemetry",
         Commands::Upgrade => "upgrade",
         Commands::Benchmark { .. } => "benchmark",
         Commands::Phase15E2e { .. } => "phase15-e2e",
@@ -345,6 +348,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Commands::Build {
             input,
             output,
+            trace,
             offline,
         } => {
             if offline {
@@ -352,10 +356,16 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             let input_path = resolve_input(input.as_deref())?;
             let output_path = resolve_output(output.as_deref())?;
-            success_exit(cli::commands::build_with_opts(
+            let telemetry = if trace {
+                telemetry::TelemetryBuildMode::Trace
+            } else {
+                telemetry::TelemetryBuildMode::Off
+            };
+            let options = telemetry::BuildOptions::new(offline, telemetry);
+            success_exit(cli::commands::build_with_options(
                 &input_path,
                 &output_path,
-                offline,
+                options,
             ))
         }
         Commands::Run { args } => {
@@ -450,6 +460,10 @@ async fn run(cli: Cli) -> Result<i32> {
                 cli::yank::run_yank(&workspace, &specifier, registry.as_deref(), yes).await,
             )
         }
+        Commands::Telemetry { subcommand } => {
+            let workspace = PathBuf::from(".");
+            success_exit(run_telemetry(subcommand, &workspace))
+        }
         Commands::Upgrade => success_exit(cli::upgrade::run_upgrade(&PathBuf::from("."))),
         Commands::Knowledge { subcommand } => {
             let workspace = PathBuf::from(".");
@@ -495,6 +509,38 @@ fn success_exit(result: Result<()>) -> Result<i32> {
 // ---------------------------------------------------------------------------
 // Command implementations
 // ---------------------------------------------------------------------------
+
+fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Result<()> {
+    match subcommand {
+        cli::TelemetrySubcommand::Inspect {
+            telemetry_dir,
+            crash,
+            map_path,
+        } => {
+            let telemetry_dir = match telemetry_dir {
+                Some(telemetry_dir) => telemetry_dir,
+                None => default_telemetry_dir(workspace)?,
+            };
+            let report = telemetry::inspect_crash_artifacts(
+                &telemetry_dir,
+                crash.as_deref(),
+                map_path.as_deref(),
+            )?;
+            println!("{}", report.to_cli_output());
+            Ok(())
+        }
+    }
+}
+
+fn default_telemetry_dir(workspace: &Path) -> Result<PathBuf> {
+    let telemetry_dir = config::load_effective_config(workspace)
+        .context("Failed to load telemetry config")?
+        .config
+        .telemetry
+        .unwrap_or_default()
+        .effective_artifact_dir(workspace);
+    Ok(telemetry_dir)
+}
 
 /// Resolves the input file path: explicit path or workspace discovery.
 fn resolve_input(explicit: Option<&Path>) -> Result<PathBuf> {

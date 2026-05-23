@@ -1,0 +1,74 @@
+{
+    "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+    "@type": "duumbi:Module",
+    "@id": "duumbi:telemetry_call",
+    "duumbi:name": "telemetry_call",
+    "duumbi:functions": [
+        {
+            "@type": "duumbi:Function",
+            "@id": "duumbi:telemetry_call/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:telemetry_call/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {
+                        "@type": "duumbi:Call",
+                        "@id": "duumbi:telemetry_call/main/entry/0",
+                        "duumbi:function": "helper",
+                        "duumbi:args": [],
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:OptionNone",
+                        "@id": "duumbi:telemetry_call/main/entry/1",
+                        "duumbi:resultType": "option<i64>"
+                    },
+                    {
+                        "@type": "duumbi:OptionIsSome",
+                        "@id": "duumbi:telemetry_call/main/entry/2",
+                        "duumbi:operand": {"@id": "duumbi:telemetry_call/main/entry/1"},
+                        "duumbi:resultType": "bool"
+                    },
+                    {
+                        "@type": "duumbi:OptionUnwrap",
+                        "@id": "duumbi:telemetry_call/main/entry/3",
+                        "duumbi:operand": {"@id": "duumbi:telemetry_call/main/entry/1"},
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:Return",
+                        "@id": "duumbi:telemetry_call/main/entry/4",
+                        "duumbi:operand": {"@id": "duumbi:telemetry_call/main/entry/3"}
+                    }
+                ]
+            }]
+        },
+        {
+            "@type": "duumbi:Function",
+            "@id": "duumbi:telemetry_call/helper",
+            "duumbi:name": "helper",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:telemetry_call/helper/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:telemetry_call/helper/entry/0",
+                        "duumbi:value": 7,
+                        "duumbi:resultType": "i64"
+                    },
+                    {
+                        "@type": "duumbi:Return",
+                        "@id": "duumbi:telemetry_call/helper/entry/1",
+                        "duumbi:operand": {"@id": "duumbi:telemetry_call/helper/entry/0"}
+                    }
+                ]
+            }]
+        }
+    ]
+}
