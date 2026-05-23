@@ -11,6 +11,6 @@
     "@azure/functions": "^4.16.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.20.2"
   }
 }
