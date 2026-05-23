@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -687,7 +687,7 @@ impl BuildOptions {
 }
 
 /// Optional local telemetry settings from the `[telemetry]` config section.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct TelemetrySection {
     /// Whether telemetry is enabled by config.
@@ -697,6 +697,14 @@ pub struct TelemetrySection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
 
+    /// Sampling mode name for traced telemetry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_mode: Option<String>,
+
+    /// Sampling rate in the inclusive range `0.0..=1.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<f64>,
+
     /// Local directory for telemetry artifacts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_dir: Option<PathBuf>,
@@ -704,6 +712,72 @@ pub struct TelemetrySection {
     /// Whether traced runs may capture argument or value snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_values: Option<bool>,
+}
+
+/// Supported telemetry sampling modes after validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetrySamplingMode {
+    /// Stable sampling decisions suitable for tests and reproducible runs.
+    Deterministic,
+    /// Probability-based sampling using `sample-rate`.
+    Probabilistic,
+}
+
+impl TelemetrySamplingMode {
+    fn parse(value: &str) -> Result<Self, TelemetryValidationError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deterministic" => Ok(Self::Deterministic),
+            "probabilistic" => Ok(Self::Probabilistic),
+            other => Err(TelemetryValidationError::UnsupportedSamplingMode {
+                value: other.to_string(),
+            }),
+        }
+    }
+}
+
+/// Effective telemetry config after traced-build validation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedTelemetryConfig {
+    /// Enables runtime telemetry emission for trace-capable binaries.
+    pub enabled: bool,
+    /// Validated sampling mode.
+    pub sampling_mode: TelemetrySamplingMode,
+    /// Validated sample rate.
+    pub sample_rate: f64,
+    /// Resolved local artifact directory.
+    pub artifact_dir: PathBuf,
+    /// Whether the artifact dir came from `DUUMBI_TELEMETRY_DIR`.
+    pub artifact_dir_overridden: bool,
+    /// Whether argument or value snapshots may be captured.
+    pub capture_values: bool,
+}
+
+/// Telemetry config validation failure.
+#[derive(Debug, Error, PartialEq)]
+pub enum TelemetryValidationError {
+    /// Unsupported sampling mode.
+    #[error(
+        "telemetry sampling-mode '{value}' is unsupported; expected 'deterministic' or 'probabilistic'"
+    )]
+    UnsupportedSamplingMode {
+        /// Invalid sampling mode value.
+        value: String,
+    },
+    /// Invalid sample rate.
+    #[error("telemetry sample-rate must be between 0.0 and 1.0 inclusive; got {value}")]
+    InvalidSampleRate {
+        /// Invalid sample rate value.
+        value: f64,
+    },
+    /// Invalid artifact directory.
+    #[error("telemetry artifact-dir is invalid: {reason}")]
+    InvalidArtifactDir {
+        /// Human-readable reason.
+        reason: String,
+    },
+    /// Value capture is outside #583 traced build config validation.
+    #[error("telemetry capture-values is out of scope for #583 and must remain false")]
+    CaptureValuesUnsupported,
 }
 
 impl TelemetrySection {
@@ -717,6 +791,18 @@ impl TelemetrySection {
     #[must_use]
     pub fn effective_capture_values(&self) -> bool {
         self.capture_values.unwrap_or(false)
+    }
+
+    /// Returns the configured sampling mode before validation.
+    #[must_use]
+    pub fn configured_sampling_mode(&self) -> &str {
+        self.sampling_mode.as_deref().unwrap_or("deterministic")
+    }
+
+    /// Returns the configured sampling rate before validation.
+    #[must_use]
+    pub fn configured_sample_rate(&self) -> f64 {
+        self.sample_rate.unwrap_or(0.0)
     }
 
     /// Returns the configured artifact directory before env overrides.
@@ -751,6 +837,77 @@ impl TelemetrySection {
         } else {
             workspace_root.join(path)
         }
+    }
+
+    /// Resolves and validates telemetry config for a traced build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryValidationError`] when local telemetry config is
+    /// invalid for traced build behavior.
+    #[must_use = "telemetry validation errors should be handled"]
+    pub fn resolve_for_trace(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<ResolvedTelemetryConfig, TelemetryValidationError> {
+        self.resolve_for_trace_with_env(workspace_root, std::env::var_os(TELEMETRY_DIR_ENV))
+    }
+
+    fn resolve_for_trace_with_env(
+        &self,
+        workspace_root: &Path,
+        env_override: Option<OsString>,
+    ) -> Result<ResolvedTelemetryConfig, TelemetryValidationError> {
+        if self.effective_capture_values() {
+            return Err(TelemetryValidationError::CaptureValuesUnsupported);
+        }
+
+        let sample_rate = self.configured_sample_rate();
+        if !sample_rate.is_finite() || !(0.0..=1.0).contains(&sample_rate) {
+            return Err(TelemetryValidationError::InvalidSampleRate { value: sample_rate });
+        }
+
+        let sampling_mode = TelemetrySamplingMode::parse(self.configured_sampling_mode())?;
+        let (artifact_dir, artifact_dir_overridden) = match env_override {
+            Some(value) => (PathBuf::from(value), true),
+            None => (self.configured_artifact_dir().to_path_buf(), false),
+        };
+        let artifact_dir = resolve_artifact_dir(workspace_root, &artifact_dir)?;
+
+        Ok(ResolvedTelemetryConfig {
+            enabled: self.effective_enabled(),
+            sampling_mode,
+            sample_rate,
+            artifact_dir,
+            artifact_dir_overridden,
+            capture_values: self.effective_capture_values(),
+        })
+    }
+}
+
+fn resolve_artifact_dir(
+    workspace_root: &Path,
+    configured: &Path,
+) -> Result<PathBuf, TelemetryValidationError> {
+    if configured.as_os_str().is_empty() {
+        return Err(TelemetryValidationError::InvalidArtifactDir {
+            reason: "path is empty".to_string(),
+        });
+    }
+
+    if configured
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(TelemetryValidationError::InvalidArtifactDir {
+            reason: "parent directory traversal is not allowed".to_string(),
+        });
+    }
+
+    if configured.is_absolute() {
+        Ok(configured.to_path_buf())
+    } else {
+        Ok(workspace_root.join(configured))
     }
 }
 
@@ -861,6 +1018,8 @@ mod tests {
 
         assert!(!section.effective_enabled());
         assert!(!section.effective_capture_values());
+        assert_eq!(section.configured_sampling_mode(), "deterministic");
+        assert_eq!(section.configured_sample_rate(), 0.0);
         assert_eq!(
             section.configured_artifact_dir(),
             Path::new(DEFAULT_ARTIFACT_DIR)
@@ -1180,6 +1339,95 @@ mod tests {
             ),
             override_dir
         );
+    }
+
+    #[test]
+    fn telemetry_trace_validation_accepts_conservative_defaults() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+
+        let resolved = TelemetrySection::default()
+            .resolve_for_trace(workspace.path())
+            .expect("default telemetry config should be valid");
+
+        assert!(!resolved.enabled);
+        assert_eq!(resolved.sampling_mode, TelemetrySamplingMode::Deterministic);
+        assert_eq!(resolved.sample_rate, 0.0);
+        assert_eq!(
+            resolved.artifact_dir,
+            workspace.path().join(DEFAULT_ARTIFACT_DIR)
+        );
+        assert!(!resolved.capture_values);
+    }
+
+    #[test]
+    fn telemetry_trace_validation_rejects_invalid_sample_rate() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            sample_rate: Some(2.0),
+            ..TelemetrySection::default()
+        };
+
+        let err = section
+            .resolve_for_trace(workspace.path())
+            .expect_err("invalid sample-rate must fail");
+
+        assert_eq!(
+            err,
+            TelemetryValidationError::InvalidSampleRate { value: 2.0 }
+        );
+    }
+
+    #[test]
+    fn telemetry_trace_validation_rejects_unsupported_sampling_mode() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            sampling_mode: Some("always".to_string()),
+            ..TelemetrySection::default()
+        };
+
+        let err = section
+            .resolve_for_trace(workspace.path())
+            .expect_err("unsupported sampling mode must fail");
+
+        assert_eq!(
+            err,
+            TelemetryValidationError::UnsupportedSamplingMode {
+                value: "always".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn telemetry_trace_validation_rejects_parent_artifact_dir() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            artifact_dir: Some(PathBuf::from("../outside")),
+            ..TelemetrySection::default()
+        };
+
+        let err = section
+            .resolve_for_trace(workspace.path())
+            .expect_err("parent traversal must fail");
+
+        assert!(matches!(
+            err,
+            TelemetryValidationError::InvalidArtifactDir { .. }
+        ));
+    }
+
+    #[test]
+    fn telemetry_trace_validation_rejects_capture_values() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            capture_values: Some(true),
+            ..TelemetrySection::default()
+        };
+
+        let err = section
+            .resolve_for_trace(workspace.path())
+            .expect_err("capture-values must fail");
+
+        assert_eq!(err, TelemetryValidationError::CaptureValuesUnsupported);
     }
 
     fn test_graph() -> crate::graph::SemanticGraph {

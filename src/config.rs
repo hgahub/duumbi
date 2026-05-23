@@ -1037,6 +1037,12 @@ fn merge_telemetry_fields(
     if overlay.enabled.is_some() {
         base.enabled = overlay.enabled;
     }
+    if overlay.sampling_mode.is_some() {
+        base.sampling_mode = overlay.sampling_mode.clone();
+    }
+    if overlay.sample_rate.is_some() {
+        base.sample_rate = overlay.sample_rate;
+    }
     if overlay.artifact_dir.is_some() {
         base.artifact_dir = overlay.artifact_dir.clone();
     }
@@ -1430,6 +1436,8 @@ path = "custom-performance.jsonl"
             r#"
 [telemetry]
 enabled = true
+sampling-mode = "probabilistic"
+sample-rate = 0.25
 artifact-dir = "custom-telemetry"
 capture-values = false
 "#,
@@ -1439,6 +1447,8 @@ capture-values = false
         let telemetry = cfg.telemetry.expect("telemetry section");
 
         assert!(telemetry.effective_enabled());
+        assert_eq!(telemetry.configured_sampling_mode(), "probabilistic");
+        assert_eq!(telemetry.configured_sample_rate(), 0.25);
         assert_eq!(
             telemetry.configured_artifact_dir(),
             Path::new("custom-telemetry")
@@ -1458,6 +1468,8 @@ capture-values = false
         };
         let workspace = DuumbiConfig {
             telemetry: Some(crate::telemetry::TelemetrySection {
+                sampling_mode: Some("probabilistic".to_string()),
+                sample_rate: Some(0.5),
                 capture_values: Some(true),
                 ..crate::telemetry::TelemetrySection::default()
             }),
@@ -1472,6 +1484,8 @@ capture-values = false
             telemetry.artifact_dir.as_deref(),
             Some(Path::new("user-telemetry"))
         );
+        assert_eq!(telemetry.sampling_mode.as_deref(), Some("probabilistic"));
+        assert_eq!(telemetry.sample_rate, Some(0.5));
         assert_eq!(telemetry.capture_values, Some(true));
     }
 

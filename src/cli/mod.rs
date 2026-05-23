@@ -127,7 +127,7 @@ pub enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Compile with local telemetry trace instrumentation.
+        /// Select local traced build telemetry instrumentation.
         #[arg(long)]
         trace: bool,
 
