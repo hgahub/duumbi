@@ -54,7 +54,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Check out helper
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Execute Stage 10 decision
         id: decision
