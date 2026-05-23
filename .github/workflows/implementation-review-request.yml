@@ -50,7 +50,7 @@ jobs:
       artifact_links_missing: ${{ steps.request.outputs.artifact_links_missing }}
     steps:
       - name: Check out helper
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve review handoff and build Slack payload
         id: request
@@ -407,7 +407,7 @@ jobs:
       contents: read
     steps:
       - name: Check out helper
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Write DUUMBI workflow metrics
         if: always()
