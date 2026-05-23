@@ -56,6 +56,47 @@ static const char *duumbi_telemetry_dir(void) {
     return DUUMBI_DEFAULT_TELEMETRY_DIR;
 }
 
+static int duumbi_is_path_sep(char ch) {
+    return ch == '/' || ch == '\\';
+}
+
+static size_t duumbi_path_root_len(const char *path) {
+#if defined(_WIN32)
+    size_t len = strlen(path);
+    if (len >= 2 &&
+        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':') {
+        if (len >= 3 && duumbi_is_path_sep(path[2])) {
+            return 3;
+        }
+        return 2;
+    }
+
+    if (len >= 2 && duumbi_is_path_sep(path[0]) && duumbi_is_path_sep(path[1])) {
+        const char *cursor = path + 2;
+        while (*cursor != '\0' && !duumbi_is_path_sep(*cursor)) {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            return len;
+        }
+        cursor++;
+        while (*cursor != '\0' && !duumbi_is_path_sep(*cursor)) {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            return len;
+        }
+        return (size_t)(cursor - path + 1);
+    }
+#endif
+
+    if (duumbi_is_path_sep(path[0])) {
+        return 1;
+    }
+    return 0;
+}
+
 static int duumbi_mkdir_p(const char *dir) {
     char path[DUUMBI_PATH_BUFFER_LEN];
     size_t len = strlen(dir);
@@ -64,8 +105,13 @@ static int duumbi_mkdir_p(const char *dir) {
     }
 
     memcpy(path, dir, len + 1);
-    for (char *p = path + 1; *p != '\0'; p++) {
-        if (*p == '/' || *p == '\\') {
+    size_t root_len = duumbi_path_root_len(path);
+    if (root_len >= len) {
+        return 0;
+    }
+
+    for (char *p = path + (root_len > 0 ? root_len : 1); *p != '\0'; p++) {
+        if (duumbi_is_path_sep(*p)) {
             char saved = *p;
             *p = '\0';
             if (DUUMBI_MKDIR(path) != 0 && errno != EEXIST) {
