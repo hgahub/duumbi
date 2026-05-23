@@ -478,7 +478,6 @@ pub fn inspect_crash_artifacts(
 ///
 /// Returns [`TelemetryError`] when crash/map evidence is missing, malformed, or
 /// cannot map the crash trace IDs to graph entries.
-#[must_use]
 pub fn repair_crash_context_from_artifacts(
     telemetry_dir: &Path,
     crash_path: Option<&Path>,
@@ -507,7 +506,6 @@ pub fn repair_crash_context_from_artifacts(
 ///
 /// Returns [`TelemetryError`] when the proposed patch does not deserialize as a
 /// graph patch.
-#[must_use]
 pub fn parse_repair_graph_patch(
     patch: &serde_json::Value,
 ) -> Result<crate::patch::GraphPatch, TelemetryError> {
@@ -522,7 +520,6 @@ pub fn parse_repair_graph_patch(
 /// # Errors
 ///
 /// Returns [`TelemetryError`] when the patch cannot be serialized for evidence.
-#[must_use]
 pub fn repair_validation_evidence_from_graph_patch(
     crash_context: RepairCrashContext,
     patch: &crate::patch::GraphPatch,
