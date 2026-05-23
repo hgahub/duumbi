@@ -20,6 +20,10 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CORPUS_DIR="$PROJECT_DIR/docs/e2e/corpus"
 RESULTS_DIR="$PROJECT_DIR/docs/e2e/results"
 
+now_ms() {
+    echo "$(($(date +%s) * 1000))"
+}
+
 # Parse args
 PROVIDER="default"
 FILTER=""
@@ -36,6 +40,8 @@ mkdir -p "$RESULTS_DIR"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT="$RESULTS_DIR/${PROVIDER}_${TIMESTAMP}.json"
+RUN_START_MS=$(now_ms)
+USAGE_UNAVAILABLE_REASON="duumbi_intent_create_usage_not_exposed"
 
 echo "=== Intent Create Eval ==="
 echo "Provider: $PROVIDER"
@@ -83,12 +89,14 @@ for txt_file in "$CORPUS_DIR"/*.txt; do
     TOTAL=$((TOTAL + 1))
 
     echo -n "[$TOTAL] $task_id ... "
+    TASK_START_MS=$(now_ms)
 
     # Snapshot existing intents before this run
     BEFORE_FILES=$(ls "$PROJECT_DIR/.duumbi/intents/"*.yaml 2>/dev/null | sort || true)
 
     # Run intent create
     GENERATED=""
+    DUUMBI_COMMAND_ATTEMPTED=true
     if output=$(cd "$PROJECT_DIR" && "$DUUMBI" intent create "$description" --yes 2>&1); then
         # Find the newly created file (diff against snapshot)
         AFTER_FILES=$(ls "$PROJECT_DIR/.duumbi/intents/"*.yaml 2>/dev/null | sort || true)
@@ -99,12 +107,29 @@ for txt_file in "$CORPUS_DIR"/*.txt; do
             GENERATED=$(ls -t "$PROJECT_DIR/.duumbi/intents/"*.yaml 2>/dev/null | head -1)
         fi
     fi
+    TASK_END_MS=$(now_ms)
+    TASK_DURATION_MS=$((TASK_END_MS - TASK_START_MS))
 
     if [[ -z "$GENERATED" ]] || [[ ! -f "$GENERATED" ]]; then
         echo "ERROR (no output)"
         ERRORS=$((ERRORS + 1))
-        RESULTS=$(echo "$RESULTS" | jq --arg id "$task_id" --arg status "error" \
-            '. + [{"task": $id, "status": $status, "score": 0}]')
+        RESULTS=$(echo "$RESULTS" | jq \
+            --arg id "$task_id" \
+            --arg status "error" \
+            --arg reason "$USAGE_UNAVAILABLE_REASON" \
+            --argjson duration "$TASK_DURATION_MS" \
+            --argjson attempted "$DUUMBI_COMMAND_ATTEMPTED" \
+            '. + [{
+                "task": $id,
+                "status": $status,
+                "score": 0,
+                "duration_ms": $duration,
+                "duumbi_command_attempted": $attempted,
+                "provider_usage": {
+                    "available": false,
+                    "reason": $reason
+                }
+            }]')
         continue
     fi
 
@@ -220,13 +245,31 @@ for txt_file in "$CORPUS_DIR"/*.txt; do
     RESULTS=$(echo "$RESULTS" | jq \
         --arg id "$task_id" \
         --arg status "$status" \
+        --arg reason "$USAGE_UNAVAILABLE_REASON" \
         --argjson score "$total_score" \
         --argjson json "$score_json" \
         --argjson mod "$score_modules" \
         --argjson test "$score_tests" \
         --argjson edge "$score_edge" \
         --argjson crit "$score_criteria" \
-        '. + [{"task": $id, "status": $status, "score": $score, "json": $json, "modules": $mod, "tests": $test, "edge_cases": $edge, "criteria": $crit}]')
+        --argjson duration "$TASK_DURATION_MS" \
+        --argjson attempted "$DUUMBI_COMMAND_ATTEMPTED" \
+        '. + [{
+            "task": $id,
+            "status": $status,
+            "score": $score,
+            "json": $json,
+            "modules": $mod,
+            "tests": $test,
+            "edge_cases": $edge,
+            "criteria": $crit,
+            "duration_ms": $duration,
+            "duumbi_command_attempted": $attempted,
+            "provider_usage": {
+                "available": false,
+                "reason": $reason
+            }
+        }]')
 done
 
 # Summary
@@ -245,9 +288,25 @@ if [[ $TOTAL -gt 0 ]]; then
 fi
 
 # Write report
+RUN_END_MS=$(now_ms)
+RUN_DURATION_MS=$((RUN_END_MS - RUN_START_MS))
 echo "$RESULTS" | jq '{
     provider: "'"$PROVIDER"'",
     timestamp: "'"$TIMESTAMP"'",
+    duration_ms: '"$RUN_DURATION_MS"',
+    usage_summary: {
+        available: false,
+        reason: "'"$USAGE_UNAVAILABLE_REASON"'",
+        provider: "'"$PROVIDER"'",
+        model: null,
+        request_count: null,
+        prompt_tokens: null,
+        completion_tokens: null,
+        total_tokens: null,
+        estimated_cost_usd: null,
+        provider_failure_count: null
+    },
+    duumbi_command_attempts: '"$TOTAL"',
     total: '"$TOTAL"',
     passed: '"$PASSED"',
     failed: '"$FAILED"',
