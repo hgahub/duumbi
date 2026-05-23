@@ -45,7 +45,7 @@ fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
         String::from_utf8_lossy(&duumbi_output.stderr)
     );
 
-    output_binary
+    native_output_path(&output_binary)
 }
 
 #[test]
@@ -392,11 +392,11 @@ fn phase1_workspace_init_build_run() {
 
 #[test]
 fn phase1_workspace_trace_build_supports_offline() {
-    let duumbi_bin = duumbi_bin();
+    let duumbi_path = duumbi_bin();
     let tmp = tempfile::TempDir::new().expect("invariant: temp dir");
     let workspace = tmp.path().join("ws");
 
-    let init_output = Command::new(&duumbi_bin)
+    let init_output = Command::new(&duumbi_path)
         .args(["init", &workspace.to_string_lossy()])
         .output()
         .expect("invariant: duumbi init must be runnable");
@@ -415,7 +415,7 @@ namespace = "ws"
     )
     .expect("invariant: dependency-free config must be writable");
 
-    let build_output = Command::new(&duumbi_bin)
+    let build_output = Command::new(&duumbi_path)
         .args(["build", "--trace", "--offline"])
         .current_dir(&workspace)
         .output()

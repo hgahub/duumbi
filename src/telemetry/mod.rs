@@ -775,8 +775,8 @@ pub enum TelemetryValidationError {
         /// Human-readable reason.
         reason: String,
     },
-    /// Value capture is outside #583 traced build config validation.
-    #[error("telemetry capture-values is out of scope for #583 and must remain false")]
+    /// Value capture is not supported yet.
+    #[error("telemetry capture-values is not supported yet and must remain false")]
     CaptureValuesUnsupported,
 }
 
@@ -868,10 +868,11 @@ impl TelemetrySection {
         }
 
         let sampling_mode = TelemetrySamplingMode::parse(self.configured_sampling_mode())?;
-        let (artifact_dir, artifact_dir_overridden) = match env_override {
-            Some(value) => (PathBuf::from(value), true),
-            None => (self.configured_artifact_dir().to_path_buf(), false),
-        };
+        let (artifact_dir, artifact_dir_overridden) =
+            match env_override.filter(|value| !value.is_empty()) {
+                Some(value) => (PathBuf::from(value), true),
+                None => (self.configured_artifact_dir().to_path_buf(), false),
+            };
         let artifact_dir = resolve_artifact_dir(workspace_root, &artifact_dir)?;
 
         Ok(ResolvedTelemetryConfig {
@@ -897,10 +898,10 @@ fn resolve_artifact_dir(
 
     if configured
         .components()
-        .any(|component| matches!(component, Component::ParentDir))
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(TelemetryValidationError::InvalidArtifactDir {
-            reason: "parent directory traversal is not allowed".to_string(),
+            reason: "parent directory traversal and path prefixes are not allowed".to_string(),
         });
     }
 
@@ -1339,6 +1340,44 @@ mod tests {
             ),
             override_dir
         );
+    }
+
+    #[test]
+    fn telemetry_empty_env_override_falls_back_to_config() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            artifact_dir: Some(PathBuf::from("config-telemetry")),
+            ..TelemetrySection::default()
+        };
+
+        let resolved = section
+            .resolve_for_trace_with_env(workspace.path(), Some(OsString::new()))
+            .expect("empty env override should be treated as unset");
+
+        assert_eq!(
+            resolved.artifact_dir,
+            workspace.path().join("config-telemetry")
+        );
+        assert!(!resolved.artifact_dir_overridden);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn telemetry_trace_validation_rejects_windows_path_prefixes() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let section = TelemetrySection {
+            artifact_dir: Some(PathBuf::from(r"C:telemetry")),
+            ..TelemetrySection::default()
+        };
+
+        let err = section
+            .resolve_for_trace(workspace.path())
+            .expect_err("Windows path prefixes must fail");
+
+        assert!(matches!(
+            err,
+            TelemetryValidationError::InvalidArtifactDir { .. }
+        ));
     }
 
     #[test]
