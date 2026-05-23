@@ -27,6 +27,9 @@ const NEXT_STATE_BY_DECISION = {
   "reject-defer": "Deferred",
 };
 
+const SLACK_SECTION_TEXT_LIMIT = 3000;
+const SLACK_FIELD_TEXT_LIMIT = 2000;
+
 function normalizeText(value) {
   return String(value ?? "")
     .replace(/\r\n?/g, "\n")
@@ -37,6 +40,9 @@ function normalizeText(value) {
 
 function truncate(value, maxLength) {
   const text = normalizeText(value);
+  if (maxLength <= 0) {
+    return "";
+  }
   if (text.length <= maxLength) {
     return text;
   }
@@ -155,11 +161,29 @@ export function sanitizePromptField(value) {
   return truncate(value, 4000);
 }
 
-export function sanitizeSlackField(value) {
-  return truncate(value, 2800)
+export function sanitizeSlackField(value, maxLength = SLACK_FIELD_TEXT_LIMIT) {
+  const escaped = normalizeText(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+  return truncate(escaped, maxLength);
+}
+
+function buildSlackLabeledText(label, value, maxLength = SLACK_FIELD_TEXT_LIMIT) {
+  const prefix = `*${label}*\n`;
+  return `${prefix}${sanitizeSlackField(value, Math.max(0, maxLength - prefix.length))}`;
+}
+
+function buildSlackSectionText(parts, maxLength = SLACK_SECTION_TEXT_LIMIT) {
+  const separator = "\n\n";
+  const fixedLength =
+    parts.reduce((length, part) => length + `*${part.label}*\n`.length, 0) +
+    separator.length * Math.max(0, parts.length - 1);
+  const valueBudget = Math.max(0, Math.floor((maxLength - fixedLength) / Math.max(1, parts.length)));
+  const text = parts
+    .map((part) => buildSlackLabeledText(part.label, part.value, `*${part.label}*\n`.length + valueBudget))
+    .join(separator);
+  return truncate(text, maxLength);
 }
 
 export function extractGithubUrls(text) {
@@ -291,7 +315,10 @@ export function buildStage10ApprovalSlackMessage(input) {
     blocks: [
       {
         type: "section",
-        text: { type: "mrkdwn", text: `*${sanitizeSlackField(title)}*\nCycle ${cycleNumber}` },
+        text: {
+          type: "mrkdwn",
+          text: `*${sanitizeSlackField(title, SLACK_SECTION_TEXT_LIMIT - 20)}*\nCycle ${cycleNumber}`,
+        },
       },
       {
         type: "section",
@@ -300,11 +327,17 @@ export function buildStage10ApprovalSlackMessage(input) {
           { type: "mrkdwn", text: `*Request*\n<${requestUrl}|comment ${requestCommentId}>` },
           {
             type: "mrkdwn",
-            text: `*Product spec*\n${sanitizeSlackField(fields["Product spec"] ?? input.productSpec ?? "unavailable")}`,
+            text: buildSlackLabeledText(
+              "Product spec",
+              fields["Product spec"] ?? input.productSpec ?? "unavailable",
+            ),
           },
           {
             type: "mrkdwn",
-            text: `*Technical spec*\n${sanitizeSlackField(fields["Technical spec"] ?? input.technicalSpec ?? "unavailable")}`,
+            text: buildSlackLabeledText(
+              "Technical spec",
+              fields["Technical spec"] ?? input.technicalSpec ?? "unavailable",
+            ),
           },
         ],
       },
@@ -312,13 +345,13 @@ export function buildStage10ApprovalSlackMessage(input) {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: [
-            `*Proposed cycle goal*\n${sanitizeSlackField(fields["Proposed Cycle Goal"])}`,
-            `*Resource estimate*\n${sanitizeSlackField(fields["Resource Estimate"])}`,
-            `*Planned checks*\n${sanitizeSlackField(fields["Planned Checks"])}`,
-            `*Approval trigger*\n${sanitizeSlackField(fields["Approval Trigger"])}`,
-            `*Stop condition*\n${sanitizeSlackField(fields["Stop Condition"])}`,
-          ].join("\n\n"),
+          text: buildSlackSectionText([
+            { label: "Proposed cycle goal", value: fields["Proposed Cycle Goal"] },
+            { label: "Resource estimate", value: fields["Resource Estimate"] },
+            { label: "Planned checks", value: fields["Planned Checks"] },
+            { label: "Approval trigger", value: fields["Approval Trigger"] },
+            { label: "Stop condition", value: fields["Stop Condition"] },
+          ]),
         },
       },
       {
@@ -424,15 +457,22 @@ export function buildStage11ReviewSlackMessage(input) {
       {
         type: "section",
         fields: [
-          { type: "mrkdwn", text: `*Product spec*\n${sanitizeSlackField(input.productSpec)}` },
-          { type: "mrkdwn", text: `*Technical spec*\n${sanitizeSlackField(input.technicalSpec)}` },
-          { type: "mrkdwn", text: `*Checks*\n${sanitizeSlackField(input.checkSummary ?? "unavailable")}` },
-          { type: "mrkdwn", text: `*Evidence*\n${sanitizeSlackField(input.evidenceSummary ?? "unavailable")}` },
+          { type: "mrkdwn", text: buildSlackLabeledText("Product spec", input.productSpec) },
+          { type: "mrkdwn", text: buildSlackLabeledText("Technical spec", input.technicalSpec) },
+          { type: "mrkdwn", text: buildSlackLabeledText("Checks", input.checkSummary ?? "unavailable") },
+          { type: "mrkdwn", text: buildSlackLabeledText("Evidence", input.evidenceSummary ?? "unavailable") },
         ],
       },
       {
         type: "section",
-        text: { type: "mrkdwn", text: `*Ready-to-run Codex prompt*\n\`\`\`${sanitizeSlackField(prompt)}\`\`\`` },
+        text: {
+          type: "mrkdwn",
+          text: buildSlackLabeledText(
+            "Ready-to-run Codex prompt",
+            `\`\`\`${prompt}\`\`\``,
+            SLACK_SECTION_TEXT_LIMIT,
+          ),
+        },
       },
     ],
   };

@@ -210,7 +210,56 @@ test("buildWorkflowMetrics keeps metadata-only workflow metrics shape", () => {
 test("sanitizers and URL extraction avoid unsafe Slack/control output", () => {
   assert.equal(sanitizePromptField(" hello\u0000\nworld "), "hello\nworld");
   assert.equal(sanitizeSlackField(" <hello> & goodbye "), "&lt;hello&gt; &amp; goodbye");
+  assert.equal(sanitizeSlackField("&".repeat(1000)).length, 2000);
+  assert.equal(sanitizeSlackField("&".repeat(1000), 120).length, 120);
   assert.deepEqual(extractGithubUrls("See https://github.com/hgahub/duumbi/pull/616."), [
     "https://github.com/hgahub/duumbi/pull/616",
   ]);
+});
+
+test("Slack messages stay within Block Kit text limits after escaping", () => {
+  const parsed = parseResourceApprovalRequest({
+    id: 123456789,
+    body: validRequestBody
+      .replace("Add the pure Stage 10 and Stage 11 handoff helper and focused tests.", "&".repeat(1000))
+      .replace("- node --test scripts/github-actions/duumbi-stage-handoff.test.mjs", "<".repeat(1000)),
+  });
+  const stage10Message = buildStage10ApprovalSlackMessage({
+    issueNumber: 595,
+    cycleNumber: parsed.cycleNumber,
+    requestCommentId: parsed.requestCommentId,
+    fields: {
+      ...parsed.fields,
+      "Product spec": "&".repeat(1000),
+      "Technical spec": "<".repeat(1000),
+      "Resource Estimate": ">".repeat(1000),
+      "Approval Trigger": "&<>".repeat(1000),
+      "Stop Condition": "&".repeat(1000),
+    },
+  });
+
+  const stage11Message = buildStage11ReviewSlackMessage({
+    issueNumber: 595,
+    prNumber: 619,
+    issueUrl: "https://github.com/hgahub/duumbi/issues/595",
+    prUrl: "https://github.com/hgahub/duumbi/pull/619",
+    productSpec: "&".repeat(1000),
+    technicalSpec: "<".repeat(1000),
+    checkSummary: ">".repeat(1000),
+    evidenceSummary: "&<>".repeat(1000),
+    prompt: "&<>".repeat(2000),
+  });
+
+  for (const message of [stage10Message, stage11Message]) {
+    for (const block of message.blocks) {
+      if (block.type === "section" && block.text) {
+        assert.ok(block.text.text.length <= 3000, block.text.text);
+      }
+      if (block.type === "section" && block.fields) {
+        for (const field of block.fields) {
+          assert.ok(field.text.length <= 2000, field.text);
+        }
+      }
+    }
+  }
 });
