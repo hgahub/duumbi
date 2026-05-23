@@ -693,12 +693,33 @@ Implementation is complete when:
 - If test runtime grows beyond the cycle budget, run focused tests first and
   report the remaining full-suite risk.
 
+## Stage 9 Review Recommendations
+
+Recommended Stage 9 decisions:
+
+- Keep telemetry config omitted from `duumbi init` for #583. `duumbi build
+  --trace` should work with internal conservative defaults, and users should add
+  `[telemetry]` only when they want to tune local behavior. Prefer CLI help,
+  docs, or a later explicit config-generation command over writing commented
+  telemetry examples during workspace initialization.
+- Keep traced behavior build-only for #583. Defer `duumbi run --trace` to a
+  later UX issue after #584 and #585 prove real trace events and local artifact
+  behavior. A run shortcut needs a separate decision on whether it rebuilds,
+  validates trace-capable binaries, or only sets runtime environment.
+- For #584, start real function/block event emission with only
+  `deterministic` and `probabilistic` sampling modes. Use `enabled = false` as
+  the only disable mechanism rather than adding a separate `disabled` sampling
+  mode. Defer `always`, adaptive sampling, per-function overrides, and
+  `always-trace-functions` until trace event shape and overhead are proven.
+
 ## Open Questions
 
-- Should `duumbi init` eventually write a commented telemetry example, or should
-  the config stay omitted until the user opts into telemetry config explicitly?
-- Should a later issue add `duumbi run --trace` as a convenience shortcut that
-  rebuilds or validates trace-capable binaries, or should traced behavior remain
-  build-only?
-- Which sampling modes should #584 accept once real function/block event
-  emission exists beyond #583's config validation contract?
+No open question blocks #583 implementation if Stage 9 accepts the
+recommendations above. Follow-up issues may still decide:
+
+- whether `duumbi init` should eventually offer an explicit telemetry config
+  example or config-generation command
+- whether a later `duumbi run --trace` shortcut is worth the rebuild/staleness
+  semantics it introduces
+- whether #584 or later telemetry slices should add sampling modes beyond
+  `deterministic` and `probabilistic`
