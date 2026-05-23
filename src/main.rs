@@ -517,7 +517,10 @@ fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Resu
             crash,
             map_path,
         } => {
-            let telemetry_dir = telemetry_dir.unwrap_or_else(|| default_telemetry_dir(workspace));
+            let telemetry_dir = match telemetry_dir {
+                Some(telemetry_dir) => telemetry_dir,
+                None => default_telemetry_dir(workspace)?,
+            };
             let report = telemetry::inspect_crash_artifacts(
                 &telemetry_dir,
                 crash.as_deref(),
@@ -529,12 +532,14 @@ fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Resu
     }
 }
 
-fn default_telemetry_dir(workspace: &Path) -> PathBuf {
-    config::load_effective_config(workspace)
-        .ok()
-        .and_then(|effective| effective.config.telemetry)
+fn default_telemetry_dir(workspace: &Path) -> Result<PathBuf> {
+    let telemetry_dir = config::load_effective_config(workspace)
+        .context("Failed to load telemetry config")?
+        .config
+        .telemetry
         .unwrap_or_default()
-        .effective_artifact_dir(workspace)
+        .effective_artifact_dir(workspace);
+    Ok(telemetry_dir)
 }
 
 /// Resolves the input file path: explicit path or workspace discovery.

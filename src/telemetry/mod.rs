@@ -5,6 +5,7 @@
 //! location when later build and runtime cycles wire the feature through.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -732,7 +733,15 @@ impl TelemetrySection {
     /// are interpreted relative to `workspace_root`.
     #[must_use]
     pub fn effective_artifact_dir(&self, workspace_root: &Path) -> PathBuf {
-        let path = std::env::var_os(TELEMETRY_DIR_ENV)
+        self.effective_artifact_dir_with_env(workspace_root, std::env::var_os(TELEMETRY_DIR_ENV))
+    }
+
+    fn effective_artifact_dir_with_env(
+        &self,
+        workspace_root: &Path,
+        env_override: Option<OsString>,
+    ) -> PathBuf {
+        let path = env_override
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| self.configured_artifact_dir().to_path_buf());
@@ -845,8 +854,6 @@ fn check_trace_id_collisions(entries: &[TraceMapEntry]) -> Result<(), TelemetryE
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn telemetry_defaults_are_local_and_off() {
@@ -1158,16 +1165,8 @@ mod tests {
 
     #[test]
     fn telemetry_env_override_wins() {
-        let _guard = ENV_LOCK
-            .lock()
-            .expect("invariant: test env lock must not be poisoned");
         let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
         let override_dir = workspace.path().join("env-telemetry");
-        // SAFETY: this test serializes environment mutation with ENV_LOCK and
-        // removes the variable before releasing the lock.
-        unsafe {
-            std::env::set_var(TELEMETRY_DIR_ENV, &override_dir);
-        }
 
         let section = TelemetrySection {
             artifact_dir: Some(PathBuf::from("config-telemetry")),
@@ -1175,13 +1174,12 @@ mod tests {
         };
 
         assert_eq!(
-            section.effective_artifact_dir(workspace.path()),
+            section.effective_artifact_dir_with_env(
+                workspace.path(),
+                Some(override_dir.clone().into_os_string())
+            ),
             override_dir
         );
-        // SAFETY: see the set_var safety note above; the same lock is held.
-        unsafe {
-            std::env::remove_var(TELEMETRY_DIR_ENV);
-        }
     }
 
     fn test_graph() -> crate::graph::SemanticGraph {

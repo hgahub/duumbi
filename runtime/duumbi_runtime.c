@@ -27,6 +27,7 @@
 #define DUUMBI_TRACE_SCHEMA_VERSION "duumbi.telemetry.trace.v1"
 #define DUUMBI_CRASH_SCHEMA_VERSION "duumbi.telemetry.crash.v1"
 #define DUUMBI_PATH_BUFFER_LEN 4096
+#define DUUMBI_TRACE_STACK_LIMIT 1024
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -47,6 +48,39 @@ typedef struct {
 static DUUMBI_THREAD_LOCAL int duumbi_trace_active = 0;
 static DUUMBI_THREAD_LOCAL int64_t duumbi_current_function_id = 0;
 static DUUMBI_THREAD_LOCAL int64_t duumbi_current_block_id = 0;
+static DUUMBI_THREAD_LOCAL int64_t duumbi_function_id_stack[DUUMBI_TRACE_STACK_LIMIT];
+static DUUMBI_THREAD_LOCAL int64_t duumbi_block_id_stack[DUUMBI_TRACE_STACK_LIMIT];
+static DUUMBI_THREAD_LOCAL size_t duumbi_function_id_stack_len = 0;
+static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_len = 0;
+static DUUMBI_THREAD_LOCAL size_t duumbi_function_id_stack_overflow = 0;
+static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_overflow = 0;
+
+static void duumbi_push_trace_id(int64_t *stack,
+                                 size_t *len,
+                                 size_t *overflow,
+                                 int64_t trace_id) {
+    if (*overflow > 0 || *len >= DUUMBI_TRACE_STACK_LIMIT) {
+        (*overflow)++;
+        return;
+    }
+
+    stack[*len] = trace_id;
+    (*len)++;
+}
+
+static int64_t duumbi_pop_trace_id(int64_t *stack, size_t *len, size_t *overflow) {
+    if (*overflow > 0) {
+        (*overflow)--;
+        return 0;
+    }
+
+    if (*len == 0) {
+        return 0;
+    }
+
+    (*len)--;
+    return stack[*len];
+}
 
 static const char *duumbi_telemetry_dir(void) {
     const char *dir = getenv(DUUMBI_TELEMETRY_DIR_ENV);
@@ -213,9 +247,17 @@ void duumbi_trace_init(void) {
     duumbi_trace_active = 1;
     duumbi_current_function_id = 0;
     duumbi_current_block_id = 0;
+    duumbi_function_id_stack_len = 0;
+    duumbi_block_id_stack_len = 0;
+    duumbi_function_id_stack_overflow = 0;
+    duumbi_block_id_stack_overflow = 0;
 }
 
 void duumbi_trace_function_enter(int64_t function_id) {
+    duumbi_push_trace_id(duumbi_function_id_stack,
+                         &duumbi_function_id_stack_len,
+                         &duumbi_function_id_stack_overflow,
+                         duumbi_current_function_id);
     duumbi_current_function_id = function_id;
     duumbi_write_trace_event("function_enter", function_id);
 }
@@ -223,11 +265,17 @@ void duumbi_trace_function_enter(int64_t function_id) {
 void duumbi_trace_function_exit(int64_t function_id) {
     duumbi_write_trace_event("function_exit", function_id);
     if (duumbi_current_function_id == function_id) {
-        duumbi_current_function_id = 0;
+        duumbi_current_function_id = duumbi_pop_trace_id(duumbi_function_id_stack,
+                                                         &duumbi_function_id_stack_len,
+                                                         &duumbi_function_id_stack_overflow);
     }
 }
 
 void duumbi_trace_block_enter(int64_t block_id) {
+    duumbi_push_trace_id(duumbi_block_id_stack,
+                         &duumbi_block_id_stack_len,
+                         &duumbi_block_id_stack_overflow,
+                         duumbi_current_block_id);
     duumbi_current_block_id = block_id;
     duumbi_write_trace_event("block_enter", block_id);
 }
@@ -235,7 +283,9 @@ void duumbi_trace_block_enter(int64_t block_id) {
 void duumbi_trace_block_exit(int64_t block_id) {
     duumbi_write_trace_event("block_exit", block_id);
     if (duumbi_current_block_id == block_id) {
-        duumbi_current_block_id = 0;
+        duumbi_current_block_id = duumbi_pop_trace_id(duumbi_block_id_stack,
+                                                      &duumbi_block_id_stack_len,
+                                                      &duumbi_block_id_stack_overflow);
     }
 }
 
