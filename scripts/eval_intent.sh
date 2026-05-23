@@ -96,7 +96,6 @@ for txt_file in "$CORPUS_DIR"/*.txt; do
 
     # Run intent create
     GENERATED=""
-    DUUMBI_COMMAND_ATTEMPTED=false
     DUUMBI_COMMAND_ATTEMPTED=true
     if output=$(cd "$PROJECT_DIR" && "$DUUMBI" intent create "$description" --yes 2>&1); then
         # Find the newly created file (diff against snapshot)

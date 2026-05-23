@@ -483,8 +483,9 @@ jobs:
             }));
             const starts = phases.map((p) => p.started_at).filter(Boolean).sort();
             const ends = phases.map((p) => p.completed_at).filter(Boolean).sort();
+            const hasInProgressJob = phases.some((p) => p.started_at && !p.completed_at);
             const startedAt = starts[0] || null;
-            const completedAt = ends[ends.length - 1] || now;
+            const completedAt = hasInProgressJob ? now : (ends[ends.length - 1] || now);
             const failed = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("failure");
             const cancelled = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("cancelled");
             const workflowConclusion = failed ? "failure" : (cancelled ? "cancelled" : "success");
