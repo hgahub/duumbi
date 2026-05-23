@@ -8,7 +8,7 @@
     "test": "echo \"No tests configured\" && exit 0"
   },
   "dependencies": {
-    "@azure/functions": "^4.6.0"
+    "@azure/functions": "^4.16.0"
   },
   "engines": {
     "node": ">=20"
