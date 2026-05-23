@@ -30,6 +30,9 @@ pub const TRACE_MAP_SCHEMA_VERSION: &str = "duumbi.telemetry.trace_map.v1";
 /// Schema version for crash dump artifacts.
 pub const CRASH_SCHEMA_VERSION: &str = "duumbi.telemetry.crash.v1";
 
+/// Schema version for repair validation evidence artifacts.
+pub const REPAIR_VALIDATION_SCHEMA_VERSION: &str = "duumbi.telemetry.repair_validation.v1";
+
 const DEFAULT_ARTIFACT_DIR: &str = ".duumbi/telemetry";
 const TRACE_ID_DOMAIN: &[u8] = b"duumbi-trace-v1\0";
 
@@ -202,6 +205,166 @@ impl InspectReport {
     }
 }
 
+/// Runtime trace IDs correlated with mapped graph context.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct TraceCorrelation {
+    /// Current function trace ID at crash time.
+    pub function_trace_id: u64,
+    /// Current block trace ID at crash time.
+    pub block_trace_id: u64,
+}
+
+/// Agent-facing crash context for proposing a graph repair.
+///
+/// This context is derived from mapped telemetry artifacts only. It does not
+/// include provider output, patch application results, or repair acceptance.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RepairCrashContext {
+    /// Crash message captured by the traced runtime.
+    pub crash_message: String,
+    /// Mapped function graph ID.
+    pub function_id: String,
+    /// Mapped block graph ID.
+    pub block_id: String,
+    /// Exact graph node ID when available from telemetry evidence.
+    pub exact_node_id: Option<String>,
+    /// Runtime trace IDs used to establish the graph correlation.
+    pub trace_ids: TraceCorrelation,
+    /// Bounded mapped graph context available for repair review.
+    pub graph_context: serde_json::Value,
+    /// Validation checks expected before any proposed repair can be reviewed.
+    pub validation_expectations: Vec<String>,
+    /// Test checks expected before any proposed repair can be reviewed.
+    pub test_expectations: Vec<String>,
+}
+
+/// A required gate in repair validation evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairValidationGate {
+    /// Proposed patch parses as a [`crate::patch::GraphPatch`].
+    GraphPatchParse,
+    /// Patch application is atomic and leaves the source unchanged on failure.
+    AtomicPatchApplication,
+    /// Patched JSON-LD parses into the Duumbi AST.
+    GraphParse,
+    /// Patched graph builds and passes graph validation.
+    GraphValidation,
+    /// Native rebuild succeeds after the candidate patch.
+    NativeRebuild,
+    /// Relevant targeted and regression tests pass.
+    RelevantTests,
+}
+
+/// Evidence captured for one repair validation gate.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairValidationGateEvidence {
+    /// Gate represented by this evidence item.
+    pub gate: RepairValidationGate,
+    /// Whether the gate passed.
+    pub passed: bool,
+    /// Human-readable summary of the gate result.
+    pub summary: String,
+    /// Optional local artifact path or command summary backing the gate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl RepairValidationGateEvidence {
+    /// Creates one repair validation gate evidence item.
+    #[must_use]
+    pub fn new(
+        gate: RepairValidationGate,
+        passed: bool,
+        summary: impl Into<String>,
+        output: Option<String>,
+    ) -> Self {
+        Self {
+            gate,
+            passed,
+            summary: summary.into(),
+            output,
+        }
+    }
+}
+
+/// Human-reviewable repair validation evidence.
+///
+/// The evidence intentionally separates "all local gates passed" from "repair
+/// accepted": callers must keep human review in the loop before any repair is
+/// treated as complete.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RepairValidationEvidence {
+    /// Repair validation schema version.
+    pub schema_version: String,
+    /// Original mapped crash context.
+    pub crash_context: RepairCrashContext,
+    /// Proposed graph patch serialized for review.
+    pub proposed_patch: serde_json::Value,
+    /// Validation gate results.
+    pub gates: Vec<RepairValidationGateEvidence>,
+    /// Whether all required local validation gates passed.
+    pub local_validation_passed: bool,
+    /// Repairs must remain human-reviewable and are not silently accepted.
+    pub requires_human_review: bool,
+    /// Repair acceptance state. This remains false in telemetry evidence.
+    pub accepted_for_application: bool,
+}
+
+impl RepairValidationEvidence {
+    /// Creates repair validation evidence without accepting the repair.
+    #[must_use]
+    pub fn new(
+        crash_context: RepairCrashContext,
+        proposed_patch: serde_json::Value,
+        gates: Vec<RepairValidationGateEvidence>,
+    ) -> Self {
+        let local_validation_passed =
+            required_repair_validation_gates()
+                .iter()
+                .all(|required_gate| {
+                    gates
+                        .iter()
+                        .any(|evidence| evidence.gate == *required_gate && evidence.passed)
+                });
+
+        Self {
+            schema_version: REPAIR_VALIDATION_SCHEMA_VERSION.to_string(),
+            crash_context,
+            proposed_patch,
+            gates,
+            local_validation_passed,
+            requires_human_review: true,
+            accepted_for_application: false,
+        }
+    }
+
+    /// Returns true when every required repair validation gate has evidence.
+    #[must_use]
+    pub fn has_required_gates(&self) -> bool {
+        required_repair_validation_gates()
+            .iter()
+            .all(|required_gate| {
+                self.gates
+                    .iter()
+                    .any(|evidence| evidence.gate == *required_gate)
+            })
+    }
+}
+
+/// Returns the required validation gates for repair evidence.
+#[must_use]
+pub fn required_repair_validation_gates() -> Vec<RepairValidationGate> {
+    vec![
+        RepairValidationGate::GraphPatchParse,
+        RepairValidationGate::AtomicPatchApplication,
+        RepairValidationGate::GraphParse,
+        RepairValidationGate::GraphValidation,
+        RepairValidationGate::NativeRebuild,
+        RepairValidationGate::RelevantTests,
+    ]
+}
+
 impl TraceMap {
     /// Creates a trace map after sorting and collision validation.
     ///
@@ -300,6 +463,91 @@ pub fn inspect_crash_artifacts(
     crash_path: Option<&Path>,
     map_path: Option<&Path>,
 ) -> Result<InspectReport, TelemetryError> {
+    let mapped = mapped_crash_evidence(telemetry_dir, crash_path, map_path)?;
+
+    Ok(InspectReport {
+        message: mapped.crash.message,
+        function_graph_id: mapped.function.graph_id,
+        block_graph_id: mapped.block.graph_id,
+    })
+}
+
+/// Builds an agent-facing repair context from mapped crash evidence.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when crash/map evidence is missing, malformed, or
+/// cannot map the crash trace IDs to graph entries.
+#[must_use]
+pub fn repair_crash_context_from_artifacts(
+    telemetry_dir: &Path,
+    crash_path: Option<&Path>,
+    map_path: Option<&Path>,
+) -> Result<RepairCrashContext, TelemetryError> {
+    let mapped = mapped_crash_evidence(telemetry_dir, crash_path, map_path)?;
+
+    Ok(RepairCrashContext {
+        crash_message: mapped.crash.message,
+        function_id: mapped.function.graph_id.clone(),
+        block_id: mapped.block.graph_id.clone(),
+        exact_node_id: None,
+        trace_ids: TraceCorrelation {
+            function_trace_id: mapped.crash.function_id,
+            block_trace_id: mapped.crash.block_id,
+        },
+        graph_context: repair_graph_context(&mapped.function, &mapped.block),
+        validation_expectations: default_validation_expectations(),
+        test_expectations: default_test_expectations(),
+    })
+}
+
+/// Parses a proposed repair patch through the canonical [`crate::patch::GraphPatch`] contract.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when the proposed patch does not deserialize as a
+/// graph patch.
+#[must_use]
+pub fn parse_repair_graph_patch(
+    patch: &serde_json::Value,
+) -> Result<crate::patch::GraphPatch, TelemetryError> {
+    serde_json::from_value(patch.clone()).map_err(|source| TelemetryError::Parse {
+        path: "<repair graph patch>".to_string(),
+        source,
+    })
+}
+
+/// Creates human-reviewable validation evidence for a parsed repair patch.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when the patch cannot be serialized for evidence.
+#[must_use]
+pub fn repair_validation_evidence_from_graph_patch(
+    crash_context: RepairCrashContext,
+    patch: &crate::patch::GraphPatch,
+    gates: Vec<RepairValidationGateEvidence>,
+) -> Result<RepairValidationEvidence, TelemetryError> {
+    let proposed_patch = serde_json::to_value(patch).map_err(TelemetryError::Serialize)?;
+    Ok(RepairValidationEvidence::new(
+        crash_context,
+        proposed_patch,
+        gates,
+    ))
+}
+
+#[derive(Debug, Clone)]
+struct MappedCrashEvidence {
+    crash: CrashArtifact,
+    function: TraceMapEntry,
+    block: TraceMapEntry,
+}
+
+fn mapped_crash_evidence(
+    telemetry_dir: &Path,
+    crash_path: Option<&Path>,
+    map_path: Option<&Path>,
+) -> Result<MappedCrashEvidence, TelemetryError> {
     let crash_path = crash_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| telemetry_dir.join(CRASH_DUMP_FILE));
@@ -338,11 +586,56 @@ pub fn inspect_crash_artifacts(
             ))
         })?;
 
-    Ok(InspectReport {
-        message: crash.message,
-        function_graph_id: function.graph_id.clone(),
-        block_graph_id: block.graph_id.clone(),
+    Ok(MappedCrashEvidence {
+        crash,
+        function: function.clone(),
+        block: block.clone(),
     })
+}
+
+fn repair_graph_context(function: &TraceMapEntry, block: &TraceMapEntry) -> serde_json::Value {
+    serde_json::json!({
+        "source": "mapped_trace_artifacts",
+        "function": {
+            "trace_id": function.trace_id,
+            "graph_id": function.graph_id,
+            "module": function.module,
+            "function": function.function
+        },
+        "block": {
+            "trace_id": block.trace_id,
+            "graph_id": block.graph_id,
+            "module": block.module,
+            "function": block.function,
+            "block": block.block
+        },
+        "exact_node_evidence": null,
+        "context_limit": "function_and_block_identity_only"
+    })
+}
+
+fn default_validation_expectations() -> Vec<String> {
+    [
+        "proposed patch parses as GraphPatch",
+        "patch application is atomic",
+        "patched graph parses and builds",
+        "graph validation passes",
+        "native rebuild passes",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn default_test_expectations() -> Vec<String> {
+    [
+        "controlled crash remains reproducible before the patch",
+        "targeted regression passes after the candidate patch",
+        "default untraced build behavior remains unchanged",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn read_trace_map(path: &Path) -> Result<TraceMap, TelemetryError> {
@@ -702,26 +995,7 @@ mod tests {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
         write_trace_map(&map, dir.path()).expect("trace map should be written");
-        let function = map
-            .entries
-            .iter()
-            .find(|entry| entry.kind == TraceMapKind::Function)
-            .expect("function entry should exist");
-        let block = map
-            .entries
-            .iter()
-            .find(|entry| entry.kind == TraceMapKind::Block)
-            .expect("block entry should exist");
-        let crash = serde_json::json!({
-            "schema_version": CRASH_SCHEMA_VERSION,
-            "event": "panic",
-            "message": "called Option::unwrap() on a None value",
-            "function_id": function.trace_id,
-            "block_id": block.trace_id,
-            "trace_active": true
-        });
-        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
-            .expect("crash artifact should be written");
+        write_test_crash(&dir, &map, "called Option::unwrap() on a None value");
 
         let report = inspect_crash_artifacts(dir.path(), None, None)
             .expect("crash artifacts should map to graph context");
@@ -733,6 +1007,123 @@ mod tests {
                 .to_cli_output()
                 .contains("Exact node evidence: unavailable in v1")
         );
+    }
+
+    #[test]
+    fn repair_crash_context_is_serializable_mapped_evidence() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (function_trace_id, block_trace_id) =
+            write_test_crash(&dir, &map, "called Option::unwrap() on a None value");
+
+        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
+            .expect("repair context should be built from mapped evidence");
+
+        assert_eq!(
+            context.crash_message,
+            "called Option::unwrap() on a None value"
+        );
+        assert_eq!(context.function_id, "duumbi:t/main");
+        assert_eq!(context.block_id, "duumbi:t/main/entry");
+        assert_eq!(context.exact_node_id, None);
+        assert_eq!(context.trace_ids.function_trace_id, function_trace_id);
+        assert_eq!(context.trace_ids.block_trace_id, block_trace_id);
+        assert_eq!(
+            context.graph_context["source"],
+            serde_json::json!("mapped_trace_artifacts")
+        );
+        assert_eq!(
+            context.graph_context["block"]["graph_id"],
+            serde_json::json!("duumbi:t/main/entry")
+        );
+        assert!(
+            context
+                .validation_expectations
+                .iter()
+                .any(|expectation| expectation == "proposed patch parses as GraphPatch")
+        );
+        assert!(
+            context
+                .test_expectations
+                .iter()
+                .any(|expectation| expectation
+                    == "default untraced build behavior remains unchanged")
+        );
+
+        let serialized = serde_json::to_string(&context).expect("repair context should serialize");
+        let roundtrip: RepairCrashContext =
+            serde_json::from_str(&serialized).expect("repair context should deserialize");
+        assert_eq!(roundtrip, context);
+    }
+
+    #[test]
+    fn repair_validation_evidence_keeps_human_review_required() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "candidate repair");
+        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
+            .expect("repair context should be built");
+        let patch = crate::patch::GraphPatch {
+            ops: vec![crate::patch::PatchOp::ModifyOp {
+                node_id: "duumbi:t/main/entry/0".to_string(),
+                field: "duumbi:value".to_string(),
+                value: serde_json::json!(1),
+            }],
+        };
+        let gates = required_repair_validation_gates()
+            .into_iter()
+            .map(|gate| RepairValidationGateEvidence::new(gate, true, "passed", None))
+            .collect();
+
+        let evidence = repair_validation_evidence_from_graph_patch(context, &patch, gates)
+            .expect("repair validation evidence should serialize the patch");
+
+        assert!(evidence.has_required_gates());
+        assert!(evidence.local_validation_passed);
+        assert!(evidence.requires_human_review);
+        assert!(!evidence.accepted_for_application);
+        parse_repair_graph_patch(&evidence.proposed_patch)
+            .expect("evidence patch should parse through GraphPatch");
+    }
+
+    #[test]
+    fn repair_validation_evidence_requires_all_gates_to_pass() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "candidate repair");
+        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
+            .expect("repair context should be built");
+        let patch = serde_json::json!({ "ops": [] });
+        let gates = vec![RepairValidationGateEvidence::new(
+            RepairValidationGate::GraphPatchParse,
+            true,
+            "parsed",
+            None,
+        )];
+
+        let evidence = RepairValidationEvidence::new(context, patch, gates);
+
+        assert!(!evidence.has_required_gates());
+        assert!(!evidence.local_validation_passed);
+        assert!(evidence.requires_human_review);
+        assert!(!evidence.accepted_for_application);
+    }
+
+    #[test]
+    fn repair_graph_patch_parse_rejects_invalid_patch() {
+        let invalid = serde_json::json!({
+            "ops": [{ "kind": "unsupported" }]
+        });
+
+        let result = parse_repair_graph_patch(&invalid);
+
+        assert!(matches!(
+            result,
+            Err(TelemetryError::Parse { path, .. }) if path == "<repair graph patch>"
+        ));
     }
 
     #[test]
@@ -829,5 +1220,29 @@ mod tests {
         }"#;
         let ast = crate::parser::parse_jsonld(source).expect("fixture should parse");
         crate::graph::builder::build_graph(&ast).expect("fixture should build")
+    }
+
+    fn write_test_crash(dir: &TempDir, map: &TraceMap, message: &str) -> (u64, u64) {
+        let function = map
+            .entries
+            .iter()
+            .find(|entry| entry.kind == TraceMapKind::Function)
+            .expect("function entry should exist");
+        let block = map
+            .entries
+            .iter()
+            .find(|entry| entry.kind == TraceMapKind::Block)
+            .expect("block entry should exist");
+        let crash = serde_json::json!({
+            "schema_version": CRASH_SCHEMA_VERSION,
+            "event": "panic",
+            "message": message,
+            "function_id": function.trace_id,
+            "block_id": block.trace_id,
+            "trace_active": true
+        });
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+        (function.trace_id, block.trace_id)
     }
 }
