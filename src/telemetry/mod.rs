@@ -898,18 +898,27 @@ fn resolve_artifact_dir(
 
     if configured
         .components()
-        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        .any(|component| matches!(component, Component::ParentDir))
     {
         return Err(TelemetryValidationError::InvalidArtifactDir {
-            reason: "parent directory traversal and path prefixes are not allowed".to_string(),
+            reason: "parent directory traversal is not allowed".to_string(),
         });
     }
 
     if configured.is_absolute() {
-        Ok(configured.to_path_buf())
-    } else {
-        Ok(workspace_root.join(configured))
+        return Ok(configured.to_path_buf());
     }
+
+    if configured
+        .components()
+        .any(|component| matches!(component, Component::Prefix(_)))
+    {
+        return Err(TelemetryValidationError::InvalidArtifactDir {
+            reason: "relative path prefixes are not allowed".to_string(),
+        });
+    }
+
+    Ok(workspace_root.join(configured))
 }
 
 fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
@@ -1359,6 +1368,22 @@ mod tests {
             workspace.path().join("config-telemetry")
         );
         assert!(!resolved.artifact_dir_overridden);
+    }
+
+    #[test]
+    fn telemetry_absolute_env_override_is_accepted() {
+        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let override_dir = workspace.path().join("absolute-telemetry");
+
+        let resolved = TelemetrySection::default()
+            .resolve_for_trace_with_env(
+                workspace.path(),
+                Some(override_dir.as_os_str().to_os_string()),
+            )
+            .expect("absolute env override should be accepted");
+
+        assert_eq!(resolved.artifact_dir, override_dir);
+        assert!(resolved.artifact_dir_overridden);
     }
 
     #[cfg(windows)]
