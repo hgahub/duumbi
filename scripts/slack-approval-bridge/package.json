@@ -5,7 +5,7 @@
   "main": "src/functions/*.js",
   "scripts": {
     "start": "func start",
-    "test": "echo \"No tests configured\" && exit 0"
+    "test": "node --test src/functions/slackApproval.test.js"
   },
   "dependencies": {
     "@azure/functions": "^4.16.0"

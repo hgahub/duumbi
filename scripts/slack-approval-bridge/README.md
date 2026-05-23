@@ -1,12 +1,14 @@
 # Slack Approval Bridge
 
-Azure Function that bridges Slack interactive button clicks to the
-`stage-approval.yml` GitHub Actions workflow via `repository_dispatch`.
+Azure Function that bridges Slack interactive button clicks to deterministic
+GitHub Actions workflows via `repository_dispatch`.
 
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
-DUUMBI Slack notification triggers a deterministic GitHub Action instead of
-an LLM-based Oz agent — reducing approval execution from ~3 hours / ~108
-credits to ~30 seconds / 0 credits.
+DUUMBI Slack notification triggers a deterministic GitHub Action instead of an
+LLM-based Oz agent. Existing Stage 5, Stage 7, and Stage 9 buttons continue to
+route to `stage-approval.yml`. Stage 10 resource authorization buttons include
+`action_type: "stage_10_authorization"` and route to
+`stage-10-authorization.yml`.
 
 ## Architecture
 
@@ -15,8 +17,8 @@ Slack button click
   → Slack sends interaction payload to Azure Function URL
     → Function verifies Slack signing secret
       → Function POSTs repository_dispatch to GitHub
-        → stage-approval.yml runs deterministically
-          → Posts decision comment, updates labels, updates Project V2
+        → stage-approval.yml or stage-10-authorization.yml runs deterministically
+          → Posts decision comment, updates labels/status when available
             → Notifies Slack with result
 ```
 
@@ -37,6 +39,7 @@ Secrets are managed via Doppler → Azure Key Vault (existing pipeline).
 ```sh
 cd scripts/slack-approval-bridge
 npm install
+npm test
 func start
 ```
 
@@ -71,6 +74,7 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 
 ## Fallback
 
-If the function is unavailable, the Slack notification includes a link to
-the `stage-approval.yml` manual dispatch page where approvals can be
-triggered directly from the GitHub Actions UI.
+If the function is unavailable, the Slack notification includes a link to the
+manual dispatch fallback. Stage 5, Stage 7, and Stage 9 approvals use
+`stage-approval.yml`; Stage 10 resource authorization uses
+`stage-10-authorization.yml`.

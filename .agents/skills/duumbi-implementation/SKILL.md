@@ -183,6 +183,12 @@ For `Run Resource-Permitted Cycle`:
 For `Request Resource Approval`:
 
 - prepare or refresh the approval request
+- route the handoff through `.github/workflows/ralph-cycle-approval-request.yml`
+  when available, using `repository_dispatch`, `workflow_dispatch`, or the
+  existing `needs-cycle-approval` label when that label already exists
+- expect the human decision to be recorded by
+  `.github/workflows/stage-10-authorization.yml` as a structured
+  `## Stage 10 Resource Authorization Decision` comment
 - set Project Status to `Cycle Authorization` when available
 - do not edit files
 - stop
@@ -199,6 +205,9 @@ For `Move To In Review`:
 
 - require an implementation PR with evidence
 - require product and technical completion criteria to be addressed
+- trigger or report the deterministic Stage 11 handoff path through
+  `.github/workflows/implementation-review-request.yml`; use the existing
+  `needs-review` label only when it is already available, and do not create it
 - set Project Status to `In Review` when available
 - do not merge
 - stop
