@@ -92,6 +92,13 @@ When the resource gate triggers:
 - do not edit files for that cycle
 - do not run implementation commands that mutate repo state for that cycle
 - prepare the next Ralph Cycle Resource Approval Request
+- use the exact `## Ralph Cycle <N> Resource Approval Request` heading and
+  required field names from this skill so
+  `.github/workflows/ralph-cycle-approval-request.yml` can parse it
+- include a manual fallback link to
+  `.github/workflows/ralph-cycle-approval-request.yml`
+- add the existing `needs-cycle-approval` label only when it is already
+  available; otherwise report that label-trigger integration is unavailable
 - set Project Status to `Cycle Authorization` when available
 - stop
 
@@ -146,6 +153,18 @@ Default autonomous batch cap: three consecutive low-budget Ralph cycles in one S
 
 Approve this resource-gated cycle?
 ```
+
+After writing this request, trigger the deterministic Stage 10 notification
+path when available:
+
+- Prefer `repository_dispatch` event type `ralph-cycle-approval-request` or the
+  manual workflow `.github/workflows/ralph-cycle-approval-request.yml`.
+- If the repository already has `needs-cycle-approval`, adding it is allowed as
+  a trigger. Do not create the label.
+- Do not use Stage 5/7/9 approval semantics for Stage 10 resource decisions.
+- Do not continue the requested cycle until a structured
+  `## Stage 10 Resource Authorization Decision` comment authorizes that exact
+  cycle.
 
 ## Cycle Evidence Report
 

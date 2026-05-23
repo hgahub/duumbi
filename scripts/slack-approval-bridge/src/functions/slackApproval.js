@@ -1,12 +1,20 @@
-const { app } = require("@azure/functions");
+let app;
+try {
+  ({ app } = require("@azure/functions"));
+} catch (error) {
+  if (error.code !== "MODULE_NOT_FOUND") {
+    throw error;
+  }
+  app = { http: () => {} };
+}
 const crypto = require("node:crypto");
 
 /**
  * Slack Approval Bridge — Azure Function
  *
- * Bridges Slack interactive button clicks → GitHub repository_dispatch
- * so that stage approvals execute deterministically via GitHub Actions
- * instead of spawning an LLM-based Oz agent.
+ * Bridges Slack interactive button clicks → GitHub repository_dispatch so that
+ * approval decisions execute deterministically via GitHub Actions instead of
+ * spawning an LLM-based Oz agent.
  *
  * App Settings (configure in Azure Function App):
  *   SLACK_SIGNING_SECRET  — Slack app signing secret
@@ -62,18 +70,11 @@ app.http("slack-approval", {
     // Then dispatch to GitHub asynchronously.
     const responseUrl = payload.response_url;
     const githubRepo = process.env.GITHUB_REPO || "hgahub/duumbi";
-    const clientPayload = {
-      stage: actionData.stage,
-      issue_number: actionData.issue_number,
-      decision: actionData.decision,
-      rationale: actionData.rationale || fallbackRationale,
-      pr_number: actionData.pr_number || 0,
-      reviewer,
-      slack_response_url: responseUrl,
-    };
+    const eventType = eventTypeForAction(actionData);
+    const clientPayload = buildClientPayload(actionData, reviewer, responseUrl, fallbackRationale);
 
     // Fire-and-forget: dispatch to GitHub + post Slack thread update
-    dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context);
+    dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, actionData, user, context);
 
     // Return 200 immediately so Slack doesn't retry
     return { status: 200, body: "" };
@@ -82,7 +83,50 @@ app.http("slack-approval", {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context) {
+function actionTypeForAction(actionData) {
+  return actionData?.action_type || "stage_approval";
+}
+
+function eventTypeForAction(actionData) {
+  return actionTypeForAction(actionData) === "stage_10_authorization"
+    ? "stage-10-authorization"
+    : "stage-approval";
+}
+
+function buildClientPayload(actionData, reviewer, responseUrl, fallbackRationale) {
+  const payload = {
+    stage: actionData.stage,
+    issue_number: actionData.issue_number,
+    decision: actionData.decision,
+    rationale: actionData.rationale || fallbackRationale,
+    pr_number: actionData.pr_number || 0,
+    reviewer,
+    slack_response_url: responseUrl,
+  };
+
+  if (actionTypeForAction(actionData) === "stage_10_authorization") {
+    payload.action_type = "stage_10_authorization";
+    payload.cycle_number = actionData.cycle_number;
+    payload.request_comment_id = actionData.request_comment_id;
+  }
+
+  return payload;
+}
+
+function fallbackWorkflowName(eventType) {
+  return eventType === "stage-10-authorization"
+    ? "stage-10-authorization.yml"
+    : "stage-approval.yml";
+}
+
+function buildDispatchSuccessText(eventType, actionData, user) {
+  if (eventType === "stage-10-authorization") {
+    return `⏳ Stage 10 cycle ${actionData.cycle_number} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
+  }
+  return `⏳ Stage ${actionData.stage} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
+}
+
+async function dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, actionData, user, context) {
   try {
     const res = await fetch(
       `https://api.github.com/repos/${githubRepo}/dispatches`,
@@ -95,7 +139,7 @@ async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData,
           "Content-Type": "application/json",
           "User-Agent": "duumbi-slack-approval-bridge/1.0",
         },
-        body: JSON.stringify({ event_type: "stage-approval", client_payload: clientPayload }),
+        body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
       },
     );
 
@@ -108,7 +152,7 @@ async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             replace_original: false,
-            text: `⚠️ Approval workflow trigger failed (HTTP ${res.status}). Please use the manual workflow dispatch as fallback.`,
+            text: `⚠️ Approval workflow trigger failed (HTTP ${res.status}). Please use ${fallbackWorkflowName(eventType)} as the manual workflow dispatch fallback.`,
           }),
         });
       }
@@ -121,7 +165,7 @@ async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           replace_original: false,
-          text: `⏳ Stage ${actionData.stage} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`,
+          text: buildDispatchSuccessText(eventType, actionData, user),
         }),
       });
     }
@@ -148,3 +192,12 @@ function verifySlackSignature(body, timestamp, signature, signingSecret) {
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
 }
+
+module.exports = {
+  actionTypeForAction,
+  buildClientPayload,
+  buildDispatchSuccessText,
+  eventTypeForAction,
+  fallbackWorkflowName,
+  verifySlackSignature,
+};

@@ -68,6 +68,9 @@ Before reviewing:
 - Stage 9 technical spec approval decision
 - Stage 10 branch/PR evidence
 - Ralph cycle resource approval requests and evidence reports
+- Stage 11 notification marker comments such as
+  `<!-- duumbi-implementation-review-slack-notified:v1 issue=<N> pr=<PR> -->`
+  when present
 - source repo `AGENTS.md`
 - directly relevant source files and tests when needed to understand the diff
 
@@ -78,6 +81,9 @@ Load only the context needed for review. Do not reimplement or patch the change.
 Verify:
 
 - issue, product spec, technical spec, and PR are linked
+- any Stage 11 handoff marker is consistent with the issue and implementation
+  PR, while recognizing that the marker is notification evidence only and does
+  not replace review
 - CI/checks required by the technical spec ran and passed, or failures are explained
 - changed files match the technical spec affected areas or approved Ralph cycles
 - product-spec `Checks` are covered by tests, manual evidence, screenshots, logs, or explicit rationale
