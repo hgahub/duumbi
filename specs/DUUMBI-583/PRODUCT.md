@@ -151,8 +151,8 @@ Assumptions:
   issues create the artifacts.
 - Sampling should be part of the configuration contract now, but actual event
   volume and performance tuning belong to later trace-event work.
-- Local artifact paths may use `.duumbi/telemetry/` by default, with an
-  implementation-defined override mechanism if needed for tests or CI.
+- Local artifact paths use `.duumbi/telemetry/` by default, with
+  `DUUMBI_TELEMETRY_DIR` as the explicit override for tests and one-off runs.
 
 Constraints:
 
@@ -220,11 +220,13 @@ Constraints:
 - Telemetry is local-only by default.
 - No telemetry artifacts are written by default uninstrumented builds.
 - Missing telemetry configuration does not prevent default builds.
-- Missing telemetry configuration for traced builds uses conservative defaults
-  unless the later technical spec identifies a safer explicit-config-only
-  behavior.
-- The default artifact root is workspace-local, expected to be
-  `.duumbi/telemetry/` or a reviewed equivalent.
+- Missing telemetry configuration for traced builds uses documented conservative
+  defaults.
+- The default artifact root is `.duumbi/telemetry/`.
+- `DUUMBI_TELEMETRY_DIR` overrides the configured artifact directory for tests
+  and one-off runs.
+- Telemetry config is read for traced builds. Default uninstrumented builds do
+  not validate telemetry config as part of the build path.
 
 ### Inputs
 
@@ -247,7 +249,7 @@ Constraints:
     function/block trace behavior.
   - user-facing success/failure behavior consistent with existing build output.
   - no dependency on external collectors or services.
-- Config validation:
+- Traced-build config validation:
   - valid telemetry settings are accepted.
   - invalid booleans, unsupported sampling modes, invalid sample rates, or unsafe
     artifact paths fail with actionable diagnostics.
@@ -258,26 +260,45 @@ The product-level telemetry configuration must cover these concepts, regardless
 of exact TOML names chosen by the technical spec:
 
 - `enabled` or equivalent:
-  - default: disabled for normal builds.
-  - traced build may enable local trace support without enabling remote export.
+  - default: false.
+  - never enables instrumentation by itself.
+  - `duumbi build --trace` is the only v1 opt-in for instrumentation.
+  - within traced builds, controls whether runtime telemetry emission and local
+    artifact writes are enabled when the trace-capable binary runs.
+  - if `enabled = true` is configured but `--trace` is omitted, the build remains
+    uninstrumented and should not fail because of telemetry config alone.
+  - if `duumbi build --trace` is used with `enabled = false`, the build may
+    produce a trace-capable binary, but runtime telemetry emission and local
+    artifact writes stay disabled.
 - `sampling mode`:
   - supports a deterministic mode suitable for tests.
   - supports a conservative default suitable for local development.
 - `sample rate`:
   - accepts an explicit bounded value.
   - rejects values outside the documented range.
-- `artifact path`:
-  - defaults to a workspace-local telemetry directory.
+- `artifact-dir` or equivalent artifact path:
+  - defaults to `.duumbi/telemetry/`.
   - can be inspected by tests.
   - does not imply remote upload.
+  - `DUUMBI_TELEMETRY_DIR` overrides `artifact-dir` for tests and one-off runs.
+  - runtime telemetry file paths are resolved from `DUUMBI_TELEMETRY_DIR` when
+    set, otherwise from `artifact-dir`, whose default is `.duumbi/telemetry/`.
+- `capture-values`:
+  - exists in the parent telemetry configuration surface.
+  - value and argument capture are out of scope for this issue.
+  - must stay false in the first implementation.
 
 ### Error States
 
 - Unknown trace flags or unsupported command combinations fail through normal CLI
   argument validation.
-- Invalid telemetry config fails before compilation succeeds.
+- Invalid telemetry config fails before traced-build compilation succeeds.
+- Default `duumbi build` without `--trace` does not fail solely because a
+  telemetry config section exists or contains telemetry-specific errors.
 - A traced build requested outside a supported build context must fail with a
   message that explains what is supported.
+- An unsafe telemetry artifact path is rejected with an actionable error; it is
+  not silently normalized.
 - Offline mode remains about dependency resolution and must not be reinterpreted
   as telemetry network control; traced telemetry is local-only regardless of
   `--offline`.
@@ -354,7 +375,24 @@ Given a valid DUUMBI workspace with no telemetry config section
 When the developer runs `duumbi build --trace`
 Then DUUMBI uses documented conservative local defaults
 And those defaults do not enable remote telemetry export
-And artifact paths resolve inside the workspace unless explicitly overridden
+And telemetry emission defaults to disabled unless local config enables it
+And artifact paths resolve to `.duumbi/telemetry/` unless
+`DUUMBI_TELEMETRY_DIR` overrides them
+
+Scenario: Telemetry config alone does not instrument default builds
+
+Given a valid DUUMBI workspace with telemetry config enabled
+When the developer runs `duumbi build` without `--trace`
+Then DUUMBI produces a default uninstrumented build
+And the telemetry config does not imply trace instrumentation
+And telemetry config validation does not block the default build path
+
+Scenario: Disabled telemetry config gates runtime emission in traced builds
+
+Given a valid DUUMBI workspace with telemetry config disabled
+When the developer runs `duumbi build --trace`
+Then DUUMBI may produce a trace-capable binary
+But runtime telemetry emission and local artifact writes remain disabled
 
 Scenario: Invalid sample rate is rejected
 
@@ -373,13 +411,12 @@ When the developer runs `duumbi build --trace`
 Then DUUMBI fails before producing a successful traced build
 And the error message identifies the unsupported sampling mode
 
-Scenario: Unsafe artifact path is rejected or normalized
+Scenario: Unsafe artifact path is rejected
 
 Given a DUUMBI workspace with telemetry config
 And the configured artifact path is not acceptable for local telemetry output
 When the developer runs `duumbi build --trace`
-Then DUUMBI either rejects the path with an actionable error
-Or normalizes it according to documented local path rules
+Then DUUMBI rejects the path with an actionable error
 And it does not silently upload telemetry elsewhere
 
 Rule: Unsupported trace surfaces are explicit
@@ -447,11 +484,9 @@ claiming traced mode succeeded
 
 - Should `duumbi run --trace` become a later convenience command after the
   traced build contract is stable?
-- Should telemetry config default to an omitted section with internal defaults,
-  or should workspace initialization eventually write an explicit commented
-  example?
-- Should tests use an environment variable override for telemetry artifact
-  paths, or should they rely only on workspace-local paths?
+- Should workspace initialization eventually write an explicit commented
+  telemetry example, or should traced builds continue to rely on internal
+  defaults unless users add the section themselves?
 - What exact sampling modes should the technical spec accept for the first
   implementation: disabled, deterministic, probabilistic, always, or a smaller
   subset?
