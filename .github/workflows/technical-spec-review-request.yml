@@ -22,6 +22,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -38,6 +39,9 @@ jobs:
     outputs:
       issue_numbers: ${{ steps.request.outputs.issue_numbers }}
       should_notify: ${{ steps.request.outputs.should_notify }}
+      issues_queued_count: ${{ steps.request.outputs.issues_queued_count }}
+      artifact_links_found: ${{ steps.request.outputs.artifact_links_found }}
+      artifact_links_missing: ${{ steps.request.outputs.artifact_links_missing }}
     steps:
       - name: Validate request and build Slack payload
         id: request
@@ -306,18 +310,32 @@ jobs:
 
             if (issuesToNotify.length === 0) {
               core.info("No unnotified issues need technical spec review.");
+              core.setOutput("issue_numbers", "[]");
+              core.setOutput("issues_queued_count", "0");
+              core.setOutput("artifact_links_found", "0");
+              core.setOutput("artifact_links_missing", "0");
               core.setOutput("should_notify", "false");
               return;
             }
 
             const slackMessages = [];
+            let artifactLinksFound = 0;
+            let artifactLinksMissing = 0;
             for (const issue of issuesToNotify) {
               const artifacts = await findStage8Artifacts(issue.number);
+              if (artifacts.technicalSpecArtifact.startsWith("<missing:")) {
+                artifactLinksMissing += 1;
+              } else {
+                artifactLinksFound += 1;
+              }
               slackMessages.push(buildSlackMessage(issue, triggeredBy, artifacts));
             }
 
             core.setOutput("slack_messages", JSON.stringify(slackMessages));
             core.setOutput("issue_numbers", JSON.stringify(issuesToNotify.map((issue) => issue.number)));
+            core.setOutput("issues_queued_count", String(issuesToNotify.length));
+            core.setOutput("artifact_links_found", String(artifactLinksFound));
+            core.setOutput("artifact_links_missing", String(artifactLinksMissing));
             core.setOutput("should_notify", "true");
 
       - name: Post Slack notifications
@@ -396,3 +414,160 @@ jobs:
                 ].join("\n"),
               });
             }
+
+  metrics:
+    name: Write workflow metrics
+    needs: [notify, mark-notified]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Write DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          NOTIFY_RESULT: ${{ needs.notify.result }}
+          MARK_NOTIFIED_RESULT: ${{ needs.mark-notified.result }}
+          ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers || '[]' }}
+          SHOULD_NOTIFY: ${{ needs.notify.outputs.should_notify || 'false' }}
+          ISSUES_QUEUED_COUNT: ${{ needs.notify.outputs.issues_queued_count || '0' }}
+          ARTIFACT_LINKS_FOUND: ${{ needs.notify.outputs.artifact_links_found || '0' }}
+          ARTIFACT_LINKS_MISSING: ${{ needs.notify.outputs.artifact_links_missing || '0' }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const path = process.env.DUUMBI_METRICS_PATH || "duumbi-workflow-metrics.json";
+            const { owner, repo } = context.repo;
+            const now = new Date().toISOString();
+            const durationMs = (start, end) => {
+              if (!start || !end) return null;
+              const ms = new Date(end).getTime() - new Date(start).getTime();
+              return Number.isFinite(ms) && ms >= 0 ? ms : null;
+            };
+            const asNumber = (value) => {
+              const n = Number(value);
+              return Number.isFinite(n) ? n : null;
+            };
+            const safeJsonArray = (value) => {
+              try {
+                const parsed = JSON.parse(value || "[]");
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            };
+
+            let jobs = [];
+            let warning = null;
+            try {
+              jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner, repo, run_id: context.runId, per_page: 100,
+              });
+            } catch (err) {
+              warning = `job metadata unavailable: ${String(err.message || err).slice(0, 160)}`;
+              core.warning(warning);
+            }
+
+            const phases = jobs.map((job) => ({
+              name: job.name,
+              conclusion: job.conclusion || job.status || "unknown",
+              started_at: job.started_at || null,
+              completed_at: job.completed_at || null,
+              duration_ms: durationMs(job.started_at, job.completed_at),
+              warning_count: null,
+              failure_count: job.conclusion === "failure" ? 1 : 0,
+            }));
+            const starts = phases.map((p) => p.started_at).filter(Boolean).sort();
+            const ends = phases.map((p) => p.completed_at).filter(Boolean).sort();
+            const startedAt = starts[0] || null;
+            const completedAt = ends[ends.length - 1] || now;
+            const failed = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("failure");
+            const cancelled = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("cancelled");
+            const workflowConclusion = failed ? "failure" : (cancelled ? "cancelled" : "success");
+            const issueNumbers = safeJsonArray(process.env.ISSUE_NUMBERS);
+            const issueNumber = issueNumbers.length === 1 ? Number(issueNumbers[0]) : null;
+
+            const metrics = {
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${owner}/${repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/technical-spec-review-request.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: context.eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion: workflowConclusion,
+                started_at: startedAt,
+                completed_at: completedAt,
+                duration_ms: durationMs(startedAt, completedAt),
+              },
+              correlation: {
+                issue_number: Number.isFinite(issueNumber) ? issueNumber : null,
+                pr_number: null,
+                stage: "9",
+                decision: null,
+                project_status: "Technical Spec Review",
+              },
+              phases,
+              counts: {
+                issues_considered: null,
+                issues_queued: asNumber(process.env.ISSUES_QUEUED_COUNT),
+                slack_notifications_attempted: process.env.SHOULD_NOTIFY === "true" ? issueNumbers.length : 0,
+                artifact_links_found: asNumber(process.env.ARTIFACT_LINKS_FOUND),
+                artifact_links_missing: asNumber(process.env.ARTIFACT_LINKS_MISSING),
+              },
+              provider_usage: {
+                available: false,
+                reason: "no_provider_step",
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings: warning ? [warning] : [],
+            };
+
+            fs.writeFileSync(path, `${JSON.stringify(metrics, null, 2)}\n`);
+            await core.summary
+              .addHeading("DUUMBI Workflow Metrics", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Artifact", `duumbi-workflow-metrics-technical-spec-review-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT || 1}`],
+                ["Workflow conclusion", workflowConclusion],
+                ["Duration ms", String(metrics.workflow.duration_ms ?? "unavailable")],
+                ["Issues queued", String(metrics.counts.issues_queued ?? "unavailable")],
+                ["Artifact links found", String(metrics.counts.artifact_links_found ?? "unavailable")],
+                ["Artifact links missing", String(metrics.counts.artifact_links_missing ?? "unavailable")],
+                ["Provider usage", "unavailable: no_provider_step"],
+              ])
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-technical-spec-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn
