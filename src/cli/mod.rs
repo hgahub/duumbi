@@ -127,6 +127,10 @@ pub enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
+        /// Compile with local telemetry trace instrumentation.
+        #[arg(long)]
+        trace: bool,
+
         /// Restrict dependency resolution to workspace and vendor layers only.
         /// Fails if any dependency is only available in the cache.
         #[arg(long)]
@@ -222,6 +226,13 @@ pub enum Commands {
         /// Skip confirmation prompt.
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+
+    /// Inspect local telemetry artifacts.
+    Telemetry {
+        /// Telemetry subcommand.
+        #[command(subcommand)]
+        subcommand: TelemetrySubcommand,
     },
 
     /// Migrate a Phase 4-5 workspace to Phase 7 format.
@@ -322,6 +333,25 @@ pub enum Commands {
         /// Port for SSE transport (default: 8421).
         #[arg(long, default_value_t = 8421)]
         port: u16,
+    },
+}
+
+/// Subcommands for `duumbi telemetry`.
+#[derive(Subcommand, Debug)]
+pub enum TelemetrySubcommand {
+    /// Inspect crash evidence and map it to graph function/block context.
+    Inspect {
+        /// Telemetry artifact directory.
+        #[arg(long)]
+        telemetry_dir: Option<PathBuf>,
+
+        /// Explicit crash artifact path.
+        #[arg(long)]
+        crash: Option<PathBuf>,
+
+        /// Explicit trace map artifact path.
+        #[arg(long = "map")]
+        map_path: Option<PathBuf>,
     },
 }
 
@@ -585,5 +615,36 @@ mod tests {
 
         assert_eq!(cli.log_level, Some(CliLogLevel::Off));
         assert!(matches!(cli.command, Commands::Check { .. }));
+    }
+
+    #[test]
+    fn build_trace_flag_parses() {
+        let cli = Cli::try_parse_from(["duumbi", "build", "--trace"])
+            .expect("CLI must parse trace build flag");
+
+        assert!(matches!(cli.command, Commands::Build { trace: true, .. }));
+    }
+
+    #[test]
+    fn telemetry_inspect_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "telemetry",
+            "inspect",
+            "--telemetry-dir",
+            "tmp/telemetry",
+            "--crash",
+            "tmp/crash.jsonl",
+            "--map",
+            "tmp/trace_map.json",
+        ])
+        .expect("CLI must parse telemetry inspect");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Telemetry {
+                subcommand: TelemetrySubcommand::Inspect { .. }
+            }
+        ));
     }
 }
