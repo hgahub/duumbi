@@ -1,0 +1,326 @@
+name: Stage 10 Authorization
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: GitHub issue number
+        required: true
+        type: number
+      cycle_number:
+        description: Ralph Cycle number
+        required: true
+        type: number
+      request_comment_id:
+        description: Resource request comment ID
+        required: false
+        type: string
+      decision:
+        description: Stage 10 authorization decision
+        required: true
+        type: choice
+        options: ['approve', 'narrow-scope', 'reject-defer']
+      rationale:
+        description: Short rationale for the decision
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: Associated implementation PR number, if known
+        required: false
+        type: number
+        default: 0
+  repository_dispatch:
+    types: [stage-10-authorization]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: stage-10-authorization-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    name: Execute authorization decision
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Check out helper
+        uses: actions/checkout@v6
+
+      - name: Execute Stage 10 decision
+        id: decision
+        uses: actions/github-script@v9
+        env:
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          SLACK_RESPONSE_URL: ${{ github.event.client_payload.slack_response_url || '' }}
+        with:
+          script: |
+            const handoff = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/duumbi-stage-handoff.mjs`);
+            const { owner, repo } = context.repo;
+            const raw = context.eventName === "repository_dispatch"
+              ? context.payload.client_payload || {}
+              : {
+                  issue_number: Number(context.payload.inputs.issue_number),
+                  cycle_number: Number(context.payload.inputs.cycle_number),
+                  request_comment_id: context.payload.inputs.request_comment_id || "",
+                  decision: String(context.payload.inputs.decision),
+                  rationale: String(context.payload.inputs.rationale || ""),
+                  pr_number: Number(context.payload.inputs.pr_number || 0),
+                  reviewer: context.actor,
+                };
+            const issueNumber = Number(raw.issue_number || 0);
+            const cycleNumber = Number(raw.cycle_number || 0);
+            const requestCommentId = raw.request_comment_id || "";
+            const decision = String(raw.decision || "");
+            const reviewer = raw.reviewer || context.actor;
+            const rationale = raw.rationale || "";
+            const issueUrl = `${context.serverUrl}/${owner}/${repo}/issues/${issueNumber}`;
+            const labelName = "needs-cycle-approval";
+
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+              core.setFailed(`Invalid issue_number: ${raw.issue_number}`);
+              return;
+            }
+            if (!Number.isInteger(cycleNumber) || cycleNumber < 1) {
+              core.setFailed(`Invalid cycle_number: ${raw.cycle_number}`);
+              return;
+            }
+            if (!["approve", "narrow-scope", "reject-defer"].includes(decision)) {
+              core.setFailed(`Unsupported Stage 10 decision: ${decision}`);
+              return;
+            }
+
+            const { data: issue } = await github.rest.issues.get({
+              owner,
+              repo,
+              issue_number: issueNumber,
+            });
+            if (issue.state !== "open") {
+              core.setFailed(`Issue #${issueNumber} is not open.`);
+              return;
+            }
+            const labels = issue.labels
+              .map((label) => typeof label === "string" ? label : label.name)
+              .filter(Boolean);
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+
+            let requestComment = null;
+            if (requestCommentId) {
+              requestComment = comments.find((comment) => String(comment.id) === String(requestCommentId));
+              if (!requestComment) {
+                core.setFailed(`Request comment ${requestCommentId} was not found on issue #${issueNumber}.`);
+                return;
+              }
+            } else {
+              requestComment = [...comments].reverse().find((comment) => {
+                const parsed = handoff.parseResourceApprovalRequest(comment);
+                return parsed.found && parsed.cycleNumber === cycleNumber;
+              });
+            }
+            if (!requestComment) {
+              core.setFailed(`No Ralph Cycle ${cycleNumber} Resource Approval Request was found on issue #${issueNumber}.`);
+              return;
+            }
+            const parsed = handoff.parseResourceApprovalRequest(requestComment);
+            if (!parsed.ok || parsed.cycleNumber !== cycleNumber) {
+              core.setFailed(`Request comment does not match a valid Ralph Cycle ${cycleNumber} request: ${parsed.errors.join("; ")}`);
+              return;
+            }
+
+            const nextState = decision === "approve"
+              ? "In Progress"
+              : decision === "narrow-scope"
+                ? "Cycle Authorization"
+                : "Deferred";
+            const commentBody = handoff.buildStage10DecisionComment({
+              decision,
+              reviewer,
+              issueUrl,
+              cycleNumber,
+              requestCommentUrl: parsed.requestCommentUrl || `${issueUrl}#issuecomment-${parsed.requestCommentId}`,
+              rationale,
+              proposedCycleGoal: parsed.fields["Proposed Cycle Goal"],
+              nextState,
+            });
+            const { data: createdComment } = await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body: commentBody,
+            });
+
+            if (labels.includes(labelName) && decision !== "narrow-scope") {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: labelName,
+                });
+              } catch (error) {
+                core.warning(`Could not remove ${labelName}: ${error.message}`);
+              }
+            }
+
+            let projectUpdated = false;
+            const projectPat = process.env.GH_PROJECT_PAT;
+            if (projectPat) {
+              try {
+                const gql = async (query, variables) => {
+                  const response = await fetch("https://api.github.com/graphql", {
+                    method: "POST",
+                    headers: {
+                      Authorization: `bearer ${projectPat}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ query, variables }),
+                  });
+                  const body = await response.json();
+                  if (body.errors) throw new Error(body.errors.map((err) => err.message).join("; "));
+                  return body.data;
+                };
+
+                const itemsData = await gql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $number) {
+                        projectItems(first: 10) {
+                          nodes { id project { id title } }
+                        }
+                      }
+                    }
+                  }`, { owner, repo, number: issueNumber });
+
+                const items = itemsData.repository?.issue?.projectItems?.nodes || [];
+                for (const item of items) {
+                  const fieldsData = await gql(`
+                    query($pid: ID!) {
+                      node(id: $pid) {
+                        ... on ProjectV2 {
+                          fields(first: 30) {
+                            nodes {
+                              ... on ProjectV2SingleSelectField { id name options { id name } }
+                            }
+                          }
+                        }
+                      }
+                    }`, { pid: item.project.id });
+                  const statusField = fieldsData.node?.fields?.nodes?.find((field) => field.name === "Status");
+                  if (!statusField) continue;
+                  const option = statusField.options.find((opt) => opt.name === nextState);
+                  if (!option) {
+                    core.warning(`Status option "${nextState}" not found in "${item.project.title}".`);
+                    continue;
+                  }
+                  await gql(`
+                    mutation($pid: ID!, $iid: ID!, $fid: ID!, $oid: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $pid, itemId: $iid, fieldId: $fid,
+                        value: { singleSelectOptionId: $oid }
+                      }) { projectV2Item { id } }
+                    }`, { pid: item.project.id, iid: item.id, fid: statusField.id, oid: option.id });
+                  projectUpdated = true;
+                  core.info(`Project "${item.project.title}" -> ${nextState}`);
+                }
+              } catch (error) {
+                core.warning(`Project V2 update failed: ${error.message}`);
+              }
+            } else {
+              core.info("GH_PROJECT_PAT is not configured; Project V2 status was not updated.");
+            }
+
+            if (process.env.SLACK_RESPONSE_URL) {
+              try {
+                await fetch(process.env.SLACK_RESPONSE_URL, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    replace_original: false,
+                    text: `Stage 10 ${decision} recorded for issue #${issueNumber}, cycle ${cycleNumber}: ${createdComment.html_url}`,
+                  }),
+                });
+              } catch (error) {
+                core.warning(`Slack response update failed: ${error.message}`);
+              }
+            }
+
+            core.setOutput("issue_number", String(issueNumber));
+            core.setOutput("decision", decision);
+            core.setOutput("project_status_target", nextState);
+            core.setOutput("project_updated", projectUpdated ? "true" : "false");
+            core.setOutput("comment_url", createdComment.html_url);
+            await core.summary
+              .addHeading("Stage 10 Resource Authorization Decision", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Issue", `#${issueNumber}`],
+                ["Cycle", String(cycleNumber)],
+                ["Decision", decision],
+                ["Next state", nextState],
+                ["Decision comment", createdComment.html_url],
+              ])
+              .write();
+
+      - name: Write DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number || github.event.inputs.issue_number || github.event.client_payload.issue_number || '' }}
+          DECISION: ${{ steps.decision.outputs.decision || github.event.inputs.decision || github.event.client_payload.decision || '' }}
+          PROJECT_STATUS_TARGET: ${{ steps.decision.outputs.project_status_target || '' }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const handoff = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/duumbi-stage-handoff.mjs`);
+            const metrics = handoff.buildWorkflowMetrics({
+              workflowName: context.workflow,
+              workflowFile: ".github/workflows/stage-10-authorization.yml",
+              runId: context.runId,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+              eventName: context.eventName,
+              actor: context.actor,
+              ref: context.ref,
+              sha: context.sha,
+              conclusion: "${{ job.status }}",
+              issueNumber: Number(process.env.ISSUE_NUMBER || 0) || null,
+              stage: "10",
+              decision: process.env.DECISION || null,
+              projectStatusTarget: process.env.PROJECT_STATUS_TARGET || null,
+            });
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
+            await core.summary
+              .addHeading("DUUMBI Workflow Metrics", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Artifact", `duumbi-workflow-metrics-stage-10-authorization-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT || 1}`],
+                ["Workflow conclusion", String(metrics.workflow.conclusion)],
+                ["Issue", String(metrics.correlation.issue_number ?? "unavailable")],
+                ["Decision", String(metrics.correlation.decision ?? "unavailable")],
+                ["Provider usage", "unavailable: no_provider_step"],
+              ])
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-stage-10-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn

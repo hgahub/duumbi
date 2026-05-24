@@ -6,16 +6,19 @@ Actions workflows via `repository_dispatch`.
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
 DUUMBI Slack notification triggers a deterministic GitHub Action instead of
 an LLM-based Oz agent. Slack shortcuts can also dispatch Stage 1 intake.
+Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
+`stage-approval.yml`. Stage 10 resource authorization buttons that include
+`action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`.
 
 ## Architecture
 
 ```text
 Slack button click or shortcut
   → Slack sends interaction payload to Azure Function URL
-    → Function verifies Slack signing secret
-      → Function POSTs repository_dispatch to GitHub
+      → Function verifies Slack signing secret
+        → Function POSTs repository_dispatch to GitHub
         → the stage-specific GitHub Actions workflow runs deterministically
-          → Posts decision comment, updates labels, updates Project V2
+          → Posts decision comment, updates labels/status when available
             → Notifies Slack with result
 ```
 
@@ -26,7 +29,8 @@ The bridge chooses the repository dispatch event from the button payload:
 | Payload stage | Dispatch event | Workflow |
 |---|---|---|
 | `5`, `7`, `9` | `stage-approval` | `stage-approval.yml` |
-| `10` | `stage10-authorization` | `stage10-authorization-request.yml` |
+| `10` + `action_type: "stage_10_authorization"` | `stage-10-authorization` | `stage-10-authorization.yml` |
+| `10` without `action_type` | `stage10-authorization` | `stage10-authorization-request.yml` |
 | `11` | `stage11-merge-decision` | `stage11-merge-decision.yml` |
 | Slack message/global shortcut | `slack-intake` | `slack-intake-dispatch.yml` |
 
@@ -50,6 +54,7 @@ Secrets are managed via Doppler → Azure Key Vault (existing pipeline).
 ```sh
 cd scripts/slack-approval-bridge
 npm install
+npm test
 func start
 ```
 
@@ -88,3 +93,7 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 
 If the function is unavailable, Slack notifications include workflow fallback
 links where decisions can be triggered directly from the GitHub Actions UI.
+Stage 5, Stage 7, and Stage 9 approvals use `stage-approval.yml`; Stage 10
+resource authorization uses `stage-10-authorization.yml` for action-typed
+payloads and `stage10-authorization-request.yml` for legacy stage-only
+payloads.

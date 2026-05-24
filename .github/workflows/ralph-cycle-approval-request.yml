@@ -1,0 +1,411 @@
+name: Ralph Cycle Approval Request
+
+on:
+  repository_dispatch:
+    types: [ralph-cycle-approval-request]
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: GitHub issue URL to request Ralph Cycle authorization for
+        required: false
+        type: string
+      issue_number:
+        description: GitHub issue number
+        required: false
+        type: number
+      request_comment_id:
+        description: Resource request comment ID to evaluate first
+        required: false
+        type: string
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: '0 * * * *'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ralph-cycle-approval-${{ github.event.issue.number || inputs.issue_number || github.event.client_payload.issue_number || github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue_numbers: ${{ steps.request.outputs.issue_numbers }}
+      request_comment_ids: ${{ steps.request.outputs.request_comment_ids }}
+      cycle_numbers: ${{ steps.request.outputs.cycle_numbers }}
+      should_notify: ${{ steps.request.outputs.should_notify }}
+      issues_queued_count: ${{ steps.request.outputs.issues_queued_count }}
+      request_parse_failures: ${{ steps.request.outputs.request_parse_failures }}
+    steps:
+      - name: Check out helper
+        uses: actions/checkout@v6
+
+      - name: Validate request and build Slack payload
+        id: request
+        uses: actions/github-script@v9
+        env:
+          INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
+          INPUT_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id || '' }}
+        with:
+          script: |
+            const handoff = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/duumbi-stage-handoff.mjs`);
+            const { owner, repo } = context.repo;
+            const labelName = "needs-cycle-approval";
+            const maxScheduledIssues = 10;
+            const workflowDispatchUrl = `${context.serverUrl}/${owner}/${repo}/actions/workflows/stage-10-authorization.yml`;
+            const issueUrlFor = (number) => `${context.serverUrl}/${owner}/${repo}/issues/${number}`;
+            const parseIssueUrl = (issueUrl) => {
+              const value = String(issueUrl || "").trim();
+              if (!value) return 0;
+              const match = value.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?(?:[?#].*)?$/);
+              if (!match) throw new Error(`Invalid issue_url: ${value}`);
+              if (match[1] !== owner || match[2] !== repo) {
+                throw new Error(`Issue URL must belong to ${owner}/${repo}: ${value}`);
+              }
+              return Number(match[3]);
+            };
+            const labelsFor = (issue) => issue.labels
+              .map((label) => typeof label === "string" ? label : label.name)
+              .filter(Boolean);
+            const fetchIssue = async (issueNumber) => {
+              const { data: issue } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: issueNumber,
+              });
+              return issue;
+            };
+            const fetchComments = async (issueNumber) => github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const hasRepositoryLabel = async (name) => {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+                return true;
+              } catch (error) {
+                if (error.status === 404) return false;
+                throw error;
+              }
+            };
+            const getRequestedComment = async (issueNumber, requestCommentId) => {
+              if (!requestCommentId) return null;
+              const comments = await fetchComments(issueNumber);
+              return comments.find((comment) => String(comment.id) === String(requestCommentId)) || null;
+            };
+            const resolveIssueNumber = (raw) => {
+              const fromNumber = Number(raw.issue_number || 0);
+              const fromUrl = parseIssueUrl(raw.issue_url || "");
+              if (fromNumber && fromUrl && fromNumber !== fromUrl) {
+                throw new Error(`issue_number and issue_url do not match: ${fromNumber} vs ${fromUrl}`);
+              }
+              return fromNumber || fromUrl;
+            };
+            const queueIssue = async (issue, triggeredBy, requestCommentId = "") => {
+              const comments = await fetchComments(issue.number);
+              let parsed = null;
+              if (requestCommentId) {
+                const requested = await getRequestedComment(issue.number, requestCommentId);
+                if (!requested) {
+                  throw new Error(`Request comment ${requestCommentId} was not found on issue #${issue.number}.`);
+                }
+                parsed = handoff.parseResourceApprovalRequest(requested);
+                if (!parsed.ok) {
+                  throw new Error(`Request comment ${requestCommentId} is malformed: ${parsed.errors.join("; ")}`);
+                }
+                if (handoff.hasStage10NotificationMarker(comments, parsed.requestCommentId, parsed.cycleNumber)) {
+                  core.info(`Skipping issue #${issue.number}: request comment ${requestCommentId} already notified.`);
+                  return null;
+                }
+              } else {
+                parsed = handoff.findLatestResourceApprovalRequest(comments);
+              }
+              if (!parsed) {
+                core.info(`Skipping issue #${issue.number}: no unnotified valid Ralph Cycle request found.`);
+                return null;
+              }
+              const message = handoff.buildStage10ApprovalSlackMessage({
+                issueNumber: issue.number,
+                cycleNumber: parsed.cycleNumber,
+                requestCommentId: parsed.requestCommentId,
+                requestCommentUrl: parsed.requestCommentUrl || `${issue.html_url}#issuecomment-${parsed.requestCommentId}`,
+                issueUrl: issue.html_url || issueUrlFor(issue.number),
+                fields: parsed.fields,
+                workflowUrl: workflowDispatchUrl,
+              });
+              return {
+                issue,
+                parsed,
+                triggeredBy,
+                message,
+              };
+            };
+
+            let queued = [];
+            let parseFailures = 0;
+            let triggeredBy = context.actor || "unknown";
+
+            try {
+              if (context.eventName === "schedule") {
+                if (!(await hasRepositoryLabel(labelName))) {
+                  core.info(`Scheduled label sweep unavailable: label "${labelName}" does not exist.`);
+                  core.setOutput("should_notify", "false");
+                  core.setOutput("issue_numbers", "[]");
+                  core.setOutput("request_comment_ids", "[]");
+                  core.setOutput("cycle_numbers", "[]");
+                  core.setOutput("issues_queued_count", "0");
+                  core.setOutput("request_parse_failures", "0");
+                  return;
+                }
+                const issues = await github.paginate(github.rest.issues.listForRepo, {
+                  owner,
+                  repo,
+                  state: "open",
+                  labels: labelName,
+                  per_page: 100,
+                });
+                for (const issue of issues) {
+                  if (issue.pull_request) continue;
+                  try {
+                    const item = await queueIssue(issue, "scheduled sweep");
+                    if (item) queued.push(item);
+                  } catch (error) {
+                    parseFailures += 1;
+                    core.warning(`Skipping issue #${issue.number}: ${error.message}`);
+                  }
+                  if (queued.length >= maxScheduledIssues) {
+                    core.info(`Scheduled sweep capped at ${maxScheduledIssues} issues for this run.`);
+                    break;
+                  }
+                }
+                triggeredBy = "scheduled sweep";
+              } else {
+                const raw = context.eventName === "repository_dispatch"
+                  ? context.payload.client_payload || {}
+                  : context.eventName === "workflow_dispatch"
+                    ? {
+                        issue_url: process.env.INPUT_ISSUE_URL,
+                        issue_number: Number(process.env.INPUT_ISSUE_NUMBER || 0),
+                        request_comment_id: process.env.INPUT_REQUEST_COMMENT_ID,
+                      }
+                    : {
+                        issue_url: context.payload.issue?.html_url,
+                        issue_number: Number(context.payload.issue?.number || 0),
+                        request_comment_id: "",
+                        label: context.payload.label?.name,
+                      };
+
+                if (context.eventName === "issues" && raw.label !== labelName) {
+                  core.info(`Ignoring label "${raw.label}".`);
+                  core.setOutput("should_notify", "false");
+                  return;
+                }
+                const issueNumber = resolveIssueNumber(raw);
+                if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+                  core.setFailed("At least one of issue_number or issue_url is required.");
+                  return;
+                }
+                const issue = await fetchIssue(issueNumber);
+                if (issue.state !== "open") {
+                  core.setFailed(`Issue #${issueNumber} is not open.`);
+                  return;
+                }
+                const item = await queueIssue(issue, raw.triggered_by || context.actor || "unknown", raw.request_comment_id || "");
+                if (!item) {
+                  core.setFailed(`No unnotified valid Ralph Cycle Resource Approval Request found for issue #${issueNumber}.`);
+                  return;
+                }
+                queued = [item];
+                triggeredBy = String(raw.triggered_by || context.actor || "unknown");
+              }
+            } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+
+            if (queued.length === 0) {
+              core.info("No unnotified Ralph Cycle approval requests found.");
+              core.setOutput("should_notify", "false");
+              core.setOutput("issue_numbers", "[]");
+              core.setOutput("request_comment_ids", "[]");
+              core.setOutput("cycle_numbers", "[]");
+              core.setOutput("issues_queued_count", "0");
+              core.setOutput("request_parse_failures", String(parseFailures));
+              return;
+            }
+
+            core.setOutput("slack_messages", JSON.stringify(queued.map((item) => item.message)));
+            core.setOutput("issue_numbers", JSON.stringify(queued.map((item) => item.issue.number)));
+            core.setOutput("request_comment_ids", JSON.stringify(queued.map((item) => item.parsed.requestCommentId)));
+            core.setOutput("cycle_numbers", JSON.stringify(queued.map((item) => item.parsed.cycleNumber)));
+            core.setOutput("issues_queued_count", String(queued.length));
+            core.setOutput("request_parse_failures", String(parseFailures));
+            core.setOutput("should_notify", "true");
+            core.info(`Queued ${queued.length} Stage 10 approval request(s), triggered by ${triggeredBy}.`);
+
+      - name: Post Slack notifications
+        if: success() && steps.request.outputs.should_notify == 'true'
+        uses: actions/github-script@v9
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          SLACK_MESSAGES: ${{ steps.request.outputs.slack_messages }}
+        with:
+          script: |
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            const messages = JSON.parse(process.env.SLACK_MESSAGES || "[]");
+            if (!token) {
+              core.setFailed("SLACK_BOT_TOKEN is not configured.");
+              return;
+            }
+            if (!channel) {
+              core.setFailed("SLACK_REVIEW_CHANNEL_ID is not configured.");
+              return;
+            }
+            for (const message of messages) {
+              const response = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({ channel, ...message }),
+              });
+              const body = await response.json();
+              if (!response.ok || !body.ok) {
+                core.setFailed(`Slack chat.postMessage failed: ${body.error || response.status}`);
+                return;
+              }
+              core.info(`Posted Stage 10 approval notification ts=${body.ts}`);
+            }
+
+  mark-notified:
+    name: Mark notified requests
+    needs: notify
+    if: success() && needs.notify.outputs.should_notify == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Mark notified requests
+        uses: actions/github-script@v9
+        env:
+          ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers }}
+          REQUEST_COMMENT_IDS: ${{ needs.notify.outputs.request_comment_ids }}
+          CYCLE_NUMBERS: ${{ needs.notify.outputs.cycle_numbers }}
+        with:
+          script: |
+            const issueNumbers = JSON.parse(process.env.ISSUE_NUMBERS || "[]");
+            const requestCommentIds = JSON.parse(process.env.REQUEST_COMMENT_IDS || "[]");
+            const cycleNumbers = JSON.parse(process.env.CYCLE_NUMBERS || "[]");
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            for (let index = 0; index < issueNumbers.length; index += 1) {
+              const issueNumber = Number(issueNumbers[index]);
+              const requestCommentId = requestCommentIds[index];
+              const cycleNumber = cycleNumbers[index];
+              const marker = `<!-- duumbi-ralph-cycle-approval-slack-notified:v1 issue=${issueNumber} cycle=${cycleNumber} request_comment_id=${requestCommentId} -->`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: [
+                  marker,
+                  "Ralph Cycle resource authorization Slack notification requested through Oz.",
+                  "",
+                  `Workflow run: ${runUrl}`,
+                  `Source event: ${context.eventName}`,
+                ].join("\n"),
+              });
+            }
+
+  metrics:
+    name: Write workflow metrics
+    needs: [notify, mark-notified]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out helper
+        uses: actions/checkout@v6
+
+      - name: Write DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          NOTIFY_RESULT: ${{ needs.notify.result }}
+          MARK_NOTIFIED_RESULT: ${{ needs.mark-notified.result }}
+          ISSUE_NUMBERS: ${{ needs.notify.outputs.issue_numbers || '[]' }}
+          SHOULD_NOTIFY: ${{ needs.notify.outputs.should_notify || 'false' }}
+          ISSUES_QUEUED_COUNT: ${{ needs.notify.outputs.issues_queued_count || '0' }}
+          REQUEST_PARSE_FAILURES: ${{ needs.notify.outputs.request_parse_failures || '0' }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const handoff = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/duumbi-stage-handoff.mjs`);
+            const safeJsonArray = (value) => {
+              try {
+                const parsed = JSON.parse(value || "[]");
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            };
+            const failed = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("failure");
+            const cancelled = [process.env.NOTIFY_RESULT, process.env.MARK_NOTIFIED_RESULT].includes("cancelled");
+            const issueNumbers = safeJsonArray(process.env.ISSUE_NUMBERS);
+            const issueNumber = issueNumbers.length === 1 ? Number(issueNumbers[0]) : null;
+            const metrics = handoff.buildWorkflowMetrics({
+              workflowName: context.workflow,
+              workflowFile: ".github/workflows/ralph-cycle-approval-request.yml",
+              runId: context.runId,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+              eventName: context.eventName,
+              actor: context.actor,
+              ref: context.ref,
+              sha: context.sha,
+              conclusion: failed ? "failure" : (cancelled ? "cancelled" : "success"),
+              issueNumber: Number.isFinite(issueNumber) ? issueNumber : null,
+              stage: "10",
+              issuesQueued: Number(process.env.ISSUES_QUEUED_COUNT || 0),
+              slackNotificationsAttempted: process.env.SHOULD_NOTIFY === "true" ? issueNumbers.length : 0,
+              requestParseFailures: Number(process.env.REQUEST_PARSE_FAILURES || 0),
+            });
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
+            await core.summary
+              .addHeading("DUUMBI Workflow Metrics", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Artifact", `duumbi-workflow-metrics-ralph-cycle-approval-${context.runId}-${process.env.GITHUB_RUN_ATTEMPT || 1}`],
+                ["Workflow conclusion", metrics.workflow.conclusion],
+                ["Issues queued", String(metrics.counts.issues_queued)],
+                ["Slack notifications attempted", String(metrics.counts.slack_notifications_attempted)],
+                ["Request parse failures", String(metrics.counts.request_parse_failures)],
+                ["Provider usage", "unavailable: no_provider_step"],
+              ])
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-ralph-cycle-approval-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn
