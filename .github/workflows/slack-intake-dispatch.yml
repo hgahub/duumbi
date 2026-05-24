@@ -38,7 +38,7 @@ jobs:
           script: |
             const fs = require("fs");
             const raw = context.eventName === "repository_dispatch"
-              ? context.payload.client_payload
+              ? (context.payload.client_payload || {})
               : {
                   source_summary: context.payload.inputs.source_summary,
                   text: context.payload.inputs.source_text,
@@ -48,7 +48,9 @@ jobs:
               raw.message_ts ? `message_ts=${raw.message_ts}` : null,
               raw.thread_ts ? `thread_ts=${raw.thread_ts}` : null,
             ].filter(Boolean).join(" ") || "Slack shortcut";
-            const sourceText = String(raw.text || "").slice(0, 3000);
+            const sourceText = context.eventName === "workflow_dispatch"
+              ? String(raw.text || "").slice(0, 3000)
+              : "";
             const prompt = [
               "Run DUUMBI Stage 1 Slack intake with duumbi-obsidian-capture.",
               "",
@@ -56,7 +58,7 @@ jobs:
               raw.user_name ? `Submitted by: ${raw.user_name}` : "",
               "",
               "Slack input:",
-              sourceText || "<no text provided; inspect the Slack source if available>",
+              sourceText || "<no text included in GitHub dispatch; inspect the Slack source by channel/thread identifiers>",
               "",
               "Goal: Capture the raw input into the DUUMBI Inbox, classify it, inspect active DUUMBI context, detect duplicates across active Inbox, Processed Inbox, Atlas, GitHub Issues, and GitHub Discussions, and report the next processing step.",
               "",
@@ -83,19 +85,6 @@ jobs:
               if (slackNotification === "failed") core.warning(`Slack notification failed: ${body.error || res.status}`);
             }
 
-            if (raw.slack_response_url) {
-              await fetch(raw.slack_response_url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  replace_original: false,
-                  text: slackNotification === "posted"
-                    ? "DUUMBI intake dispatch was queued."
-                    : "DUUMBI intake dispatch was recorded, but Slack agent dispatch notification was not posted.",
-                }),
-              });
-            }
-
             const now = new Date().toISOString();
             fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
               schema_version: "duumbi.workflow_metrics.v1",
@@ -115,10 +104,10 @@ jobs:
               .addTable([
                 [{ data: "Field", header: true }, { data: "Value", header: true }],
                 ["Source", sourceSummary],
+                ["Source text retained in GitHub summary", "false"],
                 ["Slack dispatch", slackNotification],
               ])
-              .addHeading("Agent Prompt", 3)
-              .addCodeBlock(prompt, "text")
+              .addRaw("\nAgent prompt omitted from the GitHub summary to avoid retaining Slack/user text in workflow run data.\n")
               .write();
 
       - name: Upload DUUMBI workflow metrics

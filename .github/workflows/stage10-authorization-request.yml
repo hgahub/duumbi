@@ -137,18 +137,6 @@ jobs:
                 core.warning(`Project V2 update failed: ${err.message}`);
               }
 
-              const responseUrl = raw.slack_response_url;
-              if (responseUrl) {
-                await fetch(responseUrl, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    replace_original: false,
-                    text: `Stage 10 ${decision} recorded for <${issueUrlFor(issueNumber)}|#${issueNumber}>. Decision comment: ${comment.html_url}`,
-                  }),
-                });
-              }
-
               fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
                 schema_version: "duumbi.workflow_metrics.v1",
                 generated_at: now,
@@ -156,7 +144,7 @@ jobs:
                 repository: `${context.repo.owner}/${context.repo.repo}`,
                 workflow: { name: context.workflow, file: ".github/workflows/stage10-authorization-request.yml", run_id: context.runId, run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1), event_name: context.eventName, actor: context.actor, ref: context.ref, sha: context.sha, conclusion: "success", started_at: now, completed_at: now, duration_ms: null },
                 correlation: { issue_number: issueNumber, pr_number: null, stage: "10", decision, project_status: projectUpdated ? nextState : null },
-                counts: { issues_considered: 1, issues_queued: null, slack_notifications_attempted: responseUrl ? 1 : 0, artifact_links_found: 1, artifact_links_missing: 0 },
+                counts: { issues_considered: 1, issues_queued: null, slack_notifications_attempted: 0, artifact_links_found: 1, artifact_links_missing: 0 },
                 provider_usage: { available: false, reason: "decision_record_only", provider: null, model: null, request_count: null, prompt_tokens: null, completion_tokens: null, total_tokens: null, estimated_cost_usd: null, latency_ms: null, failure_count: null },
                 privacy: { metadata_only: true, raw_prompts_included: false, raw_completions_included: false, raw_slack_payloads_included: false, secrets_included: false },
                 warnings: [],
@@ -198,7 +186,6 @@ jobs:
                 issue_number: issue.number,
                 per_page: 100,
               });
-              if (comments.some((comment) => (comment.body || "").includes(`${markerPrefix} issue=${issue.number}`))) continue;
               const request = [...comments].reverse().find((comment) => /## Ralph Cycle \d+ Resource Approval Request/i.test(comment.body || ""));
               if (!request) {
                 core.warning(`Issue #${issue.number} has no Ralph Cycle Resource Approval Request comment.`);
@@ -206,6 +193,8 @@ jobs:
               }
               const cycleMatch = (request.body || "").match(/## Ralph Cycle (\d+) Resource Approval Request/i);
               const cycle = cycleMatch ? Number(cycleMatch[1]) : 0;
+              const marker = `${markerPrefix} issue=${issue.number} cycle=${cycle || "unknown"} request=${request.id}`;
+              if (comments.some((comment) => (comment.body || "").includes(marker))) continue;
               const value = (decision) => JSON.stringify({ stage: "10", issue_number: issue.number, decision, cycle });
               const message = {
                 text: `DUUMBI issue #${issue.number} needs Stage 10 resource authorization`,
@@ -237,7 +226,7 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: issue.number,
                 body: [
-                  `${markerPrefix} issue=${issue.number} cycle=${cycle || "unknown"} -->`,
+                  `${marker} -->`,
                   "Stage 10 resource authorization Slack notification requested.",
                   "",
                   `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,

@@ -46,9 +46,11 @@ or source-repo contracts that support it.
 `scripts/slack-approval-bridge` now dispatches by stage:
 
 - Stage 5, 7, and 9 buttons use `stage-approval`.
-- Stage 10 buttons use `stage10-authorization`.
+- Stage 10 resource buttons use `stage-10-authorization` when the payload has
+  `action_type: "stage_10_authorization"`; legacy stage-only buttons continue
+  to use `stage10-authorization`.
 - Stage 11 buttons use `stage11-merge-decision`.
-- Slack shortcuts use `slack-intake`.
+- Slack shortcuts use `slack-intake` with Slack channel/thread identifiers only.
 
 Unknown stages fall back to `stage-approval`, where unsupported stages fail
 closed.
@@ -86,3 +88,9 @@ emits the Stage 12 closure prompt after merge.
 All new workflows write metadata-only metrics artifacts. They must not store raw
 Slack payloads, issue bodies, comments, prompts from users, model completions,
 provider payloads, credentials, or broad logs.
+
+Slack capability URLs, including `response_url`, stay inside the Slack bridge
+function and are not forwarded through GitHub `repository_dispatch` payloads.
+Slack shortcut dispatches pass source identifiers instead of raw Slack message
+text; GitHub workflow summaries intentionally omit generated agent prompts that
+could contain user-provided Slack content.

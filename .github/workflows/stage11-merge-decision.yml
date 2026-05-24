@@ -144,12 +144,16 @@ jobs:
               pull_number: prNumber,
             });
 
-            const checkRuns = await github.paginate(github.rest.checks.listForRef, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: pr.head.sha,
-              per_page: 100,
-            });
+            const checkRuns = await github.paginate(
+              github.rest.checks.listForRef,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha,
+                per_page: 100,
+              },
+              (response) => response.data.check_runs,
+            );
             const badChecks = checkRuns.filter((check) =>
               check.status !== "completed" || !["success", "neutral", "skipped"].includes(check.conclusion)
             );

@@ -131,12 +131,13 @@ jobs:
               return json.data;
             };
 
-            const projectQuery = `
-              query($login: String!, $number: Int!) {
+            const projectPageQuery = `
+              query($login: String!, $number: Int!, $cursor: String) {
                 organization(login: $login) {
                   projectV2(number: $number) {
                     title
-                    items(first: 100) {
+                    items(first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
                       nodes {
                         content {
                           ... on Issue { number title url state }
@@ -156,7 +157,8 @@ jobs:
                 user(login: $login) {
                   projectV2(number: $number) {
                     title
-                    items(first: 100) {
+                    items(first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
                       nodes {
                         content {
                           ... on Issue { number title url state }
@@ -175,8 +177,24 @@ jobs:
                 }
               }`;
 
-            const data = await gql(projectQuery, { login: projectOwner, number: projectNumber });
-            const project = data.organization?.projectV2 || data.user?.projectV2;
+            const loadProject = async () => {
+              let cursor = null;
+              let title = "";
+              const nodes = [];
+              for (;;) {
+                const data = await gql(projectPageQuery, { login: projectOwner, number: projectNumber, cursor });
+                const page = data.organization?.projectV2 || data.user?.projectV2;
+                if (!page) return null;
+                title = title || page.title;
+                nodes.push(...(page.items?.nodes || []));
+                const pageInfo = page.items?.pageInfo;
+                if (!pageInfo?.hasNextPage) break;
+                cursor = pageInfo.endCursor;
+              }
+              return { title, items: { nodes } };
+            };
+
+            const project = await loadProject();
             if (!project) {
               warnings.push(`Project V2 #${projectNumber} not found for ${projectOwner}.`);
               core.setFailed(warnings[0]);

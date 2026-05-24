@@ -50,9 +50,28 @@ jobs:
                 issue_number: issueNumber,
                 per_page: 100,
               });
-              const haystack = comments.map((comment) => comment.body || "").join("\n");
-              const match = haystack.match(/https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/i);
-              return match ? Number(match[1]) : 0;
+              const candidates = [];
+              for (const comment of [...comments].reverse()) {
+                for (const match of String(comment.body || "").matchAll(/https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/ig)) {
+                  const prNumber = Number(match[1]);
+                  if (Number.isInteger(prNumber) && prNumber > 0 && !candidates.includes(prNumber)) {
+                    candidates.push(prNumber);
+                  }
+                }
+              }
+              for (const prNumber of candidates) {
+                try {
+                  const { data: pr } = await github.rest.pulls.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber,
+                  });
+                  if (pr.state === "open") return prNumber;
+                } catch (err) {
+                  core.warning(`Could not inspect PR #${prNumber}: ${err.message}`);
+                }
+              }
+              return candidates[0] || 0;
             };
 
             let issues = [];
@@ -91,14 +110,26 @@ jobs:
                 issue_number: issue.number,
                 per_page: 100,
               });
-              if (comments.some((comment) => (comment.body || "").includes(`${markerPrefix} issue=${issue.number}`))) continue;
               const prNumber = await findPrNumber(issue.number, explicitPr);
               if (!prNumber) {
                 missingPr += 1;
                 core.warning(`No implementation PR link found for issue #${issue.number}.`);
                 continue;
               }
-              const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}`;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pr.state !== "open") {
+                missingPr += 1;
+                core.warning(`Implementation PR #${prNumber} for issue #${issue.number} is not open.`);
+                continue;
+              }
+              const prHeadSha = pr.head?.sha || "unknown";
+              const marker = `${markerPrefix} issue=${issue.number} pr=${prNumber} sha=${prHeadSha}`;
+              if (comments.some((comment) => (comment.body || "").includes(marker))) continue;
+              const prUrl = pr.html_url || `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}`;
               const prompt = [
                 "Run DUUMBI Stage 11 Review Artifact with duumbi-review-artifact.",
                 "",
@@ -140,7 +171,7 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: issue.number,
                 body: [
-                  `${markerPrefix} issue=${issue.number} pr=${prNumber} -->`,
+                  `${marker} -->`,
                   "Stage 11 implementation review Slack notification requested.",
                   "",
                   `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,

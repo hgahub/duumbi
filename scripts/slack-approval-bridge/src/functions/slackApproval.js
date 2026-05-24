@@ -56,8 +56,6 @@ app.http("slack-approval", {
         thread_ts: payload.message?.thread_ts || payload.message?.ts || "",
         user_id: payload.user?.id || "",
         user_name: payload.user?.username || payload.user?.name || "",
-        text: payload.message?.text || "",
-        slack_response_url: responseUrl,
       };
       dispatchGenericAsync(githubRepo, "slack-intake", clientPayload, responseUrl, "Slack intake", context);
       return { status: 200, body: "" };
@@ -89,7 +87,7 @@ app.http("slack-approval", {
     const responseUrl = payload.response_url;
     const githubRepo = process.env.GITHUB_REPO || "hgahub/duumbi";
     const eventType = eventTypeForAction(actionData);
-    const clientPayload = buildClientPayload(actionData, reviewer, responseUrl, fallbackRationale);
+    const clientPayload = buildClientPayload(actionData, reviewer, fallbackRationale);
 
     // Fire-and-forget: dispatch to GitHub + post Slack thread update
     dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, actionData, user, context);
@@ -111,7 +109,7 @@ function eventTypeForAction(actionData) {
   return eventTypeForStage(actionData?.stage);
 }
 
-function buildClientPayload(actionData, reviewer, responseUrl, fallbackRationale) {
+function buildClientPayload(actionData, reviewer, fallbackRationale) {
   const payload = {
     stage: actionData.stage,
     issue_number: actionData.issue_number,
@@ -119,7 +117,6 @@ function buildClientPayload(actionData, reviewer, responseUrl, fallbackRationale
     rationale: actionData.rationale || fallbackRationale,
     pr_number: actionData.pr_number || 0,
     reviewer,
-    slack_response_url: responseUrl,
   };
 
   if (actionTypeForAction(actionData) === "stage_10_authorization") {

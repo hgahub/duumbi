@@ -37,6 +37,11 @@ The bridge chooses the repository dispatch event from the button payload:
 Unknown stage values fall back to `stage-approval`, where unsupported stages fail
 closed.
 
+The bridge does not forward Slack `response_url` capability URLs or raw Slack
+message text in `repository_dispatch` payloads. It posts immediate Slack
+follow-up messages from the function process and passes channel/thread
+identifiers to GitHub workflows for agent handoff.
+
 ## Infrastructure
 
 The Azure Function App is provisioned via Pulumi in the
