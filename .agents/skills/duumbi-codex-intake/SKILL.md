@@ -139,9 +139,12 @@ Use a short confirmation prompt in the user's initiated language. Do not write t
 Before creating a note:
 
 1. Search `duumbi-vault/Duumbi/00 Inbox (ToProcess)/` for the same or very similar title.
-2. Search for matching source context from the current Codex conversation.
-3. If the same idea is already captured, do not create a duplicate; reply with the existing note path unless the user explicitly asks to update it.
-4. If only the title collides, create a distinct filename by appending a short qualifier or `- 2`.
+2. Search `duumbi-vault/Duumbi/05 Archive/Processed Inbox/` for the same or very similar captured idea.
+3. Search active Atlas notes under `duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/` for the same durable idea, decision, or workflow guidance.
+4. Search for matching source context from the current Codex conversation.
+5. Inspect GitHub Issues and Discussions read-only when duplicate, accepted-work, or active-execution status matters.
+6. If the same idea is already captured or represented by a canonical Atlas/GitHub item, do not create a duplicate; reply with the existing note path or link unless the user explicitly asks to update it.
+7. If only the title collides, create a distinct filename by appending a short qualifier or `- 2`.
 
 Filename rules:
 

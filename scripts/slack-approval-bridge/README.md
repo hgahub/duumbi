@@ -1,24 +1,37 @@
 # Slack Approval Bridge
 
-Azure Function that bridges Slack interactive button clicks to the
-`stage-approval.yml` GitHub Actions workflow via `repository_dispatch`.
+Azure Function that bridges Slack interactive button clicks to DUUMBI GitHub
+Actions workflows via `repository_dispatch`.
 
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
 DUUMBI Slack notification triggers a deterministic GitHub Action instead of
-an LLM-based Oz agent — reducing approval execution from ~3 hours / ~108
-credits to ~30 seconds / 0 credits.
+an LLM-based Oz agent. Slack shortcuts can also dispatch Stage 1 intake.
 
 ## Architecture
 
 ```text
-Slack button click
+Slack button click or shortcut
   → Slack sends interaction payload to Azure Function URL
     → Function verifies Slack signing secret
       → Function POSTs repository_dispatch to GitHub
-        → stage-approval.yml runs deterministically
+        → the stage-specific GitHub Actions workflow runs deterministically
           → Posts decision comment, updates labels, updates Project V2
             → Notifies Slack with result
 ```
+
+## Dispatch Routing
+
+The bridge chooses the repository dispatch event from the button payload:
+
+| Payload stage | Dispatch event | Workflow |
+|---|---|---|
+| `5`, `7`, `9` | `stage-approval` | `stage-approval.yml` |
+| `10` | `stage10-authorization` | `stage10-authorization-request.yml` |
+| `11` | `stage11-merge-decision` | `stage11-merge-decision.yml` |
+| Slack message/global shortcut | `slack-intake` | `slack-intake-dispatch.yml` |
+
+Unknown stage values fall back to `stage-approval`, where unsupported stages fail
+closed.
 
 ## Infrastructure
 
@@ -59,7 +72,9 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → DUUMBI app
 2. **Interactivity & Shortcuts** → toggle **On**
 3. Set **Request URL** to the Function URL (e.g. `https://func-duumbi-slack-bridge.azurewebsites.net/api/slack-approval`)
-4. Save Changes
+4. Optional: create a message shortcut for DUUMBI idea capture. It will route to
+   `slack-intake-dispatch.yml`.
+5. Save Changes
 
 ## App Settings
 
@@ -71,6 +86,5 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 
 ## Fallback
 
-If the function is unavailable, the Slack notification includes a link to
-the `stage-approval.yml` manual dispatch page where approvals can be
-triggered directly from the GitHub Actions UI.
+If the function is unavailable, Slack notifications include workflow fallback
+links where decisions can be triggered directly from the GitHub Actions UI.

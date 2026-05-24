@@ -29,6 +29,7 @@ This skill does not:
 - create new GitHub labels or Project fields
 
 Stage 10 owns implementation changes after review findings. Stage 12 owns post-merge closure and durable knowledge sync.
+Stage 11 merge authorization is handled separately by `duumbi-merge-decision`; this skill produces evidence and recommendation only.
 
 ## Source Of Truth Rules
 
@@ -160,6 +161,7 @@ If all checks and review expectations pass:
 - write the review artifact comment
 - recommend `Ready for Human Merge Decision`
 - keep Status `In Review` unless an existing review-ready label/status is available
+- route the explicit human merge decision through `duumbi-merge-decision` or `.github/workflows/stage11-merge-decision.yml`
 - do not merge or move to `Done`
 
 If clarification is needed:

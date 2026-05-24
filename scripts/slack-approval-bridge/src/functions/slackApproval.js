@@ -37,6 +37,24 @@ app.http("slack-approval", {
       return { status: 400, jsonBody: { text: "Invalid Slack payload." } };
     }
 
+    if (payload.type === "message_action" || payload.type === "shortcut") {
+      const responseUrl = payload.response_url;
+      const githubRepo = process.env.GITHUB_REPO || "hgahub/duumbi";
+      const clientPayload = {
+        surface: "Slack",
+        callback_id: payload.callback_id || "",
+        channel_id: payload.channel?.id || payload.channel_id || "",
+        message_ts: payload.message?.ts || payload.message_ts || "",
+        thread_ts: payload.message?.thread_ts || payload.message?.ts || "",
+        user_id: payload.user?.id || "",
+        user_name: payload.user?.username || payload.user?.name || "",
+        text: payload.message?.text || "",
+        slack_response_url: responseUrl,
+      };
+      dispatchGenericAsync(githubRepo, "slack-intake", clientPayload, responseUrl, "Slack intake", context);
+      return { status: 200, body: "" };
+    }
+
     if (payload.type !== "block_actions") {
       return { jsonBody: { text: "Unsupported interaction type." } };
     }
@@ -68,12 +86,14 @@ app.http("slack-approval", {
       decision: actionData.decision,
       rationale: actionData.rationale || fallbackRationale,
       pr_number: actionData.pr_number || 0,
+      cycle: actionData.cycle || 0,
       reviewer,
       slack_response_url: responseUrl,
     };
+    const eventType = eventTypeForStage(actionData.stage);
 
     // Fire-and-forget: dispatch to GitHub + post Slack thread update
-    dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context);
+    dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, actionData, user, context);
 
     // Return 200 immediately so Slack doesn't retry
     return { status: 200, body: "" };
@@ -82,7 +102,7 @@ app.http("slack-approval", {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData, user, context) {
+async function dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, actionData, user, context) {
   try {
     const res = await fetch(
       `https://api.github.com/repos/${githubRepo}/dispatches`,
@@ -95,7 +115,7 @@ async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData,
           "Content-Type": "application/json",
           "User-Agent": "duumbi-slack-approval-bridge/1.0",
         },
-        body: JSON.stringify({ event_type: "stage-approval", client_payload: clientPayload }),
+        body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
       },
     );
 
@@ -128,6 +148,47 @@ async function dispatchAsync(githubRepo, clientPayload, responseUrl, actionData,
   } catch (err) {
     context.error("dispatchAsync error:", err);
   }
+}
+
+async function dispatchGenericAsync(githubRepo, eventType, clientPayload, responseUrl, label, context) {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${githubRepo}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          "User-Agent": "duumbi-slack-approval-bridge/1.0",
+        },
+        body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
+      },
+    );
+
+    if (responseUrl) {
+      await fetch(responseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          replace_original: false,
+          text: res.ok
+            ? `⏳ ${label} triggered — GitHub Actions workflow running…`
+            : `⚠️ ${label} workflow trigger failed (HTTP ${res.status}).`,
+        }),
+      });
+    }
+  } catch (err) {
+    context.error("dispatchGenericAsync error:", err);
+  }
+}
+
+function eventTypeForStage(stage) {
+  const normalized = String(stage || "");
+  if (normalized === "10") return "stage10-authorization";
+  if (normalized === "11") return "stage11-merge-decision";
+  return "stage-approval";
 }
 
 function verifySlackSignature(body, timestamp, signature, signingSecret) {

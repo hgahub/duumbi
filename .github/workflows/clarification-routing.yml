@@ -1,0 +1,209 @@
+name: Clarification Routing
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to route
+        required: true
+        type: number
+      comment_url:
+        description: Source clarification comment URL
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: clarification-routing-${{ github.event.issue.number || inputs.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    name: Route clarification response
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create clarification handoff
+        uses: actions/github-script@v9
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_AGENT_DISPATCH_CHANNEL_ID: ${{ secrets.DUUMBI_AGENT_DISPATCH_CHANNEL_ID }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const isCommentEvent = context.eventName === "issue_comment";
+            const issue = isCommentEvent ? context.payload.issue : null;
+            if (issue?.pull_request) {
+              core.info("Ignoring pull request comment.");
+              return;
+            }
+
+            const issueNumber = isCommentEvent ? issue.number : Number(context.payload.inputs.issue_number);
+            const commentUrl = isCommentEvent ? context.payload.comment.html_url : String(context.payload.inputs.comment_url || "");
+            const commentBody = isCommentEvent ? String(context.payload.comment.body || "") : "";
+            const mentioned = /@(?:Codex|Copilot)\b/i.test(commentBody) || !isCommentEvent;
+            if (!mentioned) {
+              core.info("No @Codex or @Copilot mention; ignoring.");
+              return;
+            }
+
+            const { data: freshIssue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+            const labels = (freshIssue.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean);
+            const marker = `<!-- duumbi-clarification-routing:v1 issue=${issueNumber} comment=${commentUrl || "manual"} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            if (comments.some((comment) => (comment.body || "").includes(marker))) {
+              core.info("Clarification handoff marker already exists.");
+              return;
+            }
+
+            const issueUrl = freshIssue.html_url;
+            const prompt = [
+              "Run DUUMBI clarification evaluation.",
+              "",
+              `Target issue: ${issueUrl}`,
+              commentUrl ? `Source clarification comment: ${commentUrl}` : "Source clarification comment: manual workflow dispatch",
+              `Current labels: ${labels.join(", ") || "none"}`,
+              "",
+              "Goal: Evaluate the developer clarification response, inspect the current issue and DUUMBI context, decide whether the item is ready to return to its prior workflow stage or still needs clarification, and write the appropriate GitHub comment/status recommendation.",
+              "",
+              "Use the stage-specific DUUMBI skill that matches the issue state. Do not create specs, PRs, source changes, or implementation work unless the issue is already in the matching later stage and that skill explicitly permits it.",
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                marker,
+                "Clarification response routed for agent evaluation.",
+                "",
+                `Source comment: ${commentUrl || "manual workflow dispatch"}`,
+                "",
+                "```text",
+                prompt,
+                "```",
+              ].join("\n"),
+            });
+
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || process.env.SLACK_REVIEW_CHANNEL_ID;
+            let slackNotification = "not_configured";
+            if (token && channel) {
+              const res = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({
+                  channel,
+                  text: [
+                    "*DUUMBI Clarification Routing*",
+                    `*Issue:* <${issueUrl}|#${issueNumber} ${freshIssue.title}>`,
+                    commentUrl ? `*Comment:* ${commentUrl}` : "*Comment:* manual dispatch",
+                    "",
+                    "```",
+                    prompt,
+                    "```",
+                  ].join("\n"),
+                }),
+              });
+              const body = await res.json();
+              slackNotification = res.ok && body.ok ? "posted" : "failed";
+              if (slackNotification === "failed") core.warning(`Slack notification failed: ${body.error || res.status}`);
+            }
+
+            const now = new Date().toISOString();
+            const metrics = {
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/clarification-routing.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: context.eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion: "success",
+                started_at: now,
+                completed_at: now,
+                duration_ms: null,
+              },
+              correlation: {
+                issue_number: issueNumber,
+                pr_number: null,
+                stage: "clarification-routing",
+                decision: null,
+                project_status: labels.includes("needs-clarification") ? "Needs Clarification" : null,
+              },
+              counts: {
+                issues_considered: 1,
+                issues_queued: 1,
+                slack_notifications_attempted: slackNotification === "posted" ? 1 : 0,
+                artifact_links_found: commentUrl ? 1 : 0,
+                artifact_links_missing: commentUrl ? 0 : 1,
+              },
+              provider_usage: {
+                available: false,
+                reason: "agent_dispatch_only",
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings: slackNotification === "posted" ? [] : [`slack_notification_${slackNotification}`],
+            };
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
+
+            await core.summary
+              .addHeading("DUUMBI Clarification Routing", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Issue", `#${issueNumber}`],
+                ["Source comment", commentUrl || "manual dispatch"],
+                ["Slack dispatch", slackNotification],
+              ])
+              .addHeading("Agent Prompt", 3)
+              .addCodeBlock(prompt, "text")
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-clarification-routing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn

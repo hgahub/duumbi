@@ -1,10 +1,9 @@
 # DUUMBI Human Acceptance Slack Gate
 
 The Human Acceptance Slack Gate connects the DUUMBI Stage 4 triage label
-`needs-human-review` to a Slack review notification from GitHub Actions. This
-version intentionally uses only GitHub Actions, Slack, and Warp/Oz. It does not
-require a separate server, webhook bridge, Slack Incoming Webhook, GitHub App
-receiver, or Project v2 event listener.
+`needs-human-review` to a Slack review notification from GitHub Actions. The
+current version uses GitHub Actions, Slack, Warp/Oz fallback prompts, and the
+Slack approval bridge for deterministic button decisions.
 
 The durable Stage 5 decision remains the GitHub issue comment and Project/label
 updates performed by `duumbi-human-acceptance`.
@@ -19,18 +18,19 @@ updates performed by `duumbi-human-acceptance`.
    `needs-human-review` issues that were not already notified.
 5. The read-only notification job posts one Slack message per issue with the
    Slack Web API `chat.postMessage`.
-6. The Slack message tells the reviewer to reply in-thread with
+6. The Slack message includes interactive buttons when the bridge is configured.
+   If the bridge is unavailable, the reviewer can reply in-thread with
    `@Oz accepted: <short rationale>`.
 7. After Slack posting succeeds, a separate marker job writes an operational
    marker comment to the issue so future scheduled sweeps do not send duplicate
    notifications.
-8. The reviewer replies in Slack with:
+8. Fallback only: the reviewer replies in Slack with:
 
 ```text
 @Oz accepted: <short rationale>
 ```
 
-9. The inbound Warp/Oz Slack integration handles the reviewer reply and runs in
+9. Fallback only: the inbound Warp/Oz Slack integration handles the reviewer reply and runs in
    the `duumbi-vault-knowledge-env` environment:
 
 ```text
@@ -83,8 +83,13 @@ No `SLACK_WEBHOOK_URL` is required. The workflow uses the Slack Web API directly
 from GitHub Actions. The Slack bot must be invited to the target review channel.
 
 The Warp/Oz Slack integration, visible in Slack under Apps -> Warp, remains
-required for the reviewer reply path: a human replies with
+available for the fallback reviewer reply path: a human replies with
 `@Oz accepted: <short rationale>`, and that inbound Slack mention starts Oz.
+
+For interactive buttons, `scripts/slack-approval-bridge` routes Stage 5, Stage 7,
+and Stage 9 to `stage-approval.yml`, Stage 10 to
+`stage10-authorization-request.yml`, and Stage 11 to
+`stage11-merge-decision.yml`.
 
 `duumbi-vault-knowledge-env` is an Oz environment, not an agent profile. Its
 environment ID is:

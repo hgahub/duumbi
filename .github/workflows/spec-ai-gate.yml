@@ -1,0 +1,235 @@
+name: Spec AI Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Spec gate stage
+        required: true
+        type: choice
+        options: ['7', '9']
+      issue_number:
+        description: GitHub issue number
+        required: true
+        type: number
+      pr_number:
+        description: Spec PR number
+        required: true
+        type: number
+      decision:
+        description: AI gate decision
+        required: true
+        type: choice
+        options: ['approve', 'request-changes', 'needs-clarification', 'reject']
+      rationale:
+        description: AI gate rationale
+        required: true
+        type: string
+      copilot_evidence:
+        description: Link or summary of Copilot review evidence
+        required: false
+        type: string
+        default: ''
+  repository_dispatch:
+    types: [spec-ai-gate]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: spec-ai-gate-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record AI gate decision
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record decision and dispatch Stage Approval
+        uses: actions/github-script@v9
+        env:
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const raw = context.eventName === "repository_dispatch"
+              ? context.payload.client_payload
+              : context.payload.inputs;
+            const stage = String(raw.stage || "");
+            const issueNumber = Number(raw.issue_number || 0);
+            const prNumber = Number(raw.pr_number || 0);
+            const decision = String(raw.decision || "");
+            const rationale = String(raw.rationale || "");
+            const copilotEvidence = String(raw.copilot_evidence || raw.copilotEvidence || "");
+            const validStages = new Set(["7", "9"]);
+            const validDecisions = new Set(["approve", "request-changes", "needs-clarification", "reject"]);
+            if (!validStages.has(stage)) throw new Error(`Unsupported spec AI gate stage: ${stage}`);
+            if (!validDecisions.has(decision)) throw new Error(`Unsupported spec AI gate decision: ${decision}`);
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) throw new Error(`Invalid issue_number: ${raw.issue_number}`);
+            if (!Number.isInteger(prNumber) || prNumber < 1) throw new Error(`Invalid pr_number: ${raw.pr_number}`);
+
+            const { data: repoInfo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const issueUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${issueNumber}`;
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}`;
+            const title = stage === "7" ? "Stage 7 AI Gate Decision" : "Stage 9 AI Gate Decision";
+            const nextState = stage === "7"
+              ? (decision === "approve" ? "Technical Spec Needed" : decision === "request-changes" ? "Spec Needed" : decision === "needs-clarification" ? "Needs Clarification" : "Closed")
+              : (decision === "approve" ? "Ready for Build" : decision === "request-changes" ? "Technical Spec Needed" : decision === "needs-clarification" ? "Needs Clarification" : "Closed");
+            const marker = `<!-- duumbi-stage-${stage}-ai-gate-decision:v1 issue=${issueNumber} pr=${prNumber} decision=${decision} -->`;
+            const body = [
+              marker,
+              `## ${title}`,
+              "",
+              `**Decision:** ${decision}`,
+              `**Reviewer source:** Codex AI Gate`,
+              `**Spec PR:** ${prUrl}`,
+              `**Copilot evidence:** ${copilotEvidence || "verified by invoking agent; no link provided"}`,
+              `**Rationale:** ${rationale}`,
+              `**Gate policy:** fail-closed if Copilot review, checks, scope, or blocking findings are missing`,
+              `**Next state:** ${nextState}`,
+            ].join("\n");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => (comment.body || "").includes(marker));
+            let decisionCommentUrl = existing?.html_url || "";
+            if (!existing) {
+              const { data } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body,
+              });
+              decisionCommentUrl = data.html_url;
+            }
+
+            const prPointer = [
+              marker,
+              `## ${title}`,
+              "",
+              `**Issue:** ${issueUrl}`,
+              `**Decision:** ${decision}`,
+              `**Decision comment:** ${decisionCommentUrl}`,
+            ].join("\n");
+            const prComments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            if (!prComments.some((comment) => (comment.body || "").includes(marker))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: prPointer,
+              });
+            }
+
+            let stageApprovalDispatch = "not_applicable";
+            if (decision === "approve") {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "stage-approval.yml",
+                ref: repoInfo.default_branch,
+                inputs: {
+                  stage,
+                  issue_number: String(issueNumber),
+                  decision: "approve",
+                  rationale: `Approved by Codex AI Gate. ${rationale}`,
+                  pr_number: String(prNumber),
+                  reviewer: "Codex AI Gate",
+                },
+              });
+              stageApprovalDispatch = "dispatched";
+            }
+
+            const now = new Date().toISOString();
+            const metrics = {
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/spec-ai-gate.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: context.eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion: "success",
+                started_at: now,
+                completed_at: now,
+                duration_ms: null,
+              },
+              correlation: {
+                issue_number: issueNumber,
+                pr_number: prNumber,
+                stage,
+                decision,
+                project_status: nextState,
+              },
+              counts: {
+                issues_considered: 1,
+                issues_queued: null,
+                slack_notifications_attempted: 0,
+                artifact_links_found: copilotEvidence ? 1 : 0,
+                artifact_links_missing: copilotEvidence ? 0 : 1,
+              },
+              provider_usage: {
+                available: false,
+                reason: "decision_record_only",
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings: [],
+            };
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
+
+            await core.summary
+              .addHeading(`DUUMBI Stage ${stage} AI Gate`, 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Issue", `#${issueNumber}`],
+                ["PR", `#${prNumber}`],
+                ["Decision", decision],
+                ["Decision comment", decisionCommentUrl],
+                ["Stage Approval dispatch", stageApprovalDispatch],
+              ])
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-spec-ai-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn

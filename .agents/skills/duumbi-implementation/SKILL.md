@@ -184,6 +184,7 @@ For `Request Resource Approval`:
 
 - prepare or refresh the approval request
 - set Project Status to `Cycle Authorization` when available
+- add existing `needs-cycle-approval` label when available, or trigger `.github/workflows/stage10-authorization-request.yml` manually when label routing is unavailable
 - do not edit files
 - stop
 
@@ -200,6 +201,7 @@ For `Move To In Review`:
 - require an implementation PR with evidence
 - require product and technical completion criteria to be addressed
 - set Project Status to `In Review` when available
+- add existing `needs-review` label when available, or trigger `.github/workflows/stage11-review-request.yml` manually when label routing is unavailable
 - do not merge
 - stop
 

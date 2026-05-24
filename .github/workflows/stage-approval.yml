@@ -27,6 +27,11 @@ on:
         required: false
         type: number
         default: 0
+      reviewer:
+        description: 'Reviewer source override'
+        required: false
+        type: string
+        default: ''
   repository_dispatch:
     types: [stage-approval]
 
@@ -63,7 +68,7 @@ jobs:
                   decision: String(context.payload.inputs.decision),
                   rationale: String(context.payload.inputs.rationale || ''),
                   pr_number: Number(context.payload.inputs.pr_number || 0),
-                  reviewer: context.actor,
+                  reviewer: String(context.payload.inputs.reviewer || context.actor),
                 };
 
             const stage = String(raw.stage);

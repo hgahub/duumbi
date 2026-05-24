@@ -1,7 +1,7 @@
 {
   "name": "duumbi-slack-approval-bridge",
   "version": "1.0.0",
-  "description": "Azure Function: Slack interactive buttons → GitHub repository_dispatch for DUUMBI stage approvals",
+  "description": "Azure Function: Slack interactive buttons and shortcuts → GitHub repository_dispatch for DUUMBI stage workflows",
   "main": "src/functions/*.js",
   "scripts": {
     "start": "func start",

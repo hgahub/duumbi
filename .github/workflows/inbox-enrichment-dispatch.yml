@@ -1,0 +1,169 @@
+name: Inbox Enrichment Dispatch
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      target_path:
+        description: Optional Inbox note path; empty means bounded scheduled sweep
+        required: false
+        type: string
+        default: ''
+      batch_size:
+        description: Maximum notes to enrich in one run
+        required: false
+        type: number
+        default: 5
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inbox-enrichment-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch enrichment prompt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build dispatch record
+        id: dispatch
+        uses: actions/github-script@v9
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_AGENT_DISPATCH_CHANNEL_ID: ${{ secrets.DUUMBI_AGENT_DISPATCH_CHANNEL_ID }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const inputs = context.payload.inputs || {};
+            const targetPath = String(inputs.target_path || "").trim();
+            const batchSize = Number(inputs.batch_size || 5);
+            const prompt = [
+              "Run DUUMBI scheduled Inbox enrichment with duumbi-inbox-enrichment.",
+              "",
+              targetPath
+                ? `Target Inbox note: ${targetPath}`
+                : `Target: bounded scheduled sweep of untagged or unnormalized notes under Duumbi/00 Inbox (ToProcess)/`,
+              `Batch size: ${Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 5}`,
+              "",
+              "Goal: Normalize manually edited Inbox notes into the DUUMBI Inbox contract, classify them, detect duplicates against active Inbox, Processed Inbox, Atlas, GitHub Issues, and GitHub Discussions, and leave them ready for Stage 4 triage.",
+              "",
+              "Do not create GitHub issues, specs, PRs, source changes, Atlas notes, or implementation work.",
+            ].join("\n");
+
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || process.env.SLACK_REVIEW_CHANNEL_ID;
+            let slackNotification = "not_configured";
+            if (token && channel) {
+              const res = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({
+                  channel,
+                  text: [
+                    "*DUUMBI Inbox Enrichment Dispatch*",
+                    `*Repository:* ${context.repo.owner}/${context.repo.repo}`,
+                    `*Workflow run:* ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                    "",
+                    "```",
+                    prompt,
+                    "```",
+                  ].join("\n"),
+                }),
+              });
+              const body = await res.json();
+              if (!res.ok || !body.ok) {
+                core.warning(`Slack notification failed: ${body.error || res.status}`);
+                slackNotification = "failed";
+              } else {
+                slackNotification = "posted";
+              }
+            } else {
+              core.warning("Slack dispatch channel is not configured; prompt is available in the workflow summary.");
+            }
+
+            const now = new Date().toISOString();
+            const metrics = {
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/inbox-enrichment-dispatch.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: context.eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion: "success",
+                started_at: now,
+                completed_at: now,
+                duration_ms: null,
+              },
+              correlation: {
+                issue_number: null,
+                pr_number: null,
+                stage: "inbox-enrichment",
+                decision: null,
+                project_status: null,
+              },
+              counts: {
+                issues_considered: null,
+                issues_queued: null,
+                slack_notifications_attempted: token && channel ? 1 : 0,
+                artifact_links_found: null,
+                artifact_links_missing: null,
+              },
+              provider_usage: {
+                available: false,
+                reason: "agent_dispatch_only",
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings: slackNotification === "posted" ? [] : [`slack_notification_${slackNotification}`],
+            };
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
+
+            await core.summary
+              .addHeading("DUUMBI Inbox Enrichment Dispatch", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Target", targetPath || "scheduled sweep"],
+                ["Batch size", String(Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 5)],
+                ["Slack dispatch", slackNotification],
+              ])
+              .addHeading("Agent Prompt", 3)
+              .addCodeBlock(prompt, "text")
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-inbox-enrichment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn
