@@ -389,7 +389,7 @@ jobs:
                 issue_number: issueNumber,
                 body: [
                   marker,
-                  "Implementation review handoff Slack notification requested through Oz.",
+                  "Implementation review handoff Slack notification requested through GitHub Actions.",
                   "",
                   `Workflow run: ${runUrl}`,
                   `Source event: ${context.eventName}`,

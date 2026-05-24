@@ -138,7 +138,7 @@ Use this structure:
 Which approved product-spec outcomes this technical spec implements.
 
 ## Agent Audience
-Which agents should use this spec: Codex, Oz, specialized reviewer, tester, or other.
+Which agents should use this spec: Codex App, Codex Cloud, Codex CLI, specialized reviewer, tester, or other.
 
 ## Source Context
 - Product spec:

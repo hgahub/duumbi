@@ -14,7 +14,7 @@ const crypto = require("node:crypto");
  *
  * Bridges Slack interactive button clicks → GitHub repository_dispatch so that
  * approval decisions execute deterministically via GitHub Actions instead of
- * spawning an LLM-based Oz agent.
+ * launching an agent directly.
  *
  * App Settings (configure in Azure Function App):
  *   SLACK_SIGNING_SECRET  — Slack app signing secret

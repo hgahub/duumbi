@@ -110,7 +110,7 @@ Review the product spec for:
 - decisions cite evidence or issue comments
 - behavior covers success, empty, error, retry, cancellation, and relevant accessibility/focus states
 - BDD scenarios are present, clear, written in English Gherkin-style language, and describe observable outcomes
-- tasks are small enough for Codex or Oz runs
+- tasks are small enough for Codex App, Codex Cloud, or reviewed local agent runs
 - checks map to acceptance criteria
 - checks map to BDD scenarios, including E2E expectations where relevant
 - open questions are resolved or explicitly accepted as risk
@@ -182,7 +182,7 @@ For every explicit decision, write this structured GitHub issue comment:
 ## Stage 7 Product Spec Review Decision
 
 **Decision:** <Approve | Request Changes | Needs Clarification | Reject / No Longer Needed>
-**Reviewer source:** <Codex | Oz | Slack | GitHub | other>
+**Reviewer source:** <Codex App | Codex Cloud | Codex CLI | Slack | GitHub | other>
 **Spec artifact:** <comment link or PRODUCT.md path / PR link>
 **Rationale:** <short rationale>
 **Blocking findings:** <none or list>

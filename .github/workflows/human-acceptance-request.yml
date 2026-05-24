@@ -338,7 +338,7 @@ jobs:
                 issue_number: issueNumber,
                 body: [
                   marker,
-                  "Human acceptance Slack notification requested through Oz.",
+                  "Human acceptance Slack notification requested through GitHub Actions.",
                   "",
                   `Workflow run: ${runUrl}`,
                   `Source event: ${context.eventName}`,
