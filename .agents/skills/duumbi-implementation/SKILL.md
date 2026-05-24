@@ -190,6 +190,7 @@ For `Request Resource Approval`:
   `.github/workflows/stage-10-authorization.yml` as a structured
   `## Stage 10 Resource Authorization Decision` comment
 - set Project Status to `Cycle Authorization` when available
+- add existing `needs-cycle-approval` label when available, or trigger `.github/workflows/stage10-authorization-request.yml` manually when label routing is unavailable
 - do not edit files
 - stop
 
@@ -209,6 +210,7 @@ For `Move To In Review`:
   `.github/workflows/implementation-review-request.yml`; use the existing
   `needs-review` label only when it is already available, and do not create it
 - set Project Status to `In Review` when available
+- add existing `needs-review` label when available, or trigger `.github/workflows/stage11-review-request.yml` manually when label routing is unavailable
 - do not merge
 - stop
 

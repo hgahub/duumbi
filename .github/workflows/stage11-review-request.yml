@@ -1,0 +1,210 @@
+name: Stage 11 Review Request
+
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: '40 * * * *'
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: GitHub issue number in review
+        required: true
+        type: number
+      pr_number:
+        description: Implementation PR number
+        required: false
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: stage11-review-request-${{ github.event.issue.number || inputs.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Notify Stage 11 review handoff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Stage 11 review handoff
+        uses: actions/github-script@v9
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const markerPrefix = "<!-- duumbi-implementation-review-slack-notified:v1";
+            const labelsFor = (issue) => (issue.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean);
+            const findPrNumber = async (issueNumber, explicitPr) => {
+              if (explicitPr && Number(explicitPr) > 0) return Number(explicitPr);
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+              const candidates = [];
+              for (const comment of [...comments].reverse()) {
+                for (const match of String(comment.body || "").matchAll(/https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/ig)) {
+                  const prNumber = Number(match[1]);
+                  if (Number.isInteger(prNumber) && prNumber > 0 && !candidates.includes(prNumber)) {
+                    candidates.push(prNumber);
+                  }
+                }
+              }
+              for (const prNumber of candidates) {
+                try {
+                  const { data: pr } = await github.rest.pulls.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber,
+                  });
+                  if (pr.state === "open") return prNumber;
+                } catch (err) {
+                  core.warning(`Could not inspect PR #${prNumber}: ${err.message}`);
+                }
+              }
+              return candidates[0] || 0;
+            };
+
+            let issues = [];
+            let explicitPr = 0;
+            if (context.eventName === "issues") {
+              const label = context.payload.label?.name;
+              if (label !== "needs-review") {
+                core.info(`Ignoring label ${label}.`);
+                return;
+              }
+              issues = [context.payload.issue];
+            } else if (context.eventName === "workflow_dispatch") {
+              const issueNumber = Number(context.payload.inputs.issue_number);
+              explicitPr = Number(context.payload.inputs.pr_number || 0);
+              const { data: issue } = await github.rest.issues.get({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber });
+              issues = [issue];
+            } else {
+              const listed = await github.paginate(github.rest.issues.listForRepo, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                labels: "needs-review",
+                per_page: 100,
+              });
+              issues = listed.filter((issue) => !issue.pull_request).slice(0, 10);
+            }
+
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            let notified = 0;
+            let missingPr = 0;
+            for (const issue of issues) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+              const prNumber = await findPrNumber(issue.number, explicitPr);
+              if (!prNumber) {
+                missingPr += 1;
+                core.warning(`No implementation PR link found for issue #${issue.number}.`);
+                continue;
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pr.state !== "open") {
+                missingPr += 1;
+                core.warning(`Implementation PR #${prNumber} for issue #${issue.number} is not open.`);
+                continue;
+              }
+              const prHeadSha = pr.head?.sha || "unknown";
+              const marker = `${markerPrefix} issue=${issue.number} pr=${prNumber} sha=${prHeadSha}`;
+              if (comments.some((comment) => (comment.body || "").includes(marker))) continue;
+              const prUrl = pr.html_url || `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}`;
+              const prompt = [
+                "Run DUUMBI Stage 11 Review Artifact with duumbi-review-artifact.",
+                "",
+                `Target PR: ${prUrl}`,
+                `Linked issue: ${issue.html_url}`,
+                "",
+                "Goal: Review the PR against the approved product spec, technical spec, CI/checks, changed files, Copilot review state, and Ralph cycle evidence. Write a structured review artifact and recommend whether it is ready for a human merge decision.",
+                "",
+                "Do not merge, close the issue, move Project status to Done, perform closure, or edit implementation code.",
+              ].join("\n");
+              if (!token || !channel) {
+                core.warning("Slack token/channel missing; cannot post Stage 11 review notification.");
+                continue;
+              }
+              const res = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+                body: JSON.stringify({
+                  channel,
+                  text: [
+                    "*DUUMBI Stage 11 review handoff*",
+                    `*Issue:* <${issue.html_url}|#${issue.number} ${issue.title}>`,
+                    `*Implementation PR:* <${prUrl}|#${prNumber}>`,
+                    `*Labels:* ${labelsFor(issue).join(", ") || "none"}`,
+                    "",
+                    "```",
+                    prompt,
+                    "```",
+                  ].join("\n"),
+                }),
+              });
+              const body = await res.json();
+              if (!res.ok || !body.ok) {
+                core.warning(`Slack notification failed for #${issue.number}: ${body.error || res.status}`);
+                continue;
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  `${marker} -->`,
+                  "Stage 11 implementation review Slack notification requested.",
+                  "",
+                  `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                  `Implementation PR: ${prUrl}`,
+                  "",
+                  "```text",
+                  prompt,
+                  "```",
+                ].join("\n"),
+              });
+              notified += 1;
+            }
+
+            const now = new Date().toISOString();
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              workflow: { name: context.workflow, file: ".github/workflows/stage11-review-request.yml", run_id: context.runId, run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1), event_name: context.eventName, actor: context.actor, ref: context.ref, sha: context.sha, conclusion: "success", started_at: now, completed_at: now, duration_ms: null },
+              correlation: { issue_number: issues.length === 1 ? issues[0].number : null, pr_number: null, stage: "11-review-request", decision: null, project_status: "In Review" },
+              counts: { issues_considered: issues.length, issues_queued: notified, slack_notifications_attempted: notified, artifact_links_found: notified, artifact_links_missing: missingPr },
+              provider_usage: { available: false, reason: "notification_only", provider: null, model: null, request_count: null, prompt_tokens: null, completion_tokens: null, total_tokens: null, estimated_cost_usd: null, latency_ms: null, failure_count: null },
+              privacy: { metadata_only: true, raw_prompts_included: false, raw_completions_included: false, raw_slack_payloads_included: false, secrets_included: false },
+              warnings: missingPr ? [`missing_pr_links=${missingPr}`] : [],
+            }, null, 2)}\n`);
+            await core.summary.addHeading("Stage 11 Review Notifications", 2).addRaw(`Notifications posted: ${notified}\nMissing PR links: ${missingPr}\n`).write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-stage11-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn

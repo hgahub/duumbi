@@ -1,0 +1,288 @@
+name: Triage Queue Refill
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      target_todo_min:
+        description: Minimum Todo issues to keep available
+        required: false
+        type: number
+        default: 3
+      batch_limit:
+        description: Maximum triage items to request in one dispatch
+        required: false
+        type: number
+        default: 3
+
+permissions:
+  contents: read
+
+concurrency:
+  group: triage-queue-refill
+  cancel-in-progress: false
+
+jobs:
+  inspect-and-dispatch:
+    name: Inspect Todo queue and dispatch triage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect Project V2 Todo count
+        uses: actions/github-script@v9
+        env:
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
+          DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_AGENT_DISPATCH_CHANNEL_ID: ${{ secrets.DUUMBI_AGENT_DISPATCH_CHANNEL_ID }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const inputs = context.payload.inputs || {};
+            const targetTodoMin = Number(inputs.target_todo_min || 3);
+            const batchLimit = Number(inputs.batch_limit || 3);
+            const projectPat = process.env.GH_PROJECT_PAT;
+            const projectOwner = process.env.DUUMBI_PROJECT_OWNER || context.repo.owner;
+            const projectNumber = Number(process.env.DUUMBI_PROJECT_NUMBER || 0);
+            const now = new Date().toISOString();
+            const warnings = [];
+
+            const metrics = (conclusion, counts, providerReason) => ({
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/triage-queue-refill.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: context.eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion,
+                started_at: now,
+                completed_at: now,
+                duration_ms: null,
+              },
+              correlation: {
+                issue_number: null,
+                pr_number: null,
+                stage: "triage-queue-refill",
+                decision: null,
+                project_status: "Todo",
+              },
+              counts,
+              provider_usage: {
+                available: false,
+                reason: providerReason,
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings,
+            });
+
+            if (!projectPat || !projectNumber) {
+              warnings.push("Project V2 configuration unavailable; triage refill failed closed.");
+              fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics("blocked", {
+                issues_considered: null,
+                issues_queued: null,
+                slack_notifications_attempted: 0,
+                artifact_links_found: null,
+                artifact_links_missing: null,
+              }, "project_graphql_unavailable"), null, 2)}\n`);
+              await core.summary
+                .addHeading("DUUMBI Triage Queue Refill", 2)
+                .addRaw("Project V2 configuration is unavailable. Set `GH_PROJECT_PAT` and repository variable `DUUMBI_PROJECT_NUMBER`.\n")
+                .write();
+              core.setFailed("Project V2 status is not readable; failing closed.");
+              return;
+            }
+
+            const gql = async (query, variables) => {
+              const res = await fetch("https://api.github.com/graphql", {
+                method: "POST",
+                headers: {
+                  Authorization: `bearer ${projectPat}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ query, variables }),
+              });
+              const json = await res.json();
+              if (json.errors) throw new Error(json.errors.map((e) => e.message).join("; "));
+              return json.data;
+            };
+
+            const projectPageQuery = `
+              query($login: String!, $number: Int!, $cursor: String) {
+                organization(login: $login) {
+                  projectV2(number: $number) {
+                    title
+                    items(first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        content {
+                          ... on Issue { number title url state }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field { ... on ProjectV2SingleSelectField { name } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                user(login: $login) {
+                  projectV2(number: $number) {
+                    title
+                    items(first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        content {
+                          ... on Issue { number title url state }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field { ... on ProjectV2SingleSelectField { name } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const loadProject = async () => {
+              let cursor = null;
+              let title = "";
+              const nodes = [];
+              for (;;) {
+                const data = await gql(projectPageQuery, { login: projectOwner, number: projectNumber, cursor });
+                const page = data.organization?.projectV2 || data.user?.projectV2;
+                if (!page) return null;
+                title = title || page.title;
+                nodes.push(...(page.items?.nodes || []));
+                const pageInfo = page.items?.pageInfo;
+                if (!pageInfo?.hasNextPage) break;
+                cursor = pageInfo.endCursor;
+              }
+              return { title, items: { nodes } };
+            };
+
+            const project = await loadProject();
+            if (!project) {
+              warnings.push(`Project V2 #${projectNumber} not found for ${projectOwner}.`);
+              core.setFailed(warnings[0]);
+              return;
+            }
+
+            const items = project.items.nodes || [];
+            const todoIssues = items.filter((item) => {
+              const issue = item.content;
+              if (!issue || issue.state !== "OPEN") return false;
+              const status = item.fieldValues.nodes.find((value) => value.field?.name === "Status");
+              return status?.name === "Todo";
+            });
+            const todoCount = todoIssues.length;
+            const shouldDispatch = todoCount < (Number.isFinite(targetTodoMin) ? targetTodoMin : 3);
+            const needed = shouldDispatch ? Math.min((Number.isFinite(targetTodoMin) ? targetTodoMin : 3) - todoCount, Number.isFinite(batchLimit) ? batchLimit : 3) : 0;
+
+            let slackNotification = "not_needed";
+            let prompt = "";
+            if (shouldDispatch) {
+              prompt = [
+                "Run DUUMBI Stage 4 triage with duumbi-triage.",
+                "",
+                "Target: bounded next-issue discovery sweep across Inbox notes, GitHub Issues, GitHub Ideas Discussions, and active DUUMBI Obsidian documentation.",
+                "",
+                `Goal: Refill the GitHub Project Todo queue. Current Todo count is ${todoCount}; create or route up to ${needed} issue(s), stopping when Todo reaches ${Number.isFinite(targetTodoMin) ? targetTodoMin : 3} or no actionable source remains.`,
+                "",
+                "For each selected item, inspect duplicates and route execution work to Needs Human Acceptance. Do not mark work accepted, create specs, create PRs, modify source code, or start implementation.",
+              ].join("\n");
+
+              const token = process.env.SLACK_BOT_TOKEN;
+              const channel = process.env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || process.env.SLACK_REVIEW_CHANNEL_ID;
+              if (token && channel) {
+                const res = await fetch("https://slack.com/api/chat.postMessage", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json; charset=utf-8",
+                  },
+                  body: JSON.stringify({
+                    channel,
+                    text: [
+                      "*DUUMBI Triage Queue Refill Dispatch*",
+                      `*Project:* ${project.title}`,
+                      `*Todo count:* ${todoCount}`,
+                      `*Requested items:* ${needed}`,
+                      "",
+                      "```",
+                      prompt,
+                      "```",
+                    ].join("\n"),
+                  }),
+                });
+                const body = await res.json();
+                slackNotification = res.ok && body.ok ? "posted" : "failed";
+                if (slackNotification === "failed") warnings.push(`Slack notification failed: ${body.error || res.status}`);
+              } else {
+                slackNotification = "not_configured";
+                warnings.push("Slack dispatch channel is not configured; prompt is available in the workflow summary.");
+              }
+            }
+
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics("success", {
+              issues_considered: items.length,
+              issues_queued: needed,
+              slack_notifications_attempted: shouldDispatch && slackNotification !== "not_configured" ? 1 : 0,
+              artifact_links_found: null,
+              artifact_links_missing: null,
+            }, "agent_dispatch_only"), null, 2)}\n`);
+
+            const summary = core.summary
+              .addHeading("DUUMBI Triage Queue Refill", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Project", project.title],
+                ["Todo count", String(todoCount)],
+                ["Target Todo minimum", String(Number.isFinite(targetTodoMin) ? targetTodoMin : 3)],
+                ["Dispatch needed", String(shouldDispatch)],
+                ["Slack dispatch", slackNotification],
+              ]);
+            if (prompt) summary.addHeading("Agent Prompt", 3).addCodeBlock(prompt, "text");
+            await summary.write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-triage-refill-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn
