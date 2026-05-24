@@ -213,7 +213,7 @@ For every explicit decision, write this structured GitHub issue comment:
 ## Stage 9 Technical Spec Review Decision
 
 **Decision:** <Approve | Request Changes | Needs Clarification | Reject / No Longer Needed>
-**Reviewer source:** <Codex | Oz | Slack | GitHub | other>
+**Reviewer source:** <Codex App | Codex Cloud | Codex CLI | Slack | GitHub | other>
 **Technical spec:** <TECHNICAL.md path / PR link>
 **Product spec:** <PRODUCT.md path / comment link>
 **Rationale:** <short rationale>

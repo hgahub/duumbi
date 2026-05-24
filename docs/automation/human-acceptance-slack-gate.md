@@ -2,7 +2,7 @@
 
 The Human Acceptance Slack Gate connects the DUUMBI Stage 4 triage label
 `needs-human-review` to a Slack review notification from GitHub Actions. The
-current version uses GitHub Actions, Slack, Warp/Oz fallback prompts, and the
+current version uses GitHub Actions, Slack, Codex handoff prompts, and the
 Slack approval bridge for deterministic button decisions.
 
 The durable Stage 5 decision remains the GitHub issue comment and Project/label
@@ -19,19 +19,14 @@ updates performed by `duumbi-human-acceptance`.
 5. The read-only notification job posts one Slack message per issue with the
    Slack Web API `chat.postMessage`.
 6. The Slack message includes interactive buttons when the bridge is configured.
-   If the bridge is unavailable, the reviewer can reply in-thread with
-   `@Oz accepted: <short rationale>`.
+   If the bridge is unavailable, the reviewer should record the decision from
+   Codex App, Codex Cloud, Codex CLI, or a reviewed local agent run using the
+   `duumbi-human-acceptance` skill.
 7. After Slack posting succeeds, a separate marker job writes an operational
    marker comment to the issue so future scheduled sweeps do not send duplicate
    notifications.
-8. Fallback only: the reviewer replies in Slack with:
-
-```text
-@Oz accepted: <short rationale>
-```
-
-9. Fallback only: the inbound Warp/Oz Slack integration handles the reviewer reply and runs in
-   the `duumbi-vault-knowledge-env` environment:
+8. Fallback only: the reviewer records the decision with the configured Codex
+   handoff:
 
 ```text
 Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.
@@ -55,8 +50,8 @@ without an external webhook receiver. The no-server contract is therefore:
 - The GitHub Action trigger is the issue label `needs-human-review`.
 - A scheduled sweep runs hourly and catches open `needs-human-review`
   issues that have not yet received the notification marker.
-- A scheduled sweep processes at most 10 issues per run to keep the Oz prompt
-  and Slack notifications bounded.
+- A scheduled sweep processes at most 10 issues per run to keep generated
+  handoff prompts and Slack notifications bounded.
 - Stage 4 must keep adding `needs-human-review` whenever it routes an issue to
   `Needs Human Acceptance`.
 
@@ -82,25 +77,14 @@ The marker is operational state only. It is not the Stage 5 decision record.
 No `SLACK_WEBHOOK_URL` is required. The workflow uses the Slack Web API directly
 from GitHub Actions. The Slack bot must be invited to the target review channel.
 
-The Warp/Oz Slack integration, visible in Slack under Apps -> Warp, remains
-available for the fallback reviewer reply path: a human replies with
-`@Oz accepted: <short rationale>`, and that inbound Slack mention starts Oz.
+There is no secondary Slack-agent fallback path. If interactive buttons are
+unavailable, the reviewer uses Codex App, Codex Cloud, Codex CLI, or a reviewed
+local agent run with the `duumbi-human-acceptance` skill.
 
 For interactive buttons, `scripts/slack-approval-bridge` routes Stage 5, Stage 7,
 and Stage 9 to `stage-approval.yml`, Stage 10 to
 `stage10-authorization-request.yml`, and Stage 11 to
 `stage11-merge-decision.yml`.
-
-`duumbi-vault-knowledge-env` is an Oz environment, not an agent profile. Its
-environment ID is:
-
-```text
-eKLEWjD4PNqFC6j0EcDEYA
-```
-
-Do not pass the environment name through the Oz action's `profile` input. That
-input expects an agent profile and fails with `Agent profile "... " not found`
-when given the environment name.
 
 The Slack notification job uses `issues: read`. A separate marker job uses
 `issues: write` only after Slack posting succeeds.
@@ -122,14 +106,22 @@ Expected result: the workflow posts a Slack notification to
 1. Add the `needs-human-review` label to a test issue.
 2. Confirm that GitHub Actions runs `Human Acceptance Request`.
 3. Confirm that the workflow posts a Slack notification.
-4. Reply in the Slack notification thread with:
+4. If interactive buttons are unavailable, run the fallback Codex handoff:
 
 ```text
-@Oz accepted: <short rationale>
+Run DUUMBI Stage 5 Human Acceptance with duumbi-human-acceptance.
+
+Target issue: <GitHub issue URL>
+Human decision: Accept
+Reviewer source: Slack
+Rationale: <short human rationale>
+
+Goal: Record the structured Stage 5 decision, set the issue to Spec Needed, add accepted and needs-spec labels, and remove needs-human-review when available.
+
+Do not create product specs, technical specs, PRs, source-code changes, or implementation branches.
 ```
 
-6. Confirm that inbound Oz routes the acceptance run to
-   `duumbi-vault-knowledge-env`.
+6. Confirm that the Codex handoff records the acceptance decision.
 7. Confirm that the issue receives the notification marker comment.
 8. Confirm that the issue receives a Stage 5 decision comment, is moved to
    `Spec Needed`, gets `accepted` and `needs-spec`, and loses

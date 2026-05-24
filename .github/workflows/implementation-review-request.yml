@@ -286,6 +286,7 @@ jobs:
                           pr_number: Number(context.payload.pull_request?.number || 0),
                           label: context.payload.label?.name,
                           action: context.payload.action,
+                          labels: labelsFor(context.payload.pull_request || {}),
                         };
                 if (context.eventName === "issues" && raw.label !== labelName) {
                   core.info(`Ignoring label "${raw.label}".`);
@@ -294,6 +295,11 @@ jobs:
                 }
                 if (context.eventName === "pull_request" && raw.action === "labeled" && raw.label !== labelName) {
                   core.info(`Ignoring PR label "${raw.label}".`);
+                  core.setOutput("should_notify", "false");
+                  return;
+                }
+                if (context.eventName === "pull_request" && raw.action === "ready_for_review" && !raw.labels.includes(labelName)) {
+                  core.info(`Ignoring ready_for_review for PR without "${labelName}".`);
                   core.setOutput("should_notify", "false");
                   return;
                 }
@@ -389,7 +395,7 @@ jobs:
                 issue_number: issueNumber,
                 body: [
                   marker,
-                  "Implementation review handoff Slack notification requested through Oz.",
+                  "Implementation review handoff Slack notification requested through GitHub Actions.",
                   "",
                   `Workflow run: ${runUrl}`,
                   `Source event: ${context.eventName}`,

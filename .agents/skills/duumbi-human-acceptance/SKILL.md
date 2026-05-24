@@ -35,7 +35,7 @@ This skill does not:
 - The durable Stage 5 decision record is a structured GitHub issue comment.
 - GitHub Issues and Project fields hold acceptance and execution state.
 - Obsidian stores durable knowledge, not live acceptance state.
-- Slack, Codex, and Oz may carry the human decision to the agent, but the decision must be recorded back on the GitHub Issue.
+- Slack, Codex App, Codex Cloud, and reviewed local agents may carry the human decision to the agent, but the decision must be recorded back on the GitHub Issue.
 
 ## Language Rules
 
@@ -164,7 +164,7 @@ For every explicit decision, write this structured GitHub issue comment:
 ## Stage 5 Human Acceptance Decision
 
 **Decision:** <Accept | Needs Clarification | Duplicate | Defer | Reject>
-**Reviewer source:** <Codex | Oz | Slack | GitHub | other>
+**Reviewer source:** <Codex App | Codex Cloud | Codex CLI | Slack | GitHub | other>
 **Rationale:** <short rationale>
 **Stage 4 recommendation considered:** <yes/no and short note>
 **Remaining open questions:** <none or list>

@@ -5,7 +5,7 @@ Actions workflows via `repository_dispatch`.
 
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
 DUUMBI Slack notification triggers a deterministic GitHub Action instead of
-an LLM-based Oz agent. Slack shortcuts can also dispatch Stage 1 intake.
+launching an agent directly. Slack shortcuts can also dispatch Stage 1 intake.
 Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
 `stage-approval.yml`. Stage 10 resource authorization buttons that include
 `action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`.

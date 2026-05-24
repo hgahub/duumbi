@@ -12,8 +12,8 @@ or source-repo contracts that support it.
 - Obsidian stores raw intake and durable knowledge.
 - Slack is a capture, notification, clarification, and approval surface.
 - GitHub Actions do not call model APIs directly. Scheduled workflows create
-  deterministic dispatch records and Slack handoffs for Oz/Codex Cloud or Codex
-  App runs.
+  deterministic dispatch records and Slack handoffs for Codex Cloud, Codex App,
+  Codex CLI, or reviewed local agent runs.
 
 ## Skills Added Or Updated
 
