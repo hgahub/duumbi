@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout DUUMBI vault
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         continue-on-error: true
         with:
           repository: ${{ github.repository_owner }}/duumbi-vault
@@ -57,20 +57,9 @@ jobs:
             const inboxRoot = path.join(vaultRoot, "Duumbi", "00 Inbox (ToProcess)");
             const warnings = [];
             let workflowConclusion = "success";
+            let inspectedCount = 0;
 
             const toVaultRelative = (absolutePath) => path.relative(vaultRoot, absolutePath).split(path.sep).join("/");
-            const listMarkdownFiles = (dir) => {
-              const files = [];
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  files.push(...listMarkdownFiles(fullPath));
-                } else if (entry.isFile() && entry.name.endsWith(".md")) {
-                  files.push(fullPath);
-                }
-              }
-              return files;
-            };
             const isEnrichmentCandidate = (absolutePath) => {
               const text = fs.readFileSync(absolutePath, "utf8");
               const requiredSections = [
@@ -78,17 +67,43 @@ jobs:
                 "## Raw input",
                 "## Interpreted intent",
                 "## Classification",
+                "## Clarifications",
+                "### Answered",
+                "### Open",
+                "## Relevant DUUMBI context",
+                "## Related GitHub context",
                 "## Initial routing recommendation",
+                "## Requested follow-up",
                 "## Enrichment result",
               ];
               return requiredSections.some((section) => !text.includes(section));
             };
+            const collectCandidatePaths = (dir, limit) => {
+              const candidates = [];
+              const visit = (currentDir) => {
+                const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+                  .sort((a, b) => a.name.localeCompare(b.name));
+                for (const entry of entries) {
+                  if (candidates.length >= limit) return;
+                  const fullPath = path.join(currentDir, entry.name);
+                  if (entry.isDirectory()) {
+                    visit(fullPath);
+                  } else if (entry.isFile() && entry.name.endsWith(".md")) {
+                    inspectedCount += 1;
+                    if (isEnrichmentCandidate(fullPath)) {
+                      candidates.push(toVaultRelative(fullPath));
+                    }
+                  }
+                }
+              };
+              visit(dir);
+              return candidates;
+            };
 
             let candidatePaths = [];
-            let inspectedCount = 0;
             if (!fs.existsSync(inboxRoot)) {
               warnings.push("DUUMBI vault Inbox path is unavailable; enrichment dispatch failed closed.");
-              workflowConclusion = "blocked";
+              workflowConclusion = "failure";
               core.setFailed(`Missing Inbox path: ${inboxRoot}`);
             } else if (targetPath) {
               const normalizedTarget = targetPath.replace(/^duumbi-vault\//, "").replace(/^\/+/, "");
@@ -96,23 +111,26 @@ jobs:
               const relativeToInbox = path.relative(inboxRoot, targetAbsolute);
               if (relativeToInbox.startsWith("..") || path.isAbsolute(relativeToInbox)) {
                 warnings.push("Target path is outside Duumbi/00 Inbox (ToProcess); no dispatch sent.");
-                workflowConclusion = "blocked";
+                workflowConclusion = "failure";
                 core.setFailed(`Target path is outside Inbox: ${targetPath}`);
               } else if (!fs.existsSync(targetAbsolute) || !fs.statSync(targetAbsolute).isFile()) {
                 warnings.push("Target Inbox note does not exist; no dispatch sent.");
-                workflowConclusion = "blocked";
+                workflowConclusion = "failure";
                 core.setFailed(`Target Inbox note not found: ${targetPath}`);
               } else {
                 inspectedCount = 1;
-                candidatePaths = [toVaultRelative(targetAbsolute)];
+                candidatePaths = isEnrichmentCandidate(targetAbsolute) ? [toVaultRelative(targetAbsolute)] : [];
               }
             } else {
-              const inboxFiles = listMarkdownFiles(inboxRoot);
-              inspectedCount = inboxFiles.length;
-              candidatePaths = inboxFiles.filter(isEnrichmentCandidate).slice(0, effectiveBatchSize).map(toVaultRelative);
+              candidatePaths = collectCandidatePaths(inboxRoot, effectiveBatchSize);
             }
 
             const shouldDispatch = candidatePaths.length > 0;
+            const dispatchDecision = workflowConclusion === "failure"
+              ? "dispatch_blocked"
+              : shouldDispatch
+                ? "dispatch_requested"
+                : "dispatch_not_needed";
             const prompt = shouldDispatch ? [
               "Run DUUMBI scheduled Inbox enrichment with duumbi-inbox-enrichment.",
               "",
@@ -187,7 +205,7 @@ jobs:
                 issue_number: null,
                 pr_number: null,
                 stage: "inbox-enrichment",
-                decision: shouldDispatch ? "dispatch_requested" : "dispatch_not_needed",
+                decision: dispatchDecision,
                 project_status: null,
               },
               counts: {
@@ -219,6 +237,7 @@ jobs:
               },
               warnings: [
                 ...warnings,
+                ...(!shouldDispatch && workflowConclusion === "success" ? ["slack_notification_not_needed"] : []),
                 ...(shouldDispatch && slackNotification !== "posted" ? [`slack_notification_${slackNotification}`] : []),
               ],
             };
