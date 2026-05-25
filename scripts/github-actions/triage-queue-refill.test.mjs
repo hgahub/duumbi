@@ -66,7 +66,7 @@ function projectWithItems(items) {
   };
 }
 
-function makeContext(inputs = {}) {
+function makeContext(inputs = {}, ownerType = "User") {
   return {
     workflow: "Triage Queue Refill",
     runId: 12345,
@@ -75,7 +75,15 @@ function makeContext(inputs = {}) {
     ref: "refs/heads/main",
     sha: "abc123",
     repo: { owner: "hgahub", repo: "duumbi" },
-    payload: { inputs },
+    payload: {
+      inputs,
+      repository: {
+        owner: {
+          login: "hgahub",
+          type: ownerType,
+        },
+      },
+    },
   };
 }
 
@@ -311,6 +319,94 @@ test("runTriageQueueRefill queries user-owned Project V2 by default", async () =
   const projectQuery = calls.find((call) => call.body.query?.includes("projectV2(number"));
   assert.ok(projectQuery.body.query.includes("user(login"));
   assert.equal(projectQuery.body.query.includes("organization(login"), false);
+});
+
+test("runTriageQueueRefill queries organization-owned Project V2 when configured", async () => {
+  const project = projectWithItems([
+    issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 3, status: HUMAN_ACCEPTANCE_STATUS }),
+  ]);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "duumbi-triage-org-project-"));
+  const { fetchImpl, calls } = makeFetch({ project, decision: { action: "no_action" } });
+  const core = makeCore();
+
+  const result = await runTriageQueueRefill({
+    env: {
+      GH_PROJECT_PAT: "pat",
+      DUUMBI_PROJECT_OWNER_TYPE: "organization",
+      DUUMBI_PROJECT_NUMBER: "4",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.decision, "not_needed");
+  const projectQuery = calls.find((call) => call.body.query?.includes("projectV2(number"));
+  assert.ok(projectQuery.body.query.includes("organization(login"));
+  assert.equal(projectQuery.body.query.includes("user(login"), false);
+});
+
+test("runTriageQueueRefill infers organization-owned Project V2 from repository owner type", async () => {
+  const project = projectWithItems([
+    issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 3, status: HUMAN_ACCEPTANCE_STATUS }),
+  ]);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "duumbi-triage-inferred-org-project-"));
+  const { fetchImpl, calls } = makeFetch({ project, decision: { action: "no_action" } });
+  const core = makeCore();
+
+  const result = await runTriageQueueRefill({
+    env: {
+      GH_PROJECT_PAT: "pat",
+      DUUMBI_PROJECT_NUMBER: "4",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext({}, "Organization"),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.decision, "not_needed");
+  const projectQuery = calls.find((call) => call.body.query?.includes("projectV2(number"));
+  assert.ok(projectQuery.body.query.includes("organization(login"));
+  assert.equal(projectQuery.body.query.includes("user(login"), false);
+});
+
+test("runTriageQueueRefill rejects invalid DUUMBI_PROJECT_OWNER_TYPE", async () => {
+  const project = projectWithItems([
+    issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 3, status: HUMAN_ACCEPTANCE_STATUS }),
+  ]);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "duumbi-triage-invalid-owner-type-"));
+  const { fetchImpl, calls } = makeFetch({ project, decision: { action: "no_action" } });
+  const core = makeCore();
+
+  const result = await runTriageQueueRefill({
+    env: {
+      GH_PROJECT_PAT: "pat",
+      DUUMBI_PROJECT_OWNER_TYPE: "organzation",
+      DUUMBI_PROJECT_NUMBER: "4",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(core.failed, /DUUMBI_PROJECT_OWNER_TYPE must be "user" or "organization"/);
+  assert.equal(calls.some((call) => call.body.query?.includes("projectV2(number")), false);
 });
 
 test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", async () => {

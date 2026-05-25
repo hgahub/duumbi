@@ -57,9 +57,35 @@ function parsePositiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function normalizeProjectOwnerType(value) {
+function normalizeGitHubOwnerType(value) {
   const normalized = normalizeText(value).toLowerCase();
-  return normalized === "organization" || normalized === "org" ? "organization" : DEFAULT_PROJECT_OWNER_TYPE;
+  if (normalized === "organization" || normalized === "org") return "organization";
+  if (normalized === "user") return "user";
+  return null;
+}
+
+function normalizeProjectOwnerType(value, { allowBlank = false } = {}) {
+  const text = normalizeText(value);
+  if (!text) return allowBlank ? null : DEFAULT_PROJECT_OWNER_TYPE;
+  const ownerType = normalizeGitHubOwnerType(text);
+  if (!ownerType) {
+    throw new Error('DUUMBI_PROJECT_OWNER_TYPE must be "user" or "organization" when set.');
+  }
+  return ownerType;
+}
+
+function inferProjectOwnerType({ configuredType, context, projectOwner }) {
+  const explicitType = normalizeProjectOwnerType(configuredType, { allowBlank: true });
+  if (explicitType) return explicitType;
+
+  const repositoryOwner = context?.payload?.repository?.owner;
+  const repositoryOwnerType = normalizeGitHubOwnerType(repositoryOwner?.type);
+  const repositoryOwnerLogin = repositoryOwner?.login || context?.repo?.owner;
+  if (repositoryOwnerType && projectOwner === repositoryOwnerLogin) {
+    return repositoryOwnerType;
+  }
+
+  return DEFAULT_PROJECT_OWNER_TYPE;
 }
 
 function labelsForIssue(issue) {
@@ -866,7 +892,6 @@ export async function runTriageQueueRefill({
   const targetMinimum = parsePositiveInteger(inputs.target_human_acceptance_min, DEFAULT_TARGET_HUMAN_ACCEPTANCE_MIN);
   const projectPat = env.GH_PROJECT_PAT;
   const projectOwner = env.DUUMBI_PROJECT_OWNER || context.repo.owner;
-  const projectOwnerType = normalizeProjectOwnerType(env.DUUMBI_PROJECT_OWNER_TYPE);
   const projectNumber = Number(env.DUUMBI_PROJECT_NUMBER || 0);
   const deepSeekApiKey = env.DEEPSEEK_API_KEY;
   const deepSeekModel = env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL;
@@ -891,6 +916,11 @@ export async function runTriageQueueRefill({
     if (!projectPat || !projectNumber) {
       throw new Error("Project V2 configuration is unavailable. Set GH_PROJECT_PAT and repository variable DUUMBI_PROJECT_NUMBER.");
     }
+    const projectOwnerType = inferProjectOwnerType({
+      configuredType: env.DUUMBI_PROJECT_OWNER_TYPE,
+      context,
+      projectOwner,
+    });
 
     const api = createGithubApi({
       fetchImpl,
@@ -900,7 +930,10 @@ export async function runTriageQueueRefill({
     });
     const project = await api.loadProject(projectOwner, projectNumber, projectOwnerType);
     if (!project) {
-      throw new Error(`Project V2 #${projectNumber} not found for ${projectOwnerType} ${projectOwner}.`);
+      throw new Error(
+        `Project V2 #${projectNumber} not found for ${projectOwnerType} ${projectOwner}. `
+        + 'Check DUUMBI_PROJECT_OWNER, DUUMBI_PROJECT_OWNER_TYPE ("user" or "organization"), and DUUMBI_PROJECT_NUMBER.',
+      );
     }
     validateProjectStatusConfig(project);
 
