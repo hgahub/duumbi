@@ -2,7 +2,7 @@ name: Inbox Enrichment Dispatch
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '0 6,18 * * *'
   workflow_dispatch:
     inputs:
       target_path:
@@ -28,6 +28,15 @@ jobs:
     name: Dispatch enrichment prompt
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout DUUMBI vault
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        continue-on-error: true
+        with:
+          repository: ${{ github.repository_owner }}/duumbi-vault
+          path: duumbi-vault
+          token: ${{ secrets.GH_PROJECT_PAT || github.token }}
+          persist-credentials: false
+
       - name: Build dispatch record
         id: dispatch
         uses: actions/github-script@v9
@@ -39,26 +48,109 @@ jobs:
         with:
           script: |
             const fs = require("fs");
+            const path = require("path");
             const inputs = context.payload.inputs || {};
             const targetPath = String(inputs.target_path || "").trim();
             const batchSize = Number(inputs.batch_size || 5);
-            const prompt = [
+            const effectiveBatchSize = Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 5;
+            const vaultRoot = path.resolve("duumbi-vault");
+            const inboxRoot = path.join(vaultRoot, "Duumbi", "00 Inbox (ToProcess)");
+            const warnings = [];
+            let workflowConclusion = "success";
+            let inspectedCount = 0;
+
+            const toVaultRelative = (absolutePath) => path.relative(vaultRoot, absolutePath).split(path.sep).join("/");
+            const isEnrichmentCandidate = (absolutePath) => {
+              const text = fs.readFileSync(absolutePath, "utf8");
+              const requiredSections = [
+                "## Source",
+                "## Raw input",
+                "## Interpreted intent",
+                "## Classification",
+                "## Clarifications",
+                "### Answered",
+                "### Open",
+                "## Relevant DUUMBI context",
+                "## Related GitHub context",
+                "## Initial routing recommendation",
+                "## Requested follow-up",
+                "## Enrichment result",
+              ];
+              return requiredSections.some((section) => !text.includes(section));
+            };
+            const collectCandidatePaths = (dir, limit) => {
+              const candidates = [];
+              const visit = (currentDir) => {
+                const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+                  .sort((a, b) => a.name.localeCompare(b.name));
+                for (const entry of entries) {
+                  if (candidates.length >= limit) return;
+                  const fullPath = path.join(currentDir, entry.name);
+                  if (entry.isDirectory()) {
+                    visit(fullPath);
+                  } else if (entry.isFile() && entry.name.endsWith(".md")) {
+                    inspectedCount += 1;
+                    if (isEnrichmentCandidate(fullPath)) {
+                      candidates.push(toVaultRelative(fullPath));
+                    }
+                  }
+                }
+              };
+              visit(dir);
+              return candidates;
+            };
+
+            let candidatePaths = [];
+            if (!fs.existsSync(inboxRoot)) {
+              warnings.push("DUUMBI vault Inbox path is unavailable; enrichment dispatch failed closed.");
+              workflowConclusion = "failure";
+              core.setFailed(`Missing Inbox path: ${inboxRoot}`);
+            } else if (targetPath) {
+              const normalizedTarget = targetPath.replace(/^duumbi-vault\//, "").replace(/^\/+/, "");
+              const targetAbsolute = path.resolve(vaultRoot, normalizedTarget);
+              const relativeToInbox = path.relative(inboxRoot, targetAbsolute);
+              if (relativeToInbox.startsWith("..") || path.isAbsolute(relativeToInbox)) {
+                warnings.push("Target path is outside Duumbi/00 Inbox (ToProcess); no dispatch sent.");
+                workflowConclusion = "failure";
+                core.setFailed(`Target path is outside Inbox: ${targetPath}`);
+              } else if (!fs.existsSync(targetAbsolute) || !fs.statSync(targetAbsolute).isFile()) {
+                warnings.push("Target Inbox note does not exist; no dispatch sent.");
+                workflowConclusion = "failure";
+                core.setFailed(`Target Inbox note not found: ${targetPath}`);
+              } else {
+                inspectedCount = 1;
+                candidatePaths = isEnrichmentCandidate(targetAbsolute) ? [toVaultRelative(targetAbsolute)] : [];
+              }
+            } else {
+              candidatePaths = collectCandidatePaths(inboxRoot, effectiveBatchSize);
+            }
+
+            const shouldDispatch = candidatePaths.length > 0;
+            const dispatchDecision = workflowConclusion === "failure"
+              ? "dispatch_blocked"
+              : shouldDispatch
+                ? "dispatch_requested"
+                : "dispatch_not_needed";
+            const prompt = shouldDispatch ? [
               "Run DUUMBI scheduled Inbox enrichment with duumbi-inbox-enrichment.",
               "",
               targetPath
-                ? `Target Inbox note: ${targetPath}`
-                : `Target: bounded scheduled sweep of untagged or unnormalized notes under Duumbi/00 Inbox (ToProcess)/`,
-              `Batch size: ${Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 5}`,
+                ? `Target Inbox note: ${candidatePaths[0]}`
+                : "Target: bounded scheduled sweep of untagged or unnormalized notes under Duumbi/00 Inbox (ToProcess)/",
+              `Batch size: ${effectiveBatchSize}`,
+              "",
+              "Candidate notes:",
+              ...candidatePaths.map((candidatePath) => `- ${candidatePath}`),
               "",
               "Goal: Normalize manually edited Inbox notes into the DUUMBI Inbox contract, classify them, detect duplicates against active Inbox, Processed Inbox, Atlas, GitHub Issues, and GitHub Discussions, and leave them ready for Stage 4 triage.",
               "",
               "Do not create GitHub issues, specs, PRs, source changes, Atlas notes, or implementation work.",
-            ].join("\n");
+            ].join("\n") : "";
 
             const token = process.env.SLACK_BOT_TOKEN;
             const channel = process.env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || process.env.SLACK_REVIEW_CHANNEL_ID;
-            let slackNotification = "not_configured";
-            if (token && channel) {
+            let slackNotification = shouldDispatch ? "not_configured" : "not_needed";
+            if (shouldDispatch && token && channel) {
               const res = await fetch("https://slack.com/api/chat.postMessage", {
                 method: "POST",
                 headers: {
@@ -85,7 +177,7 @@ jobs:
               } else {
                 slackNotification = "posted";
               }
-            } else {
+            } else if (shouldDispatch) {
               core.warning("Slack dispatch channel is not configured; prompt is available in the workflow summary.");
             }
 
@@ -104,7 +196,7 @@ jobs:
                 actor: context.actor,
                 ref: context.ref,
                 sha: context.sha,
-                conclusion: "success",
+                conclusion: workflowConclusion,
                 started_at: now,
                 completed_at: now,
                 duration_ms: null,
@@ -113,14 +205,14 @@ jobs:
                 issue_number: null,
                 pr_number: null,
                 stage: "inbox-enrichment",
-                decision: null,
+                decision: dispatchDecision,
                 project_status: null,
               },
               counts: {
-                issues_considered: null,
-                issues_queued: null,
-                slack_notifications_attempted: token && channel ? 1 : 0,
-                artifact_links_found: null,
+                issues_considered: inspectedCount,
+                issues_queued: candidatePaths.length,
+                slack_notifications_attempted: shouldDispatch && token && channel ? 1 : 0,
+                artifact_links_found: candidatePaths.length,
                 artifact_links_missing: null,
               },
               provider_usage: {
@@ -143,21 +235,27 @@ jobs:
                 raw_slack_payloads_included: false,
                 secrets_included: false,
               },
-              warnings: slackNotification === "posted" ? [] : [`slack_notification_${slackNotification}`],
+              warnings: [
+                ...warnings,
+                ...(!shouldDispatch && workflowConclusion === "success" ? ["slack_notification_not_needed"] : []),
+                ...(shouldDispatch && slackNotification !== "posted" ? [`slack_notification_${slackNotification}`] : []),
+              ],
             };
             fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify(metrics, null, 2)}\n`);
 
-            await core.summary
+            const summary = core.summary
               .addHeading("DUUMBI Inbox Enrichment Dispatch", 2)
               .addTable([
                 [{ data: "Field", header: true }, { data: "Value", header: true }],
                 ["Target", targetPath || "scheduled sweep"],
-                ["Batch size", String(Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 5)],
+                ["Batch size", String(effectiveBatchSize)],
+                ["Inbox notes inspected", String(inspectedCount)],
+                ["Candidate notes", candidatePaths.length ? candidatePaths.join("<br>") : "none"],
+                ["Dispatch needed", String(shouldDispatch)],
                 ["Slack dispatch", slackNotification],
-              ])
-              .addHeading("Agent Prompt", 3)
-              .addCodeBlock(prompt, "text")
-              .write();
+              ]);
+            if (prompt) summary.addHeading("Agent Prompt", 3).addCodeBlock(prompt, "text");
+            await summary.write();
 
       - name: Upload DUUMBI workflow metrics
         if: always()
