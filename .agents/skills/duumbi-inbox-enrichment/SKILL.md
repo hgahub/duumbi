@@ -50,6 +50,9 @@ Use this skill for:
 - a scheduled sweep of notes that lack the standard Inbox contract, classification, or enrichment marker
 
 For scheduled sweeps, process a bounded batch. Default maximum: 5 notes per run.
+Scheduled dispatchers should inspect the Inbox before sending an agent handoff.
+If no candidate notes are present, they should record `not_needed` in workflow
+summary/metrics and skip Slack notification.
 
 ## Context To Inspect
 

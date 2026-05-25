@@ -33,7 +33,7 @@ or source-repo contracts that support it.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `slack-intake-dispatch.yml` | Slack shortcut repository dispatch, manual | Dispatches Stage 1 Slack intake without requiring the developer to name the skill. |
-| `inbox-enrichment-dispatch.yml` | every 3 hours, manual | Dispatches `duumbi-inbox-enrichment` prompt for unnormalized Inbox notes. |
+| `inbox-enrichment-dispatch.yml` | twice daily, manual | Checks `duumbi-vault` for unnormalized Inbox notes and dispatches `duumbi-inbox-enrichment` only when candidate notes exist. |
 | `triage-queue-refill.yml` | every 3 hours, manual | Reads Project V2 Todo count and dispatches bounded Stage 4 triage when Todo is below the configured minimum. |
 | `clarification-routing.yml` | issue comment mention, manual | Routes `@Codex` or `@Copilot` clarification replies to the right stage-specific agent. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
