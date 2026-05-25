@@ -9,6 +9,7 @@ export const HUMAN_ACCEPTANCE_LABEL = "needs-human-review";
 export const DEFAULT_TARGET_HUMAN_ACCEPTANCE_MIN = 3;
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
 export const MAX_ISSUES_CREATED_PER_RUN = 1;
+export const DEFAULT_PROJECT_OWNER_TYPE = "user";
 
 const ACTIVE_VAULT_DOCS = [
   "Duumbi/How to use.md",
@@ -54,6 +55,37 @@ export function truncateText(value, maxLength = 4000) {
 function parsePositiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeGitHubOwnerType(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (normalized === "organization" || normalized === "org") return "organization";
+  if (normalized === "user") return "user";
+  return null;
+}
+
+function normalizeProjectOwnerType(value, { allowBlank = false } = {}) {
+  const text = normalizeText(value);
+  if (!text) return allowBlank ? null : DEFAULT_PROJECT_OWNER_TYPE;
+  const ownerType = normalizeGitHubOwnerType(text);
+  if (!ownerType) {
+    throw new Error('DUUMBI_PROJECT_OWNER_TYPE must be "user" or "organization" when set.');
+  }
+  return ownerType;
+}
+
+function inferProjectOwnerType({ configuredType, context, projectOwner }) {
+  const explicitType = normalizeProjectOwnerType(configuredType, { allowBlank: true });
+  if (explicitType) return explicitType;
+
+  const repositoryOwner = context?.payload?.repository?.owner;
+  const repositoryOwnerType = normalizeGitHubOwnerType(repositoryOwner?.type);
+  const repositoryOwnerLogin = repositoryOwner?.login || context?.repo?.owner;
+  if (repositoryOwnerType && projectOwner === repositoryOwnerLogin) {
+    return repositoryOwnerType;
+  }
+
+  return DEFAULT_PROJECT_OWNER_TYPE;
 }
 
 function labelsForIssue(issue) {
@@ -523,52 +555,18 @@ export function createGithubApi({ fetchImpl = fetch, token, owner, repo }) {
     repo,
     graphql,
     rest,
-    async loadProject(projectOwner, projectNumber) {
+    async loadProject(projectOwner, projectNumber, projectOwnerType = DEFAULT_PROJECT_OWNER_TYPE) {
       let cursor = null;
       let title = "";
       let id = "";
       let fields = { nodes: [] };
       const nodes = [];
+      const ownerType = normalizeProjectOwnerType(projectOwnerType);
+      const ownerField = ownerType === "organization" ? "organization" : "user";
       for (;;) {
         const data = await graphql(`
           query($login: String!, $number: Int!, $cursor: String) {
-            organization(login: $login) {
-              projectV2(number: $number) {
-                id
-                title
-                fields(first: 50) {
-                  nodes {
-                    ... on ProjectV2SingleSelectField { id name options { id name } }
-                  }
-                }
-                items(first: 100, after: $cursor) {
-                  pageInfo { hasNextPage endCursor }
-                  nodes {
-                    id
-                    content {
-                      ... on Issue {
-                        id
-                        number
-                        title
-                        url
-                        state
-                        body
-                        labels(first: 20) { nodes { name } }
-                      }
-                    }
-                    fieldValues(first: 50) {
-                      nodes {
-                        ... on ProjectV2ItemFieldSingleSelectValue {
-                          name
-                          field { ... on ProjectV2SingleSelectField { name } }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            user(login: $login) {
+            ${ownerField}(login: $login) {
               projectV2(number: $number) {
                 id
                 title
@@ -605,7 +603,7 @@ export function createGithubApi({ fetchImpl = fetch, token, owner, repo }) {
               }
             }
           }`, { login: projectOwner, number: projectNumber, cursor });
-        const page = data.organization?.projectV2 || data.user?.projectV2;
+        const page = data[ownerField]?.projectV2;
         if (!page) return null;
         id = id || page.id;
         title = title || page.title;
@@ -918,6 +916,11 @@ export async function runTriageQueueRefill({
     if (!projectPat || !projectNumber) {
       throw new Error("Project V2 configuration is unavailable. Set GH_PROJECT_PAT and repository variable DUUMBI_PROJECT_NUMBER.");
     }
+    const projectOwnerType = inferProjectOwnerType({
+      configuredType: env.DUUMBI_PROJECT_OWNER_TYPE,
+      context,
+      projectOwner,
+    });
 
     const api = createGithubApi({
       fetchImpl,
@@ -925,9 +928,12 @@ export async function runTriageQueueRefill({
       owner: context.repo.owner,
       repo: context.repo.repo,
     });
-    const project = await api.loadProject(projectOwner, projectNumber);
+    const project = await api.loadProject(projectOwner, projectNumber, projectOwnerType);
     if (!project) {
-      throw new Error(`Project V2 #${projectNumber} not found for ${projectOwner}.`);
+      throw new Error(
+        `Project V2 #${projectNumber} not found for ${projectOwnerType} ${projectOwner}. `
+        + 'Check DUUMBI_PROJECT_OWNER, DUUMBI_PROJECT_OWNER_TYPE ("user" or "organization"), and DUUMBI_PROJECT_NUMBER.',
+      );
     }
     validateProjectStatusConfig(project);
 
