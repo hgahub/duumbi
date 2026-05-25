@@ -38,7 +38,7 @@ or source-repo contracts that support it.
 | `slack-intake-dispatch.yml` | Slack shortcut repository dispatch, manual | Dispatches Stage 1 Slack intake without requiring the developer to name the skill. |
 | `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Checks `duumbi-vault` for unnormalized Inbox notes and dispatches `duumbi-inbox-enrichment` only when candidate notes exist. |
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded DeepSeek Stage 4 triage refill when fewer than three issues are waiting. |
-| `clarification-routing.yml` | issue comment mention, manual | Routes `@Codex` or `@Copilot` clarification replies to the right stage-specific agent. |
+| `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
 | `stage10-authorization-request.yml` | label, hourly, manual, repository dispatch | Sends Stage 10 resource authorization Slack notifications and records resource decisions. |
 | `stage11-review-request.yml` | label, hourly, manual | Sends implementation review handoff notifications and records the Stage 11 notification marker. |
@@ -65,8 +65,9 @@ closed.
 - `DUUMBI_AGENT_DISPATCH_CHANNEL_ID`: optional agent dispatch channel; falls
   back to `SLACK_REVIEW_CHANNEL_ID`.
 - `GH_PROJECT_PAT`: PAT that can read and update GitHub Project V2.
-- `DEEPSEEK_API_KEY`: DeepSeek API key used only by `triage-queue-refill.yml`
-  when the `Needs Human Acceptance` queue is below target.
+- `DEEPSEEK_API_KEY`: DeepSeek API key used by `triage-queue-refill.yml`
+  when the `Needs Human Acceptance` queue is below target, and by
+  `clarification-routing.yml` for explicit `@Clarification` synthesis.
 - `DEEPSEEK_MODEL`: optional repository variable for the refill model; defaults
   to `deepseek-v4-pro`.
 - `DUUMBI_PROJECT_NUMBER`: repository variable for the Project V2 number used by
@@ -76,6 +77,17 @@ closed.
 - `DUUMBI_PROJECT_OWNER_TYPE`: optional repository variable; use `user` for a
   personal-account project and `organization` for an org-owned project. When
   omitted, the workflow infers the repository owner type from the GitHub event.
+
+## Clarification Routing Policy
+
+`clarification-routing.yml` is registered on all created issue comments and
+filters in code. It ignores general `@Codex` and `@Copilot` issue comments. It
+only processes comments whose visible text starts with `@Clarification`, and
+only when the target issue still carries the `needs-human-review` Stage 5 label.
+The workflow calls DeepSeek for a bounded JSON clarification synthesis, writes
+the synthesis as an issue comment, and sends a Slack notification when Slack
+secrets are configured. It does not update labels, Project V2 status, specs,
+PRs, or source code.
 
 ## Stage 4 Refill LLM Policy
 
@@ -93,7 +105,8 @@ most one issue is queued per run.
 All GitHub writes use `GH_PROJECT_PAT` rather than `GITHUB_TOKEN`, so adding the
 existing `needs-human-review` label can trigger the separate Human Acceptance
 Slack gate. The refill workflow itself does not post Slack notifications; this
-avoids duplicate messages.
+avoids duplicate messages. Clarification routing uses `GITHUB_TOKEN` because it
+only comments on the already-routed issue.
 
 Default model: `deepseek-v4-pro`. DeepSeek's public docs list V4 Pro and Flash
 with 1M context, JSON output, tool calls, and low per-token prices. As of
