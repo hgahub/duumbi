@@ -73,6 +73,9 @@ closed.
   `triage-queue-refill.yml`.
 - `DUUMBI_PROJECT_OWNER`: optional repository variable; defaults to repository
   owner.
+- `DUUMBI_PROJECT_OWNER_TYPE`: optional repository variable; use `user` for a
+  personal-account project and `organization` for an org-owned project. Defaults
+  to `user`.
 
 ## Stage 4 Refill LLM Policy
 
