@@ -325,6 +325,82 @@ test("runClarificationRouting posts synthesis comment and Slack notification", a
   assert.equal(metrics.privacy.raw_prompts_included, false);
 });
 
+test("runClarificationRouting keeps GitHub synthesis when Slack fetch fails", async () => {
+  const workspace = makeWorkspace("duumbi-clarification-slack-fetch-fail-");
+  const { fetchImpl: baseFetch, calls } = makeFetch();
+  const fetchImpl = async (url, options = {}) => {
+    if (url === "https://slack.com/api/chat.postMessage") {
+      throw new Error("network unavailable");
+    }
+    return baseFetch(url, options);
+  };
+  const core = makeCore();
+
+  const result = await runClarificationRouting({
+    env: {
+      GITHUB_TOKEN: "token",
+      DEEPSEEK_API_KEY: "deepseek",
+      SLACK_BOT_TOKEN: "slack",
+      SLACK_REVIEW_CHANNEL_ID: "C123",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.slackNotification, "failed");
+  assert.equal(core.failed, null);
+  assert.equal(calls.some((call) => call.url.endsWith("/repos/hgahub/duumbi/issues/584/comments") && call.method === "POST"), true);
+
+  const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
+  assert.equal(metrics.workflow.conclusion, "success");
+  assert.equal(metrics.counts.slack_notifications_attempted, 0);
+  assert.match(metrics.warnings.join("\n"), /slack_notification_failed:network unavailable/);
+});
+
+test("runClarificationRouting keeps GitHub synthesis when Slack returns non-json", async () => {
+  const workspace = makeWorkspace("duumbi-clarification-slack-non-json-");
+  const { fetchImpl: baseFetch } = makeFetch();
+  const fetchImpl = async (url, options = {}) => {
+    if (url === "https://slack.com/api/chat.postMessage") {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "not-json",
+      };
+    }
+    return baseFetch(url, options);
+  };
+  const core = makeCore();
+
+  const result = await runClarificationRouting({
+    env: {
+      GITHUB_TOKEN: "token",
+      DEEPSEEK_API_KEY: "deepseek",
+      SLACK_BOT_TOKEN: "slack",
+      SLACK_REVIEW_CHANNEL_ID: "C123",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.slackNotification, "failed");
+  assert.equal(core.failed, null);
+
+  const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
+  assert.equal(metrics.workflow.conclusion, "success");
+  assert.match(metrics.warnings.join("\n"), /slack_notification_failed:Response was not JSON/);
+});
+
 test("runClarificationRouting fails closed on invalid DeepSeek JSON", async () => {
   const workspace = makeWorkspace("duumbi-clarification-invalid-json-");
   const { fetchImpl } = makeFetch({ decision: "not-json" });

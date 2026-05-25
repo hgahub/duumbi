@@ -316,18 +316,22 @@ async function postSlack({ fetchImpl, env, text, warnings }) {
   const channel = env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || env.SLACK_REVIEW_CHANNEL_ID;
   if (!token || !channel) return "not_configured";
 
-  const response = await fetchImpl("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({ channel, text }),
-  });
-  const { json } = await readJsonResponse(response);
-  if (response.ok && json.ok) return "posted";
+  try {
+    const response = await fetchImpl("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({ channel, text }),
+    });
+    const { json } = await readJsonResponse(response);
+    if (response.ok && json.ok) return "posted";
 
-  warnings.push(`slack_notification_failed:${json.error || response.status}`);
+    warnings.push(`slack_notification_failed:${json.error || response.status}`);
+  } catch (error) {
+    warnings.push(`slack_notification_failed:${truncateText(error.message || error, 160)}`);
+  }
   return "failed";
 }
 
