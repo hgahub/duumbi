@@ -108,8 +108,11 @@ function makeFetch({
       });
     }
 
-    if (url.endsWith("/repos/hgahub/duumbi/issues/584/comments?per_page=100")) {
-      return response(comments);
+    if (url.includes("/repos/hgahub/duumbi/issues/584/comments?per_page=100")) {
+      const parsed = new URL(url);
+      const page = Number(parsed.searchParams.get("page") || 1);
+      const start = (page - 1) * 100;
+      return response(comments.slice(start, start + 100));
     }
 
     if (url.endsWith("/repos/hgahub/duumbi/issues/584/comments")) {
@@ -231,6 +234,39 @@ test("runClarificationRouting ignores duplicate clarification markers", async ()
 
   assert.equal(result.ignored, true);
   assert.equal(result.reason, "duplicate_clarification_marker");
+  assert.equal(calls.some((call) => call.url === "https://api.deepseek.com/chat/completions"), false);
+  assert.equal(core.failed, null);
+});
+
+test("runClarificationRouting paginates comments before duplicate detection", async () => {
+  const workspace = makeWorkspace("duumbi-clarification-pagination-");
+  const marker = `${MARKER_PREFIX} issue=584 comment=https://github.com/hgahub/duumbi/issues/584#issuecomment-1 -->`;
+  const comments = Array.from({ length: 120 }, (_value, index) => ({
+    html_url: `https://github.com/hgahub/duumbi/issues/584#issuecomment-${index}`,
+    body: index === 115 ? `${marker}\nAlready handled on a later page.` : `Comment ${index}`,
+  }));
+  const { fetchImpl, calls } = makeFetch({ comments });
+  const core = makeCore();
+
+  const result = await runClarificationRouting({
+    env: {
+      GITHUB_TOKEN: "token",
+      DEEPSEEK_API_KEY: "deepseek",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(result.ignored, true);
+  assert.equal(result.reason, "duplicate_clarification_marker");
+  assert.equal(
+    calls.filter((call) => call.url.includes("/repos/hgahub/duumbi/issues/584/comments?per_page=100")).length,
+    2,
+  );
   assert.equal(calls.some((call) => call.url === "https://api.deepseek.com/chat/completions"), false);
   assert.equal(core.failed, null);
 });

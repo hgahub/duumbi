@@ -685,48 +685,91 @@ export async function callDeepSeek({
   model = DEFAULT_DEEPSEEK_MODEL,
   messages,
   timeoutMs = 120_000,
+  emptyContentRetries = 2,
 }) {
   const started = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-        max_tokens: 2500,
-      }),
-      signal: controller.signal,
-    });
-    const { text, json } = await readJsonResponse(response);
-    if (!response.ok) {
-      throw new Error(`DeepSeek API failed: ${response.status} ${truncateText(text, 240)}`);
+  const maxAttempts = Math.max(1, 1 + Number(emptyContentRetries || 0));
+  const baseMessages = Array.isArray(messages) ? messages : [];
+  const retryInstruction = [
+    "Retry instruction: the previous DeepSeek JSON-mode response returned empty content.",
+    "Return one non-empty JSON object only.",
+    "Do not return an empty string, markdown, prose outside JSON, or whitespace-only content.",
+  ].join("\n");
+  let lastEmptyDetails = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const retryMessages = attempt === 1
+      ? baseMessages
+      : baseMessages[0]?.role === "system"
+        ? [
+            { ...baseMessages[0], content: `${baseMessages[0].content || ""}\n\n${retryInstruction}` },
+            ...baseMessages.slice(1),
+          ]
+        : [{ role: "system", content: retryInstruction }, ...baseMessages];
+
+    try {
+      const response = await fetchImpl("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: retryMessages,
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+          max_tokens: 2500,
+        }),
+        signal: controller.signal,
+      });
+      const { text, json } = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(`DeepSeek API failed: ${response.status} ${truncateText(text, 240)}`);
+      }
+      const choice = json.choices?.[0] || {};
+      const content = choice.message?.content;
+      if (normalizeText(content)) {
+        return {
+          model: json.model || model,
+          content,
+          usage: json.usage || {},
+          latencyMs: Date.now() - started,
+        };
+      }
+
+      lastEmptyDetails = {
+        attempt,
+        maxAttempts,
+        model: json.model || model,
+        finishReason: choice.finish_reason || null,
+        usage: json.usage || {},
+      };
+      if (attempt < maxAttempts) {
+        continue;
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(`DeepSeek API timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    const content = json.choices?.[0]?.message?.content;
-    if (!normalizeText(content)) {
-      throw new Error("DeepSeek returned empty decision content.");
-    }
-    return {
-      model: json.model || model,
-      content,
-      usage: json.usage || {},
-      latencyMs: Date.now() - started,
-    };
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error(`DeepSeek API timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  const usage = lastEmptyDetails?.usage || {};
+  throw new Error([
+    "DeepSeek returned empty decision content after JSON-mode retries.",
+    `attempts=${lastEmptyDetails?.maxAttempts || maxAttempts}`,
+    `model=${lastEmptyDetails?.model || model}`,
+    `finish_reason=${lastEmptyDetails?.finishReason || "unknown"}`,
+    `prompt_tokens=${usage.prompt_tokens ?? "unknown"}`,
+    `completion_tokens=${usage.completion_tokens ?? "unknown"}`,
+    `total_tokens=${usage.total_tokens ?? "unknown"}`,
+  ].join(" "));
 }
 
 export function buildWorkflowMetrics({

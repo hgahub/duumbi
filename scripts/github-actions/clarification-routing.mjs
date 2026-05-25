@@ -202,7 +202,16 @@ export function createGithubApi({ fetchImpl = fetch, token, owner, repo }) {
       return rest("GET", `/repos/${owner}/${repo}/issues/${issueNumber}`);
     },
     async listIssueComments(issueNumber) {
-      return rest("GET", `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`);
+      const comments = [];
+      for (let page = 1;; page += 1) {
+        const pageComments = await rest("GET", `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100&page=${page}`);
+        if (!Array.isArray(pageComments)) {
+          throw new Error("GitHub issue comments response was not an array.");
+        }
+        comments.push(...pageComments);
+        if (pageComments.length < 100) break;
+      }
+      return comments;
     },
     async createIssueComment(issueNumber, body) {
       return rest("POST", `/repos/${owner}/${repo}/issues/${issueNumber}/comments`, { body });

@@ -260,6 +260,55 @@ test("callDeepSeek fails with a bounded timeout", async () => {
   );
 });
 
+test("callDeepSeek retries empty JSON-mode content with reinforced prompt", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push(body);
+    if (calls.length === 1) {
+      return response({
+        model: "deepseek-v4-pro",
+        choices: [{ finish_reason: "stop", message: { content: "" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+      });
+    }
+    return response({
+      model: "deepseek-v4-pro",
+      choices: [{ finish_reason: "stop", message: { content: "{\"action\":\"no_action\"}" } }],
+      usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+    });
+  };
+
+  const result = await callDeepSeek({
+    fetchImpl,
+    apiKey: "deepseek-key",
+    messages: [{ role: "user", content: "{}" }],
+  });
+
+  assert.equal(result.content, "{\"action\":\"no_action\"}");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].messages[0].role, "system");
+  assert.match(calls[1].messages[0].content, /previous DeepSeek JSON-mode response returned empty content/);
+});
+
+test("callDeepSeek reports model finish reason and token usage after empty retries", async () => {
+  const fetchImpl = async () => response({
+    model: "deepseek-v4-pro",
+    choices: [{ finish_reason: "length", message: { content: "" } }],
+    usage: { prompt_tokens: 33, completion_tokens: 0, total_tokens: 33 },
+  });
+
+  await assert.rejects(
+    () => callDeepSeek({
+      fetchImpl,
+      apiKey: "deepseek-key",
+      messages: [{ role: "user", content: "{}" }],
+      emptyContentRetries: 1,
+    }),
+    /attempts=2 model=deepseek-v4-pro finish_reason=length prompt_tokens=33 completion_tokens=0 total_tokens=33/,
+  );
+});
+
 test("runTriageQueueRefill exits without model call when the queue is full", async () => {
   const project = projectWithItems([
     issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
