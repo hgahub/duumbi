@@ -19,7 +19,7 @@ This skill covers:
 - adding English Gherkin-style BDD scenarios that express observable behavior
 - writing the product spec as a GitHub issue comment for small issues
 - creating `specs/DUUMBI-<issue-number>/PRODUCT.md` in the relevant source repository and opening a review-ready PR for larger, architectural, cross-module, or durable specs
-- marking the file-based spec PR ready for review, requesting configured automated review, addressing blocking review feedback, and reaching green checks before Slack approval is requested
+- marking the file-based spec PR ready for review, requesting configured automated review, waiting for actual reviewer submissions, addressing blocking review feedback, resolving review threads, and reaching green checks before Slack approval is requested
 - linking the spec artifact back to the GitHub Issue
 - moving the issue to `Spec Review`, or to `Needs Clarification` when blocked
 - keeping the execution issue open by avoiding GitHub auto-close keywords in spec-only PR titles, bodies, and commit messages
@@ -110,7 +110,11 @@ For file-based specs:
 - create or update only the spec file and minimal supporting metadata if required by the source repo
 - open the PR as a draft while the first artifact is being assembled
 - mark the PR ready for review after the spec artifact is complete and local checks are complete
-- request or wait for the configured automated reviewers when available, including Copilot review
+- request or wait for the configured automated reviewers when available. In this
+  repository the default required reviewers are `copilot-pull-request-reviewer`
+  and `chatgpt-codex-connector` unless repository configuration states
+  otherwise. Do not treat a successful reviewer-request check as completed
+  review evidence.
 - inspect review feedback and check results, fix blocking findings inside the spec file, and repeat until the PR is review-clean
 - link the review-ready PR and spec path from the GitHub Issue
 - treat the PR as a spec-review artifact only; it must not close the execution issue when merged or closed
@@ -178,7 +182,7 @@ After a successful spec artifact exists:
 - add existing `spec-review` label when available
 - do not mark the product spec approved
 - do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
-- for file-based specs, add `spec-review` only after the PR is no longer draft, checks are green, configured automated review is complete, and blocking review threads are resolved; the Stage 7 Slack approval will merge the spec PR if approved
+- for file-based specs, add `spec-review` only after the PR is no longer draft, checks are green, actual configured automated reviewer submissions exist, and every review thread is resolved, including outdated threads after fixes; the Stage 7 Slack approval will merge the spec PR if approved
 
 When blocked:
 
@@ -213,7 +217,7 @@ Product spec draft complete:
 - Do not bury blocking questions in a draft spec.
 - Do not create technical specs, implementation code, PRs for implementation, or Ralph cycles.
 - Do not approve your own product spec.
-- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing configured automated review, or has unresolved blocking feedback.
+- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing actual configured automated review evidence, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the spec traceable to source links and decisions.
 - Stop and ask the user if a requested write exceeds Stage 6.

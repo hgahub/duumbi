@@ -59,6 +59,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
           INPUT_SLACK_RESPONSE_URL: ${{ github.event.client_payload.slack_response_url || '' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector' }}
         with:
           script: |
             // ── Inputs ──────────────────────────────────────────────
@@ -252,7 +253,7 @@ jobs:
                   `Target issue: ${issueUrl}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/PRODUCT.md, unless the skill determines that an issue-comment spec is sufficient.`,
                   '',
-                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, address blocking review feedback until checks and configured automated review are clean, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge.',
+                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, wait for actual configured automated reviewer submissions, address blocking review feedback until checks and automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -262,17 +263,17 @@ jobs:
 
               if (stage === '7') {
                 return [
-                  'Run DUUMBI Stage 8 Technical Spec Draft with duumbi-tech-spec-draft.',
+                  'Run DUUMBI Stage 8 Technical Spec Draft with duumbi-tech-spec-draft, then run Stage 9 Technical Spec Review with duumbi-tech-spec-review in AI-gate mode when the gate requirements are satisfied; otherwise stop and request human approval.',
                   '',
                   `Target issue: ${issueUrl}`,
                   `Product spec artifact: ${knownProductSpec}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
                   '',
-                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, address blocking review feedback until checks and configured automated review are clean, link it from the issue, and move the issue to Technical Spec Review only after it is ready for approval merge.',
+                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, wait for actual configured automated reviewer submissions, address blocking review feedback until checks and automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, move the issue to Technical Spec Review only after it is ready for approval merge, then record Stage 9 approval through the configured AI or human gate, merge the spec PR, move the issue to Ready for Build, and send the Stage 10 prompt.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Technical spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
-                  'Do not modify implementation code, tests, generated artifacts, runtime assets, or product specs. Do not approve the technical spec or run Ralph cycles.',
+                  'Do not modify implementation code, tests, generated artifacts, runtime assets, or product specs. Do not bypass Stage 9 approval, do not approve if the AI/human gate is missing, and do not run Ralph cycles.',
                 ].join('\n');
               }
 
@@ -334,6 +335,19 @@ jobs:
               return [...latest.values()];
             };
 
+            const requiredAutomatedReviewers = () =>
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector')
+                .split(',')
+                .map((reviewer) => reviewer.trim())
+                .filter(Boolean);
+
+            const missingRequiredReviewers = (latestReviews) => {
+              const reviewActors = new Set(
+                latestReviews.map((review) => String(review.user?.login || '').toLowerCase()).filter(Boolean),
+              );
+              return requiredAutomatedReviewers().filter((reviewer) => !reviewActors.has(reviewer.toLowerCase()));
+            };
+
             const findUnresolvedReviewThreads = async (pullNumber) => {
               const unresolved = [];
               let cursor = null;
@@ -362,9 +376,10 @@ jobs:
                 );
                 const threads = data.repository?.pullRequest?.reviewThreads;
                 for (const thread of threads?.nodes || []) {
-                  if (!thread.isResolved && !thread.isOutdated) {
+                  if (!thread.isResolved) {
                     const firstComment = thread.comments?.nodes?.[0];
-                    unresolved.push(firstComment?.url || `review thread by ${firstComment?.author?.login || 'unknown'}`);
+                    const state = thread.isOutdated ? 'outdated unresolved' : 'active unresolved';
+                    unresolved.push(`${firstComment?.url || `review thread by ${firstComment?.author?.login || 'unknown'}`} (${state})`);
                   }
                 }
                 cursor = threads?.pageInfo?.hasNextPage ? threads.pageInfo.endCursor : null;
@@ -384,7 +399,7 @@ jobs:
                     expectedPath: policy.expectedPath,
                     checkCount: 0,
                     reviewCount: 0,
-                    copilotReviewCount: 0,
+                    requiredReviewers: [],
                     issueCommentArtifact: true,
                   };
                 }
@@ -455,14 +470,9 @@ jobs:
               });
               const latestReviews = latestReviewsByActor(reviews);
               const blockingReviews = latestReviews.filter((review) => review.state === 'CHANGES_REQUESTED');
-              const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ''));
-              const successfulCopilotCheck = checkRuns.some((check) =>
-                /copilot/i.test(check.name || '') &&
-                check.status === 'completed' &&
-                ['success', 'neutral', 'skipped'].includes(check.conclusion)
-              );
-              if (copilotReviews.length === 0 && !successfulCopilotCheck) {
-                throw new Error(`${policy.kind} PR #${prNumber} has no completed Copilot review evidence; approval waits for review and fixes.`);
+              const missingReviewers = missingRequiredReviewers(latestReviews);
+              if (missingReviewers.length > 0) {
+                throw new Error(`${policy.kind} PR #${prNumber} is missing required automated review evidence from: ${missingReviewers.join(', ')}. A review-request check is not enough; approval waits for actual reviewer submissions and fixes.`);
               }
               if (blockingReviews.length > 0) {
                 throw new Error(`${policy.kind} PR #${prNumber} has blocking review decisions: ${blockingReviews.map((review) => `${review.user?.login || 'unknown'}:${review.state}`).join(', ')}`);
@@ -481,7 +491,7 @@ jobs:
                   expectedPath: policy.expectedPath,
                   checkCount: checkRuns.length + statuses.length,
                   reviewCount: latestReviews.length,
-                  copilotReviewCount: copilotReviews.length,
+                  requiredReviewers: requiredAutomatedReviewers(),
                   alreadyMerged: true,
                 };
               }
@@ -502,7 +512,7 @@ jobs:
                 expectedPath: policy.expectedPath,
                 checkCount: checkRuns.length + statuses.length,
                 reviewCount: latestReviews.length,
-                copilotReviewCount: copilotReviews.length,
+                requiredReviewers: requiredAutomatedReviewers(),
               };
             };
 

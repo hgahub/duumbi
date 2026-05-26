@@ -40,7 +40,13 @@ Before approving through the AI gate, verify all of these facts:
 
 - the product spec PR is a spec-only PR and contains no implementation code
 - the product spec PR is open, non-draft, review-clean, and ready for approval merge
-- Copilot review was requested and has no unresolved blocking feedback
+- each configured automated reviewer has submitted actual review evidence; in
+  this repository the default required reviewers are
+  `copilot-pull-request-reviewer` and `chatgpt-codex-connector` unless
+  repository configuration states otherwise
+- do not treat a successful reviewer-request check as completed review evidence
+- no latest automated or human review is `CHANGES_REQUESTED`
+- no review thread remains unresolved, including outdated threads after a fix
 - relevant checks are complete and passing, or the PR is documentation-only and checks are explicitly not applicable
 - the product spec satisfies the Review Checklist below
 - no unresolved product, scope, architecture, security, migration, cost, or user-facing trade-off question remains
@@ -80,7 +86,7 @@ When the prompt contains an explicit **Approve** decision (e.g. `Human decision:
 1. `gh issue view <N> --json number,title,labels,body` — verify `spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 6 Product Spec Draft artifact link
 3. Construct and post the Stage 7 Decision Comment on the issue
-4. If the artifact is a PR, verify it is open, non-draft, changes only `specs/DUUMBI-<N>/PRODUCT.md`, has green checks, completed configured automated review, no blocking review decisions, and no unresolved review threads
+4. If the artifact is a PR, verify it is open, non-draft, changes only `specs/DUUMBI-<N>/PRODUCT.md`, has green checks, actual configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
 5. If the artifact is a PR, squash-merge it with non-closing issue references such as `Related to #<N>`; do not close the execution issue
 6. Post a short pointer comment on the PR (if identifiable)
 7. Update labels: remove `needs-spec` and `spec-review`, add `product-spec-approved` and `needs-tech-spec`
@@ -201,7 +207,7 @@ For file-based specs, also comment on the PR with the same decision or a short p
 For `Approve`:
 
 - require explicit human approval or a fully satisfied AI gate
-- for file-based specs, require an open non-draft spec-only PR with green checks, completed configured automated review, no blocking review decisions, and no unresolved review threads
+- for file-based specs, require an open non-draft spec-only PR with green checks, actual configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads
 - for file-based specs, squash-merge the product spec PR before moving the issue to `Technical Spec Needed`
 - write the decision comment
 - set Project Status to `Technical Spec Needed` when available

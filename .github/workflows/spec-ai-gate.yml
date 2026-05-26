@@ -26,7 +26,12 @@ on:
         required: true
         type: string
       copilot_evidence:
-        description: Link or summary of Copilot review evidence
+        description: 'Deprecated: link or summary of automated review evidence'
+        required: false
+        type: string
+        default: ''
+      automated_review_evidence:
+        description: Link or summary of configured automated review evidence
         required: false
         type: string
         default: ''
@@ -63,7 +68,13 @@ jobs:
             const prNumber = Number(raw.pr_number || 0);
             const decision = String(raw.decision || "");
             const rationale = String(raw.rationale || "");
-            const copilotEvidence = String(raw.copilot_evidence || raw.copilotEvidence || "");
+            const automatedReviewEvidence = String(
+              raw.automated_review_evidence ||
+              raw.automatedReviewEvidence ||
+              raw.copilot_evidence ||
+              raw.copilotEvidence ||
+              "",
+            );
             const validStages = new Set(["7", "9"]);
             const validDecisions = new Set(["approve", "request-changes", "needs-clarification", "reject"]);
             if (!validStages.has(stage)) throw new Error(`Unsupported spec AI gate stage: ${stage}`);
@@ -89,9 +100,9 @@ jobs:
               `**Decision:** ${decision}`,
               `**Reviewer source:** Codex AI Gate`,
               `**Spec PR:** ${prUrl}`,
-              `**Copilot evidence:** ${copilotEvidence || "verified by invoking agent; no link provided"}`,
+              `**Automated review evidence:** ${automatedReviewEvidence || "verified by invoking agent; no link provided"}`,
               `**Rationale:** ${rationale}`,
-              `**Gate policy:** fail-closed if Copilot review, checks, scope, or blocking findings are missing`,
+              `**Gate policy:** fail-closed if configured automated review, checks, scope, or blocking findings are missing`,
               `**Next state:** ${nextState}`,
             ].join("\n");
 
@@ -186,8 +197,8 @@ jobs:
                 issues_considered: 1,
                 issues_queued: null,
                 slack_notifications_attempted: 0,
-                artifact_links_found: copilotEvidence ? 1 : 0,
-                artifact_links_missing: copilotEvidence ? 0 : 1,
+                artifact_links_found: automatedReviewEvidence ? 1 : 0,
+                artifact_links_missing: automatedReviewEvidence ? 0 : 1,
               },
               provider_usage: {
                 available: false,

@@ -28,8 +28,9 @@ or source-repo contracts that support it.
 - `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
-  gates while still failing closed on missing Copilot, checks, scope,
-  unresolved findings, or unmerged spec PR readiness.
+  gates while still failing closed on missing configured automated review
+  submissions, checks, scope, unresolved findings, or unmerged spec PR
+  readiness.
 
 ## Workflows Added
 
@@ -130,7 +131,14 @@ Stage 7 and Stage 9 AI gates may approve only when:
 
 - the PR is spec-only
 - the PR is open, non-draft, and ready for approval merge
-- Copilot review exists and has no unresolved blocking feedback
+- actual configured automated review submissions exist. By default this means
+  `copilot-pull-request-reviewer` and `chatgpt-codex-connector`; repositories
+  can override the comma-separated list with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
+- reviewer-request workflow success does not count as review evidence
+- automated reviews and human reviews have no blocking `CHANGES_REQUESTED`
+  decision
+- every review thread is resolved, including threads that became outdated after
+  a fix
 - relevant checks are passing or explicitly not applicable
 - no product, architecture, security, migration, cost, scope, or verification
   question remains
@@ -138,11 +146,21 @@ Stage 7 and Stage 9 AI gates may approve only when:
 
 Stage 7 and Stage 9 human Slack approvals are merge finalizers for file-based
 specs. The review request workflows send Slack approval cards only after the
-linked PRODUCT.md or TECHNICAL.md PR is review-clean. Approval then revalidates
-the exact PR, squash-merges the spec artifact with non-closing issue references,
-records the stage decision, and advances the issue to the next workflow state.
-If the PR is draft, dirty, not spec-only, missing Copilot review, or has
-unresolved review threads, the workflow fails closed or defers notification.
+linked PRODUCT.md or TECHNICAL.md PR is review-clean. Review-clean means the
+PR has actual configured automated reviewer submissions, green checks, no
+blocking review decisions, and no unresolved review threads. Approval then
+revalidates the exact PR, squash-merges the spec artifact with non-closing issue
+references, records the stage decision, and advances the issue to the next
+workflow state. If the PR is draft, dirty, not spec-only, missing required
+reviewer submissions, or has unresolved review threads, the workflow fails
+closed or defers notification.
+
+The Stage 7 approval prompt is intentionally a Stage 8-to-Ready handoff. It
+instructs Codex to draft the technical spec, wait for configured automated
+reviewers, fix and resolve review feedback, route to `Technical Spec Review`,
+then run Stage 9 through the configured AI or human gate. Only a satisfied
+Stage 9 gate may merge the technical spec PR, move the issue to `Ready for
+Build`, and send the Stage 10 prompt.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
 human decision, Stage 11 review artifact, green checks, clean Copilot review,
