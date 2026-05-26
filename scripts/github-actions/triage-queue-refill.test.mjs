@@ -128,8 +128,15 @@ function makeWorkspace() {
   return workspace;
 }
 
-function makeFetch({ project, decision, failAddToProject = false, failExistingLabel = false }) {
+function makeFetch({
+  project,
+  decision,
+  failAddToProject = false,
+  failExistingLabel = false,
+  deepSeekContents = null,
+}) {
   const calls = [];
+  let deepSeekCallCount = 0;
   const fetchImpl = async (url, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : {};
     calls.push({ url, method: options.method || "GET", body });
@@ -169,9 +176,13 @@ function makeFetch({ project, decision, failAddToProject = false, failExistingLa
     }
 
     if (url === "https://api.deepseek.com/chat/completions") {
+      const content = Array.isArray(deepSeekContents)
+        ? deepSeekContents[Math.min(deepSeekCallCount, deepSeekContents.length - 1)]
+        : JSON.stringify(decision);
+      deepSeekCallCount += 1;
       return response({
         model: "deepseek-v4-pro",
-        choices: [{ message: { content: JSON.stringify(decision) } }],
+        choices: [{ message: { content } }],
         usage: { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 },
       });
     }
@@ -507,6 +518,60 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   assert.equal(metrics.counts.issues_queued, 1);
   assert.equal(metrics.counts.slack_notifications_attempted, 0);
   assert.equal(metrics.provider_usage.provider, "deepseek");
+});
+
+test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", async () => {
+  const project = projectWithItems([
+    issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 10, status: TODO_STATUS }),
+  ]);
+  const decision = {
+    action: "route_existing_issue",
+    existing_issue_number: 10,
+    source_links: ["duumbi-vault/Duumbi/00 Inbox (ToProcess)/candidate.md"],
+    rationale: "Best next actionable candidate.",
+  };
+  const workspace = makeWorkspace();
+  const { fetchImpl, calls } = makeFetch({
+    project,
+    decision,
+    deepSeekContents: [
+      "{\n  \"action\": \"route_existing_issue\",\n  \"issue\": { // invalid json\n  }\n}",
+      JSON.stringify(decision),
+    ],
+  });
+  const core = makeCore();
+
+  const result = await runTriageQueueRefill({
+    env: {
+      GH_PROJECT_PAT: "pat",
+      DEEPSEEK_API_KEY: "deepseek-key",
+      DUUMBI_PROJECT_NUMBER: "1",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+  });
+
+  assert.equal(core.failed, null);
+  assert.equal(result.decision, "route_existing_issue");
+  assert.equal(result.issueNumber, 10);
+  assert.match(core.warnings[0], /retrying strict JSON repair once/);
+  assert.equal(calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions").length, 2);
+
+  const repairRequest = calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions")[1];
+  assert.match(repairRequest.body.messages[0].content, /valid strict JSON object/);
+  assert.match(repairRequest.body.messages.at(-1).content, /Repair this malformed decision/);
+
+  const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
+  assert.equal(metrics.provider_usage.request_count, 2);
+  assert.equal(metrics.provider_usage.prompt_tokens, 2000);
+  assert.equal(metrics.provider_usage.completion_tokens, 400);
+  assert.equal(metrics.warnings.some((warning) => /retrying strict JSON repair once/.test(warning)), true);
 });
 
 test("runTriageQueueRefill blocks before status update when existing issue label fails", async () => {
