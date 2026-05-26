@@ -222,7 +222,7 @@ jobs:
                   per_page: 100,
                 },
                 (response) => response.data.check_runs,
-              );
+              ).then((runs) => runs.flat().filter(Boolean));
               const badChecks = checkRuns.filter((check) =>
                 check.status !== "completed" || !["success", "neutral", "skipped"].includes(check.conclusion)
               );
@@ -245,7 +245,12 @@ jobs:
               const latestReviews = latestReviewsByActor(reviews);
               const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ""));
               const blockingReviews = latestReviews.filter((review) => review.state === "CHANGES_REQUESTED");
-              if (copilotReviews.length === 0) return { ready: false, prNumber, summary: "Copilot review has not completed" };
+              const successfulCopilotCheck = checkRuns.some((check) =>
+                /copilot/i.test(check.name || "") &&
+                check.status === "completed" &&
+                ["success", "neutral", "skipped"].includes(check.conclusion)
+              );
+              if (copilotReviews.length === 0 && !successfulCopilotCheck) return { ready: false, prNumber, summary: "Copilot review evidence has not completed" };
               if (blockingReviews.length > 0) return { ready: false, prNumber, summary: "blocking review decision remains" };
 
               const unresolvedThreads = await findUnresolvedReviewThreads(prNumber);

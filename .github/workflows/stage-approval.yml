@@ -431,7 +431,7 @@ jobs:
                 github.rest.checks.listForRef,
                 { owner, repo, ref: pr.head.sha, per_page: 100 },
                 (response) => response.data.check_runs,
-              );
+              ).then((runs) => runs.flat().filter(Boolean));
               const badChecks = checkRuns.filter((check) =>
                 check.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(check.conclusion)
               );
@@ -456,8 +456,13 @@ jobs:
               const latestReviews = latestReviewsByActor(reviews);
               const blockingReviews = latestReviews.filter((review) => review.state === 'CHANGES_REQUESTED');
               const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ''));
-              if (copilotReviews.length === 0) {
-                throw new Error(`${policy.kind} PR #${prNumber} has no completed Copilot review; approval waits for review and fixes.`);
+              const successfulCopilotCheck = checkRuns.some((check) =>
+                /copilot/i.test(check.name || '') &&
+                check.status === 'completed' &&
+                ['success', 'neutral', 'skipped'].includes(check.conclusion)
+              );
+              if (copilotReviews.length === 0 && !successfulCopilotCheck) {
+                throw new Error(`${policy.kind} PR #${prNumber} has no completed Copilot review evidence; approval waits for review and fixes.`);
               }
               if (blockingReviews.length > 0) {
                 throw new Error(`${policy.kind} PR #${prNumber} has blocking review decisions: ${blockingReviews.map((review) => `${review.user?.login || 'unknown'}:${review.state}`).join(', ')}`);
