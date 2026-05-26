@@ -879,10 +879,14 @@ function providerUsageFromDeepSeek(model, usage, latencyMs) {
 function combineDeepSeekUsage(responses) {
   const usage = {
     request_count: responses.length,
+    prompt_cache_hit_tokens: 0,
+    prompt_cache_miss_tokens: 0,
     prompt_tokens: 0,
     completion_tokens: 0,
     total_tokens: 0,
   };
+  let hasPromptCacheHitTokens = false;
+  let hasPromptCacheMissTokens = false;
   let hasPromptTokens = false;
   let hasCompletionTokens = false;
   let hasTotalTokens = false;
@@ -890,9 +894,19 @@ function combineDeepSeekUsage(responses) {
 
   for (const response of responses) {
     const current = response?.usage || {};
+    const promptCacheHitTokens = Number(current.prompt_cache_hit_tokens);
+    const promptCacheMissTokens = Number(current.prompt_cache_miss_tokens);
     const promptTokens = Number(current.prompt_tokens);
     const completionTokens = Number(current.completion_tokens);
     const totalTokens = Number(current.total_tokens);
+    if (Number.isFinite(promptCacheHitTokens)) {
+      usage.prompt_cache_hit_tokens += promptCacheHitTokens;
+      hasPromptCacheHitTokens = true;
+    }
+    if (Number.isFinite(promptCacheMissTokens)) {
+      usage.prompt_cache_miss_tokens += promptCacheMissTokens;
+      hasPromptCacheMissTokens = true;
+    }
     if (Number.isFinite(promptTokens)) {
       usage.prompt_tokens += promptTokens;
       hasPromptTokens = true;
@@ -914,6 +928,8 @@ function combineDeepSeekUsage(responses) {
   return {
     usage: {
       ...usage,
+      prompt_cache_hit_tokens: hasPromptCacheHitTokens ? usage.prompt_cache_hit_tokens : null,
+      prompt_cache_miss_tokens: hasPromptCacheMissTokens ? usage.prompt_cache_miss_tokens : null,
       prompt_tokens: hasPromptTokens ? usage.prompt_tokens : null,
       completion_tokens: hasCompletionTokens ? usage.completion_tokens : null,
       total_tokens: hasTotalTokens ? usage.total_tokens : null,

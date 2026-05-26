@@ -134,6 +134,7 @@ function makeFetch({
   failAddToProject = false,
   failExistingLabel = false,
   deepSeekContents = null,
+  deepSeekUsages = null,
 }) {
   const calls = [];
   let deepSeekCallCount = 0;
@@ -176,14 +177,17 @@ function makeFetch({
     }
 
     if (url === "https://api.deepseek.com/chat/completions") {
-      const content = Array.isArray(deepSeekContents)
-        ? deepSeekContents[Math.min(deepSeekCallCount, deepSeekContents.length - 1)]
+      const content = Array.isArray(deepSeekContents) && deepSeekContents.length > 0
+        ? deepSeekContents[deepSeekCallCount % deepSeekContents.length]
         : JSON.stringify(decision);
+      const usage = Array.isArray(deepSeekUsages) && deepSeekUsages.length > 0
+        ? deepSeekUsages[deepSeekCallCount % deepSeekUsages.length]
+        : { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 };
       deepSeekCallCount += 1;
       return response({
         model: "deepseek-v4-pro",
         choices: [{ message: { content } }],
-        usage: { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 },
+        usage,
       });
     }
 
@@ -540,6 +544,22 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
       "{\n  \"action\": \"route_existing_issue\",\n  \"issue\": { // invalid json\n  }\n}",
       JSON.stringify(decision),
     ],
+    deepSeekUsages: [
+      {
+        prompt_cache_hit_tokens: 100,
+        prompt_cache_miss_tokens: 900,
+        prompt_tokens: 1000,
+        completion_tokens: 200,
+        total_tokens: 1200,
+      },
+      {
+        prompt_cache_hit_tokens: 50,
+        prompt_cache_miss_tokens: 950,
+        prompt_tokens: 1000,
+        completion_tokens: 200,
+        total_tokens: 1200,
+      },
+    ],
   });
   const core = makeCore();
 
@@ -560,7 +580,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
   assert.equal(core.failed, null);
   assert.equal(result.decision, "route_existing_issue");
   assert.equal(result.issueNumber, 10);
-  assert.match(core.warnings[0], /retrying strict JSON repair once/);
+  assert.equal(core.warnings.some((warning) => /retrying strict JSON repair once/.test(warning)), true);
   assert.equal(calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions").length, 2);
 
   const repairRequest = calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions")[1];
@@ -571,6 +591,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
   assert.equal(metrics.provider_usage.request_count, 2);
   assert.equal(metrics.provider_usage.prompt_tokens, 2000);
   assert.equal(metrics.provider_usage.completion_tokens, 400);
+  assert.equal(metrics.provider_usage.estimated_cost_usd, 0.00115329);
   assert.equal(metrics.warnings.some((warning) => /retrying strict JSON repair once/.test(warning)), true);
 });
 
