@@ -64,6 +64,9 @@ Relevant verified source facts:
     `block_trace_graph_id()`.
   - Derives trace IDs from graph identity with a `duumbi-trace-v1` SHA-256
     domain and truncates them to signed 63-bit-compatible values.
+  - Currently contains deterministic fallback graph IDs when node-derived
+    graph identity is unavailable. This is a verified baseline gap for #584,
+    not accepted completion evidence.
   - Writes `trace_map.json` and validates trace ID collision behavior.
   - Computes local telemetry artifact directories through config and
     `DUUMBI_TELEMETRY_DIR`.
@@ -275,6 +278,9 @@ Required trace ID behavior:
 - Derive function trace IDs from function graph identity.
 - Derive block trace IDs from block graph identity.
 - Keep trace ID generation deterministic for the same graph identity.
+- Fail traced compilation with an actionable diagnostic when function or block
+  graph identity cannot be derived from graph `@id` or equivalent explicit
+  graph metadata.
 - Do not derive trace IDs from compiler traversal order, block index alone, or
   non-stable memory addresses.
 - Keep IDs compatible with the signed `int64_t` runtime ABI.
@@ -285,7 +291,11 @@ Recommended current strategy:
 - Continue using the existing `duumbi-trace-v1` SHA-256 domain in
   `src/telemetry/mod.rs`.
 - Continue deriving graph identity from graph `@id` parent segments when node
-  IDs are available, with deterministic module/function/block fallback IDs.
+  IDs are available.
+- Replace or gate the current deterministic module/function/block fallback so
+  traced builds fail before instrumentation when graph identity is missing.
+  Default untraced builds may continue to compile graphs that do not request
+  trace IDs.
 - Keep `trace_map.json` as the join artifact for later #585/#586 work.
 
 ### 6. Event Shape And Local Artifacts
@@ -347,7 +357,7 @@ Do not update product specs or create generated artifacts.
 | Trace artifact write failure does not hide original behavior | Runtime-focused test or manual smoke: run a traced binary with `DUUMBI_TELEMETRY_DIR` set to an unwritable or invalid path, assert stderr includes a telemetry warning and the original program output or panic behavior remains visible. If this cannot be made portable across macOS/Linux/Windows CI, document manual evidence and keep unit coverage for runtime warning paths if practical. |
 | Traced runtime records active context for a later crash | Existing `tests/integration_telemetry.rs` crash fixture evidence: traced panic writes trace/crash artifacts and `duumbi telemetry inspect` maps function/block context. Ensure the test asserts caller/current context expected by #584. |
 | Missing runtime hooks fail before false trace success | Compile/link evidence: traced object references trace hook symbols, and normal link with `runtime/duumbi_runtime.c` succeeds. Negative missing-hook testing may be review evidence only unless a portable linker failure test is cheap. |
-| Missing graph identity prevents traced instrumentation | Unit/review evidence: current fallback graph IDs are deterministic when node-derived IDs are unavailable. If product reviewers require hard failure instead of deterministic fallback, stop for a product decision before changing behavior. |
+| Missing graph identity prevents traced instrumentation | Unit or integration test: construct a function/block graph identity gap, request traced compilation, and assert the build fails before claiming trace instrumentation is available. The diagnostic must identify the missing function or block graph identity. Review evidence must confirm no order-derived or fallback placeholder trace IDs are emitted in traced mode. |
 
 ## Live E2E Plan
 
@@ -456,13 +466,18 @@ Each Stage 10 Ralph cycle must:
 3. Default-build non-instrumentation hardening:
    - ensure default object tests cover all trace hook symbols, not only a subset.
    - ensure default build/run integration does not create runtime trace events.
-4. Runtime warning behavior:
+4. Missing graph identity failure:
+   - replace or gate fallback trace graph IDs for traced builds.
+   - add a focused test proving traced compilation fails with an actionable
+     diagnostic when a function or block lacks stable graph identity.
+   - confirm default untraced builds remain unaffected.
+5. Runtime warning behavior:
    - add portable test or manual evidence for artifact write failure preserving
      program behavior.
-5. Documentation:
+6. Documentation:
    - update minimal documentation only if current docs do not describe event
      shape, artifact path, or default-off behavior.
-6. Regression:
+7. Regression:
    - run focused checks, then broader regression if shared compiler/runtime
      behavior changed.
 
@@ -500,6 +515,8 @@ Required review evidence:
 - Default builds remain uninstrumented and do not reference trace hooks.
 - Event trace IDs are deterministic and graph-linked.
 - Event trace IDs join with trace-map function/block metadata.
+- Traced builds fail with an actionable diagnostic when stable function or
+  block graph identity cannot be derived.
 - Trace event emission works locally without network services or provider
   credentials.
 - Telemetry write failure behavior is either tested portably or documented with
@@ -515,8 +532,10 @@ Required review evidence:
   baseline issue or caused by the current cycle.
 - If the current implementation already satisfies #584, do not make cosmetic
   changes. Report evidence and route to review.
-- If trace ID behavior conflicts with graph identity requirements, stop for
-  human guidance before changing ID semantics.
+- If trace ID behavior conflicts with graph identity requirements, follow the
+  approved product spec: traced builds must fail rather than emit fallback or
+  order-derived placeholder IDs. Stop for human guidance only if satisfying
+  that requirement would require changing the approved product scope.
 - If block-exit completeness conflicts with Cranelift terminator constraints,
   preserve program correctness and ask for product/technical review.
 - If write-failure testing is not portable, propose manual evidence rather than
@@ -529,9 +548,6 @@ Required review evidence:
 
 ## Open Questions
 
-- Should #584 implementation harden the current deterministic graph-ID fallback
-  for functions/blocks without node-derived IDs, or should a later product
-  decision require hard failure for missing graph identity?
 - Should portable CI cover telemetry write failure, or is manual smoke evidence
   acceptable for platform-specific filesystem permission behavior?
 
