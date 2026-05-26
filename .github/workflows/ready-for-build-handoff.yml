@@ -33,6 +33,9 @@ jobs:
           GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}
+          DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
+          DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE || 'user' }}
           DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
         with:
           script: |
@@ -60,6 +63,15 @@ jobs:
             function extractGithubUrls(text) {
               return [...new Set((String(text || "").match(/https:\/\/github\.com\/[^\s)>"]+/g) || [])
                 .map((url) => url.replace(/[.,;:]+$/, "")))];
+            }
+
+            function extractLabeledUrl(text, labelPattern) {
+              const lines = String(text || "").split("\n");
+              const line = lines.find((candidate) => {
+                const match = candidate.match(/^\*\*([^:*]+):\*\*\s*(.+)$/);
+                return match && labelPattern.test(match[1]);
+              });
+              return extractGithubUrls(line || "")[0] || "";
             }
 
             function extractNextPrompt(text, issue) {
@@ -122,6 +134,83 @@ jobs:
               return null;
             }
 
+            async function listReadyProjectIssues() {
+              const projectPat = process.env.GH_PROJECT_PAT;
+              const projectNumber = Number(process.env.DUUMBI_PROJECT_NUMBER || 0);
+              const projectOwner = process.env.DUUMBI_PROJECT_OWNER || owner;
+              const ownerType = String(process.env.DUUMBI_PROJECT_OWNER_TYPE || "user").toLowerCase();
+              if (!projectPat || !projectNumber) {
+                warnings.push("project_ready_scan_not_configured");
+                return [];
+              }
+              const rootField = ownerType === "organization" ? "organization" : "user";
+              const query = `
+                query($owner:String!,$number:Int!,$cursor:String) {
+                  ${rootField}(login:$owner) {
+                    projectV2(number:$number) {
+                      items(first:100, after:$cursor) {
+                        nodes {
+                          content {
+                            ... on Issue {
+                              number
+                              title
+                              url
+                              state
+                              repository { nameWithOwner }
+                              labels(first:30) { nodes { name } }
+                            }
+                          }
+                          fieldValues(first:20) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                name
+                                field { ... on ProjectV2SingleSelectField { name } }
+                              }
+                            }
+                          }
+                        }
+                        pageInfo { hasNextPage endCursor }
+                      }
+                    }
+                  }
+                }`;
+              const ready = [];
+              let cursor = null;
+              do {
+                const response = await fetch("https://api.github.com/graphql", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `bearer ${projectPat}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ query, variables: { owner: projectOwner, number: projectNumber, cursor } }),
+                });
+                const body = await response.json();
+                if (body.errors) {
+                  warnings.push("project_ready_scan_failed");
+                  core.warning(`Project Ready for Build scan failed: ${body.errors.map((e) => e.message).join("; ")}`);
+                  return ready;
+                }
+                const page = body.data?.[rootField]?.projectV2?.items;
+                for (const item of page?.nodes || []) {
+                  const issue = item.content;
+                  if (!issue || issue.repository?.nameWithOwner !== `${owner}/${repo}` || issue.state !== "OPEN") continue;
+                  const status = (item.fieldValues?.nodes || []).find((value) =>
+                    value?.field?.name === "Status" && value?.name === "Ready for Build",
+                  );
+                  if (!status) continue;
+                  ready.push({
+                    number: issue.number,
+                    title: issue.title,
+                    html_url: issue.url,
+                    labels: (issue.labels?.nodes || []).map((label) => ({ name: label.name })),
+                  });
+                }
+                cursor = page?.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+              } while (cursor);
+              return ready;
+            }
+
             async function getIssue(issueNumber) {
               const { data } = await github.rest.issues.get({
                 owner,
@@ -146,20 +235,18 @@ jobs:
                 return [...candidates.values()];
               }
 
-              const issues = await github.paginate(github.rest.issues.listForRepo, {
+              const labeledIssues = await github.paginate(github.rest.issues.listForRepo, {
                 owner,
                 repo,
                 state: "open",
+                labels: "tech-spec-approved",
                 per_page: 100,
               });
-              for (const issue of issues.filter((item) => !item.pull_request)) {
-                const labels = labelsFor(issue);
-                if (labels.includes("tech-spec-approved")) {
-                  candidates.set(issue.number, issue);
-                  continue;
-                }
-                const status = await getProjectStatus(issue.number);
-                if (status === "Ready for Build") candidates.set(issue.number, issue);
+              for (const issue of labeledIssues.filter((item) => !item.pull_request)) {
+                candidates.set(issue.number, issue);
+              }
+              for (const issue of await listReadyProjectIssues()) {
+                candidates.set(issue.number, issue);
               }
               return [...candidates.values()];
             }
@@ -191,9 +278,16 @@ jobs:
               const stage9 = [...comments].reverse().find((comment) =>
                 /Stage 9 (Technical Spec Review Decision|AI Gate Decision)/i.test(comment.body || ""),
               );
-              const urls = extractGithubUrls(stage9?.body || "");
-              const technicalSpec = urls.find((url) => /\/pull\/\d+/.test(url)) || "";
-              const productSpec = urls.find((url) => url !== technicalSpec && /\/pull\/\d+/.test(url)) || "";
+              const stage9Body = stage9?.body || "";
+              const urls = extractGithubUrls(stage9Body);
+              const technicalSpec =
+                extractLabeledUrl(stage9Body, /^(Technical spec|Spec PR)$/i) ||
+                urls.find((url) => /\/pull\/\d+/.test(url)) ||
+                "";
+              const productSpec =
+                extractLabeledUrl(stage9Body, /^Product spec$/i) ||
+                urls.find((url) => url !== technicalSpec && /\/pull\/\d+/.test(url)) ||
+                "";
               const prompt = extractNextPrompt(stage9?.body || "", issue);
               const signal = [
                 labels.includes("tech-spec-approved") ? "`tech-spec-approved` label" : null,
@@ -243,10 +337,17 @@ jobs:
             const candidates = await collectCandidates();
             const results = [];
             for (const issue of candidates) {
-              results.push(await notifyIssue(issue));
+              try {
+                results.push(await notifyIssue(issue));
+              } catch (error) {
+                warnings.push(`notify_failed_issue_${issue.number}`);
+                core.warning(`Ready for Build handoff failed for #${issue.number}: ${error.message}`);
+                results.push({ issue: issue.number, outcome: "failed", error: error.message });
+              }
             }
 
             const posted = results.filter((result) => result.outcome === "posted").length;
+            const failed = results.filter((result) => result.outcome === "failed").length;
             const now = new Date().toISOString();
             fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
               schema_version: "duumbi.workflow_metrics.v1",
@@ -311,9 +412,14 @@ jobs:
                 [{ data: "Field", header: true }, { data: "Value", header: true }],
                 ["Issues considered", String(candidates.length)],
                 ["Slack notifications posted", String(posted)],
+                ["Failures", String(failed)],
                 ["Results", JSON.stringify(results)],
               ])
               .write();
+
+            if (failed > 0) {
+              core.setFailed(`${failed} Ready for Build Slack handoff(s) failed.`);
+            }
 
       - name: Upload DUUMBI workflow metrics
         if: always()
