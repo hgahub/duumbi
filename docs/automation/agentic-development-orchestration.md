@@ -28,8 +28,8 @@ or source-repo contracts that support it.
 - `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
-  gates while still failing closed on missing Copilot, checks, scope, or
-  unresolved findings.
+  gates while still failing closed on missing Copilot, checks, scope,
+  unresolved findings, or unmerged spec PR readiness.
 
 ## Workflows Added
 
@@ -129,11 +129,20 @@ Reference pricing pages:
 Stage 7 and Stage 9 AI gates may approve only when:
 
 - the PR is spec-only
+- the PR is open, non-draft, and ready for approval merge
 - Copilot review exists and has no unresolved blocking feedback
 - relevant checks are passing or explicitly not applicable
 - no product, architecture, security, migration, cost, scope, or verification
   question remains
 - the proposed spec stays inside the accepted issue scope
+
+Stage 7 and Stage 9 human Slack approvals are merge finalizers for file-based
+specs. The review request workflows send Slack approval cards only after the
+linked PRODUCT.md or TECHNICAL.md PR is review-clean. Approval then revalidates
+the exact PR, squash-merges the spec artifact with non-closing issue references,
+records the stage decision, and advances the issue to the next workflow state.
+If the PR is draft, dirty, not spec-only, missing Copilot review, or has
+unresolved review threads, the workflow fails closed or defers notification.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
 human decision, Stage 11 review artifact, green checks, clean Copilot review,
