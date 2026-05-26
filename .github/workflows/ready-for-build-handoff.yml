@@ -35,7 +35,7 @@ jobs:
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
           DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}
           DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
-          DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE || 'user' }}
+          DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE }}
           DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
         with:
           script: |
@@ -89,6 +89,13 @@ jobs:
               ].join("\n");
             }
 
+            function inferProjectOwnerType() {
+              const configured = String(process.env.DUUMBI_PROJECT_OWNER_TYPE || "").trim().toLowerCase();
+              if (configured === "organization" || configured === "user") return configured;
+              const ownerKind = context.payload.repository?.owner?.type;
+              return ownerKind === "Organization" ? "organization" : "user";
+            }
+
             async function getProjectStatus(issueNumber) {
               const projectPat = process.env.GH_PROJECT_PAT;
               if (!projectPat) return null;
@@ -138,7 +145,7 @@ jobs:
               const projectPat = process.env.GH_PROJECT_PAT;
               const projectNumber = Number(process.env.DUUMBI_PROJECT_NUMBER || 0);
               const projectOwner = process.env.DUUMBI_PROJECT_OWNER || owner;
-              const ownerType = String(process.env.DUUMBI_PROJECT_OWNER_TYPE || "user").toLowerCase();
+              const ownerType = inferProjectOwnerType();
               if (!projectPat || !projectNumber) {
                 warnings.push("project_ready_scan_not_configured");
                 return [];
@@ -286,7 +293,6 @@ jobs:
                 "";
               const productSpec =
                 extractLabeledUrl(stage9Body, /^Product spec$/i) ||
-                urls.find((url) => url !== technicalSpec && /\/pull\/\d+/.test(url)) ||
                 "";
               const prompt = extractNextPrompt(stage9?.body || "", issue);
               const signal = [
@@ -348,6 +354,8 @@ jobs:
 
             const posted = results.filter((result) => result.outcome === "posted").length;
             const failed = results.filter((result) => result.outcome === "failed").length;
+            const notificationAttempts = posted + failed;
+            const workflowConclusion = failed > 0 ? "failure" : "success";
             const now = new Date().toISOString();
             fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
               schema_version: "duumbi.workflow_metrics.v1",
@@ -363,7 +371,7 @@ jobs:
                 actor: context.actor,
                 ref: context.ref,
                 sha: context.sha,
-                conclusion: "success",
+                conclusion: workflowConclusion,
                 started_at: now,
                 completed_at: now,
                 duration_ms: null,
@@ -378,7 +386,7 @@ jobs:
               counts: {
                 issues_considered: candidates.length,
                 issues_queued: posted,
-                slack_notifications_attempted: posted,
+                slack_notifications_attempted: notificationAttempts,
                 artifact_links_found: null,
                 artifact_links_missing: null,
               },
