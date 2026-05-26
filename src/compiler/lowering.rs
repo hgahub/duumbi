@@ -2151,7 +2151,10 @@ mod tests {
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
 
         assert!(!object_contains(&obj_bytes, "duumbi_trace_init"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_function_enter"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_function_exit"));
         assert!(!object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_block_exit"));
     }
 
     #[test]
@@ -2179,6 +2182,7 @@ mod tests {
         assert!(object_contains(&obj_bytes, "duumbi_trace_init"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_function_enter"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+        assert!(object_contains(&obj_bytes, "duumbi_trace_block_exit"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_function_exit"));
     }
 
