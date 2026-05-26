@@ -29,8 +29,8 @@ Do not use this spec to start implementation during Stage 8 or Stage 9.
 
 ## Source Context
 
-- Product spec: `specs/DUUMBI-376/PRODUCT.md`, approved through product spec PR
-  #634.
+- Product spec: `specs/DUUMBI-376/PRODUCT.md`.
+- Product spec PR: `https://github.com/hgahub/duumbi/pull/634`.
 - GitHub issue: `https://github.com/hgahub/duumbi/issues/376`.
 - Stage 4 triage: issue comment
   `https://github.com/hgahub/duumbi/issues/376#issuecomment-4538613990`.
