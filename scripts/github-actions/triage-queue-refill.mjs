@@ -317,6 +317,29 @@ function stripJsonFence(value) {
   return fenceMatch ? fenceMatch[1].trim() : text;
 }
 
+function buildJsonRepairMessages({ baseMessages, invalidContent, parseError }) {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are repairing one DUUMBI Stage 4 triage decision.",
+        "Return exactly one valid strict JSON object and no markdown.",
+        "Do not include comments, trailing commas, prose outside JSON, or JSON5 syntax.",
+        "Preserve the intended decision if it can be recovered safely.",
+        `Previous parser error: ${truncateText(parseError?.message || parseError, 300)}`,
+      ].join("\n"),
+    },
+    ...baseMessages,
+    {
+      role: "user",
+      content: [
+        "Repair this malformed decision into one valid JSON object:",
+        truncateText(invalidContent, 4000),
+      ].join("\n\n"),
+    },
+  ];
+}
+
 export function parseTriageDecision(content) {
   const text = stripJsonFence(content);
   try {
@@ -843,7 +866,7 @@ function providerUsageFromDeepSeek(model, usage, latencyMs) {
     reason: "deepseek_api_call",
     provider: "deepseek",
     model,
-    request_count: 1,
+    request_count: Number.isFinite(Number(usage.request_count)) ? Number(usage.request_count) : 1,
     prompt_tokens: Number.isFinite(Number(usage.prompt_tokens)) ? Number(usage.prompt_tokens) : null,
     completion_tokens: Number.isFinite(Number(usage.completion_tokens)) ? Number(usage.completion_tokens) : null,
     total_tokens: Number.isFinite(Number(usage.total_tokens)) ? Number(usage.total_tokens) : null,
@@ -851,6 +874,105 @@ function providerUsageFromDeepSeek(model, usage, latencyMs) {
     latency_ms: Number.isFinite(latencyMs) ? latencyMs : null,
     failure_count: 0,
   };
+}
+
+function combineDeepSeekUsage(responses) {
+  const usage = {
+    request_count: responses.length,
+    prompt_cache_hit_tokens: 0,
+    prompt_cache_miss_tokens: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  };
+  let hasPromptCacheHitTokens = false;
+  let hasPromptCacheMissTokens = false;
+  let hasPromptTokens = false;
+  let hasCompletionTokens = false;
+  let hasTotalTokens = false;
+  let latencyMs = 0;
+
+  for (const response of responses) {
+    const current = response?.usage || {};
+    const promptCacheHitTokens = Number(current.prompt_cache_hit_tokens);
+    const promptCacheMissTokens = Number(current.prompt_cache_miss_tokens);
+    const promptTokens = Number(current.prompt_tokens);
+    const completionTokens = Number(current.completion_tokens);
+    const totalTokens = Number(current.total_tokens);
+    if (Number.isFinite(promptCacheHitTokens)) {
+      usage.prompt_cache_hit_tokens += promptCacheHitTokens;
+      hasPromptCacheHitTokens = true;
+    }
+    if (Number.isFinite(promptCacheMissTokens)) {
+      usage.prompt_cache_miss_tokens += promptCacheMissTokens;
+      hasPromptCacheMissTokens = true;
+    }
+    if (Number.isFinite(promptTokens)) {
+      usage.prompt_tokens += promptTokens;
+      hasPromptTokens = true;
+    }
+    if (Number.isFinite(completionTokens)) {
+      usage.completion_tokens += completionTokens;
+      hasCompletionTokens = true;
+    }
+    if (Number.isFinite(totalTokens)) {
+      usage.total_tokens += totalTokens;
+      hasTotalTokens = true;
+    }
+    const currentLatencyMs = Number(response?.latencyMs);
+    if (Number.isFinite(currentLatencyMs)) {
+      latencyMs += currentLatencyMs;
+    }
+  }
+
+  return {
+    usage: {
+      ...usage,
+      prompt_cache_hit_tokens: hasPromptCacheHitTokens ? usage.prompt_cache_hit_tokens : null,
+      prompt_cache_miss_tokens: hasPromptCacheMissTokens ? usage.prompt_cache_miss_tokens : null,
+      prompt_tokens: hasPromptTokens ? usage.prompt_tokens : null,
+      completion_tokens: hasCompletionTokens ? usage.completion_tokens : null,
+      total_tokens: hasTotalTokens ? usage.total_tokens : null,
+    },
+    latencyMs: latencyMs || null,
+  };
+}
+
+async function getParsedTriageDecision({ fetchImpl, apiKey, model, messages, core, warnings = [] }) {
+  const responses = [];
+  const firstResponse = await callDeepSeek({
+    fetchImpl,
+    apiKey,
+    model,
+    messages,
+  });
+  responses.push(firstResponse);
+
+  try {
+    return {
+      parsedDecision: parseTriageDecision(firstResponse.content),
+      responses,
+    };
+  } catch (error) {
+    const warning = `DeepSeek decision was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
+    warnings.push(warning);
+    core?.warning?.(warning);
+    const repairResponse = await callDeepSeek({
+      fetchImpl,
+      apiKey,
+      model,
+      messages: buildJsonRepairMessages({
+        baseMessages: messages,
+        invalidContent: firstResponse.content,
+        parseError: error,
+      }),
+    });
+    responses.push(repairResponse);
+    return {
+      parsedDecision: parseTriageDecision(repairResponse.content),
+      responses,
+    };
+  }
 }
 
 async function applyTriageDecision({ api, project, decision }) {
@@ -1025,16 +1147,19 @@ export async function runTriageQueueRefill({
       warnings,
     });
     const messages = buildDeepSeekMessages(triageContext);
-    const deepSeekResponse = await callDeepSeek({
+    const { parsedDecision, responses: deepSeekResponses } = await getParsedTriageDecision({
       fetchImpl,
       apiKey: deepSeekApiKey,
       model: deepSeekModel,
       messages,
+      core,
+      warnings,
     });
-    const parsedDecision = parseTriageDecision(deepSeekResponse.content);
     const decision = validateTriageDecision(parsedDecision, triageContext);
     const applied = await applyTriageDecision({ api, project, decision });
     const queued = applied.issueNumber ? 1 : 0;
+    const lastDeepSeekResponse = deepSeekResponses.at(-1);
+    const combinedDeepSeekUsage = combineDeepSeekUsage(deepSeekResponses);
 
     result = {
       ...result,
@@ -1042,7 +1167,7 @@ export async function runTriageQueueRefill({
       decision: decision.action,
       issueNumber: applied.issueNumber,
       issueUrl: applied.issueUrl,
-      model: deepSeekResponse.model,
+      model: lastDeepSeekResponse.model,
     };
 
     const metrics = buildWorkflowMetrics({
@@ -1057,7 +1182,11 @@ export async function runTriageQueueRefill({
         artifact_links_found: decision.source_links?.length || null,
         artifact_links_missing: decision.source_links?.length ? 0 : null,
       },
-      providerUsage: providerUsageFromDeepSeek(deepSeekResponse.model, deepSeekResponse.usage, deepSeekResponse.latencyMs),
+      providerUsage: providerUsageFromDeepSeek(
+        lastDeepSeekResponse.model,
+        combinedDeepSeekUsage.usage,
+        combinedDeepSeekUsage.latencyMs,
+      ),
       warnings,
     });
     writeMetrics(metrics);
