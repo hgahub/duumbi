@@ -41,6 +41,7 @@ or source-repo contracts that support it.
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded DeepSeek Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
+| `ready-for-build-handoff.yml` | `tech-spec-approved` label, every 15 minutes, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, with an idempotent issue marker so the notification can be retried independently from `stage-approval.yml`. |
 | `stage10-authorization-request.yml` | label, hourly, manual, repository dispatch | Sends Stage 10 resource authorization Slack notifications and records resource decisions. |
 | `stage11-review-request.yml` | label, hourly, manual | Sends implementation review handoff notifications and records the Stage 11 notification marker. |
 | `stage11-merge-decision.yml` | manual, repository dispatch | Processes explicit human merge authorization, fails closed on missing evidence, and squash-merges only when Stage 11 evidence, CI, and Copilot review are clean. |
@@ -161,6 +162,16 @@ reviewers, fix and resolve review feedback, route to `Technical Spec Review`,
 then run Stage 9 through the configured AI or human gate. Only a satisfied
 Stage 9 gate may merge the technical spec PR, move the issue to `Ready for
 Build`, and send the Stage 10 prompt.
+
+`ready-for-build-handoff.yml` is the fallback and retry path for the Stage 10
+Slack handoff. It posts when `tech-spec-approved` is added and also scans for
+open issues that are already labeled `tech-spec-approved` or whose Project V2
+Status is `Ready for Build`. It records
+`<!-- duumbi-ready-for-build-slack-notified:v1 issue=N -->` on the issue after a
+successful Slack post, so reruns and scheduled scans do not duplicate the same
+handoff. This keeps Slack delivery independent from `stage-approval.yml` merge
+or validation failures while preserving GitHub Issues and Project V2 as the
+source of truth.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
 human decision, Stage 11 review artifact, green checks, clean Copilot review,

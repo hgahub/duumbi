@@ -1,0 +1,325 @@
+name: Ready For Build Handoff
+
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Optional issue number to notify if it is Ready for Build
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ready-for-build-handoff-${{ github.event.issue.number || github.event.inputs.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Notify Stage 10 handoff
+    if: github.event_name != 'issues' || github.event.label.name == 'tech-spec-approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Ready for Build handoff
+        uses: actions/github-script@v9
+        env:
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
+          DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
+        with:
+          script: |
+            const fs = require("fs");
+            const { owner, repo } = context.repo;
+            const eventName = context.eventName;
+            const slackToken = process.env.SLACK_BOT_TOKEN;
+            const slackChannel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            const markerFor = (issueNumber) => `<!-- duumbi-ready-for-build-slack-notified:v1 issue=${issueNumber} -->`;
+            const warnings = [];
+
+            function labelsFor(issue) {
+              return (issue.labels || [])
+                .map((label) => typeof label === "string" ? label : label.name)
+                .filter(Boolean);
+            }
+
+            function slackEscape(value) {
+              return String(value || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+            }
+
+            function extractGithubUrls(text) {
+              return [...new Set((String(text || "").match(/https:\/\/github\.com\/[^\s)>"]+/g) || [])
+                .map((url) => url.replace(/[.,;:]+$/, "")))];
+            }
+
+            function extractNextPrompt(text, issue) {
+              const match = String(text || "").match(/## Next Codex Prompt\s*```text\n([\s\S]*?)```/i);
+              if (match?.[1]?.trim()) return match[1].trim();
+              return [
+                "Run DUUMBI Stage 10 Implementation Coordination with duumbi-implementation.",
+                "",
+                `Target issue: ${issue.html_url}`,
+                "Mode: coordinate Stage 10 branch, PR, blocker, or evidence state",
+                "",
+                "Goal: Verify Ready for Build context, manage branch and PR readiness, consolidate Ralph-cycle evidence when relevant, choose the next routed action, and delegate implementation edits only through bounded Ralph cycles.",
+                "",
+                "Do not exceed the approved product or technical specs, skip resource gates, perform Stage 12 closure, merge PRs, or mark the issue done.",
+              ].join("\n");
+            }
+
+            async function getProjectStatus(issueNumber) {
+              const projectPat = process.env.GH_PROJECT_PAT;
+              if (!projectPat) return null;
+              const query = `
+                query($owner:String!,$repo:String!,$number:Int!) {
+                  repository(owner:$owner,name:$repo) {
+                    issue(number:$number) {
+                      projectItems(first:20) {
+                        nodes {
+                          fieldValues(first:20) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                name
+                                field { ... on ProjectV2SingleSelectField { name } }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }`;
+              const response = await fetch("https://api.github.com/graphql", {
+                method: "POST",
+                headers: {
+                  Authorization: `bearer ${projectPat}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ query, variables: { owner, repo, number: Number(issueNumber) } }),
+              });
+              const body = await response.json();
+              if (body.errors) {
+                warnings.push(`project_status_query_failed_issue_${issueNumber}`);
+                core.warning(`Project status query failed for #${issueNumber}: ${body.errors.map((e) => e.message).join("; ")}`);
+                return null;
+              }
+              const items = body.data?.repository?.issue?.projectItems?.nodes || [];
+              for (const item of items) {
+                for (const value of item.fieldValues?.nodes || []) {
+                  if (value?.field?.name === "Status" && value?.name) return value.name;
+                }
+              }
+              return null;
+            }
+
+            async function getIssue(issueNumber) {
+              const { data } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: Number(issueNumber),
+              });
+              return data;
+            }
+
+            async function collectCandidates() {
+              const candidates = new Map();
+
+              if (eventName === "issues") {
+                const issue = context.payload.issue;
+                if (context.payload.label?.name === "tech-spec-approved") candidates.set(issue.number, issue);
+                return [...candidates.values()];
+              }
+
+              const inputIssue = String(context.payload.inputs?.issue_number || "").trim();
+              if (inputIssue) {
+                candidates.set(Number(inputIssue), await getIssue(inputIssue));
+                return [...candidates.values()];
+              }
+
+              const issues = await github.paginate(github.rest.issues.listForRepo, {
+                owner,
+                repo,
+                state: "open",
+                per_page: 100,
+              });
+              for (const issue of issues.filter((item) => !item.pull_request)) {
+                const labels = labelsFor(issue);
+                if (labels.includes("tech-spec-approved")) {
+                  candidates.set(issue.number, issue);
+                  continue;
+                }
+                const status = await getProjectStatus(issue.number);
+                if (status === "Ready for Build") candidates.set(issue.number, issue);
+              }
+              return [...candidates.values()];
+            }
+
+            async function loadComments(issueNumber) {
+              return github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+            }
+
+            async function notifyIssue(issue) {
+              const labels = labelsFor(issue);
+              const projectStatus = await getProjectStatus(issue.number);
+              const isReady = labels.includes("tech-spec-approved") || projectStatus === "Ready for Build";
+              if (!isReady) return { issue: issue.number, outcome: "not_ready" };
+
+              const comments = await loadComments(issue.number);
+              const marker = markerFor(issue.number);
+              if (comments.some((comment) => (comment.body || "").includes(marker))) {
+                return { issue: issue.number, outcome: "already_notified" };
+              }
+
+              if (!slackToken) throw new Error("SLACK_BOT_TOKEN is not configured.");
+              if (!slackChannel) throw new Error("SLACK_REVIEW_CHANNEL_ID is not configured.");
+
+              const stage9 = [...comments].reverse().find((comment) =>
+                /Stage 9 (Technical Spec Review Decision|AI Gate Decision)/i.test(comment.body || ""),
+              );
+              const urls = extractGithubUrls(stage9?.body || "");
+              const technicalSpec = urls.find((url) => /\/pull\/\d+/.test(url)) || "";
+              const productSpec = urls.find((url) => url !== technicalSpec && /\/pull\/\d+/.test(url)) || "";
+              const prompt = extractNextPrompt(stage9?.body || "", issue);
+              const signal = [
+                labels.includes("tech-spec-approved") ? "`tech-spec-approved` label" : null,
+                projectStatus === "Ready for Build" ? "`Ready for Build` Project status" : null,
+              ].filter(Boolean).join(" and ");
+
+              const text = [
+                "*DUUMBI Stage 10 handoff: Ready for Build*",
+                `*Issue:* <${issue.html_url}|#${issue.number} ${slackEscape(issue.title)}>`,
+                `*Signal:* ${signal || "Ready for Build"}`,
+                technicalSpec ? `*Technical spec:* ${technicalSpec}` : null,
+                productSpec ? `*Product spec:* ${productSpec}` : null,
+                "",
+                "*Next Codex prompt:*",
+                "```",
+                prompt,
+                "```",
+              ].filter((line) => line !== null).join("\n");
+
+              const response = await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${slackToken}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({ channel: slackChannel, text }),
+              });
+              const body = await response.json();
+              if (!response.ok || !body.ok) throw new Error(`Slack chat.postMessage failed: ${body.error || response.status}`);
+
+              const markerBody = [
+                marker,
+                "Ready for Build Slack handoff posted.",
+                "",
+                `Slack timestamp: ${body.ts || "<unavailable>"}`,
+                `Signal: ${signal || "Ready for Build"}`,
+              ].join("\n");
+              const { data: comment } = await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body: markerBody,
+              });
+              return { issue: issue.number, outcome: "posted", comment_url: comment.html_url };
+            }
+
+            const candidates = await collectCandidates();
+            const results = [];
+            for (const issue of candidates) {
+              results.push(await notifyIssue(issue));
+            }
+
+            const posted = results.filter((result) => result.outcome === "posted").length;
+            const now = new Date().toISOString();
+            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
+              schema_version: "duumbi.workflow_metrics.v1",
+              generated_at: now,
+              source: "github_actions",
+              repository: `${owner}/${repo}`,
+              workflow: {
+                name: context.workflow,
+                file: ".github/workflows/ready-for-build-handoff.yml",
+                run_id: context.runId,
+                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                event_name: eventName,
+                actor: context.actor,
+                ref: context.ref,
+                sha: context.sha,
+                conclusion: "success",
+                started_at: now,
+                completed_at: now,
+                duration_ms: null,
+              },
+              correlation: {
+                issue_number: candidates.length === 1 ? candidates[0].number : null,
+                pr_number: null,
+                stage: "10-handoff",
+                decision: null,
+                project_status: "Ready for Build",
+              },
+              counts: {
+                issues_considered: candidates.length,
+                issues_queued: posted,
+                slack_notifications_attempted: posted,
+                artifact_links_found: null,
+                artifact_links_missing: null,
+              },
+              provider_usage: {
+                available: false,
+                reason: "notification_only",
+                provider: null,
+                model: null,
+                request_count: null,
+                prompt_tokens: null,
+                completion_tokens: null,
+                total_tokens: null,
+                estimated_cost_usd: null,
+                latency_ms: null,
+                failure_count: null,
+              },
+              privacy: {
+                metadata_only: true,
+                raw_prompts_included: false,
+                raw_completions_included: false,
+                raw_slack_payloads_included: false,
+                secrets_included: false,
+              },
+              warnings,
+              results,
+            }, null, 2)}\n`);
+
+            await core.summary
+              .addHeading("Ready for Build Handoff", 2)
+              .addTable([
+                [{ data: "Field", header: true }, { data: "Value", header: true }],
+                ["Issues considered", String(candidates.length)],
+                ["Slack notifications posted", String(posted)],
+                ["Results", JSON.stringify(results)],
+              ])
+              .write();
+
+      - name: Upload DUUMBI workflow metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: duumbi-workflow-metrics-ready-for-build-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: duumbi-workflow-metrics.json
+          if-no-files-found: warn
