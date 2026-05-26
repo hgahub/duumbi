@@ -98,6 +98,22 @@ pub enum TelemetryError {
     /// Required telemetry evidence was not available.
     #[error("missing telemetry evidence: {0}")]
     MissingEvidence(String),
+    /// A traced build could not derive required graph identity metadata.
+    #[error(
+        "missing {kind} graph identity for module '{module}', function '{function}'{block_context}"
+    )]
+    MissingTraceGraphIdentity {
+        /// Missing trace-map entry kind.
+        kind: TraceMapKind,
+        /// Owning module name.
+        module: String,
+        /// Owning function name.
+        function: String,
+        /// Optional block label for block identity failures.
+        block: Option<String>,
+        /// Formatted optional block context for display.
+        block_context: String,
+    },
     /// A telemetry artifact could not be parsed.
     #[error("failed to parse telemetry artifact '{path}': {source}")]
     Parse {
@@ -393,23 +409,30 @@ impl TraceMap {
     ///
     /// # Errors
     ///
-    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
-    /// inside this graph.
+    /// Returns [`TelemetryError::MissingTraceGraphIdentity`] if this graph has
+    /// functions or blocks without stable graph identities. Returns
+    /// [`TelemetryError::TraceIdCollision`] if generated IDs collide inside
+    /// this graph.
     pub fn from_graph(graph: &SemanticGraph) -> Result<Self, TelemetryError> {
-        Self::new(entries_for_graph(graph))
+        Self::new(entries_for_graph(graph)?)
     }
 
     /// Creates a combined trace map for all modules in a program.
     ///
     /// # Errors
     ///
-    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
-    /// inside the compiled program.
+    /// Returns [`TelemetryError::MissingTraceGraphIdentity`] if any program
+    /// module has functions or blocks without stable graph identities. Returns
+    /// [`TelemetryError::TraceIdCollision`] if generated IDs collide inside the
+    /// compiled program.
     pub fn from_program(program: &Program) -> Result<Self, TelemetryError> {
         let entries = program
             .modules
             .values()
-            .flat_map(entries_for_graph)
+            .map(entries_for_graph)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
             .collect();
         Self::new(entries)
     }
@@ -921,11 +944,11 @@ fn resolve_artifact_dir(
     Ok(workspace_root.join(configured))
 }
 
-fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
+fn entries_for_graph(graph: &SemanticGraph) -> Result<Vec<TraceMapEntry>, TelemetryError> {
     let mut entries = Vec::new();
 
     for function in &graph.functions {
-        let function_graph_id = function_trace_graph_id(graph, function);
+        let function_graph_id = function_trace_graph_id(graph, function)?;
         entries.push(TraceMapEntry {
             trace_id: trace_id(TraceMapKind::Function, &function_graph_id),
             kind: TraceMapKind::Function,
@@ -936,7 +959,7 @@ fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
         });
 
         for block in &function.blocks {
-            let block_graph_id = block_trace_graph_id(graph, function, block);
+            let block_graph_id = block_trace_graph_id(graph, function, block)?;
             entries.push(TraceMapEntry {
                 trace_id: trace_id(TraceMapKind::Block, &block_graph_id),
                 kind: TraceMapKind::Block,
@@ -948,32 +971,59 @@ fn entries_for_graph(graph: &SemanticGraph) -> Vec<TraceMapEntry> {
         }
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Returns the graph identity used for a function trace entry.
-#[must_use]
-pub fn function_trace_graph_id(graph: &SemanticGraph, function: &FunctionInfo) -> String {
+///
+/// # Errors
+///
+/// Returns [`TelemetryError::MissingTraceGraphIdentity`] when no block node can
+/// be mapped back to a stable function graph identity.
+pub fn function_trace_graph_id(
+    graph: &SemanticGraph,
+    function: &FunctionInfo,
+) -> Result<String, TelemetryError> {
     function
         .blocks
         .iter()
         .find_map(|block| graph_id_from_first_node(graph, block, 2))
-        .unwrap_or_else(|| format!("duumbi:{}/{}", graph.module_name.0, function.name.0))
+        .ok_or_else(|| missing_trace_graph_identity(graph, function, None, TraceMapKind::Function))
 }
 
 /// Returns the graph identity used for a block trace entry.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`TelemetryError::MissingTraceGraphIdentity`] when the block cannot
+/// be mapped back to a stable graph block identity.
 pub fn block_trace_graph_id(
     graph: &SemanticGraph,
     function: &FunctionInfo,
     block: &BlockInfo,
-) -> String {
-    graph_id_from_first_node(graph, block, 1).unwrap_or_else(|| {
-        format!(
-            "duumbi:{}/{}/{}",
-            graph.module_name.0, function.name.0, block.label.0
-        )
+) -> Result<String, TelemetryError> {
+    graph_id_from_first_node(graph, block, 1).ok_or_else(|| {
+        missing_trace_graph_identity(graph, function, Some(block), TraceMapKind::Block)
     })
+}
+
+fn missing_trace_graph_identity(
+    graph: &SemanticGraph,
+    function: &FunctionInfo,
+    block: Option<&BlockInfo>,
+    kind: TraceMapKind,
+) -> TelemetryError {
+    let block = block.map(|block| block.label.0.clone());
+    let block_context = block
+        .as_ref()
+        .map_or_else(String::new, |label| format!(", block '{label}'"));
+    TelemetryError::MissingTraceGraphIdentity {
+        kind,
+        module: graph.module_name.0.clone(),
+        function: function.name.0.clone(),
+        block,
+        block_context,
+    }
 }
 
 fn graph_id_from_first_node(
@@ -1149,6 +1199,46 @@ mod tests {
                 && entry.function == "main"
                 && entry.block.as_deref() == Some("entry")
         }));
+    }
+
+    #[test]
+    fn trace_map_from_graph_rejects_missing_function_identity() {
+        let mut graph = test_graph();
+        for (index, node) in graph.graph.node_weights_mut().enumerate() {
+            node.id = crate::types::NodeId(format!("node-{index}"));
+        }
+
+        let err = TraceMap::from_graph(&graph).expect_err("trace map should require graph IDs");
+
+        assert!(matches!(
+            err,
+            TelemetryError::MissingTraceGraphIdentity {
+                kind: TraceMapKind::Function,
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("missing function graph identity"));
+    }
+
+    #[test]
+    fn trace_map_from_graph_rejects_missing_block_identity() {
+        let mut graph = test_graph();
+        graph.functions[0].blocks.push(crate::graph::BlockInfo {
+            label: crate::types::BlockLabel("empty".to_string()),
+            nodes: vec![],
+        });
+
+        let err = TraceMap::from_graph(&graph).expect_err("trace map should require block IDs");
+
+        assert!(matches!(
+            err,
+            TelemetryError::MissingTraceGraphIdentity {
+                kind: TraceMapKind::Block,
+                block: Some(_),
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("block 'empty'"));
     }
 
     #[test]

@@ -3,29 +3,46 @@
 use std::fs;
 use std::process::Command;
 
+use duumbi::telemetry::{TraceMap, TraceMapKind};
+use serde::Deserialize;
+
 #[test]
 fn traced_option_none_unwrap_writes_crash_evidence_and_inspects() {
-    let stdout = traced_fixture_inspect_output(
+    let evidence = traced_fixture_evidence(
         "tests/fixtures/telemetry/option_none_unwrap.jsonld",
         "panic",
     );
 
+    let stdout = &evidence.inspect_stdout;
     assert!(stdout.contains("Function: duumbi:telemetry/main"));
     assert!(stdout.contains("Block: duumbi:telemetry/main/entry"));
     assert!(stdout.contains("Exact node evidence: unavailable in v1"));
+
+    assert_trace_events_join_trace_map(&evidence, &["function_enter", "block_enter"]);
 }
 
 #[test]
 fn traced_call_then_panic_preserves_caller_context() {
-    let stdout = traced_fixture_inspect_output(
+    let evidence = traced_fixture_evidence(
         "tests/fixtures/telemetry/call_then_panic.jsonld",
         "call_then_panic",
     );
 
+    let stdout = &evidence.inspect_stdout;
     assert!(stdout.contains("Function: duumbi:telemetry_call/main"));
     assert!(stdout.contains("Block: duumbi:telemetry_call/main/entry"));
     assert!(!stdout.contains("Function: duumbi:telemetry_call/helper"));
     assert!(!stdout.contains("Block: duumbi:telemetry_call/helper/entry"));
+
+    assert_trace_events_join_trace_map(
+        &evidence,
+        &[
+            "function_enter",
+            "function_exit",
+            "block_enter",
+            "block_exit",
+        ],
+    );
 }
 
 #[test]
@@ -58,7 +75,7 @@ fn telemetry_inspect_without_dir_reports_malformed_config() {
     );
 }
 
-fn traced_fixture_inspect_output(fixture: &str, binary_name: &str) -> String {
+fn traced_fixture_evidence(fixture: &str, binary_name: &str) -> TraceFixtureEvidence {
     let duumbi = env!("CARGO_BIN_EXE_duumbi");
     let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
     let telemetry_dir = tmp.path().join("telemetry");
@@ -96,6 +113,9 @@ fn traced_fixture_inspect_output(fixture: &str, binary_name: &str) -> String {
     assert!(telemetry_dir.join("traces.jsonl").exists());
     assert!(telemetry_dir.join("crash_dump.jsonl").exists());
 
+    let trace_map = read_trace_map(&telemetry_dir);
+    let trace_events = read_trace_events(&telemetry_dir);
+
     let inspect = Command::new(duumbi)
         .args([
             "telemetry",
@@ -112,5 +132,72 @@ fn traced_fixture_inspect_output(fixture: &str, binary_name: &str) -> String {
         "telemetry inspect failed: {}",
         String::from_utf8_lossy(&inspect.stderr)
     );
-    String::from_utf8(inspect.stdout).expect("invariant: inspect stdout must be UTF-8")
+    TraceFixtureEvidence {
+        inspect_stdout: String::from_utf8(inspect.stdout)
+            .expect("invariant: inspect stdout must be UTF-8"),
+        trace_map,
+        trace_events,
+    }
+}
+
+#[derive(Debug)]
+struct TraceFixtureEvidence {
+    inspect_stdout: String,
+    trace_map: TraceMap,
+    trace_events: Vec<TraceEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceEvent {
+    event: String,
+    trace_id: Option<u64>,
+}
+
+fn read_trace_map(telemetry_dir: &std::path::Path) -> TraceMap {
+    let content = fs::read_to_string(telemetry_dir.join("trace_map.json"))
+        .expect("invariant: trace map must be readable");
+    serde_json::from_str(&content).expect("invariant: trace map must parse")
+}
+
+fn read_trace_events(telemetry_dir: &std::path::Path) -> Vec<TraceEvent> {
+    let content = fs::read_to_string(telemetry_dir.join("traces.jsonl"))
+        .expect("invariant: trace events must be readable");
+    content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("invariant: trace event must parse"))
+        .collect()
+}
+
+fn assert_trace_events_join_trace_map(evidence: &TraceFixtureEvidence, required_events: &[&str]) {
+    for event in required_events {
+        let kind = match *event {
+            "function_enter" | "function_exit" => TraceMapKind::Function,
+            "block_enter" | "block_exit" => TraceMapKind::Block,
+            _ => panic!("unsupported trace event kind {event}"),
+        };
+        let matching_events: Vec<_> = evidence
+            .trace_events
+            .iter()
+            .filter(|trace| trace.event == *event)
+            .collect();
+        assert!(
+            !matching_events.is_empty(),
+            "missing trace event kind {event}"
+        );
+
+        for trace in matching_events {
+            let trace_id = trace
+                .trace_id
+                .unwrap_or_else(|| panic!("trace event kind {event} did not include trace_id"));
+
+            assert!(
+                evidence
+                    .trace_map
+                    .entries
+                    .iter()
+                    .any(|entry| entry.kind == kind && entry.trace_id == trace_id),
+                "trace event {event} with id {trace_id} did not join to the trace map"
+            );
+        }
+    }
 }

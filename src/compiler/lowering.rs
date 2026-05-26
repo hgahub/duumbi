@@ -752,7 +752,8 @@ fn compile_function(
     });
     let function_trace_id = trace_refs
         .as_ref()
-        .map(|_| trace_id_for_function(graph, func_info) as i64);
+        .map(|_| trace_id_for_function(graph, func_info).map(|id| id as i64))
+        .transpose()?;
 
     // Import all callable function references
     let mut func_refs: HashMap<String, cranelift_codegen::ir::FuncRef> = HashMap::new();
@@ -825,7 +826,7 @@ fn compile_function(
             emit_trace_event_call(
                 &mut builder,
                 trace.block_enter,
-                trace_id_for_block(graph, func_info, block_info) as i64,
+                trace_id_for_block(graph, func_info, block_info)? as i64,
             );
         }
 
@@ -905,7 +906,7 @@ fn compile_function(
                         emit_trace_event_call(
                             &mut builder,
                             trace.block_exit,
-                            trace_id_for_block(graph, func_info, block_info) as i64,
+                            trace_id_for_block(graph, func_info, block_info)? as i64,
                         );
                     }
                     builder
@@ -1019,7 +1020,7 @@ fn compile_function(
                         emit_trace_event_call(
                             &mut builder,
                             trace.block_exit,
-                            trace_id_for_block(graph, func_info, block_info) as i64,
+                            trace_id_for_block(graph, func_info, block_info)? as i64,
                         );
                         let Some(function_id) = function_trace_id else {
                             return Err(CompileError::Cranelift {
@@ -1495,7 +1496,7 @@ fn compile_function(
                         emit_trace_event_call(
                             &mut builder,
                             trace.block_exit,
-                            trace_id_for_block(graph, func_info, block_info) as i64,
+                            trace_id_for_block(graph, func_info, block_info)? as i64,
                         );
                     }
                     builder
@@ -1621,18 +1622,34 @@ fn emit_trace_event_call(
     builder.ins().call(func_ref, &[trace_id_value]);
 }
 
-fn trace_id_for_function(graph: &SemanticGraph, func_info: &FunctionInfo) -> u64 {
-    let graph_id = crate::telemetry::function_trace_graph_id(graph, func_info);
-    crate::telemetry::trace_id(TraceMapKind::Function, &graph_id)
+fn trace_id_for_function(
+    graph: &SemanticGraph,
+    func_info: &FunctionInfo,
+) -> Result<u64, CompileError> {
+    let graph_id =
+        crate::telemetry::function_trace_graph_id(graph, func_info).map_err(|source| {
+            CompileError::Cranelift {
+                message: format!("Trace instrumentation requires graph identity: {source}"),
+            }
+        })?;
+    Ok(crate::telemetry::trace_id(
+        TraceMapKind::Function,
+        &graph_id,
+    ))
 }
 
 fn trace_id_for_block(
     graph: &SemanticGraph,
     func_info: &FunctionInfo,
     block_info: &BlockInfo,
-) -> u64 {
-    let graph_id = crate::telemetry::block_trace_graph_id(graph, func_info, block_info);
-    crate::telemetry::trace_id(TraceMapKind::Block, &graph_id)
+) -> Result<u64, CompileError> {
+    let graph_id =
+        crate::telemetry::block_trace_graph_id(graph, func_info, block_info).map_err(|source| {
+            CompileError::Cranelift {
+                message: format!("Trace instrumentation requires graph identity: {source}"),
+            }
+        })?;
+    Ok(crate::telemetry::trace_id(TraceMapKind::Block, &graph_id))
 }
 
 /// Resolves the left and right operand SSA values for a binary operation node.
@@ -2134,7 +2151,24 @@ mod tests {
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
 
         assert!(!object_contains(&obj_bytes, "duumbi_trace_init"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_function_enter"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_function_exit"));
         assert!(!object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_block_exit"));
+    }
+
+    #[test]
+    fn default_compile_allows_missing_trace_graph_identity() {
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let mut sg = build_graph(&module).expect("invariant: fixture must build");
+        for (index, node) in sg.graph.node_weights_mut().enumerate() {
+            node.id = NodeId(format!("node-{index}"));
+        }
+
+        let obj_bytes = compile_to_object(&sg).expect("default compilation should succeed");
+
+        assert_valid_object(&obj_bytes);
+        assert!(!object_contains(&obj_bytes, "duumbi_trace_init"));
     }
 
     #[test]
@@ -2148,7 +2182,24 @@ mod tests {
         assert!(object_contains(&obj_bytes, "duumbi_trace_init"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_function_enter"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_block_enter"));
+        assert!(object_contains(&obj_bytes, "duumbi_trace_block_exit"));
         assert!(object_contains(&obj_bytes, "duumbi_trace_function_exit"));
+    }
+
+    #[test]
+    fn traced_compile_rejects_missing_trace_graph_identity() {
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let mut sg = build_graph(&module).expect("invariant: fixture must build");
+        for (index, node) in sg.graph.node_weights_mut().enumerate() {
+            node.id = NodeId(format!("node-{index}"));
+        }
+
+        let err = compile_to_object_with_telemetry(&sg, TelemetryBuildMode::Trace)
+            .expect_err("traced compilation should require graph identity");
+
+        let message = err.to_string();
+        assert!(message.contains("Trace instrumentation requires graph identity"));
+        assert!(message.contains("missing function graph identity"));
     }
 
     #[test]
