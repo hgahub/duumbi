@@ -18,7 +18,7 @@ fn traced_option_none_unwrap_writes_crash_evidence_and_inspects() {
     assert!(stdout.contains("Block: duumbi:telemetry/main/entry"));
     assert!(stdout.contains("Exact node evidence: unavailable in v1"));
 
-    assert_trace_events_join_trace_map(&evidence);
+    assert_trace_events_join_trace_map(&evidence, &["function_enter", "block_enter"]);
 }
 
 #[test]
@@ -34,7 +34,15 @@ fn traced_call_then_panic_preserves_caller_context() {
     assert!(!stdout.contains("Function: duumbi:telemetry_call/helper"));
     assert!(!stdout.contains("Block: duumbi:telemetry_call/helper/entry"));
 
-    assert_trace_events_join_trace_map(&evidence);
+    assert_trace_events_join_trace_map(
+        &evidence,
+        &[
+            "function_enter",
+            "function_exit",
+            "block_enter",
+            "block_exit",
+        ],
+    );
 }
 
 #[test]
@@ -160,17 +168,17 @@ fn read_trace_events(telemetry_dir: &std::path::Path) -> Vec<TraceEvent> {
         .collect()
 }
 
-fn assert_trace_events_join_trace_map(evidence: &TraceFixtureEvidence) {
-    for (event, kind) in [
-        ("function_enter", TraceMapKind::Function),
-        ("function_exit", TraceMapKind::Function),
-        ("block_enter", TraceMapKind::Block),
-        ("block_exit", TraceMapKind::Block),
-    ] {
+fn assert_trace_events_join_trace_map(evidence: &TraceFixtureEvidence, required_events: &[&str]) {
+    for event in required_events {
+        let kind = match *event {
+            "function_enter" | "function_exit" => TraceMapKind::Function,
+            "block_enter" | "block_exit" => TraceMapKind::Block,
+            _ => panic!("unsupported trace event kind {event}"),
+        };
         let trace_id = evidence
             .trace_events
             .iter()
-            .find(|trace| trace.event == event)
+            .find(|trace| trace.event == *event)
             .unwrap_or_else(|| panic!("missing trace event kind {event}"))
             .trace_id
             .unwrap_or_else(|| panic!("trace event kind {event} did not include trace_id"));
