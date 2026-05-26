@@ -409,8 +409,10 @@ impl TraceMap {
     ///
     /// # Errors
     ///
-    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
-    /// inside this graph.
+    /// Returns [`TelemetryError::MissingTraceGraphIdentity`] if this graph has
+    /// functions or blocks without stable graph identities. Returns
+    /// [`TelemetryError::TraceIdCollision`] if generated IDs collide inside
+    /// this graph.
     pub fn from_graph(graph: &SemanticGraph) -> Result<Self, TelemetryError> {
         Self::new(entries_for_graph(graph)?)
     }
@@ -419,8 +421,10 @@ impl TraceMap {
     ///
     /// # Errors
     ///
-    /// Returns [`TelemetryError::TraceIdCollision`] if generated IDs collide
-    /// inside the compiled program.
+    /// Returns [`TelemetryError::MissingTraceGraphIdentity`] if any program
+    /// module has functions or blocks without stable graph identities. Returns
+    /// [`TelemetryError::TraceIdCollision`] if generated IDs collide inside the
+    /// compiled program.
     pub fn from_program(program: &Program) -> Result<Self, TelemetryError> {
         let entries = program
             .modules

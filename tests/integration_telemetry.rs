@@ -175,21 +175,29 @@ fn assert_trace_events_join_trace_map(evidence: &TraceFixtureEvidence, required_
             "block_enter" | "block_exit" => TraceMapKind::Block,
             _ => panic!("unsupported trace event kind {event}"),
         };
-        let trace_id = evidence
+        let matching_events: Vec<_> = evidence
             .trace_events
             .iter()
-            .find(|trace| trace.event == *event)
-            .unwrap_or_else(|| panic!("missing trace event kind {event}"))
-            .trace_id
-            .unwrap_or_else(|| panic!("trace event kind {event} did not include trace_id"));
-
+            .filter(|trace| trace.event == *event)
+            .collect();
         assert!(
-            evidence
-                .trace_map
-                .entries
-                .iter()
-                .any(|entry| entry.kind == kind && entry.trace_id == trace_id),
-            "trace event {event} with id {trace_id} did not join to the trace map"
+            !matching_events.is_empty(),
+            "missing trace event kind {event}"
         );
+
+        for trace in matching_events {
+            let trace_id = trace
+                .trace_id
+                .unwrap_or_else(|| panic!("trace event kind {event} did not include trace_id"));
+
+            assert!(
+                evidence
+                    .trace_map
+                    .entries
+                    .iter()
+                    .any(|entry| entry.kind == kind && entry.trace_id == trace_id),
+                "trace event {event} with id {trace_id} did not join to the trace map"
+            );
+        }
     }
 }
