@@ -37,9 +37,11 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  checks: read
+  contents: write
   issues: write
   pull-requests: write
+  statuses: read
 
 concurrency:
   group: stage-approval-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
@@ -80,6 +82,7 @@ jobs:
             const { owner, repo } = context.repo;
             const issueUrl = `https://github.com/${owner}/${repo}/issues/${issueNumber}`;
             const today = new Date().toISOString().split('T')[0];
+            let specPrMerge = null;
 
             core.info(`Stage ${stage} | ${decision} | issue #${issueNumber}`);
 
@@ -249,7 +252,7 @@ jobs:
                   `Target issue: ${issueUrl}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/PRODUCT.md, unless the skill determines that an issue-comment spec is sufficient.`,
                   '',
-                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a draft spec PR if file-based, link it from the issue, and move the issue to Spec Review.',
+                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, address blocking review feedback until checks and configured automated review are clean, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -265,7 +268,7 @@ jobs:
                   `Product spec artifact: ${knownProductSpec}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
                   '',
-                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a draft PR, link it from the issue, and move the issue to Technical Spec Review.',
+                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, address blocking review feedback until checks and configured automated review are clean, link it from the issue, and move the issue to Technical Spec Review only after it is ready for approval merge.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Technical spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -292,6 +295,214 @@ jobs:
             };
             const nextCodexPrompt = buildNextCodexPrompt();
 
+            const approvalSpecPrPolicy = () => {
+              if (decision !== 'approve') return null;
+              if (stage === '7') {
+                return {
+                  stageLabel: 'Stage 7',
+                  kind: 'product spec',
+                  artifact: productSpecArtifact,
+                  allowIssueCommentArtifact: true,
+                  expectedPath: `specs/DUUMBI-${issueNumber}/PRODUCT.md`,
+                  safeCommitTitle: `Spec for #${issueNumber}: product spec`,
+                  safeCommitMessage: `Related to #${issueNumber}.\n\nSpec-only Stage 7 approval merge. The execution issue remains open for Stage 8 and later workflow stages.`,
+                };
+              }
+              if (stage === '9') {
+                return {
+                  stageLabel: 'Stage 9',
+                  kind: 'technical spec',
+                  artifact: techSpecArtifact,
+                  allowIssueCommentArtifact: false,
+                  expectedPath: `specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
+                  safeCommitTitle: `Technical spec for #${issueNumber}`,
+                  safeCommitMessage: `Related to #${issueNumber}.\n\nSpec-only Stage 9 approval merge. The execution issue remains open for Stage 10 and later workflow stages.`,
+                };
+              }
+              return null;
+            };
+
+            const latestReviewsByActor = (reviews) => {
+              const latest = new Map();
+              for (const review of reviews) {
+                const actor = review.user?.login || `review-${review.id}`;
+                const previous = latest.get(actor);
+                const submitted = Date.parse(review.submitted_at || review.submittedAt || 0);
+                const previousSubmitted = Date.parse(previous?.submitted_at || previous?.submittedAt || 0);
+                if (!previous || submitted >= previousSubmitted) latest.set(actor, review);
+              }
+              return [...latest.values()];
+            };
+
+            const findUnresolvedReviewThreads = async (pullNumber) => {
+              const unresolved = [];
+              let cursor = null;
+              do {
+                const data = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $cursor) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            isResolved
+                            isOutdated
+                            comments(first: 1) {
+                              nodes {
+                                url
+                                author { login }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`,
+                  { owner, repo, number: pullNumber, cursor },
+                );
+                const threads = data.repository?.pullRequest?.reviewThreads;
+                for (const thread of threads?.nodes || []) {
+                  if (!thread.isResolved && !thread.isOutdated) {
+                    const firstComment = thread.comments?.nodes?.[0];
+                    unresolved.push(firstComment?.url || `review thread by ${firstComment?.author?.login || 'unknown'}`);
+                  }
+                }
+                cursor = threads?.pageInfo?.hasNextPage ? threads.pageInfo.endCursor : null;
+              } while (cursor);
+              return unresolved;
+            };
+
+            const validateAndMergeSpecPr = async (policy) => {
+              if (!policy) return null;
+              if (!prNumber) {
+                const artifact = String(policy.artifact || '');
+                if (policy.allowIssueCommentArtifact && artifact && !artifact.includes('/pull/') && !artifact.startsWith('<missing:')) {
+                  return {
+                    prNumber: 0,
+                    prUrl: 'not applicable',
+                    mergeSha: 'not applicable',
+                    expectedPath: policy.expectedPath,
+                    checkCount: 0,
+                    reviewCount: 0,
+                    copilotReviewCount: 0,
+                    issueCommentArtifact: true,
+                  };
+                }
+                throw new Error(`${policy.stageLabel} approval requires an associated ${policy.kind} PR so approval can merge the reviewed artifact.`);
+              }
+
+              const prUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}`;
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+              const alreadyMerged = pr.state !== 'open' && pr.merged;
+              if (pr.state !== 'open' && !alreadyMerged) throw new Error(`${policy.kind} PR #${prNumber} is not open.`);
+              if (!alreadyMerged && pr.draft) throw new Error(`${policy.kind} PR #${prNumber} is still draft; mark it ready for review and finish review fixes before approval.`);
+              if (pr.base?.repo?.full_name !== `${owner}/${repo}`) {
+                throw new Error(`${policy.kind} PR #${prNumber} targets ${pr.base?.repo?.full_name || 'unknown'}, not ${owner}/${repo}.`);
+              }
+
+              const closingPattern = new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#${issueNumber}\\b`, 'i');
+              const closingSurfaces = [
+                ['PR title', pr.title || ''],
+                ['PR body', pr.body || ''],
+              ];
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              const changedPaths = files.map((file) => file.filename);
+              const invalidFiles = files.filter((file) =>
+                file.filename !== policy.expectedPath || file.status === 'removed'
+              );
+              for (const file of files) {
+                closingSurfaces.push([`patch ${file.filename}`, file.patch || '']);
+              }
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              for (const commit of commits) {
+                closingSurfaces.push([`commit ${commit.sha}`, commit.commit?.message || '']);
+              }
+              const closingHit = closingSurfaces.find(([, text]) => closingPattern.test(text));
+              if (closingHit) throw new Error(`${policy.kind} PR #${prNumber} uses an issue-closing reference in ${closingHit[0]}; use "Related to #${issueNumber}" style wording.`);
+              if (invalidFiles.length > 0 || files.length !== 1) {
+                throw new Error(`${policy.kind} PR #${prNumber} must change only ${policy.expectedPath}; found ${changedPaths.join(', ') || 'no files'}.`);
+              }
+
+              const checkRuns = await github.paginate(
+                github.rest.checks.listForRef,
+                { owner, repo, ref: pr.head.sha, per_page: 100 },
+                (response) => response.data.check_runs,
+              );
+              const badChecks = checkRuns.filter((check) =>
+                check.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(check.conclusion)
+              );
+              const { data: combinedStatus } = await github.rest.repos.getCombinedStatusForRef({
+                owner, repo, ref: pr.head.sha,
+              });
+              const statuses = combinedStatus.statuses || [];
+              const badStatuses = statuses.filter((status) => status.state !== 'success');
+              if (checkRuns.length + statuses.length === 0) {
+                throw new Error(`${policy.kind} PR #${prNumber} has no check runs or status contexts; approval requires verifiable green checks.`);
+              }
+              if (badChecks.length > 0) {
+                throw new Error(`Checks are not green on ${policy.kind} PR #${prNumber}: ${badChecks.map((check) => `${check.name}:${check.status}/${check.conclusion}`).join(', ')}`);
+              }
+              if (badStatuses.length > 0) {
+                throw new Error(`Status contexts are not green on ${policy.kind} PR #${prNumber}: ${badStatuses.map((status) => `${status.context}:${status.state}`).join(', ')}`);
+              }
+
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              const latestReviews = latestReviewsByActor(reviews);
+              const blockingReviews = latestReviews.filter((review) => review.state === 'CHANGES_REQUESTED');
+              const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ''));
+              if (copilotReviews.length === 0) {
+                throw new Error(`${policy.kind} PR #${prNumber} has no completed Copilot review; approval waits for review and fixes.`);
+              }
+              if (blockingReviews.length > 0) {
+                throw new Error(`${policy.kind} PR #${prNumber} has blocking review decisions: ${blockingReviews.map((review) => `${review.user?.login || 'unknown'}:${review.state}`).join(', ')}`);
+              }
+
+              const unresolvedThreads = await findUnresolvedReviewThreads(prNumber);
+              if (unresolvedThreads.length > 0) {
+                throw new Error(`${policy.kind} PR #${prNumber} has unresolved review threads: ${unresolvedThreads.slice(0, 5).join(', ')}`);
+              }
+
+              if (alreadyMerged) {
+                return {
+                  prNumber,
+                  prUrl,
+                  mergeSha: pr.merge_commit_sha || '',
+                  expectedPath: policy.expectedPath,
+                  checkCount: checkRuns.length + statuses.length,
+                  reviewCount: latestReviews.length,
+                  copilotReviewCount: copilotReviews.length,
+                  alreadyMerged: true,
+                };
+              }
+
+              const merge = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: prNumber,
+                merge_method: 'squash',
+                commit_title: policy.safeCommitTitle,
+                commit_message: policy.safeCommitMessage,
+              });
+
+              return {
+                prNumber,
+                prUrl,
+                mergeSha: merge.data.sha || '',
+                expectedPath: policy.expectedPath,
+                checkCount: checkRuns.length + statuses.length,
+                reviewCount: latestReviews.length,
+                copilotReviewCount: copilotReviews.length,
+              };
+            };
+
+            specPrMerge = await validateAndMergeSpecPr(approvalSpecPrPolicy());
+
             // ── Build decision comment ──────────────────────────────
             const lines = [`## ${stageConfig.title}`, ''];
             lines.push(`**Decision:** ${dc.label}`);
@@ -305,6 +516,8 @@ jobs:
               lines.push(`**Review date:** ${today}`);
             } else if (stage === '7') {
               lines.push(`**Spec artifact:** ${productSpecArtifact || 'not found'}`);
+              lines.push(`**Spec PR:** ${specPrMerge?.prUrl || 'not merged'}`);
+              lines.push(`**Spec PR merge SHA:** ${specPrMerge?.mergeSha || 'not merged'}`);
               lines.push(`**Rationale:** ${rationale}`);
               lines.push(`**Blocking findings:** none`);
               lines.push(`**Non-blocking findings:** none`);
@@ -312,6 +525,8 @@ jobs:
             } else if (stage === '9') {
               lines.push(`**Technical spec:** ${techSpecArtifact || 'not found'}`);
               lines.push(`**Product spec:** ${productSpecArtifact || 'not found'}`);
+              lines.push(`**Technical spec PR:** ${specPrMerge?.prUrl || 'not merged'}`);
+              lines.push(`**Technical spec PR merge SHA:** ${specPrMerge?.mergeSha || 'not merged'}`);
               lines.push(`**Rationale:** ${rationale}`);
               lines.push(`**Blocking findings:** none`);
               lines.push(`**Non-blocking findings:** none`);
@@ -350,7 +565,8 @@ jobs:
                   `**Decision:** ${dc.label}`,
                   `**Issue:** ${issueUrl}`,
                   `**Decision comment:** ${posted.html_url}`,
-                ].join('\n');
+                  specPrMerge?.mergeSha ? `**Merge SHA:** ${specPrMerge.mergeSha}` : null,
+                ].filter(Boolean).join('\n');
                 const prComments = await github.paginate(github.rest.issues.listComments, {
                   owner, repo, issue_number: prNumber, per_page: 100,
                 });
@@ -493,6 +709,7 @@ jobs:
               `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
               `• Decision comment: ${posted.html_url}`,
               prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
+              specPrMerge?.mergeSha ? `• Spec PR merged: ${specPrMerge.mergeSha}` : null,
               `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,
               `• Project: ${projectUpdated ? dc.projectStatus : '_not updated_'}`,
               `• Next: ${dc.nextStage}`,

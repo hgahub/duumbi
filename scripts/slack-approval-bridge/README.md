@@ -9,6 +9,8 @@ launching an agent directly. Slack shortcuts can also dispatch Stage 1 intake.
 Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
 `stage-approval.yml`. Stage 10 resource authorization buttons that include
 `action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`.
+For file-based Stage 7 and Stage 9 spec approvals, `stage-approval.yml`
+revalidates the linked spec PR and squash-merges it before advancing the issue.
 
 ## Architecture
 

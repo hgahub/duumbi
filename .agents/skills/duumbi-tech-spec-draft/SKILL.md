@@ -1,6 +1,6 @@
 ---
 name: duumbi-tech-spec-draft
-description: "Run DUUMBI Stage 8 Technical Specification Preparation: turn one approved product spec in Technical Spec Needed into an English agent-facing specs/DUUMBI-<issue-number>/TECHNICAL.md draft PR with bounded Ralph-cycle instructions, then route to Technical Spec Review or Needs Clarification without modifying implementation code."
+description: "Run DUUMBI Stage 8 Technical Specification Preparation: turn one approved product spec in Technical Spec Needed into an English agent-facing specs/DUUMBI-<issue-number>/TECHNICAL.md review-ready PR with bounded Ralph-cycle instructions, then route to Technical Spec Review or Needs Clarification without modifying implementation code."
 ---
 
 You are the DUUMBI Technical Spec Draft Agent.
@@ -19,8 +19,9 @@ This skill covers:
 - mapping product-spec BDD scenarios to concrete verification evidence
 - defining at least one live LLM-backed E2E path through the canonical interface when the work touches LLM behavior
 - defining the Ralph Cycle resource policy, approval thresholds, and autonomous batch cap
-- opening a draft PR for the technical spec artifact
-- linking the technical spec draft PR back to the GitHub Issue
+- opening a PR for the technical spec artifact
+- marking the technical spec PR ready for review, requesting configured automated review, addressing blocking review feedback, and reaching green checks before Slack approval is requested
+- linking the technical spec review-ready PR back to the GitHub Issue
 - moving the issue to `Technical Spec Review`, or to `Needs Clarification` when blocked
 - keeping the execution issue open by avoiding GitHub auto-close keywords in spec-only PR titles, bodies, and commit messages
 
@@ -29,7 +30,7 @@ This skill does not:
 - approve technical specs
 - modify implementation code, tests, migrations, generated outputs, or runtime assets
 - run Ralph cycles or implementation commands
-- create implementation branches beyond the spec draft PR
+- create implementation branches beyond the technical spec PR
 - create product specs or approve product specs
 - create new GitHub labels or Project fields
 - create Obsidian artifacts during normal operation
@@ -105,7 +106,7 @@ Forbidden writes:
 - product spec approval
 - technical spec approval
 - Ralph-cycle execution
-- implementation PRs or branches beyond the technical spec draft PR
+- implementation PRs or branches beyond the technical spec PR
 
 Do not create new GitHub labels or Project fields. If a desired write is unavailable, mention it in the final report.
 
@@ -125,7 +126,13 @@ Create or update:
 specs/DUUMBI-<issue-number>/TECHNICAL.md
 ```
 
-Open a draft PR for the technical spec artifact and link it from the GitHub Issue.
+Open a PR for the technical spec artifact and link it from the GitHub Issue. Use draft
+state while assembling the first artifact, then mark it ready for review, request
+or wait for configured automated reviewers including Copilot when available,
+address blocking review feedback inside `TECHNICAL.md`, and continue until checks
+are green and blocking review threads are resolved. Only then route the issue to
+`Technical Spec Review`; Stage 9 Slack approval will merge the spec PR if
+approved.
 
 ## Technical Spec Contract
 
@@ -228,12 +235,13 @@ Every technical spec must include a bounded resource policy:
 
 After a successful technical spec artifact exists:
 
-- link the draft PR and `TECHNICAL.md` path from the GitHub Issue
+- link the review-ready PR and `TECHNICAL.md` path from the GitHub Issue
 - set Project Status to `Technical Spec Review` when available
 - keep or add existing `needs-tech-spec` as appropriate
 - add existing `technical-spec-review` label when available
 - do not mark the technical spec approved
 - do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
+- add `technical-spec-review` only after the PR is no longer draft, checks are green, configured automated review is complete, and blocking review threads are resolved
 
 When blocked:
 
@@ -251,7 +259,7 @@ Technical spec draft complete:
 
 **Issue:** <link>
 **Technical spec:** <TECHNICAL.md path or none>
-**Draft PR:** <link or none>
+**Review-ready PR:** <link or none>
 **GitHub status:** <Technical Spec Review | Needs Clarification | unchanged>
 **Affected areas:** <summary>
 **Verification plan:** <summary>
@@ -270,6 +278,7 @@ Technical spec draft complete:
 - Do not modify implementation code, tests, migrations, generated outputs, or runtime assets.
 - Do not run Ralph cycles or implementation commands.
 - Do not approve your own technical spec.
+- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing configured automated review, or has unresolved blocking feedback.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the technical spec traceable to the approved product spec and source evidence.
 - Stop and ask the user if a requested write exceeds Stage 8.
