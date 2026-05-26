@@ -43,9 +43,9 @@ Before approving through the AI gate, verify all of these facts:
 - the technical spec PR is a spec-only PR and contains no implementation code or test edits
 - the technical spec PR is open, non-draft, review-clean, and ready for approval merge
 - each configured automated reviewer has submitted actual, non-dismissed review
-  evidence; in this repository the default required reviewers are
-  `copilot-pull-request-reviewer` and `chatgpt-codex-connector` unless
-  repository configuration states otherwise
+  evidence; in this repository the default required reviewer is
+  `copilot-pull-request-reviewer` unless repository configuration states
+  otherwise
 - do not treat a successful review-request check, including `Request Copilot
   Review`, as completed review evidence
 - no latest automated or human review is `CHANGES_REQUESTED`

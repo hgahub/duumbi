@@ -111,10 +111,9 @@ For file-based specs:
 - open the PR as a draft while the first artifact is being assembled
 - mark the PR ready for review after the spec artifact is complete and local checks are complete
 - request or wait for the configured automated reviewers when available. In this
-  repository the default required reviewers are `copilot-pull-request-reviewer`
-  and `chatgpt-codex-connector` unless repository configuration states
-  otherwise. Do not treat a successful reviewer-request check as completed
-  review evidence.
+  repository the default required reviewer is `copilot-pull-request-reviewer`
+  unless repository configuration states otherwise. Do not treat a successful
+  reviewer-request check as completed review evidence.
 - inspect review feedback and check results, fix blocking findings inside the spec file, and repeat until the PR is review-clean
 - link the review-ready PR and spec path from the GitHub Issue
 - treat the PR as a spec-review artifact only; it must not close the execution issue when merged or closed

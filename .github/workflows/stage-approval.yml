@@ -59,7 +59,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
           INPUT_SLACK_RESPONSE_URL: ${{ github.event.client_payload.slack_response_url || '' }}
-          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer' }}
         with:
           script: |
             // ── Inputs ──────────────────────────────────────────────
@@ -336,7 +336,7 @@ jobs:
             };
 
             const requiredAutomatedReviewers = () =>
-              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector')
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer')
                 .split(',')
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);
