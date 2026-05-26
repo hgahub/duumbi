@@ -130,10 +130,10 @@ specs/DUUMBI-<issue-number>/TECHNICAL.md
 Open a PR for the technical spec artifact and link it from the GitHub Issue. Use draft
 state while assembling the first artifact, then mark it ready for review, request
 or wait for configured automated reviewers. In this repository the default
-configured automated reviewers are `copilot-pull-request-reviewer` and
-`chatgpt-codex-connector` unless repository configuration states otherwise.
-Do not treat a successful "Request Copilot Review" check as completed review
-evidence; it only proves the request was sent. Address blocking review feedback
+configured automated reviewer is `copilot-pull-request-reviewer` unless
+repository configuration states otherwise. Do not treat a successful
+"Request Copilot Review" check as completed review evidence; it only proves the
+request was sent. Address blocking review feedback
 inside `TECHNICAL.md`, push the fix, and continue until checks are green and all
 review threads are resolved, including threads that became outdated after the
 fix. Only then route the issue to `Technical Spec Review`; Stage 9 Slack or AI

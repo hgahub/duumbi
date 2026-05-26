@@ -56,7 +56,7 @@ jobs:
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
           INPUT_STATUS: ${{ inputs.status || '' }}
-          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer' }}
         with:
           script: |
             const marker = "<!-- duumbi-spec-review-slack-notified -->";
@@ -149,7 +149,7 @@ jobs:
             };
 
             const requiredAutomatedReviewers = () =>
-              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "copilot-pull-request-reviewer,chatgpt-codex-connector")
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "copilot-pull-request-reviewer")
                 .split(",")
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);

@@ -132,9 +132,8 @@ Stage 7 and Stage 9 AI gates may approve only when:
 - the PR is spec-only
 - the PR is open, non-draft, and ready for approval merge
 - actual non-dismissed configured automated review submissions exist. By
-  default this means `copilot-pull-request-reviewer` and
-  `chatgpt-codex-connector`; repositories can override the comma-separated list
-  with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
+  default this means `copilot-pull-request-reviewer`; repositories can override
+  the comma-separated list with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
 - reviewer-request workflow success does not count as review evidence
 - automated reviews and human reviews have no blocking `CHANGES_REQUESTED`
   decision

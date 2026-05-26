@@ -41,9 +41,9 @@ Before approving through the AI gate, verify all of these facts:
 - the product spec PR is a spec-only PR and contains no implementation code
 - the product spec PR is open, non-draft, review-clean, and ready for approval merge
 - each configured automated reviewer has submitted actual, non-dismissed review
-  evidence; in this repository the default required reviewers are
-  `copilot-pull-request-reviewer` and `chatgpt-codex-connector` unless
-  repository configuration states otherwise
+  evidence; in this repository the default required reviewer is
+  `copilot-pull-request-reviewer` unless repository configuration states
+  otherwise
 - do not treat a successful reviewer-request check as completed review evidence
 - no latest automated or human review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a fix
