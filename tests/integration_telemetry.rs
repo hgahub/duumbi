@@ -142,7 +142,7 @@ struct TraceFixtureEvidence {
 #[derive(Debug, Deserialize)]
 struct TraceEvent {
     event: String,
-    trace_id: u64,
+    trace_id: Option<u64>,
 }
 
 fn read_trace_map(telemetry_dir: &std::path::Path) -> TraceMap {
@@ -172,7 +172,8 @@ fn assert_trace_events_join_trace_map(evidence: &TraceFixtureEvidence) {
             .iter()
             .find(|trace| trace.event == event)
             .unwrap_or_else(|| panic!("missing trace event kind {event}"))
-            .trace_id;
+            .trace_id
+            .unwrap_or_else(|| panic!("trace event kind {event} did not include trace_id"));
 
         assert!(
             evidence
