@@ -56,6 +56,7 @@ jobs:
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
           INPUT_STATUS: ${{ inputs.status || '' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer,chatgpt-codex-connector' }}
         with:
           script: |
             const marker = "<!-- duumbi-spec-review-slack-notified -->";
@@ -147,6 +148,24 @@ jobs:
               return [...latest.values()];
             };
 
+            const requiredAutomatedReviewers = () =>
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "copilot-pull-request-reviewer,chatgpt-codex-connector")
+                .split(",")
+                .map((reviewer) => reviewer.trim())
+                .filter(Boolean);
+
+            const validReviewEvidenceStates = new Set(["APPROVED", "COMMENTED", "CHANGES_REQUESTED"]);
+
+            const missingRequiredReviewers = (latestReviews) => {
+              const reviewActors = new Set(
+                latestReviews
+                  .filter((review) => validReviewEvidenceStates.has(String(review.state || "").toUpperCase()))
+                  .map((review) => String(review.user?.login || "").toLowerCase())
+                  .filter(Boolean),
+              );
+              return requiredAutomatedReviewers().filter((reviewer) => !reviewActors.has(reviewer.toLowerCase()));
+            };
+
             const findUnresolvedReviewThreads = async (pullNumber) => {
               const unresolved = [];
               let cursor = null;
@@ -170,8 +189,9 @@ jobs:
                 );
                 const threads = data.repository?.pullRequest?.reviewThreads;
                 for (const thread of threads?.nodes || []) {
-                  if (!thread.isResolved && !thread.isOutdated) {
-                    unresolved.push(thread.comments?.nodes?.[0]?.url || `review thread on PR #${pullNumber}`);
+                  if (!thread.isResolved) {
+                    const state = thread.isOutdated ? "outdated unresolved" : "active unresolved";
+                    unresolved.push(`${thread.comments?.nodes?.[0]?.url || `review thread on PR #${pullNumber}`} (${state})`);
                   }
                 }
                 cursor = threads?.pageInfo?.hasNextPage ? threads.pageInfo.endCursor : null;
@@ -243,14 +263,15 @@ jobs:
                 per_page: 100,
               });
               const latestReviews = latestReviewsByActor(reviews);
-              const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ""));
               const blockingReviews = latestReviews.filter((review) => review.state === "CHANGES_REQUESTED");
-              const successfulCopilotCheck = checkRuns.some((check) =>
-                /copilot/i.test(check.name || "") &&
-                check.status === "completed" &&
-                ["success", "neutral", "skipped"].includes(check.conclusion)
-              );
-              if (copilotReviews.length === 0 && !successfulCopilotCheck) return { ready: false, prNumber, summary: "Copilot review evidence has not completed" };
+              const missingReviewers = missingRequiredReviewers(latestReviews);
+              if (missingReviewers.length > 0) {
+                return {
+                  ready: false,
+                  prNumber,
+                  summary: `required automated review evidence missing from ${missingReviewers.join(", ")}; review-request checks do not count`,
+                };
+              }
               if (blockingReviews.length > 0) return { ready: false, prNumber, summary: "blocking review decision remains" };
 
               const unresolvedThreads = await findUnresolvedReviewThreads(prNumber);

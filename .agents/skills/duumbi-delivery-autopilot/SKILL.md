@@ -1,6 +1,6 @@
 ---
 name: duumbi-delivery-autopilot
-description: "Run DUUMBI delivery autopilot from one Spec Needed issue: draft product and technical specs, use Copilot plus Codex AI gates for Stage 7 and Stage 9, merge spec-only PRs when gates are clean, then enter Stage 10 Ralph-cycle implementation without bypassing resource gates."
+description: "Run DUUMBI delivery autopilot from one Spec Needed issue: draft product and technical specs, use configured automated reviews plus Codex AI gates for Stage 7 and Stage 9, merge spec-only PRs when gates are clean, then enter Stage 10 Ralph-cycle implementation without bypassing resource gates."
 ---
 
 You are the DUUMBI Delivery Autopilot Coordinator.
@@ -13,11 +13,13 @@ This skill covers:
 
 - verifying one issue is accepted and in `Spec Needed`
 - running Stage 6 product spec draft through `duumbi-spec-draft`
-- waiting for or verifying Copilot review on the product spec PR
+- waiting for or verifying actual non-dismissed configured automated reviewer submissions on
+  the product spec PR
 - running Stage 7 product spec review through `duumbi-spec-review` in AI-gate mode
 - merging the product spec-only PR only after a clean Stage 7 AI gate
 - running Stage 8 technical spec draft through `duumbi-tech-spec-draft`
-- waiting for or verifying Copilot review on the technical spec PR
+- waiting for or verifying actual non-dismissed configured automated reviewer submissions on
+  the technical spec PR
 - running Stage 9 technical spec review through `duumbi-tech-spec-review` in AI-gate mode
 - merging the technical spec-only PR only after a clean Stage 9 AI gate
 - entering Stage 10 through `duumbi-implementation` and bounded `duumbi-ralph-cycle` runs
@@ -26,7 +28,7 @@ This skill covers:
 This skill does not:
 
 - accept Stage 5 work
-- bypass Copilot review or CI/check evidence
+- bypass configured automated review or CI/check evidence
 - approve specs when AI gate requirements are missing
 - broaden product or technical scope
 - exceed Ralph-cycle resource gates
@@ -49,7 +51,7 @@ Stage 7 and Stage 9 may be approved by AI only when all gate requirements in `du
 
 Fail closed when:
 
-- Copilot review is absent or unresolved
+- configured automated review evidence is absent, request-only, or unresolved
 - checks are failing, pending, or missing without a documented not-applicable reason
 - blocking findings exist
 - unresolved product, architecture, security, migration, cost, scope, or verification questions remain
@@ -61,19 +63,19 @@ Durable decision comments must use:
 - `## Stage 7 AI Gate Decision`
 - `## Stage 9 AI Gate Decision`
 
-Each AI gate decision must link the issue, spec PR, Copilot review evidence, checks, findings, and next state.
+Each AI gate decision must link the issue, spec PR, configured automated review evidence, checks, findings, and next state.
 
 ## Operating Flow
 
 1. Verify the target issue, Stage 5 decision, labels, Project status, and source links.
 2. Run Stage 6 with `duumbi-spec-draft`.
-3. Verify the product spec PR exists, is spec-only, and has Copilot review requested.
-4. Wait for Copilot review and checks when they are not complete. If waiting is not possible in the current environment, stop with the next prompt.
+3. Verify the product spec PR exists, is spec-only, and has configured automated review requested.
+4. Wait for actual non-dismissed configured automated reviewer submissions and checks when they are not complete. A successful review-request check is not review evidence. If waiting is not possible in the current environment, stop with the next prompt.
 5. Run Stage 7 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
 6. Merge the product spec-only PR after the Stage 7 AI gate approval is recorded.
 7. Run Stage 8 with `duumbi-tech-spec-draft`.
-8. Verify the technical spec PR exists, is spec-only, and has Copilot review requested.
-9. Wait for Copilot review and checks when they are not complete. If waiting is not possible, stop with the next prompt.
+8. Verify the technical spec PR exists, is spec-only, and has configured automated review requested.
+9. Wait for actual non-dismissed configured automated reviewer submissions and checks when they are not complete. Resolve all review threads, including outdated threads after fixes. If waiting is not possible, stop with the next prompt.
 10. Run Stage 9 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
 11. Merge the technical spec-only PR after the Stage 9 AI gate approval is recorded.
 12. Run Stage 10 coordination with `duumbi-implementation`.
@@ -86,7 +88,7 @@ Before merging a spec-only PR:
 
 - verify the PR is not an implementation PR
 - verify the execution issue is referenced only with non-closing language
-- verify CI/check state and Copilot review are acceptable for the AI gate
+- verify CI/check state and configured automated review evidence are acceptable for the AI gate
 - verify the Stage 7 or Stage 9 AI gate decision comment exists
 - use squash merge by default
 
@@ -116,14 +118,14 @@ Delivery autopilot complete:
 **Spec PR merges:** <merged PRs or none>
 **Stage 10 state:** <Ready for Build | In Progress | Cycle Authorization | In Review | Blocked | not reached>
 **Ralph cycles processed:** <count or none>
-**Checks and Copilot evidence:** <summary>
+**Checks and automated review evidence:** <summary>
 **Open blockers:** <none or list>
 **Next prompt:** <copy-ready prompt if stopped>
 ```
 
 ## Safety Rules
 
-- Do not infer clean Copilot review from absence of a visible comment; verify review state when possible.
+- Do not infer clean automated review from absence of a visible comment or from a successful reviewer-request check; verify reviewer submissions and review-thread state when possible.
 - Do not self-approve specs outside the AI gate.
 - Do not continue after a failed gate.
 - Do not merge implementation PRs.
