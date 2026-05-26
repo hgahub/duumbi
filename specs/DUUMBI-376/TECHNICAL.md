@@ -53,8 +53,8 @@ Do not use this spec to start implementation during Stage 8 or Stage 9.
 - Relevant tests and CI:
   - `.github/workflows/ci.yml`: docs/spec-only changes avoid Rust checks unless
     Rust-relevant paths change.
-  - `.github/workflows/docs-review.yml`: triggers on Rust source and Cargo
-    changes, not on README, `sites/docs`, or `specs` changes.
+  - `.github/workflows/docs-review.yml`: triggers on `src/**`, `crates/**`,
+    and `Cargo.toml`, not on README, `sites/docs`, or `specs` changes.
   - No existing automated test covers external Discord configuration.
 - Relevant Obsidian notes from the approved product spec:
   - Active PRD.
