@@ -12,13 +12,13 @@ Your job is to handle Stage 7, the product spec approval gate. You review a Stag
 This skill covers:
 
 - reading one GitHub Issue in `Spec Review`
-- reading the linked product spec artifact from a GitHub issue comment or source-repo `specs/DUUMBI-<issue-number>/PRODUCT.md` draft PR
+- reading the linked product spec artifact from a GitHub issue comment or source-repo `specs/DUUMBI-<issue-number>/PRODUCT.md` review-ready PR
 - inspecting Stage 5 acceptance, Stage 6 spec draft context, source links, relevant PRD/Glossary/Atlas notes, and related GitHub items
 - preparing a structured product spec review report
 - separating blocking findings from non-blocking improvements
 - processing explicit human decisions on the product spec
 - processing AI gate decisions only when the full AI Gate Requirements below are satisfied
-- writing a structured GitHub review comment, and a draft PR comment when the spec is file-based
+- writing a structured GitHub review comment, and a PR comment when the spec is file-based
 - updating existing GitHub labels and Project status after an explicit decision
 
 This skill does not:
@@ -39,6 +39,7 @@ The AI gate is allowed only for Stage 7 product spec approval and only when invo
 Before approving through the AI gate, verify all of these facts:
 
 - the product spec PR is a spec-only PR and contains no implementation code
+- the product spec PR is open, non-draft, review-clean, and ready for approval merge
 - Copilot review was requested and has no unresolved blocking feedback
 - relevant checks are complete and passing, or the PR is documentation-only and checks are explicitly not applicable
 - the product spec satisfies the Review Checklist below
@@ -53,7 +54,7 @@ If any requirement is missing, fail closed: record a review report, route to `Sp
 - GitHub Issues and Project fields hold workflow state.
 - The product spec artifact is the object being reviewed.
 - The durable Stage 7 decision record is a structured GitHub issue comment.
-- For file-based specs, also comment on the draft PR when available so review context stays with the spec diff.
+- For file-based specs, also comment on the PR when available so review context stays with the spec diff.
 - Obsidian Atlas provides context, but should not mirror live review state.
 
 ## Language Rules
@@ -79,10 +80,12 @@ When the prompt contains an explicit **Approve** decision (e.g. `Human decision:
 1. `gh issue view <N> --json number,title,labels,body` — verify `spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 6 Product Spec Draft artifact link
 3. Construct and post the Stage 7 Decision Comment on the issue
-4. Post a short pointer comment on the draft PR (if identifiable)
-5. Update labels: remove `needs-spec` and `spec-review`, add `product-spec-approved` and `needs-tech-spec`
-6. Attempt Project V2 status update to `Technical Spec Needed`
-7. Report the final state
+4. If the artifact is a PR, verify it is open, non-draft, changes only `specs/DUUMBI-<N>/PRODUCT.md`, has green checks, completed configured automated review, no blocking review decisions, and no unresolved review threads
+5. If the artifact is a PR, squash-merge it with non-closing issue references such as `Related to #<N>`; do not close the execution issue
+6. Post a short pointer comment on the PR (if identifiable)
+7. Update labels: remove `needs-spec` and `spec-review`, add `product-spec-approved` and `needs-tech-spec`
+8. Attempt Project V2 status update to `Technical Spec Needed`
+9. Report the final state
 
 Do NOT read the full PRODUCT.md, run the review checklist, read unrelated skills, or re-fetch content already in context. Use `wait` mode for all `gh`/`git` commands.
 
@@ -92,7 +95,7 @@ Before reviewing:
 
 - GitHub issue title, body, comments, labels, Project status, and linked artifacts
 - Stage 5 human acceptance decision
-- Stage 6 product spec artifact and any draft PR
+- Stage 6 product spec artifact and any review-ready PR
 - Stage 4 triage context and source links when needed
 - related GitHub Issues, PRs, Discussions, and prior specs
 - active DUUMBI PRD, Glossary, Agentic Development Map, workflow, and directly relevant Dots, Maps, or Works
@@ -191,13 +194,15 @@ For every explicit decision, write this structured GitHub issue comment:
 **Next state:** <Technical Spec Needed | Spec Needed | Needs Clarification | Closed | Deferred>
 ```
 
-For file-based specs, also comment on the draft PR with the same decision or a short pointer back to the issue decision comment.
+For file-based specs, also comment on the PR with the same decision or a short pointer back to the issue decision comment.
 
 ## Outcome Rules
 
 For `Approve`:
 
 - require explicit human approval or a fully satisfied AI gate
+- for file-based specs, require an open non-draft spec-only PR with green checks, completed configured automated review, no blocking review decisions, and no unresolved review threads
+- for file-based specs, squash-merge the product spec PR before moving the issue to `Technical Spec Needed`
 - write the decision comment
 - set Project Status to `Technical Spec Needed` when available
 - remove existing `needs-spec` when available
@@ -240,6 +245,7 @@ Product spec review complete:
 **Spec artifact:** <comment link or PRODUCT.md path / PR link>
 **Recommendation or decision:** <value>
 **Review comment:** <link or "posted">
+**Spec PR merge:** <merge SHA, "not applicable", or "not merged">
 **GitHub status:** <Technical Spec Needed | Spec Needed | Needs Clarification | Closed | Deferred | unchanged>
 **Labels changed:** <added/removed/none>
 **BDD readiness:** <ready | missing | blocked>

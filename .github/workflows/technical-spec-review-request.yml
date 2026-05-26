@@ -23,7 +23,10 @@ on:
 
 permissions:
   actions: read
+  checks: read
   contents: read
+  pull-requests: read
+  statuses: read
 
 concurrency:
   group: tech-spec-review-${{ github.event.issue.number || inputs.issue_number || github.event_name }}
@@ -34,8 +37,11 @@ jobs:
     name: Notify Slack
     runs-on: ubuntu-latest
     permissions:
+      checks: read
       contents: read
       issues: read
+      pull-requests: read
+      statuses: read
     outputs:
       issue_numbers: ${{ steps.request.outputs.issue_numbers }}
       should_notify: ${{ steps.request.outputs.should_notify }}
@@ -140,9 +146,132 @@ jobs:
               };
             };
 
+            const latestReviewsByActor = (reviews) => {
+              const latest = new Map();
+              for (const review of reviews) {
+                const actor = review.user?.login || `review-${review.id}`;
+                const previous = latest.get(actor);
+                const submitted = Date.parse(review.submitted_at || 0);
+                const previousSubmitted = Date.parse(previous?.submitted_at || 0);
+                if (!previous || submitted >= previousSubmitted) latest.set(actor, review);
+              }
+              return [...latest.values()];
+            };
+
+            const findUnresolvedReviewThreads = async (pullNumber) => {
+              const unresolved = [];
+              let cursor = null;
+              do {
+                const data = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $cursor) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            isResolved
+                            isOutdated
+                            comments(first: 1) { nodes { url } }
+                          }
+                        }
+                      }
+                    }
+                  }`,
+                  { owner: context.repo.owner, repo: context.repo.repo, number: pullNumber, cursor },
+                );
+                const threads = data.repository?.pullRequest?.reviewThreads;
+                for (const thread of threads?.nodes || []) {
+                  if (!thread.isResolved && !thread.isOutdated) {
+                    unresolved.push(thread.comments?.nodes?.[0]?.url || `review thread on PR #${pullNumber}`);
+                  }
+                }
+                cursor = threads?.pageInfo?.hasNextPage ? threads.pageInfo.endCursor : null;
+              } while (cursor);
+              return unresolved;
+            };
+
+            const technicalSpecPrReadiness = async (issueNumber, technicalSpecArtifact) => {
+              const prMatch = technicalSpecArtifact.match(/\/pull\/(\d+)/);
+              if (!prMatch) {
+                return {
+                  ready: false,
+                  prNumber: 0,
+                  summary: "technical spec review requires a linked TECHNICAL.md PR",
+                };
+              }
+
+              const prNumber = Number(prMatch[1]);
+              const expectedPath = `specs/DUUMBI-${issueNumber}/TECHNICAL.md`;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pr.state !== "open") return { ready: false, prNumber, summary: "PR is not open" };
+              if (pr.draft) return { ready: false, prNumber, summary: "PR is still draft" };
+
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+              if (files.length !== 1 || files.some((file) => file.filename !== expectedPath || file.status === "removed")) {
+                return {
+                  ready: false,
+                  prNumber,
+                  summary: `PR must change only ${expectedPath}`,
+                };
+              }
+
+              const checkRuns = await github.paginate(
+                github.rest.checks.listForRef,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: pr.head.sha,
+                  per_page: 100,
+                },
+                (response) => response.data.check_runs,
+              );
+              const badChecks = checkRuns.filter((check) =>
+                check.status !== "completed" || !["success", "neutral", "skipped"].includes(check.conclusion)
+              );
+              const { data: combinedStatus } = await github.rest.repos.getCombinedStatusForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha,
+              });
+              const statuses = combinedStatus.statuses || [];
+              const badStatuses = statuses.filter((statusContext) => statusContext.state !== "success");
+              if (checkRuns.length + statuses.length === 0) return { ready: false, prNumber, summary: "no checks or status contexts found" };
+              if (badChecks.length > 0 || badStatuses.length > 0) return { ready: false, prNumber, summary: "checks or status contexts are not green" };
+
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+              const latestReviews = latestReviewsByActor(reviews);
+              const copilotReviews = latestReviews.filter((review) => /copilot/i.test(review.user?.login || ""));
+              const blockingReviews = latestReviews.filter((review) => review.state === "CHANGES_REQUESTED");
+              if (copilotReviews.length === 0) return { ready: false, prNumber, summary: "Copilot review has not completed" };
+              if (blockingReviews.length > 0) return { ready: false, prNumber, summary: "blocking review decision remains" };
+
+              const unresolvedThreads = await findUnresolvedReviewThreads(prNumber);
+              if (unresolvedThreads.length > 0) return { ready: false, prNumber, summary: "unresolved review threads remain" };
+
+              return {
+                ready: true,
+                prNumber,
+                summary: `PR #${prNumber} is review-clean and ready for approval merge`,
+              };
+            };
+
             const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
-            const buildSlackMessage = (issue, triggeredBy, artifacts) => {
+            const buildSlackMessage = (issue, triggeredBy, artifacts, readiness) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
               const labelNames = labelsFor(issue);
               const labels = labelNames.join(", ") || "none";
@@ -170,13 +299,13 @@ jobs:
               });
 
               return {
-                text: `DUUMBI issue #${issue.number} needs technical spec review approval: ${title}`,
+                text: `DUUMBI issue #${issue.number} technical spec is ready to approve: ${title}`,
                 blocks: [
                   {
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: `*DUUMBI issue needs technical spec review approval*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Technical spec artifact:* ${technicalSpecLine}\n*Product spec artifact:* ${productSpecLine}\n*Trigger:* \`technical-spec-review\` label\n*Status:* Technical Spec Review\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
+                      text: `*DUUMBI technical spec ready for approval*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Technical spec artifact:* ${technicalSpecLine}\n*Product spec artifact:* ${productSpecLine}\n*Technical spec PR readiness:* <https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${readiness.prNumber}|PR #${readiness.prNumber}> is review-clean and will be squash-merged on approval\n*Trigger:* \`technical-spec-review\` label\n*Status:* Technical Spec Review\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
                     },
                   },
                   {
@@ -191,7 +320,7 @@ jobs:
                         value: buttonValue("approve"),
                         confirm: {
                           title: { type: "plain_text", text: "Approve Technical Spec" },
-                          text: { type: "mrkdwn", text: `Approve Stage 9 Technical Spec Review for issue #${issue.number}?\nThis will set the issue to *Ready for Build*.` },
+                          text: { type: "mrkdwn", text: `Approve Stage 9 Technical Spec Review for issue #${issue.number}?\nThis will merge the technical spec PR and then set the issue to *Ready for Build*.` },
                           confirm: { type: "plain_text", text: "Approve" },
                           deny: { type: "plain_text", text: "Cancel" },
                         },
@@ -319,21 +448,40 @@ jobs:
             }
 
             const slackMessages = [];
+            const notifiedIssues = [];
             let artifactLinksFound = 0;
             let artifactLinksMissing = 0;
             for (const issue of issuesToNotify) {
               const artifacts = await findStage8Artifacts(issue.number);
               if (artifacts.technicalSpecArtifact.startsWith("<missing:")) {
                 artifactLinksMissing += 1;
+                core.info(`Skipping issue #${issue.number}: missing Stage 8 technical spec artifact.`);
+                continue;
               } else {
                 artifactLinksFound += 1;
               }
-              slackMessages.push(buildSlackMessage(issue, triggeredBy, artifacts));
+              const readiness = await technicalSpecPrReadiness(issue.number, artifacts.technicalSpecArtifact);
+              if (!readiness.ready) {
+                core.info(`Skipping issue #${issue.number}: technical spec PR not ready for approval (${readiness.summary}).`);
+                continue;
+              }
+              slackMessages.push(buildSlackMessage(issue, triggeredBy, artifacts, readiness));
+              notifiedIssues.push(issue);
+            }
+
+            if (slackMessages.length === 0) {
+              core.info("No technical spec review notifications are ready to send.");
+              core.setOutput("issue_numbers", "[]");
+              core.setOutput("issues_queued_count", "0");
+              core.setOutput("artifact_links_found", String(artifactLinksFound));
+              core.setOutput("artifact_links_missing", String(artifactLinksMissing));
+              core.setOutput("should_notify", "false");
+              return;
             }
 
             core.setOutput("slack_messages", JSON.stringify(slackMessages));
-            core.setOutput("issue_numbers", JSON.stringify(issuesToNotify.map((issue) => issue.number)));
-            core.setOutput("issues_queued_count", String(issuesToNotify.length));
+            core.setOutput("issue_numbers", JSON.stringify(notifiedIssues.map((issue) => issue.number)));
+            core.setOutput("issues_queued_count", String(notifiedIssues.length));
             core.setOutput("artifact_links_found", String(artifactLinksFound));
             core.setOutput("artifact_links_missing", String(artifactLinksMissing));
             core.setOutput("should_notify", "true");
