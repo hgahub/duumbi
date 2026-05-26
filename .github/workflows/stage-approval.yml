@@ -447,11 +447,19 @@ jobs:
                 throw new Error(`${policy.kind} PR #${prNumber} must change only ${policy.expectedPath}; found ${changedPaths.join(', ') || 'no files'}.`);
               }
 
-              const checkRuns = await github.paginate(
-                github.rest.checks.listForRef,
-                { owner, repo, ref: pr.head.sha, per_page: 100 },
-                (response) => response.data.check_runs,
-              ).then((runs) => runs.flat().filter(Boolean));
+              const checkRuns = [];
+              for (let page = 1; ; page += 1) {
+                const response = await github.rest.checks.listForRef({
+                  owner,
+                  repo,
+                  ref: pr.head.sha,
+                  per_page: 100,
+                  page,
+                });
+                const pageRuns = response.data.check_runs || [];
+                checkRuns.push(...pageRuns);
+                if (pageRuns.length < 100) break;
+              }
               const badChecks = checkRuns.filter((check) =>
                 check.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(check.conclusion)
               );
