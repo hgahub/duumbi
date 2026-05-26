@@ -341,9 +341,14 @@ jobs:
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);
 
+            const validReviewEvidenceStates = new Set(['APPROVED', 'COMMENTED', 'CHANGES_REQUESTED']);
+
             const missingRequiredReviewers = (latestReviews) => {
               const reviewActors = new Set(
-                latestReviews.map((review) => String(review.user?.login || '').toLowerCase()).filter(Boolean),
+                latestReviews
+                  .filter((review) => validReviewEvidenceStates.has(String(review.state || '').toUpperCase()))
+                  .map((review) => String(review.user?.login || '').toLowerCase())
+                  .filter(Boolean),
               );
               return requiredAutomatedReviewers().filter((reviewer) => !reviewActors.has(reviewer.toLowerCase()));
             };

@@ -42,8 +42,8 @@ Before approving through the AI gate, verify all of these facts:
 
 - the technical spec PR is a spec-only PR and contains no implementation code or test edits
 - the technical spec PR is open, non-draft, review-clean, and ready for approval merge
-- each configured automated reviewer has submitted actual review evidence; in
-  this repository the default required reviewers are
+- each configured automated reviewer has submitted actual, non-dismissed review
+  evidence; in this repository the default required reviewers are
   `copilot-pull-request-reviewer` and `chatgpt-codex-connector` unless
   repository configuration states otherwise
 - do not treat a successful review-request check, including `Request Copilot
@@ -90,7 +90,7 @@ When the prompt contains an explicit **Approve** decision (e.g. `Human decision:
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `technical-spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 8 Technical Spec Draft artifact link and product spec link from existing comments (search for "Stage 8 Technical Spec Draft" and "Stage 6 Product Spec Draft")
-3. Verify the technical spec PR is open, non-draft, changes only `specs/DUUMBI-<N>/TECHNICAL.md`, has green checks, actual configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
+3. Verify the technical spec PR is open, non-draft, changes only `specs/DUUMBI-<N>/TECHNICAL.md`, has green checks, actual non-dismissed configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
 4. Squash-merge the technical spec PR with non-closing issue references such as `Related to #<N>`; do not close the execution issue
 5. Construct and post the Stage 9 Decision Comment on the issue (use the Decision Comment template below)
 6. Post a short pointer comment on the tech spec PR
@@ -240,7 +240,7 @@ For file-based technical specs, also comment on the PR with the same decision or
 For `Approve`:
 
 - require explicit human approval or a fully satisfied AI gate
-- require an open non-draft spec-only PR with green checks, actual configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads
+- require an open non-draft spec-only PR with green checks, actual non-dismissed configured automated reviewer submissions, no blocking review decisions, and no unresolved review threads
 - fail closed if the only automated-review evidence is a successful reviewer
   request workflow; the reviewer must have submitted a review or equivalent
   configured evidence

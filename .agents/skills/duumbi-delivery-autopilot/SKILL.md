@@ -13,12 +13,12 @@ This skill covers:
 
 - verifying one issue is accepted and in `Spec Needed`
 - running Stage 6 product spec draft through `duumbi-spec-draft`
-- waiting for or verifying actual configured automated reviewer submissions on
+- waiting for or verifying actual non-dismissed configured automated reviewer submissions on
   the product spec PR
 - running Stage 7 product spec review through `duumbi-spec-review` in AI-gate mode
 - merging the product spec-only PR only after a clean Stage 7 AI gate
 - running Stage 8 technical spec draft through `duumbi-tech-spec-draft`
-- waiting for or verifying actual configured automated reviewer submissions on
+- waiting for or verifying actual non-dismissed configured automated reviewer submissions on
   the technical spec PR
 - running Stage 9 technical spec review through `duumbi-tech-spec-review` in AI-gate mode
 - merging the technical spec-only PR only after a clean Stage 9 AI gate
@@ -70,12 +70,12 @@ Each AI gate decision must link the issue, spec PR, configured automated review 
 1. Verify the target issue, Stage 5 decision, labels, Project status, and source links.
 2. Run Stage 6 with `duumbi-spec-draft`.
 3. Verify the product spec PR exists, is spec-only, and has configured automated review requested.
-4. Wait for actual configured automated reviewer submissions and checks when they are not complete. A successful review-request check is not review evidence. If waiting is not possible in the current environment, stop with the next prompt.
+4. Wait for actual non-dismissed configured automated reviewer submissions and checks when they are not complete. A successful review-request check is not review evidence. If waiting is not possible in the current environment, stop with the next prompt.
 5. Run Stage 7 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
 6. Merge the product spec-only PR after the Stage 7 AI gate approval is recorded.
 7. Run Stage 8 with `duumbi-tech-spec-draft`.
 8. Verify the technical spec PR exists, is spec-only, and has configured automated review requested.
-9. Wait for actual configured automated reviewer submissions and checks when they are not complete. Resolve all review threads, including outdated threads after fixes. If waiting is not possible, stop with the next prompt.
+9. Wait for actual non-dismissed configured automated reviewer submissions and checks when they are not complete. Resolve all review threads, including outdated threads after fixes. If waiting is not possible, stop with the next prompt.
 10. Run Stage 9 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
 11. Merge the technical spec-only PR after the Stage 9 AI gate approval is recorded.
 12. Run Stage 10 coordination with `duumbi-implementation`.

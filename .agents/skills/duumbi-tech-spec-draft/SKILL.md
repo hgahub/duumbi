@@ -150,8 +150,8 @@ are verified:
   references
 - CI/checks and status contexts are complete and passing, or explicitly
   not applicable for a docs-only diff
-- each configured automated reviewer has submitted actual review evidence;
-  review-request workflow success is not enough
+- each configured automated reviewer has submitted actual, non-dismissed review
+  evidence; review-request workflow success is not enough
 - no latest review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a push
 - every blocking review finding has been addressed in the technical spec or the
@@ -310,7 +310,7 @@ Technical spec draft complete:
 - Do not modify implementation code, tests, migrations, generated outputs, or runtime assets.
 - Do not run Ralph cycles or implementation commands.
 - Do not approve your own technical spec.
-- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing actual configured automated review evidence, or has any unresolved review thread.
+- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing actual non-dismissed configured automated review evidence, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the technical spec traceable to the approved product spec and source evidence.
 - Stop and ask the user if a requested write exceeds Stage 8.

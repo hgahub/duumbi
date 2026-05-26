@@ -131,9 +131,10 @@ Stage 7 and Stage 9 AI gates may approve only when:
 
 - the PR is spec-only
 - the PR is open, non-draft, and ready for approval merge
-- actual configured automated review submissions exist. By default this means
-  `copilot-pull-request-reviewer` and `chatgpt-codex-connector`; repositories
-  can override the comma-separated list with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
+- actual non-dismissed configured automated review submissions exist. By
+  default this means `copilot-pull-request-reviewer` and
+  `chatgpt-codex-connector`; repositories can override the comma-separated list
+  with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
 - reviewer-request workflow success does not count as review evidence
 - automated reviews and human reviews have no blocking `CHANGES_REQUESTED`
   decision
@@ -147,7 +148,7 @@ Stage 7 and Stage 9 AI gates may approve only when:
 Stage 7 and Stage 9 human Slack approvals are merge finalizers for file-based
 specs. The review request workflows send Slack approval cards only after the
 linked PRODUCT.md or TECHNICAL.md PR is review-clean. Review-clean means the
-PR has actual configured automated reviewer submissions, green checks, no
+PR has actual non-dismissed configured automated reviewer submissions, green checks, no
 blocking review decisions, and no unresolved review threads. Approval then
 revalidates the exact PR, squash-merges the spec artifact with non-closing issue
 references, records the stage decision, and advances the issue to the next

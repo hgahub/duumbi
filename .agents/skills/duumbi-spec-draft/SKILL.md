@@ -182,7 +182,7 @@ After a successful spec artifact exists:
 - add existing `spec-review` label when available
 - do not mark the product spec approved
 - do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
-- for file-based specs, add `spec-review` only after the PR is no longer draft, checks are green, actual configured automated reviewer submissions exist, and every review thread is resolved, including outdated threads after fixes; the Stage 7 Slack approval will merge the spec PR if approved
+- for file-based specs, add `spec-review` only after the PR is no longer draft, checks are green, actual non-dismissed configured automated reviewer submissions exist, and every review thread is resolved, including outdated threads after fixes; the Stage 7 Slack approval will merge the spec PR if approved
 
 When blocked:
 
@@ -217,7 +217,7 @@ Product spec draft complete:
 - Do not bury blocking questions in a draft spec.
 - Do not create technical specs, implementation code, PRs for implementation, or Ralph cycles.
 - Do not approve your own product spec.
-- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing actual configured automated review evidence, or has any unresolved review thread.
+- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing actual non-dismissed configured automated review evidence, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the spec traceable to source links and decisions.
 - Stop and ask the user if a requested write exceeds Stage 6.
