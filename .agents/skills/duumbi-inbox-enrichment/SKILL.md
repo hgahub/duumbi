@@ -54,7 +54,8 @@ run. The GitHub Actions scheduled workflow processes at most one note per run,
 commits the same Inbox note directly to `duumbi-vault/main`, and marks it with
 `duumbi/status/processed` plus `duumbi-inbox-enrichment:v1`. If no candidate
 notes are present, or if the selected note does not produce a vault commit, the
-workflow records `not_needed` in summary/metrics and skips Slack notification.
+workflow records `no_candidate_note` or `no_vault_diff` in metrics and skips
+Slack notification.
 
 ## Context To Inspect
 

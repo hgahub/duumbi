@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   ENRICHMENT_MARKER_PREFIX,
+  buildEnrichmentContext,
   buildObsidianTags,
   collectCandidatePaths,
   isEnrichmentCandidateText,
@@ -220,6 +221,21 @@ test("buildObsidianTags emits Obsidian-compatible classification tags", () => {
   ]);
 });
 
+test("buildEnrichmentContext derives repository names from context", () => {
+  const { workspace } = makeWorkspace();
+  const contextPayload = buildEnrichmentContext({
+    workspace,
+    vaultRoot: path.join(workspace, "duumbi-vault"),
+    candidatePath: "Duumbi/00 Inbox (ToProcess)/candidate.md",
+    context: {
+      repo: { owner: "example-owner", repo: "example-repo" },
+    },
+  });
+
+  assert.equal(contextPayload.repository, "example-owner/example-repo");
+  assert.equal(contextPayload.vault_repository, "example-owner/duumbi-vault");
+});
+
 test("runInboxEnrichment skips Slack and DeepSeek when all notes are processed", async () => {
   const { workspace } = makeWorkspace({ processed: true });
   const { fetchImpl, calls } = makeFetch();
@@ -252,6 +268,44 @@ test("runInboxEnrichment skips Slack and DeepSeek when all notes are processed",
   assert.equal(metrics.provider_usage.reason, "no_candidate_note");
 });
 
+test("runInboxEnrichment fails before DeepSeek when vault write token is missing", async () => {
+  const { workspace } = makeWorkspace();
+  const { fetchImpl, calls } = makeFetch();
+  const { git, calls: gitCalls } = makeGit();
+  const core = makeCore();
+
+  const result = await runInboxEnrichment({
+    env: {
+      DEEPSEEK_API_KEY: "deepseek",
+      SLACK_BOT_TOKEN: "slack",
+      SLACK_REVIEW_CHANNEL_ID: "C123",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+    git,
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.decision, "enrichment_failed");
+  assert.match(core.failed, /GH_PROJECT_PAT is required/);
+  assert.equal(calls.some((call) => call.url === "https://api.deepseek.com/chat/completions"), false);
+  assert.equal(gitCalls.length, 0);
+
+  const original = fs.readFileSync(
+    path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "candidate.md"),
+    "utf8",
+  );
+  assert.match(original, /# Raw idea/);
+  const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
+  assert.equal(metrics.correlation.decision, "enrichment_failed");
+  assert.equal(metrics.counts.slack_notifications_attempted, 0);
+  assert.equal(metrics.provider_usage.reason, "no_candidate_note");
+});
+
 test("runInboxEnrichment enriches one note, commits to vault, and posts Slack", async () => {
   const { workspace } = makeWorkspace({ secondRaw: true });
   const { fetchImpl, calls } = makeFetch();
@@ -266,6 +320,7 @@ test("runInboxEnrichment enriches one note, commits to vault, and posts Slack", 
       SLACK_BOT_TOKEN: "slack",
       SLACK_REVIEW_CHANNEL_ID: "C123",
       DUUMBI_METRICS_PATH: "metrics.json",
+      GITHUB_RUN_ATTEMPT: "7",
     },
     context: makeContext(),
     core,
@@ -301,6 +356,7 @@ test("runInboxEnrichment enriches one note, commits to vault, and posts Slack", 
 
   const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
   assert.equal(metrics.correlation.decision, "vault_note_enriched");
+  assert.equal(metrics.workflow.run_attempt, 7);
   assert.equal(metrics.counts.slack_notifications_attempted, 1);
   assert.equal(metrics.provider_usage.provider, "deepseek");
 });

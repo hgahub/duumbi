@@ -277,6 +277,7 @@ export function buildEnrichmentContext({
   workspace,
   vaultRoot,
   candidatePath,
+  context = null,
   warnings = [],
 }) {
   const candidateAbsolute = path.join(vaultRoot, candidatePath);
@@ -289,8 +290,8 @@ export function buildEnrichmentContext({
 
   return {
     generated_at: nowIso(),
-    repository: "hgahub/duumbi",
-    vault_repository: "hgahub/duumbi-vault",
+    repository: `${context?.repo?.owner || "hgahub"}/${context?.repo?.repo || "duumbi"}`,
+    vault_repository: `${context?.repo?.owner || "hgahub"}/duumbi-vault`,
     stage: "inbox-enrichment",
     policy: {
       max_notes_to_update: 1,
@@ -745,6 +746,7 @@ async function postSlack({ fetchImpl, env, context, candidatePath, commitSha, wo
 }
 
 function buildWorkflowMetrics({
+  env = process.env,
   context,
   conclusion,
   decision,
@@ -762,7 +764,7 @@ function buildWorkflowMetrics({
       name: context.workflow,
       file: WORKFLOW_FILE,
       run_id: context.runId,
-      run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+      run_attempt: Number(env.GITHUB_RUN_ATTEMPT || 1),
       event_name: context.eventName,
       actor: context.actor,
       ref: context.ref,
@@ -855,6 +857,7 @@ export async function runInboxEnrichment({
 
     if (candidatePaths.length === 0) {
       const metrics = buildWorkflowMetrics({
+        env,
         context,
         conclusion: "success",
         decision: "no_candidate_note",
@@ -880,6 +883,9 @@ export async function runInboxEnrichment({
     if (!apiKey) {
       throw new Error("DEEPSEEK_API_KEY is not configured; failing closed before Inbox enrichment.");
     }
+    if (!normalizeText(env.GH_PROJECT_PAT)) {
+      throw new Error("GH_PROJECT_PAT is required before Inbox enrichment can call DeepSeek and commit to duumbi-vault/main.");
+    }
 
     const contextPayload = buildEnrichmentContext({
       fs,
@@ -887,6 +893,7 @@ export async function runInboxEnrichment({
       workspace,
       vaultRoot,
       candidatePath,
+      context,
       warnings,
     });
     const messages = buildDeepSeekMessages(contextPayload);
@@ -940,6 +947,7 @@ export async function runInboxEnrichment({
     }
 
     const metrics = buildWorkflowMetrics({
+      env,
       context,
       conclusion: "success",
       decision: commitResult.committed ? "vault_note_enriched" : "no_vault_diff",
@@ -961,6 +969,7 @@ export async function runInboxEnrichment({
     const message = error?.message || String(error);
     warnings.push(`inbox_enrichment_failed:${truncateText(message, 240)}`);
     const metrics = buildWorkflowMetrics({
+      env,
       context,
       conclusion: "failure",
       decision: "enrichment_failed",
