@@ -49,10 +49,12 @@ Use this skill for:
 - a bounded list of Inbox note paths
 - a scheduled sweep of notes that lack the standard Inbox contract, classification, or enrichment marker
 
-For scheduled sweeps, process a bounded batch. Default maximum: 5 notes per run.
-Scheduled dispatchers should inspect the Inbox before sending an agent handoff.
-If no candidate notes are present, they should record `not_needed` in workflow
-summary/metrics and skip Slack notification.
+For manual agent sweeps, process a bounded batch. Default maximum: 5 notes per
+run. The GitHub Actions scheduled workflow processes at most one note per run,
+commits the same Inbox note directly to `duumbi-vault/main`, and marks it with
+`duumbi/status/processed` plus `duumbi-inbox-enrichment:v1`. If no candidate
+notes are present, or if the selected note does not produce a vault commit, the
+workflow records `not_needed` in summary/metrics and skips Slack notification.
 
 ## Context To Inspect
 
@@ -126,6 +128,11 @@ If the note is raw, preserve the original text and append or rewrite only enough
 - Assumptions:
 - Recommendations:
 ```
+
+The automated workflow also adds a developer summary, a Mermaid UML-style
+overview, AI-agent instructions for later GitHub issue creation, and Obsidian
+tags for processed state, classification, business value, importance, and
+complexity.
 
 If the note already follows the contract, append or update only `## Enrichment result`.
 

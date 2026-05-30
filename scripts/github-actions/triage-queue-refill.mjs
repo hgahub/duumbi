@@ -709,6 +709,8 @@ export async function callDeepSeek({
   messages,
   timeoutMs = 120_000,
   emptyContentRetries = 2,
+  maxTokens = 2500,
+  temperature = 0.2,
 }) {
   const started = Date.now();
   const maxAttempts = Math.max(1, 1 + Number(emptyContentRetries || 0));
@@ -743,8 +745,8 @@ export async function callDeepSeek({
           model,
           messages: retryMessages,
           response_format: { type: "json_object" },
-          temperature: 0.2,
-          max_tokens: 2500,
+          temperature,
+          max_tokens: maxTokens,
         }),
         signal: controller.signal,
       });
