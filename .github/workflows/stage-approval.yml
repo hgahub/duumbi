@@ -384,16 +384,19 @@ jobs:
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);
 
+            const normalizeReviewerLogin = (login) =>
+              String(login || '').trim().toLowerCase().replace(/\[bot\]$/, '');
+
             const validReviewEvidenceStates = new Set(['APPROVED', 'COMMENTED', 'CHANGES_REQUESTED']);
 
             const missingRequiredReviewers = (latestReviews) => {
               const reviewActors = new Set(
                 latestReviews
                   .filter((review) => validReviewEvidenceStates.has(String(review.state || '').toUpperCase()))
-                  .map((review) => String(review.user?.login || '').toLowerCase())
+                  .map((review) => normalizeReviewerLogin(review.user?.login))
                   .filter(Boolean),
               );
-              return requiredAutomatedReviewers().filter((reviewer) => !reviewActors.has(reviewer.toLowerCase()));
+              return requiredAutomatedReviewers().filter((reviewer) => !reviewActors.has(normalizeReviewerLogin(reviewer)));
             };
 
             const findUnresolvedReviewThreads = async (pullNumber) => {
