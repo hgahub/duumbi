@@ -48,6 +48,7 @@ jobs:
       issues_queued_count: ${{ steps.request.outputs.issues_queued_count }}
       artifact_links_found: ${{ steps.request.outputs.artifact_links_found }}
       artifact_links_missing: ${{ steps.request.outputs.artifact_links_missing }}
+      project_status_updates: ${{ steps.request.outputs.project_status_updates }}
     steps:
       - name: Validate request and build Slack payload
         id: request
@@ -56,6 +57,7 @@ jobs:
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
           INPUT_STATUS: ${{ inputs.status || '' }}
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
           DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer' }}
         with:
           script: |
@@ -78,6 +80,83 @@ jobs:
               .map((label) => typeof label === "string" ? label : label.name)
               .filter(Boolean);
             const issueUrlFor = (number) => `https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${number}`;
+
+            const updateProjectStatus = async (issueNumber, targetStatus) => {
+              const projectPat = process.env.GH_PROJECT_PAT;
+              if (!projectPat) {
+                core.info("GH_PROJECT_PAT not set — skipping Project V2 status update.");
+                return false;
+              }
+
+              const gql = async (query, variables) => {
+                const response = await fetch("https://api.github.com/graphql", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `bearer ${projectPat}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ query, variables }),
+                });
+                const json = await response.json();
+                if (json.errors) throw new Error(json.errors.map((error) => error.message).join("; "));
+                return json.data;
+              };
+
+              const itemsData = await gql(`
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    issue(number: $number) {
+                      projectItems(first: 10) {
+                        nodes { id project { id title } }
+                      }
+                    }
+                  }
+                }`,
+                { owner: context.repo.owner, repo: context.repo.repo, number: issueNumber },
+              );
+
+              const items = itemsData.repository?.issue?.projectItems?.nodes || [];
+              let updated = false;
+              for (const item of items) {
+                const fieldsData = await gql(`
+                  query($pid: ID!) {
+                    node(id: $pid) {
+                      ... on ProjectV2 {
+                        fields(first: 30) {
+                          nodes {
+                            ... on ProjectV2SingleSelectField { id name options { id name } }
+                          }
+                        }
+                      }
+                    }
+                  }`,
+                  { pid: item.project.id },
+                );
+
+                const statusField = fieldsData.node?.fields?.nodes?.find((field) => field.name === "Status");
+                if (!statusField) continue;
+
+                const option = statusField.options.find((candidate) => candidate.name === targetStatus);
+                if (!option) {
+                  core.warning(`Status option "${targetStatus}" not found in "${item.project.title}".`);
+                  continue;
+                }
+
+                await gql(`
+                  mutation($pid: ID!, $iid: ID!, $fid: ID!, $oid: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $pid, itemId: $iid, fieldId: $fid,
+                      value: { singleSelectOptionId: $oid }
+                    }) { projectV2Item { id } }
+                  }`,
+                  { pid: item.project.id, iid: item.id, fid: statusField.id, oid: option.id },
+                );
+
+                updated = true;
+                core.info(`Project "${item.project.title}" → ${targetStatus}`);
+              }
+              return updated;
+            };
 
             const hasNotificationMarker = async (issueNumber) => {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -438,6 +517,7 @@ jobs:
               core.setOutput("issues_queued_count", "0");
               core.setOutput("artifact_links_found", "0");
               core.setOutput("artifact_links_missing", "0");
+              core.setOutput("project_status_updates", "0");
               core.setOutput("should_notify", "false");
               return;
             }
@@ -446,6 +526,7 @@ jobs:
             const notifiedIssues = [];
             let artifactLinksFound = 0;
             let artifactLinksMissing = 0;
+            let projectStatusUpdates = 0;
             for (const issue of issuesToNotify) {
               const specArtifact = await findSpecArtifact(issue.number);
               if (specArtifact.startsWith("<missing:")) {
@@ -460,6 +541,13 @@ jobs:
                 core.info(`Skipping issue #${issue.number}: product spec PR not ready for approval (${readiness.summary}).`);
                 continue;
               }
+              try {
+                if (await updateProjectStatus(issue.number, "Spec Review")) {
+                  projectStatusUpdates += 1;
+                }
+              } catch (error) {
+                core.warning(`Project V2 status update failed for #${issue.number}: ${error.message}`);
+              }
               slackMessages.push(buildSlackMessage(issue, triggeredBy, specArtifact, readiness));
               notifiedIssues.push(issue);
             }
@@ -470,6 +558,7 @@ jobs:
               core.setOutput("issues_queued_count", "0");
               core.setOutput("artifact_links_found", String(artifactLinksFound));
               core.setOutput("artifact_links_missing", String(artifactLinksMissing));
+              core.setOutput("project_status_updates", String(projectStatusUpdates));
               core.setOutput("should_notify", "false");
               return;
             }
@@ -479,6 +568,7 @@ jobs:
             core.setOutput("issues_queued_count", String(notifiedIssues.length));
             core.setOutput("artifact_links_found", String(artifactLinksFound));
             core.setOutput("artifact_links_missing", String(artifactLinksMissing));
+            core.setOutput("project_status_updates", String(projectStatusUpdates));
             core.setOutput("should_notify", "true");
 
       - name: Post Slack notifications
@@ -579,6 +669,7 @@ jobs:
           ISSUES_QUEUED_COUNT: ${{ needs.notify.outputs.issues_queued_count || '0' }}
           ARTIFACT_LINKS_FOUND: ${{ needs.notify.outputs.artifact_links_found || '0' }}
           ARTIFACT_LINKS_MISSING: ${{ needs.notify.outputs.artifact_links_missing || '0' }}
+          PROJECT_STATUS_UPDATES: ${{ needs.notify.outputs.project_status_updates || '0' }}
           DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
         with:
           script: |
@@ -668,6 +759,7 @@ jobs:
                 slack_notifications_attempted: process.env.SHOULD_NOTIFY === "true" ? issueNumbers.length : 0,
                 artifact_links_found: asNumber(process.env.ARTIFACT_LINKS_FOUND),
                 artifact_links_missing: asNumber(process.env.ARTIFACT_LINKS_MISSING),
+                project_status_updates: asNumber(process.env.PROJECT_STATUS_UPDATES),
               },
               provider_usage: {
                 available: false,
@@ -703,6 +795,7 @@ jobs:
                 ["Issues queued", String(metrics.counts.issues_queued ?? "unavailable")],
                 ["Artifact links found", String(metrics.counts.artifact_links_found ?? "unavailable")],
                 ["Artifact links missing", String(metrics.counts.artifact_links_missing ?? "unavailable")],
+                ["Project status updates", String(metrics.counts.project_status_updates ?? "unavailable")],
                 ["Provider usage", "unavailable: no_provider_step"],
               ])
               .write();
