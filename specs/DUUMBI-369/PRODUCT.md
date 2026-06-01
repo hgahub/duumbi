@@ -366,6 +366,10 @@ Feature: Publish the DUUMBI graph-not-text thesis article
       And future-facing capabilities are labeled as future, roadmap, or vision
       And the article does not claim guaranteed arbitrary natural-language
       correctness or autonomous repair acceptance
+      And the article does not claim production customer telemetry or silent
+      update behavior as current capability
+      And the article does not claim planned Phase 14 demos, registry modules, or
+      website assets are complete unless verified
 
     Scenario: The article includes the required narrative coverage
       Given issue #369 requires problem statement, semantic graph thesis, DUUMBI
@@ -377,6 +381,7 @@ Feature: Publish the DUUMBI graph-not-text thesis article
       Cranelift compilation workflow
       And it includes current evidence, results, demos, or explicitly stated
       evidence caveats
+      And technical terms are introduced before use or linked to supporting docs
 
   Rule: The article is publishable as a Phase 14 launch asset
 
@@ -420,6 +425,7 @@ Feature: Publish the DUUMBI graph-not-text thesis article
       Then the comment includes Medium, dev.to, and Hashnode URLs
       And it includes word count, diagram count, links included, and publication
       caveats
+      And it includes the source references used
       And it includes a current-versus-future claim review note
       And the execution issue remains open for later workflow closure
 
