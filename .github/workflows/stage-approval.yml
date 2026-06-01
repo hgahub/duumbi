@@ -1,6 +1,8 @@
 name: Stage Approval
 
 on:
+  pull_request:
+    types: [closed]
   workflow_dispatch:
     inputs:
       stage:
@@ -44,12 +46,13 @@ permissions:
   statuses: read
 
 concurrency:
-  group: stage-approval-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
+  group: stage-approval-${{ github.event.inputs.pr_number || github.event.client_payload.pr_number || github.event.pull_request.number || github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
   cancel-in-progress: false
 
 jobs:
   execute:
     name: Execute approval
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Execute decision
@@ -65,6 +68,15 @@ jobs:
             // ── Inputs ──────────────────────────────────────────────
             const raw = context.eventName === 'repository_dispatch'
               ? context.payload.client_payload
+              : context.eventName === 'pull_request'
+              ? {
+                  stage: '',
+                  issue_number: 0,
+                  decision: 'approve',
+                  rationale: '',
+                  pr_number: Number(context.payload.pull_request?.number || context.payload.number || 0),
+                  reviewer: `GitHub PR merge (${context.actor})`,
+                }
               : {
                   stage: String(context.payload.inputs.stage),
                   issue_number: Number(context.payload.inputs.issue_number),
@@ -74,13 +86,44 @@ jobs:
                   reviewer: String(context.payload.inputs.reviewer || context.actor),
                 };
 
-            const stage = String(raw.stage);
-            const issueNumber = Number(raw.issue_number);
+            let stage = String(raw.stage);
+            let issueNumber = Number(raw.issue_number);
             const decision = String(raw.decision);
-            const rationale = raw.rationale || `Recorded via Stage Approval workflow (decision: ${decision}).`;
+            let rationale = raw.rationale || `Recorded via Stage Approval workflow (decision: ${decision}).`;
             let prNumber = Number(raw.pr_number || 0);
-            const reviewer = raw.reviewer || context.actor;
+            let reviewer = raw.reviewer || context.actor;
             const { owner, repo } = context.repo;
+
+            if (context.eventName === 'pull_request') {
+              const pr = context.payload.pull_request;
+              if (!pr?.merged) {
+                core.info('Ignoring closed PR because it was not merged.');
+                return;
+              }
+              prNumber = Number(pr.number || context.payload.number || prNumber);
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: prNumber, per_page: 100,
+              });
+              if (files.length !== 1 || files[0].status === 'removed') {
+                core.info(`Ignoring merged PR #${prNumber}: not a single-file spec artifact.`);
+                return;
+              }
+              const productMatch = files[0].filename.match(/^specs\/DUUMBI-(\d+)\/PRODUCT\.md$/);
+              const technicalMatch = files[0].filename.match(/^specs\/DUUMBI-(\d+)\/TECHNICAL\.md$/);
+              if (productMatch) {
+                stage = '7';
+                issueNumber = Number(productMatch[1]);
+              } else if (technicalMatch) {
+                stage = '9';
+                issueNumber = Number(technicalMatch[1]);
+              } else {
+                core.info(`Ignoring merged PR #${prNumber}: ${files[0].filename} is not a DUUMBI spec artifact.`);
+                return;
+              }
+              reviewer = `GitHub PR merge (${context.actor})`;
+              rationale = `Spec-only PR #${prNumber} was merged by ${context.actor}; treating the merged review-clean artifact as Stage ${stage} approval evidence.`;
+            }
+
             const issueUrl = `https://github.com/${owner}/${repo}/issues/${issueNumber}`;
             const today = new Date().toISOString().split('T')[0];
             let specPrMerge = null;
@@ -573,6 +616,7 @@ jobs:
 
             // ── Post or reuse decision comment ──────────────────────
             let posted = [...comments].reverse().find(matchingDecisionComment);
+            const reusedDecisionComment = Boolean(posted);
             if (posted) {
               core.info(`Decision comment already exists: ${posted.html_url}`);
             } else {
@@ -761,7 +805,7 @@ jobs:
             // Post to review channel
             const slackToken = process.env.SLACK_BOT_TOKEN;
             const slackChannel = process.env.SLACK_REVIEW_CHANNEL_ID;
-            if (slackToken && slackChannel) {
+            if (slackToken && slackChannel && !(context.eventName === 'pull_request' && reusedDecisionComment)) {
               try {
                 const res = await fetch('https://slack.com/api/chat.postMessage', {
                   method: 'POST',
@@ -776,6 +820,8 @@ jobs:
               } catch (err) {
                 core.warning(`Slack notification failed: ${err.message}`);
               }
+            } else if (context.eventName === 'pull_request' && reusedDecisionComment) {
+              core.info('Skipping duplicate Slack summary for already-recorded pull_request approval.');
             }
 
             // ── Workflow summary ─────────────────────────────────────
