@@ -28,8 +28,7 @@ This skill does not:
 - edit implementation code, tests, generated artifacts, docs, configs, product specs, technical specs, workflow docs, Obsidian Atlas notes, or intake artifacts
 - create new GitHub labels or Project fields
 
-Stage 10 owns implementation changes after review findings. Stage 12 owns post-merge closure and durable knowledge sync.
-Stage 11 merge authorization is handled separately by `duumbi-merge-decision`; this skill produces evidence and recommendation only.
+Stage 10 owns implementation changes after review findings. Human reviewers own the GitHub PR merge or disposition decision after this artifact. Stage 12 owns post-merge closure and durable knowledge sync.
 
 ## Source Of Truth Rules
 
@@ -167,7 +166,9 @@ If all checks and review expectations pass:
 - write the review artifact comment
 - recommend `Ready for Human Merge Decision`
 - keep Status `In Review` unless an existing review-ready label/status is available
-- route the explicit human merge decision through `duumbi-merge-decision` or `.github/workflows/stage11-merge-decision.yml`
+- tell the human reviewer to merge or request changes directly in GitHub
+- after a verified merge, expect `.github/workflows/stage12-closure-dispatch.yml`
+  to dispatch `duumbi-closure`
 - do not merge or move to `Done`
 
 If clarification is needed:

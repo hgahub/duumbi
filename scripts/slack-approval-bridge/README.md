@@ -8,7 +8,9 @@ DUUMBI Slack notification triggers a deterministic GitHub Action instead of
 launching an agent directly. Slack shortcuts can also dispatch Stage 1 intake.
 Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
 `stage-approval.yml`. Stage 10 resource authorization buttons that include
-`action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`.
+`action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`;
+legacy Stage 10 payloads are normalized into that same workflow. Stage 11 merge
+or status decisions are handled directly by the human reviewer in GitHub.
 For file-based Stage 7 and Stage 9 spec approvals, `stage-approval.yml`
 revalidates the linked spec PR and squash-merges it before advancing the issue.
 
@@ -32,8 +34,7 @@ The bridge chooses the repository dispatch event from the button payload:
 |---|---|---|
 | `5`, `7`, `9` | `stage-approval` | `stage-approval.yml` |
 | `10` + `action_type: "stage_10_authorization"` | `stage-10-authorization` | `stage-10-authorization.yml` |
-| `10` without `action_type` | `stage10-authorization` | `stage10-authorization-request.yml` |
-| `11` | `stage11-merge-decision` | `stage11-merge-decision.yml` |
+| `10` without `action_type` | `stage-10-authorization` | `stage-10-authorization.yml` |
 | Slack message/global shortcut | `slack-intake` | `slack-intake-dispatch.yml` |
 
 Unknown stage values fall back to `stage-approval`, where unsupported stages fail
@@ -101,6 +102,6 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 If the function is unavailable, Slack notifications include workflow fallback
 links where decisions can be triggered directly from the GitHub Actions UI.
 Stage 5, Stage 7, and Stage 9 approvals use `stage-approval.yml`; Stage 10
-resource authorization uses `stage-10-authorization.yml` for action-typed
-payloads and `stage10-authorization-request.yml` for legacy stage-only
-payloads.
+resource authorization uses `stage-10-authorization.yml`. Stage 11 merge,
+request-changes, clarification, and abandon decisions are made directly in
+GitHub by the human reviewer.

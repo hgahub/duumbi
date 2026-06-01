@@ -109,6 +109,12 @@ function eventTypeForAction(actionData) {
   return eventTypeForStage(actionData?.stage);
 }
 
+function normalizeStage10Decision(decision) {
+  if (decision === "needs-clarification") return "narrow-scope";
+  if (decision === "block") return "reject-defer";
+  return decision;
+}
+
 function buildClientPayload(actionData, reviewer, fallbackRationale) {
   const payload = {
     stage: actionData.stage,
@@ -119,12 +125,11 @@ function buildClientPayload(actionData, reviewer, fallbackRationale) {
     reviewer,
   };
 
-  if (actionTypeForAction(actionData) === "stage_10_authorization") {
+  if (actionTypeForAction(actionData) === "stage_10_authorization" || String(actionData.stage || "") === "10") {
     payload.action_type = "stage_10_authorization";
-    payload.cycle_number = actionData.cycle_number;
+    payload.decision = normalizeStage10Decision(actionData.decision);
+    payload.cycle_number = actionData.cycle_number || actionData.cycle;
     payload.request_comment_id = actionData.request_comment_id;
-  } else if (String(actionData.stage || "") === "10") {
-    payload.cycle = actionData.cycle || 0;
   }
 
   return payload;
@@ -132,20 +137,12 @@ function buildClientPayload(actionData, reviewer, fallbackRationale) {
 
 function fallbackWorkflowName(eventType) {
   if (eventType === "stage-10-authorization") return "stage-10-authorization.yml";
-  if (eventType === "stage10-authorization") return "stage10-authorization-request.yml";
-  if (eventType === "stage11-merge-decision") return "stage11-merge-decision.yml";
   return "stage-approval.yml";
 }
 
 function buildDispatchSuccessText(eventType, actionData, user) {
   if (eventType === "stage-10-authorization") {
-    return `⏳ Stage 10 cycle ${actionData.cycle_number} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
-  }
-  if (eventType === "stage10-authorization") {
-    return `⏳ Stage 10 cycle ${actionData.cycle || "?"} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
-  }
-  if (eventType === "stage11-merge-decision") {
-    return `⏳ Stage 11 *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
+    return `⏳ Stage 10 cycle ${actionData.cycle_number || actionData.cycle || "?"} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
   }
   return `⏳ Stage ${actionData.stage} *${actionData.decision}* triggered by <@${user.id}> — GitHub Actions workflow running…`;
 }
@@ -234,8 +231,7 @@ async function dispatchGenericAsync(githubRepo, eventType, clientPayload, respon
 
 function eventTypeForStage(stage) {
   const normalized = String(stage || "");
-  if (normalized === "10") return "stage10-authorization";
-  if (normalized === "11") return "stage11-merge-decision";
+  if (normalized === "10") return "stage-10-authorization";
   return "stage-approval";
 }
 

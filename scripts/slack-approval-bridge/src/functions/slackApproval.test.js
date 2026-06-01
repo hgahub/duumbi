@@ -66,26 +66,28 @@ test("stage 10 authorization actions route to dedicated repository dispatch", ()
   assert.equal("slack_response_url" in payload, false);
 });
 
-test("legacy stage 10 payloads route to compatibility workflow", () => {
+test("legacy stage 10 payloads route to the dedicated authorization workflow", () => {
   const actionData = {
     stage: "10",
     issue_number: 595,
     cycle: 4,
-    decision: "approve",
+    decision: "needs-clarification",
   };
 
-  assert.equal(eventTypeForAction(actionData), "stage10-authorization");
-  assert.equal(fallbackWorkflowName(eventTypeForAction(actionData)), "stage10-authorization-request.yml");
+  assert.equal(eventTypeForAction(actionData), "stage-10-authorization");
+  assert.equal(fallbackWorkflowName(eventTypeForAction(actionData)), "stage-10-authorization.yml");
 
   const payload = buildClientPayload(
     actionData,
     "Slack (hga)",
-    "Approve by Slack (hga)",
+    "Needs clarification by Slack (hga)",
   );
-  assert.equal(payload.cycle, 4);
+  assert.equal(payload.action_type, "stage_10_authorization");
+  assert.equal(payload.cycle_number, 4);
+  assert.equal(payload.decision, "narrow-scope");
 });
 
-test("stage 11 payloads route to merge decision workflow", () => {
+test("stage 11 payloads fail closed through stage approval fallback", () => {
   const actionData = {
     stage: "11",
     issue_number: 595,
@@ -93,8 +95,8 @@ test("stage 11 payloads route to merge decision workflow", () => {
     decision: "approve-merge",
   };
 
-  assert.equal(eventTypeForAction(actionData), "stage11-merge-decision");
-  assert.equal(fallbackWorkflowName(eventTypeForAction(actionData)), "stage11-merge-decision.yml");
+  assert.equal(eventTypeForAction(actionData), "stage-approval");
+  assert.equal(fallbackWorkflowName(eventTypeForAction(actionData)), "stage-approval.yml");
 });
 
 test("stage 10 Slack follow-up names the cycle and does not imply implementation execution", () => {
