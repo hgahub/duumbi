@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const readRepoFile = (path) => readFileSync(join(repoRoot, path), "utf8");
+const reviewerBotSuffixReplacement = /replace\(\s*\/\\\[bot\\\]\$\/\s*,\s*(["'])\1\s*\)/;
 
 test("stage approval merges only reviewed spec PRs for Stage 7 and Stage 9 approvals", () => {
   const workflow = readRepoFile(".github/workflows/stage-approval.yml");
@@ -23,7 +24,7 @@ test("stage approval merges only reviewed spec PRs for Stage 7 and Stage 9 appro
   assert.match(workflow, /required automated review evidence from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
   assert.match(workflow, /normalizeReviewerLogin/);
-  assert.match(workflow, /replace\(\/\\\[bot\\\]\$\/, ''\)/);
+  assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /has unresolved review threads/);
   assert.match(workflow, /must change only \$\{policy\.expectedPath\}/);
   assert.match(workflow, /Related to #\$\{issueNumber\}/);
@@ -37,7 +38,7 @@ test("product spec Slack review requests wait for review-clean PRs", () => {
   assert.match(workflow, /required automated review evidence missing from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
   assert.match(workflow, /normalizeReviewerLogin/);
-  assert.match(workflow, /replace\(\/\\\[bot\\\]\$\/, ""\)/);
+  assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /unresolved review threads remain/);
   assert.match(workflow, /will be squash-merged on approval/);
   assert.match(workflow, /No product spec review notifications are ready to send/);
@@ -55,7 +56,7 @@ test("technical spec Slack review requests wait for review-clean PRs", () => {
   assert.match(workflow, /required automated review evidence missing from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
   assert.match(workflow, /normalizeReviewerLogin/);
-  assert.match(workflow, /replace\(\/\\\[bot\\\]\$\/, ""\)/);
+  assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /unresolved review threads remain/);
   assert.match(workflow, /will be squash-merged on approval/);
   assert.match(workflow, /No technical spec review notifications are ready to send/);
