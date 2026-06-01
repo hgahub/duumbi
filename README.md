@@ -129,5 +129,6 @@ Native Windows builds use the MSVC Rust target and do not require WSL2. The curr
 
 ## Community
 
+- Join the [DUUMBI Discord](https://discord.gg/FJ92HrZKu7) for community discussion, help, showcases, development coordination, and announcements.
 - Read the [Code of Conduct](CODE_OF_CONDUCT.md) before opening issues or pull requests.
 - Use the provided issue and PR templates.

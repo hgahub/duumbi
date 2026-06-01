@@ -45,4 +45,5 @@ duumbi run
 - [Quick Start](getting-started/quickstart.md) — first program in 5 minutes
 - [CLI Reference](cli/overview.md) — all commands
 - [JSON-LD Format](jsonld/overview.md) — graph format reference
+- [Discord](https://discord.gg/FJ92HrZKu7) — community discussion, help, showcases, and announcements
 - [GitHub](https://github.com/hgahub/duumbi) — source code and issues
