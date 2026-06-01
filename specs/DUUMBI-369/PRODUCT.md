@@ -508,23 +508,14 @@ Non-blocking execution-time questions:
   https://github.com/hgahub/duumbi/issues/369#issuecomment-4596574731
 - DUUMBI README: `README.md`
 - DUUMBI architecture reference: `docs/architecture.md`
-- DUUMBI PRD:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
-- DUUMBI Glossary:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
-- DUUMBI Core Concepts Map:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Core Concepts Map.md`
-- DUUMBI Agentic Development Map:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
-- DUUMBI Phase 14 Marketing and Go-to-Market:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Phase 14 - Marketing & Go-to-Market.md`
-- JSON-LD Graph Representation:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/JSON-LD Graph Representation.md`
-- Semantic Fixed Point:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Semantic Fixed Point.md`
-- Compilation Pipeline:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Compilation Pipeline.md`
-- Public Docs as Product Interface:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Public Docs as Product Interface.md`
+- DUUMBI vault: active PRD note.
+- DUUMBI vault: active Glossary note.
+- DUUMBI vault: Core Concepts Map note.
+- DUUMBI vault: Agentic Development Map note.
+- DUUMBI vault: archived Phase 14 Marketing and Go-to-Market plan.
+- DUUMBI vault: JSON-LD Graph Representation dot.
+- DUUMBI vault: Semantic Fixed Point dot.
+- DUUMBI vault: Compilation Pipeline dot.
+- DUUMBI vault: Public Docs as Product Interface dot.
 - GitHub number #2 dependency check:
   https://github.com/hgahub/duumbi/pull/2
