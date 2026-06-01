@@ -100,7 +100,6 @@ When the resource gate triggers:
 - add the existing `needs-cycle-approval` label only when it is already
   available; otherwise report that label-trigger integration is unavailable
 - set Project Status to `Cycle Authorization` when available
-- add existing `needs-cycle-approval` label when available, or trigger `.github/workflows/stage10-authorization-request.yml` manually when label routing is unavailable
 - stop
 
 When the resource gate does not trigger:
@@ -220,7 +219,7 @@ If product and technical spec completion criteria are met:
 - open or update the implementation PR
 - link the GitHub Issue, product spec, technical spec, BDD evidence, live E2E evidence, and cycle evidence
 - set Project Status to `In Review` when available
-- add existing `needs-review` label when available, or trigger `.github/workflows/stage11-review-request.yml` manually when label routing is unavailable
+- add existing `needs-review` label when available, or trigger `.github/workflows/implementation-review-request.yml` manually when label routing is unavailable
 - stop
 
 If blocked:

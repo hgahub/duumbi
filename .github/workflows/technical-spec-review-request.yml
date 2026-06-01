@@ -4,7 +4,7 @@ on:
   issues:
     types: [labeled]
   schedule:
-    - cron: '0 * * * *'
+    - cron: '20 8,16 * * *'
   workflow_dispatch:
     inputs:
       issue_url:

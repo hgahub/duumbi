@@ -24,13 +24,15 @@ or source-repo contracts that support it.
   duplicates before Stage 4 triage.
 - `duumbi-delivery-autopilot` coordinates a single `Spec Needed` issue through
   Stage 6, Stage 7 AI gate, Stage 8, Stage 9 AI gate, and Stage 10 entry.
-- `duumbi-merge-decision` processes explicit human Stage 11 merge decisions.
 - `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
   gates while still failing closed on missing configured automated review
   submissions, checks, scope, unresolved findings, or unmerged spec PR
   readiness.
+- `duumbi-closure` runs after a verified merge or equivalent completion
+  evidence to close the loop across GitHub, source surfaces, Inbox notes, and
+  durable knowledge sync decisions.
 
 ## Workflows Added
 
@@ -41,10 +43,10 @@ or source-repo contracts that support it.
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded DeepSeek Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
-| `ready-for-build-handoff.yml` | `tech-spec-approved` label, every 15 minutes, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, with an idempotent issue marker so the notification can be retried independently from `stage-approval.yml`. |
-| `stage10-authorization-request.yml` | label, hourly, manual, repository dispatch | Sends Stage 10 resource authorization Slack notifications and records resource decisions. |
-| `stage11-review-request.yml` | label, hourly, manual | Sends implementation review handoff notifications and records the Stage 11 notification marker. |
-| `stage11-merge-decision.yml` | manual, repository dispatch | Processes explicit human merge authorization, fails closed on missing evidence, and squash-merges only when Stage 11 evidence, CI, and Copilot review are clean. |
+| `ready-for-build-handoff.yml` | `tech-spec-approved` label, hourly, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, with an idempotent issue marker so the notification can be retried independently from `stage-approval.yml`. |
+| `ralph-cycle-approval-request.yml` | `needs-cycle-approval` label, twice daily, manual, repository dispatch | Sends Stage 10 bounded-cycle resource authorization Slack notifications; decisions are recorded through `stage-10-authorization.yml`. |
+| `implementation-review-request.yml` | `needs-review` label, PR ready/labeled, twice daily, manual, repository dispatch | Sends implementation review handoff notifications with linked spec and PR evidence. |
+| `stage12-closure-dispatch.yml` | merged PR, manual | Dispatches `duumbi-closure` after a developer merges the implementation PR. It does not merge, close issues, or claim `Done` itself. |
 
 ## Slack Bridge Routing
 
@@ -52,9 +54,10 @@ or source-repo contracts that support it.
 
 - Stage 5, 7, and 9 buttons use `stage-approval`.
 - Stage 10 resource buttons use `stage-10-authorization` when the payload has
-  `action_type: "stage_10_authorization"`; legacy stage-only buttons continue
-  to use `stage10-authorization`.
-- Stage 11 buttons use `stage11-merge-decision`.
+  `action_type: "stage_10_authorization"`; legacy stage-only buttons are
+  normalized into the same workflow.
+- Stage 11 merge, request-changes, clarification, and abandon decisions are made
+  directly by the human reviewer in GitHub.
 - Slack shortcuts use `slack-intake` with Slack channel/thread identifiers only.
 
 Unknown stages fall back to `stage-approval`, where unsupported stages fail
