@@ -320,8 +320,10 @@ Recommended optional visuals:
 - If a platform rejects or transforms a diagram, replace it with a compatible
   image or attach a clear textual equivalent before considering the platform
   deliverable complete.
-- If `duumbi.dev` or docs links are unavailable at publication time, use the
-  GitHub repository link and record the unavailable public link as a caveat.
+- If optional docs links are unavailable at publication time, use the GitHub
+  repository link for supporting context and record the unavailable docs link as
+  a caveat. The article still needs DUUMBI website and GitHub repository links
+  for final completion.
 - If showcase demos are not available or not reliable, the article should avoid
   demo-specific claims and use architecture or pipeline visuals instead.
 - If cross-post canonical URL support is unavailable, include an explicit
@@ -383,7 +385,8 @@ Feature: Publish the DUUMBI graph-not-text thesis article
       When it is published on Medium
       Then the published article has 2000-3000 words
       And it includes at least three diagrams or illustrations
-      And it links to DUUMBI's website or GitHub repository
+      And it links to DUUMBI's website
+      And it links to the DUUMBI GitHub repository
       And publication evidence is posted to issue #369
 
     Scenario: The article uses diagrams that clarify the thesis
@@ -442,8 +445,8 @@ Feature: Publish the DUUMBI graph-not-text thesis article
   purpose.
 - Review the draft for evidence-backed current claims, future-facing claim
   labels, link correctness, and launch tone.
-- Publish or submit to the preferred Medium publication; use direct Medium
-  publication if needed.
+- Publish on Medium; submit to the preferred Medium publication first when
+  timing allows, but use direct Medium publication if needed.
 - Cross-post to dev.to and Hashnode with canonical URL handling or visible
   original-source notes.
 - Post delivery evidence to issue #369.
@@ -467,13 +470,14 @@ Independent work:
   - at least three diagrams or illustrations
   - problem statement, semantic graph thesis, DUUMBI implementation, and current
     results/evidence coverage
-  - links to DUUMBI website or GitHub repository
+  - links to DUUMBI website and GitHub repository
   - current-versus-future claim separation
   - no unsupported production self-healing, telemetry, or autonomous repair
     acceptance claims
 - Publication evidence confirms:
-  - Medium URL is live or submitted to a preferred publication with fallback
-    decision recorded
+  - Medium URL is live
+  - preferred publication submission status or direct-publication fallback
+    decision is recorded as a caveat when relevant
   - dev.to URL is live
   - Hashnode URL is live
   - cross-post canonical or original-source handling is recorded
