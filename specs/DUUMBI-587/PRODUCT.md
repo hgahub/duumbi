@@ -431,8 +431,9 @@ And no repair is accepted before the gates and human review are complete
 
 Scenario: Raw crash logs are not enough to validate a repair
 Given a runtime failure message exists in stderr or a log file
+And a proposed patch candidate is provided
 But no mapped repair crash context exists
-When repair validation is requested with a proposed patch
+When repair validation is requested
 Then the system reports that mapped crash evidence is required
 And no local validation success is reported
 And no source graph is silently changed
@@ -475,7 +476,7 @@ Scenario: Patch-shaped output is not automatically accepted
 Given mapped repair crash context exists
 And a Repair agent has produced GraphPatch-shaped output
 But graph validation, rebuild, tests, and human review have not all completed
-When repair validation is requested for the candidate
+When repair validation is requested
 Then the candidate is not accepted for application
 And the evidence report records the gates that have not passed
 
@@ -485,7 +486,7 @@ Scenario: Graph parse failure blocks local success
 Given mapped repair crash context exists
 And a proposed patch parses and applies atomically
 But the patched JSON-LD cannot be parsed into the DUUMBI AST
-When repair validation runs
+When repair validation is requested
 Then the graph parse gate fails
 And local validation is not marked as passed
 And the evidence report includes the parse diagnostics
@@ -495,7 +496,7 @@ Given mapped repair crash context exists
 And a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 But the parsed DUUMBI AST cannot be converted to graph IR
-When repair validation runs
+When repair validation is requested
 Then the graph build gate fails
 And local validation is not marked as passed
 And the evidence report includes the graph construction diagnostics
@@ -506,7 +507,7 @@ And a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 And the parsed DUUMBI AST builds into graph IR
 But the patched graph produces blocking validation diagnostics
-When repair validation runs
+When repair validation is requested
 Then the graph validation gate fails
 And local validation is not marked as passed
 And the evidence report includes the validation diagnostics
@@ -515,7 +516,7 @@ Scenario: Native rebuild failure blocks local success
 Given mapped repair crash context exists
 And a proposed patch passes graph validation
 But the native rebuild fails
-When repair validation runs
+When repair validation is requested
 Then the native rebuild gate fails
 And local validation is not marked as passed
 And the evidence report includes rebuild command and output summary
@@ -525,7 +526,7 @@ Given mapped repair crash context exists
 And a proposed patch passes graph validation
 And the native rebuild succeeds
 But a relevant targeted or regression test fails
-When repair validation runs
+When repair validation is requested
 Then the relevant tests gate fails
 And local validation is not marked as passed
 And the evidence report identifies the failed tests
