@@ -388,7 +388,8 @@ Constraints:
   proceed to graph validation.
 - If graph validation fails, report diagnostics and do not proceed to native
   rebuild.
-- If rebuild fails, report the rebuild command summary and failure output.
+- If rebuild fails, report the rebuild command summary and failure output and do
+  not proceed to relevant tests.
 - If tests fail, report the failed tests and preserve local validation as
   failed.
 - If all local gates pass but no human review exists, report pending human
@@ -508,7 +509,7 @@ And the evidence report identifies the failed tests
 Scenario: All local gates pass but human review is still required
 Given mapped repair crash context exists
 And a proposed patch parses as GraphPatch
-And patch application is atomic
+And the patch is applied atomically
 And the patched graph parses, builds, and validates
 And the native rebuild succeeds
 And relevant tests pass
