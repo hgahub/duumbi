@@ -427,7 +427,7 @@ Expected live E2E shape:
 
 ```text
 tmp=<temporary directory>
-target/debug/duumbi build --trace tests/fixtures/telemetry/<controlled-failure>.jsonld -o "$tmp/panic-fixture"
+DUUMBI_TELEMETRY_DIR="$tmp/telemetry" target/debug/duumbi build --trace tests/fixtures/telemetry/<controlled-failure>.jsonld -o "$tmp/panic-fixture"
 DUUMBI_TELEMETRY_DIR="$tmp/telemetry" "$tmp/panic-fixture"
 target/debug/duumbi telemetry inspect --telemetry-dir "$tmp/telemetry"
 ```
@@ -435,6 +435,7 @@ target/debug/duumbi telemetry inspect --telemetry-dir "$tmp/telemetry"
 Expected evidence:
 
 - The traced build succeeds.
+- The traced build and traced run use the same telemetry artifact directory.
 - The traced binary exits nonzero.
 - Stderr includes the original DUUMBI panic message.
 - `$tmp/telemetry/traces.jsonl` or the accepted trace event artifact exists.
