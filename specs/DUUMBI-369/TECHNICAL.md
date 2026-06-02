@@ -556,8 +556,9 @@ Code/test commands:
 
 Stage 10 implementation for #369 is complete only when:
 
-- Medium article is live or a Medium publication submission/fallback decision
-  satisfies the product spec's publication rule.
+- A live Medium article URL exists. A fallback note may explain direct Medium
+  publication instead of preferred-publication acceptance, but it cannot replace
+  the live Medium URL requirement.
 - Final article is 2000-3000 words.
 - Article includes at least three diagrams or illustrations.
 - Article links to DUUMBI website and GitHub repository.
