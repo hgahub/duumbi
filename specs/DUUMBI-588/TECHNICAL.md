@@ -293,6 +293,12 @@ Canonical serialized `RepairContextEvidence.selection` values:
 - `line:<N>` for `CrashEntrySelection::LineNumber(N)`, where `<N>` is the same
   1-based JSONL line stored in `selected_crash_line`.
 
+Canonical serialized `RepairContextEvidence.source` value:
+
+- `local_telemetry_artifacts` for contexts assembled from local
+  `crash_dump.jsonl`, `trace_map.json`, and supplied graph source files through
+  `duumbi telemetry repair-context` or equivalent library options.
+
 ### 3. Build Bounded Graph Context From Graph Source
 
 Replace or augment the current trace-map-only `repair_graph_context()` with a
@@ -325,6 +331,10 @@ Fail closed when graph source is unavailable or stale:
   missing function graph context.
 - If the block ID is absent from the mapped function, report stale or missing
   block graph context.
+- If the mapped function `@id` appears in more than one supplied graph file,
+  report ambiguous graph source and fail closed.
+- If the mapped block `@id` appears in more than one candidate mapped function
+  context, report ambiguous graph source and fail closed.
 - If the graph source is malformed JSON, report parse failure with the source
   path.
 
@@ -405,12 +415,13 @@ candidate patches or producing repair success evidence.
 
 | Product BDD Scenario | Required Technical Evidence |
 | --- | --- |
-| Controlled crash becomes repair context | Unit test assembles `RepairCrashContext` from a crash artifact, trace map, and graph fixture; asserts schema version, crash message, trace IDs, graph function/block IDs, bounded graph context, provenance, validation expectations, and test expectations. Integration test runs `duumbi telemetry repair-context --telemetry-dir <dir> --graph tests/fixtures/telemetry/option_none_unwrap.jsonld` after a traced crash and asserts equivalent JSON fields. |
+| Controlled crash becomes repair context | Unit test assembles `RepairCrashContext` from a crash artifact, trace map, and graph fixture; asserts schema version, crash message, trace IDs, graph function/block IDs, bounded graph context, `evidence.source` value `local_telemetry_artifacts`, provenance, validation expectations, and test expectations. Integration test runs `duumbi telemetry repair-context --telemetry-dir <dir> --graph tests/fixtures/telemetry/option_none_unwrap.jsonld` after a traced crash and asserts equivalent JSON fields. |
 | Raw logs are not repair-ready | Unit test calls the context API without crash/map artifacts and asserts missing evidence. If `repair_crash_context_from_artifacts()` is retained, a unit test invokes it without graph source input and asserts the missing-graph-source/deprecated-helper error rather than a trace-map-only context. Review evidence confirms no API accepts raw stderr/log text as a repair context input and no provider call is made. |
 | Unmapped trace IDs block repair readiness | Unit test writes a crash artifact whose function or block trace ID does not join the trace map; expects `TelemetryError::Unmapped` or equivalent and no context. |
 | Exact node evidence is unavailable in v1 | Unit and CLI JSON tests assert `exact_node_id` is `None`/`null` and graph context contains `exact_node_evidence: null`. |
 | Argument values are omitted by default | Serialization test asserts the context JSON has no argument, runtime value, heap, stack, or value snapshot fields. Review evidence confirms runtime crash artifact fields were not expanded for value capture. |
 | Stale graph IDs prevent a misleading context | Unit test supplies a graph source missing the mapped function or block and asserts stale/missing graph context error. Add separate function-missing and block-missing tests if one combined test is not clear enough. |
+| Duplicate graph IDs prevent ambiguous context | Unit test supplies two graph source files with the mapped function or block `@id` duplicated and asserts ambiguous graph source error instead of first-match or last-match context assembly. |
 | Default crash selection remains traceable | Unit test writes two valid crash JSONL entries and no explicit `--crash-entry`; asserts the latest non-empty line is selected, `evidence.selected_crash_line` points to that line, and `evidence.selection` is `latest`. CLI E2E may cover this with a synthetic artifact if practical. |
 | Explicit crash selection remains traceable | Unit test writes two valid crash JSONL entries and selects the first with `CrashEntrySelection::LineNumber(1)` or CLI `--crash-entry 1`; asserts the selected crash message, provenance line, and `evidence.selection` value `line:1`. |
 | Repair agent receives validation expectations | Unit test asserts context includes expected validation/test strings: `GraphPatch` parse, atomic patch behavior, graph parse/build, graph validation, native rebuild, relevant tests, controlled crash reproducibility, targeted regression, and default untraced behavior unchanged. The same test asserts `human_review_required` is `true` so a later Repair agent cannot treat generated patch-shaped output as accepted without human review. |
@@ -483,6 +494,7 @@ Pass criteria:
   - `trace_ids.function_trace_id`
   - `trace_ids.block_trace_id`
   - `graph_context.context_limit`
+  - `evidence.source: "local_telemetry_artifacts"`
   - `evidence.selected_crash_line`
   - validation expectations
   - test expectations
@@ -497,6 +509,8 @@ Failure criteria:
 
 - command accepts raw logs without artifacts.
 - command succeeds without graph source.
+- command picks first-match or last-match context when duplicate mapped graph
+  `@id` values are supplied.
 - command calls a provider.
 - command writes or mutates graph source.
 - command omits provenance or selected crash entry evidence.
@@ -655,12 +669,16 @@ Stage 10 implementation is complete for #588 only when:
 - Context assembly requires mapped crash evidence.
 - Context assembly rejects missing, malformed, untraced, unmapped, and stale
   graph evidence.
+- Context assembly rejects ambiguous graph source matches when duplicate mapped
+  function or block `@id` values appear across supplied graph files.
 - Default crash selection uses latest non-empty crash JSONL entry.
 - Explicit crash selection supports a 1-based crash JSONL line.
 - Context assembly requires graph source and builds bounded context from the
   mapped function/block.
 - No successful context assembly path, including retained legacy helpers, emits a
   trace-map-only context without supplied graph sources.
+- `RepairContextEvidence.source` serializes as `local_telemetry_artifacts` for
+  locally assembled contexts.
 - Exact node evidence remains explicitly unavailable in v1.
 - Runtime values and argument snapshots remain absent.
 - `duumbi telemetry repair-context` emits reviewable JSON.
