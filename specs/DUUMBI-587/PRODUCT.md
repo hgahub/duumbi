@@ -347,8 +347,7 @@ Constraints:
 
 - Relevant tests gate:
   - passes only when the selected targeted and regression tests pass.
-  - must include enough evidence to explain why the selected tests are relevant.
-  - must stay conservative when impacted-test analysis is unavailable.
+  - fails with failed-test summaries when any selected relevant test fails.
 
 - Human review gate:
   - is not satisfied by local validation.
@@ -363,6 +362,9 @@ Constraints:
 - The report identifies the source graph/workspace artifact validated.
 - The report records each gate as passed or failed.
 - The report includes concise command/result summaries for rebuild and tests.
+- The report explains why selected tests are relevant.
+- The report records conservative test selection when impacted-test analysis is
+  unavailable.
 - The report preserves failed gate output in a reviewable form.
 - The report says whether all local validation gates passed.
 - The report says human review is required.
@@ -378,6 +380,8 @@ Constraints:
   mapped crash evidence and do not validate a patch.
 - If the candidate patch is missing, report that no repair candidate was
   provided and do not produce local validation success.
+- If the source graph or workspace artifact is missing or unreadable, report that
+  the source artifact is required and do not attempt patch application.
 - If the patch is malformed, report the GraphPatch parse error and do not apply
   the patch.
 - If patch application fails, report the failed operation and keep original
@@ -434,6 +438,15 @@ But no proposed patch candidate is provided
 When repair validation is requested
 Then the system reports that a patch candidate is required
 And no validation gates are reported as passed
+
+Scenario: Unavailable source artifact blocks validation
+Given mapped repair crash context exists
+And a proposed patch candidate is provided
+But the source graph or workspace artifact is missing or unreadable
+When repair validation is requested
+Then the system reports that the source artifact is required
+And patch application is not attempted
+And no local validation success is reported
 
 Rule: Patch validation is canonical and atomic
 
