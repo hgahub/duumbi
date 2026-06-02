@@ -386,11 +386,17 @@ When repair context is assembled
 Then the system reports stale or missing graph context
 And it does not create a vague prompt from the crash message alone
 
-Scenario: Multiple crash entries require traceable selection
+Scenario: Default crash selection remains traceable
 Given a crash dump contains more than one crash entry
-When repair context is assembled
+When repair context is assembled from the default crash selection
 Then the resulting context identifies which crash entry was used
-Or the caller can provide an explicit crash artifact selection
+And the review evidence can trace the context back to that selected crash
+And Stage 8 defines the default selection rule before implementation
+
+Scenario: Explicit crash selection remains traceable
+Given a crash dump contains more than one crash entry
+When the caller provides an explicit crash artifact selection
+Then the resulting context uses the selected crash entry
 And the review evidence can trace the context back to that selected crash
 
 Rule: Repair proposals remain gated
