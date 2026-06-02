@@ -333,8 +333,12 @@ Fail closed when graph source is unavailable or stale:
   block graph context.
 - If the mapped function `@id` appears in more than one supplied graph file,
   report ambiguous graph source and fail closed.
+- If the mapped function `@id` appears more than once within a single supplied
+  graph file, report ambiguous graph source and fail closed.
 - If the mapped block `@id` appears in more than one candidate mapped function
   context, report ambiguous graph source and fail closed.
+- If the mapped block `@id` appears more than once within the candidate mapped
+  function context, report ambiguous graph source and fail closed.
 - If the graph source is malformed JSON, report parse failure with the source
   path.
 
@@ -421,7 +425,7 @@ candidate patches or producing repair success evidence.
 | Exact node evidence is unavailable in v1 | Unit and CLI JSON tests assert `exact_node_id` is `None`/`null` and graph context contains `exact_node_evidence: null`. |
 | Argument values are omitted by default | Serialization test asserts the context JSON has no argument, runtime value, heap, stack, or value snapshot fields. Review evidence confirms runtime crash artifact fields were not expanded for value capture. |
 | Stale graph IDs prevent a misleading context | Unit test supplies a graph source missing the mapped function or block and asserts stale/missing graph context error. Add separate function-missing and block-missing tests if one combined test is not clear enough. |
-| Duplicate graph IDs prevent ambiguous context | Unit test supplies two graph source files with the mapped function or block `@id` duplicated and asserts ambiguous graph source error instead of first-match or last-match context assembly. |
+| Duplicate graph IDs prevent ambiguous context | Unit test supplies two graph source files with the mapped function or block `@id` duplicated and asserts ambiguous graph source error instead of first-match or last-match context assembly. A separate unit test or fixture variant duplicates the mapped function or block `@id` within one supplied graph file and asserts the same fail-closed behavior. |
 | Default crash selection remains traceable | Unit test writes two valid crash JSONL entries and no explicit `--crash-entry`; asserts the latest non-empty line is selected, `evidence.selected_crash_line` points to that line, and `evidence.selection` is `latest`. CLI E2E may cover this with a synthetic artifact if practical. |
 | Explicit crash selection remains traceable | Unit test writes two valid crash JSONL entries and selects the first with `CrashEntrySelection::LineNumber(1)` or CLI `--crash-entry 1`; asserts the selected crash message, provenance line, and `evidence.selection` value `line:1`. |
 | Repair agent receives validation expectations | Unit test asserts context includes expected validation/test strings: `GraphPatch` parse, atomic patch behavior, graph parse/build, graph validation, native rebuild, relevant tests, controlled crash reproducibility, targeted regression, and default untraced behavior unchanged. The same test asserts `human_review_required` is `true` so a later Repair agent cannot treat generated patch-shaped output as accepted without human review. |
@@ -496,6 +500,7 @@ Pass criteria:
   - `graph_context.context_limit`
   - `evidence.source: "local_telemetry_artifacts"`
   - `evidence.selected_crash_line`
+  - `evidence.selection`
   - validation expectations
   - test expectations
 - stdout does not include runtime argument/value/heap/stack snapshot fields.
@@ -670,7 +675,8 @@ Stage 10 implementation is complete for #588 only when:
 - Context assembly rejects missing, malformed, untraced, unmapped, and stale
   graph evidence.
 - Context assembly rejects ambiguous graph source matches when duplicate mapped
-  function or block `@id` values appear across supplied graph files.
+  function or block `@id` values appear across supplied graph files or within a
+  single supplied graph file.
 - Default crash selection uses latest non-empty crash JSONL entry.
 - Explicit crash selection supports a 1-based crash JSONL line.
 - Context assembly requires graph source and builds bounded context from the
