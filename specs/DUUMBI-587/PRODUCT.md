@@ -385,8 +385,8 @@ Constraints:
   graph building or validation.
 - If graph building fails, report the graph construction diagnostics and do not
   proceed to graph validation.
-- If graph validation fails, report diagnostics and do not rebuild as a local
-  success path.
+- If graph validation fails, report diagnostics and do not proceed to native
+  rebuild.
 - If rebuild fails, report the rebuild command summary and failure output.
 - If tests fail, report the failed tests and preserve local validation as
   failed.
