@@ -450,7 +450,7 @@ Given a Repair agent has produced GraphPatch-shaped output
 But graph validation, rebuild, tests, and human review have not all completed
 When the candidate is inspected
 Then the candidate is not accepted for application
-And the evidence report shows the remaining gates
+And the evidence report records the gates that have not passed
 
 Rule: Graph, rebuild, and test gates must pass
 
@@ -467,7 +467,7 @@ Given a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 But the parsed DUUMBI AST cannot be converted to graph IR
 When repair validation runs
-Then the graph build evidence fails
+Then the graph build gate fails
 And local validation is not marked as passed
 And the evidence report includes the graph construction diagnostics
 
