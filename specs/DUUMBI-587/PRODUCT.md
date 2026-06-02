@@ -298,6 +298,8 @@ Constraints:
   is absent.
 - Missing patch candidate: validation cannot start because no proposed patch was
   provided.
+- Source artifact unavailable: validation cannot start because the source graph
+  or workspace artifact is missing or unreadable.
 - Patch malformed: the proposed patch does not parse as GraphPatch.
 - Patch application failed: the patch cannot be applied atomically to the
   source graph.
@@ -468,7 +470,8 @@ And the original graph source remains unchanged
 And the evidence report identifies the failed patch operation
 
 Scenario: Patch-shaped output is not automatically accepted
-Given a Repair agent has produced GraphPatch-shaped output
+Given mapped repair crash context exists
+And a Repair agent has produced GraphPatch-shaped output
 But graph validation, rebuild, tests, and human review have not all completed
 When repair validation is requested for the candidate
 Then the candidate is not accepted for application
@@ -584,14 +587,14 @@ And Query mode does not accept the repair
   - Keep the execution issue open for later workflow stages.
 
 - Validation contract:
-  - Define the required starting inputs: mapped repair crash context and a
-    proposed GraphPatch candidate.
+  - Define the required starting inputs: mapped repair crash context, proposed
+    GraphPatch candidate, and source graph or workspace artifact.
   - Define the required local gates: GraphPatch parse, atomic patch application,
     graph parse, graph build, graph validation, native rebuild, and relevant
     tests.
-  - Define not-ready behavior for missing context, missing patch, malformed
-    patch, failed patch application, graph diagnostics, rebuild failure, and
-    test failure.
+  - Define not-ready behavior for missing context, missing patch, unavailable
+    source artifact, malformed patch, failed patch application, graph
+    diagnostics, rebuild failure, and test failure.
 
 - Evidence report:
   - Define the minimum evidence fields for crash context, patch candidate,
@@ -642,6 +645,7 @@ And Query mode does not accept the repair
 - Implementation PRs should later prove:
   - Missing mapped crash context blocks validation.
   - Missing patch candidate blocks validation.
+  - Missing or unreadable source artifact blocks validation.
   - Malformed GraphPatch data fails before application.
   - Failed patch application preserves the original graph.
   - Graph parse, graph build, and graph validation failures block local success.
@@ -656,6 +660,7 @@ And Query mode does not accept the repair
 - Suggested test coverage for later implementation:
   - Unit tests for evidence serialization and required fields.
   - Unit tests for GraphPatch parse success and failure.
+  - Unit or integration tests for missing or unreadable source artifact handling.
   - Unit tests for atomic patch failure preserving source.
   - Unit tests or integration tests for graph validation failure evidence.
   - Integration coverage using the controlled runtime failure fixture.
