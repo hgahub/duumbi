@@ -530,7 +530,7 @@ And the patch is applied atomically
 And the patched graph parses, builds, and validates
 And the native rebuild succeeds
 And relevant tests pass
-When repair validation produces evidence
+When repair validation is requested
 Then local validation is marked as passed
 And the evidence report requires human review
 And the repair is not marked accepted for application
