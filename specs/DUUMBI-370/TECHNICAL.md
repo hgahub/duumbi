@@ -56,8 +56,7 @@ Do not use this spec to start implementation during Stage 8 or Stage 9.
   - `docs/architecture.md`: graph, JSON-LD, validation, Cranelift, agent,
     Query, and Intent source context.
   - `docs/coding-conventions.md`: source evidence for engineering discipline.
-- Public website repository references from local
-  `/Users/heizergabor/space/hgahub/duumbi-web` inspection:
+- Public website repository references from `hgahub/duumbi-web` inspection:
   - `README.md`: confirms `duumbi-web` owns `https://duumbi.dev`, public
     messaging, landing-page content, documentation links, Discord, and GitHub
     Discussions.
@@ -397,11 +396,14 @@ Each Stage 10 Ralph cycle must:
 - Expected external social API usage: 0 calls, USD 0.
 - Human approval is required when planned external LLM usage exceeds USD 2,
   exceeds 10 external calls, adds generated raster images, adds dependencies,
-  changes Astro routes or published site content, requires social account
-  access, publishes or schedules posts, introduces analytics or tracking,
-  commits binary/generated assets, moves artifacts outside the approved package,
+  adds risky dependencies, introduces migration-sensitive changes, changes
+  Astro routes or published site content, requires social account access,
+  publishes or schedules posts, introduces analytics or tracking, commits
+  binary/generated assets, moves artifacts outside the approved package,
   changes implementation code, changes product specs, changes workflow behavior,
-  or requires a product/editorial decision that materially changes scope.
+  touches security- or privacy-sensitive work, encounters an unresolved blocker,
+  or requires a product, architecture, or editorial decision that materially
+  changes scope.
 - External LLM usage counted: DUUMBI live provider calls and external model or
   agent CLI/API calls outside Codex internal reasoning. Codex internal reasoning
   usage is reported only as an estimate.
