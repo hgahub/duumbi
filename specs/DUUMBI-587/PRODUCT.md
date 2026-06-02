@@ -481,7 +481,7 @@ Scenario: Graph validation failure blocks local success
 Given a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 And the parsed DUUMBI AST builds into graph IR
-But the patched graph produces validation diagnostics
+But the patched graph produces blocking validation diagnostics
 When repair validation runs
 Then the graph validation gate fails
 And local validation is not marked as passed
@@ -521,7 +521,7 @@ Given a repair candidate is pending human review after all local gates pass
 When a reviewer rejects the candidate or requests revision
 Then the repair state is marked as human rejected or revision needed
 And the repair remains not accepted for application
-And the evidence report preserves the reviewer decision for follow-up
+And the evidence report or linked human-review state preserves the reviewer decision for follow-up
 
 Rule: Evidence is traceable and bounded
 
