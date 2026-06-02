@@ -57,8 +57,8 @@ When this issue is implemented:
   telemetry artifact directory.
 - The crash evidence includes trace correlation for the active graph function
   and block at failure time.
-- Trace event IDs and crash IDs can be joined to `trace_map.json` entries of
-  the matching graph kind.
+- Trace event IDs and crash-record function/block trace IDs can be joined to
+  `trace_map.json` entries of the matching graph kind.
 - `duumbi telemetry inspect` or the accepted equivalent maps the failure to
   graph function/block identifiers.
 - Exact node-level evidence remains explicitly unavailable in v1 unless a later
@@ -334,7 +334,7 @@ Then every required trace event has a trace ID
 And each function event trace ID maps to a function entry in the trace map
 And each block event trace ID maps to a block entry in the trace map
 
-Scenario: Crash IDs join to the trace map
+Scenario: Crash trace IDs join to the trace map
 Given crash evidence from the controlled traced failure
 And the trace-map artifact from the same build
 When the verification reads the latest crash record
@@ -448,7 +448,8 @@ Expected evidence:
 - The trace event artifact contains required function/block events with trace
   IDs.
 - Crash evidence contains trace-active function/block trace IDs.
-- Trace and crash IDs join to graph function/block entries in the trace map.
+- Trace event IDs and crash-record function/block trace IDs join to graph
+  function/block entries in the trace map.
 - Telemetry inspection reports mapped function/block graph IDs.
 - Telemetry inspection does not claim exact node-level evidence in v1.
 - No provider, network, Studio, external collector, or repair-agent execution is
