@@ -351,7 +351,8 @@ Human approval is required before:
 - changing compiler trace emission behavior.
 - changing runtime panic behavior or trace hook ABI.
 - changing CLI command behavior beyond test invocation.
-- adding dependencies or external services.
+- adding dependencies, accepting a risky dependency, or using external
+  services.
 - touching provider/model behavior or external LLM calls.
 - expanding from function/block evidence to exact node or per-operation
   evidence.
@@ -368,7 +369,8 @@ Human approval is required before:
 - Hard approval threshold: stop before external LLM usage exceeds USD 2 or
   before external LLM calls exceed 10.
 - Stop immediately on repeated test instability, unclear artifact contract,
-  #585 contract conflict, schema mismatch, or scope expansion.
+  #585 contract conflict, schema mismatch, blocker discovery, or scope
+  expansion.
 
 ## Task Breakdown
 
