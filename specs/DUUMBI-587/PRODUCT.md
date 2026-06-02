@@ -197,6 +197,8 @@ Constraints:
 
 - Validation must not start without mapped crash context or an explicit
   proposed patch.
+- Validation must not start without the source graph or workspace artifact being
+  present and readable.
 - Raw logs alone must not be enough to validate a repair candidate.
 - Patch-shaped provider output must not be trusted until it parses through the
   accepted patch contract.
@@ -480,7 +482,8 @@ And the evidence report records the gates that have not passed
 Rule: Graph, rebuild, and test gates must pass
 
 Scenario: Graph parse failure blocks local success
-Given a proposed patch parses and applies atomically
+Given mapped repair crash context exists
+And a proposed patch parses and applies atomically
 But the patched JSON-LD cannot be parsed into the DUUMBI AST
 When repair validation runs
 Then the graph parse gate fails
@@ -488,7 +491,8 @@ And local validation is not marked as passed
 And the evidence report includes the parse diagnostics
 
 Scenario: Graph build failure blocks local success
-Given a proposed patch parses and applies atomically
+Given mapped repair crash context exists
+And a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 But the parsed DUUMBI AST cannot be converted to graph IR
 When repair validation runs
@@ -497,7 +501,8 @@ And local validation is not marked as passed
 And the evidence report includes the graph construction diagnostics
 
 Scenario: Graph validation failure blocks local success
-Given a proposed patch parses and applies atomically
+Given mapped repair crash context exists
+And a proposed patch parses and applies atomically
 And the patched JSON-LD parses into the DUUMBI AST
 And the parsed DUUMBI AST builds into graph IR
 But the patched graph produces blocking validation diagnostics
@@ -507,7 +512,8 @@ And local validation is not marked as passed
 And the evidence report includes the validation diagnostics
 
 Scenario: Native rebuild failure blocks local success
-Given a proposed patch passes graph validation
+Given mapped repair crash context exists
+And a proposed patch passes graph validation
 But the native rebuild fails
 When repair validation runs
 Then the native rebuild gate fails
@@ -515,7 +521,8 @@ And local validation is not marked as passed
 And the evidence report includes rebuild command and output summary
 
 Scenario: Relevant test failure blocks local success
-Given a proposed patch passes graph validation
+Given mapped repair crash context exists
+And a proposed patch passes graph validation
 And the native rebuild succeeds
 But a relevant targeted or regression test fails
 When repair validation runs
