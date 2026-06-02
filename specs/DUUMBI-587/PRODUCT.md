@@ -297,7 +297,7 @@ Constraints:
 - Patch application failed: the patch cannot be applied atomically to the
   source graph.
 - Graph parse failed: patched JSON-LD cannot be parsed into DUUMBI AST.
-- Graph build failed: parsed graph source cannot be converted to graph IR.
+- Graph IR build failed: parsed DUUMBI AST cannot be converted to graph IR.
 - Graph validation failed: semantic validation produced diagnostics.
 - Rebuild failed: native rebuild does not complete successfully.
 - Tests failed: relevant tests do not pass.
@@ -386,7 +386,7 @@ Constraints:
 
 - Original crash evidence remains traceable from every validation report.
 - Patch-shaped output is not enough to claim repair success.
-- Graph mutation cannot bypass parse/build/validate behavior.
+- Graph mutation cannot bypass parse, build, or validate behavior.
 - Failed gates cannot be hidden behind an agent success message.
 - Local validation success cannot bypass human review.
 - Default untraced behavior remains unchanged unless later approved scope says
@@ -567,8 +567,8 @@ And Query mode does not accept the repair
   - The product spec stays within #587 and does not create a technical spec.
   - Repair validation starts from mapped crash context and a proposed patch.
   - GraphPatch parse and atomic patch behavior are product-visible gates.
-  - Graph parse/build, graph validation, native rebuild, and relevant tests are
-    required before local validation success.
+  - Graph parse, graph build, graph validation, native rebuild, and relevant
+    tests are required before local validation success.
   - Local validation success remains distinct from human acceptance.
   - Evidence report requirements are reviewable and bounded.
   - Production self-healing, hot-swap, deployment, and autonomous acceptance are
@@ -591,7 +591,7 @@ And Query mode does not accept the repair
   - Missing patch candidate blocks validation.
   - Malformed GraphPatch data fails before application.
   - Failed patch application preserves the original graph.
-  - Graph parse/build/validation failures block local success.
+  - Graph parse, graph build, and graph validation failures block local success.
   - Native rebuild failure blocks local success.
   - Relevant test failure blocks local success.
   - All local gates passing still keeps human review required and acceptance
