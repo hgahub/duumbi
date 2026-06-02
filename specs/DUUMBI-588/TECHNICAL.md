@@ -240,6 +240,7 @@ pub struct RepairCrashContext {
     pub evidence: RepairContextEvidence,
     pub validation_expectations: Vec<String>,
     pub test_expectations: Vec<String>,
+    pub human_review_required: bool,
 }
 ```
 
@@ -399,7 +400,7 @@ candidate patches or producing repair success evidence.
 | Stale graph IDs prevent a misleading context | Unit test supplies a graph source missing the mapped function or block and asserts stale/missing graph context error. Add separate function-missing and block-missing tests if one combined test is not clear enough. |
 | Default crash selection remains traceable | Unit test writes two valid crash JSONL entries and no explicit `--crash-entry`; asserts the latest non-empty line is selected and `evidence.selected_crash_line` points to that line. CLI E2E may cover this with a synthetic artifact if practical. |
 | Explicit crash selection remains traceable | Unit test writes two valid crash JSONL entries and selects the first with `CrashEntrySelection::LineNumber(1)` or CLI `--crash-entry 1`; asserts the selected crash message and provenance line. |
-| Repair agent receives validation expectations | Unit test asserts context includes expected validation/test strings: `GraphPatch` parse, atomic patch behavior, graph parse/build, graph validation, native rebuild, relevant tests, controlled crash reproducibility, targeted regression, and default untraced behavior unchanged. |
+| Repair agent receives validation expectations | Unit test asserts context includes expected validation/test strings: `GraphPatch` parse, atomic patch behavior, graph parse/build, graph validation, native rebuild, relevant tests, controlled crash reproducibility, targeted regression, and default untraced behavior unchanged. The same test asserts `human_review_required` is `true` so a later Repair agent cannot treat generated patch-shaped output as accepted without human review. |
 | Patch-shaped output is not accepted automatically | Review evidence plus unit tests confirm #588 does not set `accepted_for_application`, apply `GraphPatch`, write graph files, or call `repair_validation_evidence_from_graph_patch()` as part of context assembly. |
 | Graph mutation cannot bypass validation | Review evidence confirms context assembly is read-only and any later patch remains constrained to existing `GraphPatch`/MCP validation boundaries. No #588 test should mutate `.duumbi/graph`. |
 | Production self-healing is requested from this contract | Review evidence confirms no `duumbi heal`, production ingestion, remote telemetry, hot-swap, Studio dashboard, or autonomous repair loop is added. |
