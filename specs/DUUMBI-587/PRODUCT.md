@@ -17,10 +17,10 @@ human-reviewable evidence report -> pending human review
 
 A repair candidate is not successful merely because an agent proposed a patch.
 It must parse through the canonical GraphPatch contract, apply atomically, pass
-graph parsing/building, pass graph validation, rebuild natively, pass relevant
-tests, and produce an evidence report that a human can inspect. Even when all
-local gates pass, the repair remains pending human review and is not accepted
-or applied silently.
+graph parsing, pass graph building, pass graph validation, rebuild natively,
+pass relevant tests, and produce an evidence report that a human can inspect.
+Even when all local gates pass, the repair remains pending human review and is
+not accepted or applied silently.
 
 This specification PR is related to #587 and must leave the execution issue
 open for Stage 7 review, Stage 8 technical specification, implementation,
@@ -229,8 +229,8 @@ Constraints:
   The existing GraphPatch applicator is all-or-nothing, and #587 should preserve
   that user-visible safety property.
 
-- **Decision:** Require graph parse/build, graph validation, native rebuild, and
-  relevant tests before local validation can pass.
+- **Decision:** Require graph parse, graph build, graph validation, native
+  rebuild, and relevant tests before local validation can pass.
   **Evidence:** #587 acceptance criteria require graph validation, rebuild, and
   relevant tests. The active PRD says any repair must pass graph validation,
   rebuild, tests, and human review before acceptance.
@@ -315,15 +315,20 @@ Constraints:
   - fails before any patch application when the payload is malformed.
 
 - Atomic patch application gate:
-  - passes only when the candidate patch can be applied to a clone or otherwise
-    proves the original source remains unchanged on failure.
+  - passes only when the candidate patch can be applied to a clone of the
+    source and the original source is structurally preserved on any failure.
   - fails when any operation targets a missing node, block, function, or invalid
     JSON-LD structure.
 
-- Graph parse and build gates:
-  - pass only when the patched JSON-LD parses and builds into DUUMBI graph IR.
-  - fail with diagnostics that identify the parse or graph construction problem
-    clearly enough for review.
+- Graph parse gate:
+  - passes only when the patched JSON-LD parses into the DUUMBI AST.
+  - fails with diagnostics that identify the parse problem clearly enough for
+    review.
+
+- Graph build gate:
+  - passes only when the parsed DUUMBI AST builds into graph IR.
+  - fails with diagnostics that identify the graph construction problem clearly
+    enough for review.
 
 - Graph validation gate:
   - passes only when the patched graph has no blocking validation diagnostics.
@@ -504,10 +509,8 @@ And the result is not reported as locally validated
 Rule: Product boundaries remain explicit
 
 Scenario: Production self-healing is requested from the validation guardrail
-Given the repair validation guardrail is available for local developer/test
-evidence
-When a user asks it to ingest production crashes or automatically deploy a
-repair
+Given the repair validation guardrail is available for local developer/test evidence
+When a user asks it to ingest production crashes or automatically deploy a repair
 Then the request is out of scope for #587
 And it must be routed to later product specification
 And no automatic acceptance is reported
@@ -531,7 +534,8 @@ And Query mode does not accept the repair
   - Define the required starting inputs: mapped repair crash context and a
     proposed GraphPatch candidate.
   - Define the required local gates: GraphPatch parse, atomic patch application,
-    graph parse/build, graph validation, native rebuild, and relevant tests.
+    graph parse, graph build, graph validation, native rebuild, and relevant
+    tests.
   - Define not-ready behavior for missing context, missing patch, malformed
     patch, failed patch application, graph diagnostics, rebuild failure, and
     test failure.
@@ -575,8 +579,8 @@ And Query mode does not accept the repair
   - The exact evidence report schema.
   - How the original source graph is preserved while validating a candidate.
   - How candidate patch artifacts are represented and diffed.
-  - How graph parse/build/validation gates map to existing parser, builder, and
-    validator APIs.
+  - How graph parse, graph build, and graph validation gates map to existing
+    parser, builder, and validator APIs.
   - How rebuild commands are selected for single-file and workspace cases.
   - How relevant tests are selected conservatively.
   - How large command output is summarized and linked.
@@ -657,15 +661,15 @@ Non-blocking questions for Stage 8 or later implementation:
 - Related child #585, local crash dumps and trace-to-graph mapping artifacts:
   https://github.com/hgahub/duumbi/issues/585
 - DUUMBI PRD:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
 - Runtime Failure Feedback Loop:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Runtime Failure Feedback Loop.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Runtime Failure Feedback Loop.md`
 - DUUMBI Service and Research Direction:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Service and Research Direction.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Service and Research Direction.md`
 - DUUMBI Product Roadmap 2026-05:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Product Roadmap 2026-05.md`
+  `Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Product Roadmap 2026-05.md`
 - DUUMBI Phase 13 Self-Healing and Telemetry archive:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Phase 13 - Self-Healing & Telemetry.md`
+  `Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Phase 13 - Self-Healing & Telemetry.md`
 - Architecture reference: `docs/architecture.md`
 - Telemetry and repair validation source: `src/telemetry/mod.rs`
 - GraphPatch source: `src/patch.rs`
