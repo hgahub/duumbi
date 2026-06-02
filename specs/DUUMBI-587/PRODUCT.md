@@ -448,7 +448,7 @@ And the evidence report identifies the failed patch operation
 Scenario: Patch-shaped output is not automatically accepted
 Given a Repair agent has produced GraphPatch-shaped output
 But graph validation, rebuild, tests, and human review have not all completed
-When the candidate is inspected
+When repair validation is requested for the candidate
 Then the candidate is not accepted for application
 And the evidence report records the gates that have not passed
 
@@ -473,6 +473,8 @@ And the evidence report includes the graph construction diagnostics
 
 Scenario: Graph validation failure blocks local success
 Given a proposed patch parses and applies atomically
+And the patched JSON-LD parses into the DUUMBI AST
+And the parsed DUUMBI AST builds into graph IR
 But the patched graph produces validation diagnostics
 When repair validation runs
 Then the graph validation gate fails
@@ -533,8 +535,8 @@ Rule: Product boundaries remain explicit
 Scenario: Production self-healing is requested from the validation guardrail
 Given the repair validation guardrail is available for local developer/test evidence
 When a user asks it to ingest production crashes or automatically deploy a repair
-Then the request is out of scope for #587
-And it must be routed to later product specification
+Then the system reports that production crash ingestion and automatic deployment are unavailable for this guardrail
+And it does not ingest production crash artifacts or start deployment
 And no automatic acceptance is reported
 
 Scenario: Query mode asks about repair validation evidence
