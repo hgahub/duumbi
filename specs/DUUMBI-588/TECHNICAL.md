@@ -140,8 +140,13 @@ Assumptions for implementation:
 - The canonical user-visible interface for a reviewable context package should
   be local CLI JSON output: `duumbi telemetry repair-context`.
 - The existing library API should remain usable for unit tests and internal
-  callers; Stage 10 may add a richer options struct and keep the current helper
-  as a backward-compatible latest-entry wrapper.
+  callers only through graph-source-aware context assembly options. Stage 10 may
+  add a richer options struct and keep a latest-entry convenience wrapper when it
+  can receive or delegate to supplied graph sources. The current
+  `repair_crash_context_from_artifacts()` helper must not keep emitting
+  trace-map-only context; if its signature cannot carry graph sources, deprecate
+  or fail that helper with the same missing-graph-source error and update
+  callers/tests accordingly.
 - Graph-source-backed context can be built from one or more JSON-LD file paths
   supplied by CLI or tests. Workspace discovery may be added only if it remains
   local, deterministic, and bounded.
@@ -159,6 +164,8 @@ Expected implementation changes:
     - Add repair-context assembly options that include telemetry directory,
       optional crash path, optional map path, crash selection, and graph source
       paths or parsed graph source values.
+    - Update every successful context assembly entry point, including any retained
+      latest-entry helper, so it requires or delegates to supplied graph sources.
     - Read the selected crash entry without losing line/provenance metadata.
     - Build bounded graph-source-backed context and fail closed on stale graph
       IDs.
@@ -399,7 +406,7 @@ candidate patches or producing repair success evidence.
 | Product BDD Scenario | Required Technical Evidence |
 | --- | --- |
 | Controlled crash becomes repair context | Unit test assembles `RepairCrashContext` from a crash artifact, trace map, and graph fixture; asserts schema version, crash message, trace IDs, graph function/block IDs, bounded graph context, provenance, validation expectations, and test expectations. Integration test runs `duumbi telemetry repair-context --telemetry-dir <dir> --graph tests/fixtures/telemetry/option_none_unwrap.jsonld` after a traced crash and asserts equivalent JSON fields. |
-| Raw logs are not repair-ready | Unit test calls the context API without crash/map artifacts and asserts missing evidence. Review evidence confirms no API accepts raw stderr/log text as a repair context input and no provider call is made. |
+| Raw logs are not repair-ready | Unit test calls the context API without crash/map artifacts and asserts missing evidence. If `repair_crash_context_from_artifacts()` is retained, a unit test invokes it without graph source input and asserts the missing-graph-source/deprecated-helper error rather than a trace-map-only context. Review evidence confirms no API accepts raw stderr/log text as a repair context input and no provider call is made. |
 | Unmapped trace IDs block repair readiness | Unit test writes a crash artifact whose function or block trace ID does not join the trace map; expects `TelemetryError::Unmapped` or equivalent and no context. |
 | Exact node evidence is unavailable in v1 | Unit and CLI JSON tests assert `exact_node_id` is `None`/`null` and graph context contains `exact_node_evidence: null`. |
 | Argument values are omitted by default | Serialization test asserts the context JSON has no argument, runtime value, heap, stack, or value snapshot fields. Review evidence confirms runtime crash artifact fields were not expanded for value capture. |
@@ -563,7 +570,8 @@ policy stays below thresholds and the resulting diff remains reviewable.
    - Add `REPAIR_CONTEXT_SCHEMA_VERSION`.
    - Extend `RepairCrashContext` with schema and evidence/provenance fields.
    - Add crash selection types and selected-line metadata.
-   - Keep the existing latest-entry helper as a wrapper when practical.
+   - Keep a latest-entry helper only when it delegates to graph-source-aware
+     options; otherwise deprecate or fail the old helper and update callers/tests.
    - Update existing serialization tests.
 
 2. Crash selection and failure states:
@@ -651,6 +659,8 @@ Stage 10 implementation is complete for #588 only when:
 - Explicit crash selection supports a 1-based crash JSONL line.
 - Context assembly requires graph source and builds bounded context from the
   mapped function/block.
+- No successful context assembly path, including retained legacy helpers, emits a
+  trace-map-only context without supplied graph sources.
 - Exact node evidence remains explicitly unavailable in v1.
 - Runtime values and argument snapshots remain absent.
 - `duumbi telemetry repair-context` emits reviewable JSON.
