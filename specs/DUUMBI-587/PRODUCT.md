@@ -365,6 +365,8 @@ Constraints:
 - The report preserves failed gate output in a reviewable form.
 - The report says whether all local validation gates passed.
 - The report says human review is required.
+- The report or linked human-review state preserves reviewer rejection or
+  revision decisions for follow-up when available.
 - The report does not mark the candidate accepted for application by default.
 - The report is bounded enough for GitHub review or CI artifacts and does not
   include unbounded raw logs by default.
@@ -379,6 +381,10 @@ Constraints:
   the patch.
 - If patch application fails, report the failed operation and keep original
   source unchanged.
+- If graph parse fails, report parse diagnostics and do not proceed to graph
+  build as a local success path.
+- If graph build fails, report graph construction diagnostics and do not proceed
+  to graph validation as a local success path.
 - If graph validation fails, report diagnostics and do not rebuild as a local
   success path.
 - If rebuild fails, report the rebuild command summary and failure output.
