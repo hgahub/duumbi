@@ -159,6 +159,11 @@ Facts:
 - `src/telemetry/mod.rs` currently identifies these required gates:
   GraphPatch parse, atomic patch application, graph parse, graph validation,
   native rebuild, and relevant tests.
+- In current source, the graph validation gate description includes both graph
+  building and graph validation. This product spec separates graph build failure
+  and graph validation failure as product-visible evidence states so Stage 8 can
+  decide whether to expose graph build as a distinct enum gate or as an explicit
+  sub-result of the existing graph validation gate.
 - `RepairValidationEvidence` keeps `requires_human_review = true` and
   `accepted_for_application = false`.
 - `src/patch.rs` defines GraphPatch operations and an all-or-nothing
@@ -448,6 +453,23 @@ Then the candidate is not accepted for application
 And the evidence report shows the remaining gates
 
 Rule: Graph, rebuild, and test gates must pass
+
+Scenario: Graph parse failure blocks local success
+Given a proposed patch parses and applies atomically
+But the patched JSON-LD cannot be parsed into the DUUMBI AST
+When repair validation runs
+Then the graph parse gate fails
+And local validation is not marked as passed
+And the evidence report includes the parse diagnostics
+
+Scenario: Graph build failure blocks local success
+Given a proposed patch parses and applies atomically
+And the patched JSON-LD parses into the DUUMBI AST
+But the parsed DUUMBI AST cannot be converted to graph IR
+When repair validation runs
+Then the graph build evidence fails
+And local validation is not marked as passed
+And the evidence report includes the graph construction diagnostics
 
 Scenario: Graph validation failure blocks local success
 Given a proposed patch parses and applies atomically
