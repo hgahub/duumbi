@@ -303,7 +303,8 @@ Constraints:
   source graph.
 - Graph parse failed: patched JSON-LD cannot be parsed into DUUMBI AST.
 - Graph build failed: parsed DUUMBI AST cannot be converted to graph IR.
-- Graph validation failed: semantic validation produced diagnostics.
+- Graph validation failed: semantic validation produced blocking validation
+  diagnostics.
 - Rebuild failed: native rebuild does not complete successfully.
 - Tests failed: relevant tests do not pass.
 - Local validation passed: every required local gate passed.
