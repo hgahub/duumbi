@@ -280,6 +280,12 @@ pub struct RepairContextEvidence {
 }
 ```
 
+Canonical serialized `RepairContextEvidence.selection` values:
+
+- `latest` for `CrashEntrySelection::Latest`.
+- `line:<N>` for `CrashEntrySelection::LineNumber(N)`, where `<N>` is the same
+  1-based JSONL line stored in `selected_crash_line`.
+
 ### 3. Build Bounded Graph Context From Graph Source
 
 Replace or augment the current trace-map-only `repair_graph_context()` with a
@@ -398,8 +404,8 @@ candidate patches or producing repair success evidence.
 | Exact node evidence is unavailable in v1 | Unit and CLI JSON tests assert `exact_node_id` is `None`/`null` and graph context contains `exact_node_evidence: null`. |
 | Argument values are omitted by default | Serialization test asserts the context JSON has no argument, runtime value, heap, stack, or value snapshot fields. Review evidence confirms runtime crash artifact fields were not expanded for value capture. |
 | Stale graph IDs prevent a misleading context | Unit test supplies a graph source missing the mapped function or block and asserts stale/missing graph context error. Add separate function-missing and block-missing tests if one combined test is not clear enough. |
-| Default crash selection remains traceable | Unit test writes two valid crash JSONL entries and no explicit `--crash-entry`; asserts the latest non-empty line is selected and `evidence.selected_crash_line` points to that line. CLI E2E may cover this with a synthetic artifact if practical. |
-| Explicit crash selection remains traceable | Unit test writes two valid crash JSONL entries and selects the first with `CrashEntrySelection::LineNumber(1)` or CLI `--crash-entry 1`; asserts the selected crash message and provenance line. |
+| Default crash selection remains traceable | Unit test writes two valid crash JSONL entries and no explicit `--crash-entry`; asserts the latest non-empty line is selected, `evidence.selected_crash_line` points to that line, and `evidence.selection` is `latest`. CLI E2E may cover this with a synthetic artifact if practical. |
+| Explicit crash selection remains traceable | Unit test writes two valid crash JSONL entries and selects the first with `CrashEntrySelection::LineNumber(1)` or CLI `--crash-entry 1`; asserts the selected crash message, provenance line, and `evidence.selection` value `line:1`. |
 | Repair agent receives validation expectations | Unit test asserts context includes expected validation/test strings: `GraphPatch` parse, atomic patch behavior, graph parse/build, graph validation, native rebuild, relevant tests, controlled crash reproducibility, targeted regression, and default untraced behavior unchanged. The same test asserts `human_review_required` is `true` so a later Repair agent cannot treat generated patch-shaped output as accepted without human review. |
 | Patch-shaped output is not accepted automatically | Review evidence plus unit tests confirm #588 does not set `accepted_for_application`, apply `GraphPatch`, write graph files, or call `repair_validation_evidence_from_graph_patch()` as part of context assembly. |
 | Graph mutation cannot bypass validation | Review evidence confirms context assembly is read-only and any later patch remains constrained to existing `GraphPatch`/MCP validation boundaries. No #588 test should mutate `.duumbi/graph`. |
@@ -521,10 +527,12 @@ policy stays below thresholds and the resulting diff remains reviewable.
 ## Cycle Budget
 
 - Default cycle size: one bounded implementation goal per cycle.
-- Max files or modules per cycle: 3 source/test files, excluding unchanged
-  fixtures. A cycle touching more than `src/telemetry/mod.rs`, `src/cli/mod.rs`,
-  `src/main.rs`, and `tests/integration_telemetry.rs` needs coordinator
-  approval unless the extra file is a focused test fixture.
+- Max files or modules per cycle: at most 3 source/test files from the approved
+  implementation pool, excluding unchanged fixtures. The approved pool is
+  `src/telemetry/mod.rs`, `src/cli/mod.rs`, `src/main.rs`, and
+  `tests/integration_telemetry.rs`; touching 4 or more files in one cycle, or
+  touching any file outside that pool, needs coordinator approval unless the
+  extra file is a focused test fixture.
 - Expected command budget per low-budget cycle: up to 6 focused commands.
 - Expected external LLM calls per cycle: 0.
 - Estimated external LLM cost per cycle: USD 0.
