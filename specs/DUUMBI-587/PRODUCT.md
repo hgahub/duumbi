@@ -302,7 +302,7 @@ Constraints:
 - Patch application failed: the patch cannot be applied atomically to the
   source graph.
 - Graph parse failed: patched JSON-LD cannot be parsed into DUUMBI AST.
-- Graph IR build failed: parsed DUUMBI AST cannot be converted to graph IR.
+- Graph build failed: parsed DUUMBI AST cannot be converted to graph IR.
 - Graph validation failed: semantic validation produced diagnostics.
 - Rebuild failed: native rebuild does not complete successfully.
 - Tests failed: relevant tests do not pass.
@@ -509,6 +509,13 @@ When repair validation produces evidence
 Then local validation is marked as passed
 And the evidence report requires human review
 And the repair is not marked accepted for application
+
+Scenario: Human reviewer requests revision after local validation
+Given a repair candidate is pending human review after all local gates pass
+When a reviewer rejects the candidate or requests revision
+Then the repair state is marked as human rejected or revision needed
+And the repair remains not accepted for application
+And the evidence report preserves the reviewer decision for follow-up
 
 Rule: Evidence is traceable and bounded
 
