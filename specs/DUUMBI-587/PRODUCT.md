@@ -381,10 +381,10 @@ Constraints:
   the patch.
 - If patch application fails, report the failed operation and keep original
   source unchanged.
-- If graph parse fails, report parse diagnostics and do not proceed to graph
-  build as a local success path.
-- If graph build fails, report graph construction diagnostics and do not proceed
-  to graph validation as a local success path.
+- If graph parsing fails, report the parse diagnostics and do not proceed to
+  graph building or validation.
+- If graph building fails, report the graph construction diagnostics and do not
+  proceed to graph validation.
 - If graph validation fails, report diagnostics and do not rebuild as a local
   success path.
 - If rebuild fails, report the rebuild command summary and failure output.
