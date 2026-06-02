@@ -195,7 +195,7 @@ Assumptions:
 
 Constraints:
 
-- Validation must not start without mapped crash context or an explicit
+- Validation must not start without mapped crash context and an explicit
   proposed patch.
 - Validation must not start without the source graph or workspace artifact being
   present and readable.
@@ -514,7 +514,10 @@ And the evidence report includes the validation diagnostics
 
 Scenario: Native rebuild failure blocks local success
 Given mapped repair crash context exists
-And a proposed patch passes graph validation
+And a proposed patch parses and applies atomically
+And the patched JSON-LD parses into the DUUMBI AST
+And the parsed DUUMBI AST builds into graph IR
+And the patched graph passes graph validation
 But the native rebuild fails
 When repair validation is requested
 Then the native rebuild gate fails
@@ -523,7 +526,10 @@ And the evidence report includes rebuild command and output summary
 
 Scenario: Relevant test failure blocks local success
 Given mapped repair crash context exists
-And a proposed patch passes graph validation
+And a proposed patch parses and applies atomically
+And the patched JSON-LD parses into the DUUMBI AST
+And the parsed DUUMBI AST builds into graph IR
+And the patched graph passes graph validation
 And the native rebuild succeeds
 But a relevant targeted or regression test fails
 When repair validation is requested
