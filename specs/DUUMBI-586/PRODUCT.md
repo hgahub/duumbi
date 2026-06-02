@@ -138,6 +138,10 @@ Facts:
 - At Stage 6 inspection, #585 exists for crash dumps and trace-to-graph mapping
   artifacts, but it is still in human-review intake and has no `specs/DUUMBI-585`
   product artifact in this worktree.
+- Before Stage 10 implements #586, the asserted artifact contract must be stable
+  in merged source or in an approved product/technical spec. If #585 is approved
+  first and changes artifact names, fields, or join semantics, #586 must return
+  to product-spec update or clarification before implementation proceeds.
 - The current source tree already contains telemetry-focused fixtures under
   `tests/fixtures/telemetry/`.
 - The current source tree already contains `tests/integration_telemetry.rs`,
@@ -500,12 +504,12 @@ telemetry behavior.
 - Compiler lowering telemetry instrumentation:
   `src/compiler/lowering.rs`
 - Active PRD:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
 - Runtime feedback note:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Runtime Failure Feedback Loop.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Runtime Failure Feedback Loop.md`
 - Glossary:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
 - Agentic development map:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
 - Development intake to delivery workflow:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Development Intake to Delivery Workflow.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Development Intake to Delivery Workflow.md`
