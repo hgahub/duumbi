@@ -396,8 +396,9 @@ Constraints:
   not proceed to relevant tests.
 - If tests fail, report the failed tests and preserve local validation as
   failed.
-- If all local gates pass but no human review exists, report pending human
-  review rather than success.
+- If all local gates pass but no human review exists, report both local
+  validation passed and pending human review; do not mark the repair accepted for
+  application.
 
 ### Invariants
 
@@ -461,7 +462,7 @@ And the evidence report records the parse failure
 Scenario: Patch application failure preserves the original graph
 Given mapped repair crash context exists
 And a proposed GraphPatch references a missing graph node
-When repair validation applies the patch candidate
+When repair validation is requested
 Then the atomic patch application gate fails
 And the original graph source remains unchanged
 And the evidence report identifies the failed patch operation
