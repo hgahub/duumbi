@@ -296,7 +296,7 @@ jobs:
                   `Target issue: ${issueUrl}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/PRODUCT.md, unless the skill determines that an issue-comment spec is sufficient.`,
                   '',
-                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, wait for actual configured automated reviewer submissions, address blocking review feedback until checks and automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge.',
+                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, run Codex self-review, wait for actual required automated reviewer submissions (Copilot by default), address blocking review feedback until checks and required automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge. Do not invoke Greptile unless the developer explicitly requests a manual deep review.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -312,7 +312,7 @@ jobs:
                   `Product spec artifact: ${knownProductSpec}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
                   '',
-                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, wait for actual configured automated reviewer submissions, address blocking review feedback until checks and automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, move the issue to Technical Spec Review only after it is ready for approval merge, then record Stage 9 approval through the configured AI or human gate, merge the spec PR, move the issue to Ready for Build, and send the Stage 10 prompt.',
+                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, run Codex self-review, wait for actual required automated reviewer submissions (Copilot by default), address blocking review feedback until checks and required automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, move the issue to Technical Spec Review only after it is ready for approval merge, then record Stage 9 approval through the configured AI or human gate, merge the spec PR, move the issue to Ready for Build, and send the Stage 10 prompt. Do not invoke Greptile unless the developer explicitly requests a manual deep review.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Technical spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -378,6 +378,8 @@ jobs:
               return [...latest.values()];
             };
 
+            // Low-cost required review gate. Keep quota-limited manual reviewers
+            // such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
             const requiredAutomatedReviewers = () =>
               String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer')
                 .split(',')
@@ -531,7 +533,7 @@ jobs:
               const blockingReviews = latestReviews.filter((review) => review.state === 'CHANGES_REQUESTED');
               const missingReviewers = missingRequiredReviewers(latestReviews);
               if (missingReviewers.length > 0) {
-                throw new Error(`${policy.kind} PR #${prNumber} is missing required automated review evidence from: ${missingReviewers.join(', ')}. A review-request check is not enough; approval waits for actual reviewer submissions and fixes.`);
+                throw new Error(`${policy.kind} PR #${prNumber} is missing required automated review evidence from: ${missingReviewers.join(', ')}. A review-request check is not enough; approval waits for actual reviewer submissions and fixes. Greptile is manual-only and must not be used to satisfy this default gate unless a human explicitly configured it.`);
               }
               if (blockingReviews.length > 0) {
                 throw new Error(`${policy.kind} PR #${prNumber} has blocking review decisions: ${blockingReviews.map((review) => `${review.user?.login || 'unknown'}:${review.state}`).join(', ')}`);

@@ -20,7 +20,7 @@ This skill covers:
 - defining at least one live LLM-backed E2E path through the canonical interface when the work touches LLM behavior
 - defining the Ralph Cycle resource policy, approval thresholds, and autonomous batch cap
 - opening a PR for the technical spec artifact
-- marking the technical spec PR ready for review, requesting configured automated review, waiting for actual reviewer submissions, addressing blocking review feedback, resolving review threads, and reaching green checks before Slack approval is requested
+- marking the technical spec PR ready for review, running Codex self-review, requesting required automated review, waiting for actual reviewer submissions, addressing blocking review feedback, resolving review threads, and reaching green checks before Slack approval is requested
 - linking the technical spec review-ready PR back to the GitHub Issue
 - moving the issue to `Technical Spec Review`, or to `Needs Clarification` when blocked
 - when the initiating prompt explicitly asks to continue through `Ready for Build`, handing off to `duumbi-tech-spec-review` after Stage 8 is review-clean so Stage 9 can process an explicit human or AI-gate approval, merge the spec PR, and advance the issue
@@ -45,6 +45,19 @@ Stage 9 owns technical spec review, approval, spec PR merge, and `Ready for Buil
 - Technical specs define how AI implementation agents should safely make the product spec true.
 - Technical specs live in the relevant source repository, not in this Obsidian vault.
 - Obsidian Atlas provides durable context, but should not mirror live GitHub state.
+
+## AI Review Service Policy
+
+- Run Codex self-review before marking a technical spec PR ready for review and
+  before moving the issue to `Technical Spec Review`.
+- Copilot is the default required automated reviewer for file-based technical
+  spec PRs in this repository, recorded as `copilot-pull-request-reviewer`
+  unless repository configuration states otherwise.
+- Greptile is manual-only and quota-limited. Do not invoke it for normal
+  technical spec PRs, docs-only changes, or every push. Use it only when the
+  developer explicitly requests a manual deep review for high-risk architecture
+  or implementation-plan concerns.
+- Do not treat a successful reviewer-request workflow as review evidence.
 
 ## Language Rules
 
@@ -128,12 +141,13 @@ specs/DUUMBI-<issue-number>/TECHNICAL.md
 ```
 
 Open a PR for the technical spec artifact and link it from the GitHub Issue. Use draft
-state while assembling the first artifact, then mark it ready for review, request
-or wait for configured automated reviewers. In this repository the default
-configured automated reviewer is `copilot-pull-request-reviewer` unless
-repository configuration states otherwise. Do not treat a successful
-"Request Copilot Review" check as completed review evidence; it only proves the
-request was sent. Address blocking review feedback
+state while assembling the first artifact, then mark it ready for review, run
+Codex self-review, and request or wait for required automated reviewers. In this
+repository the default required automated reviewer is
+`copilot-pull-request-reviewer` unless repository configuration states
+otherwise. Do not include Greptile in this default gate and do not treat a
+successful "Request Copilot Review" check as completed review evidence; it only
+proves the request was sent. Address blocking review feedback
 inside `TECHNICAL.md`, push the fix, and continue until checks are green and all
 review threads are resolved, including threads that became outdated after the
 fix. Only then route the issue to `Technical Spec Review`; Stage 9 Slack or AI
@@ -150,7 +164,8 @@ are verified:
   references
 - CI/checks and status contexts are complete and passing, or explicitly
   not applicable for a docs-only diff
-- each configured automated reviewer has submitted actual, non-dismissed review
+- Codex self-review has no blocking finding
+- each required automated reviewer has submitted actual, non-dismissed review
   evidence; review-request workflow success is not enough
 - no latest review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a push
@@ -310,7 +325,7 @@ Technical spec draft complete:
 - Do not modify implementation code, tests, migrations, generated outputs, or runtime assets.
 - Do not run Ralph cycles or implementation commands.
 - Do not approve your own technical spec.
-- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing actual non-dismissed configured automated review evidence, or has any unresolved review thread.
+- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing Codex self-review, missing actual non-dismissed required automated review evidence, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the technical spec traceable to the approved product spec and source evidence.
 - Stop and ask the user if a requested write exceeds Stage 8.

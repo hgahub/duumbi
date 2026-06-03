@@ -17,6 +17,13 @@ Describe what changed and why.
 - [ ] `cargo test --all`
 - [ ] `cargo audit`
 
+## AI Review Plan
+
+- [ ] Codex self-review completed and blocking findings are fixed or listed
+- [ ] Copilot review requested/received or explicitly not applicable
+- [ ] Greptile not used, or manually requested because this PR meets the high-risk criteria in `docs/automation/code-review-policy.md`
+- [ ] Review threads are resolved after verifying fixes
+
 ## Docs Impact
 
 - [ ] No docs update needed

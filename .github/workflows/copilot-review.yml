@@ -1,4 +1,4 @@
-name: Copilot Review (All PRs)
+name: Copilot Review (Default PR Gate)
 
 on:
   pull_request:
@@ -16,6 +16,9 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
+            // Copilot is DUUMBI's default low-cost automated reviewer.
+            // Greptile is configured separately as manual-only for scarce,
+            // high-risk deep reviews; this workflow must not invoke it.
             try {
               await github.rest.pulls.requestReviewers({
                 owner: context.repo.owner,

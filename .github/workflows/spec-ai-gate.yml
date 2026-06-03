@@ -31,7 +31,7 @@ on:
         type: string
         default: ''
       automated_review_evidence:
-        description: Link or summary of configured automated review evidence
+        description: Link or summary of required automated review evidence
         required: false
         type: string
         default: ''
@@ -102,7 +102,7 @@ jobs:
               `**Spec PR:** ${prUrl}`,
               `**Automated review evidence:** ${automatedReviewEvidence || "verified by invoking agent; no link provided"}`,
               `**Rationale:** ${rationale}`,
-              `**Gate policy:** fail-closed if configured automated review, checks, scope, or blocking findings are missing`,
+              `**Gate policy:** fail-closed if required automated review, checks, scope, or blocking findings are missing. Greptile is manual-only and not part of the default spec gate.`,
               `**Next state:** ${nextState}`,
             ].join("\n");
 

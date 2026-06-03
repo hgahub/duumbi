@@ -27,9 +27,9 @@ or source-repo contracts that support it.
 - `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
-  gates while still failing closed on missing configured automated review
+  gates while still failing closed on missing required automated review
   submissions, checks, scope, unresolved findings, or unmerged spec PR
-  readiness.
+  readiness. Copilot is the default required reviewer; Greptile is manual-only.
 - `duumbi-closure` runs after a verified merge or equivalent completion
   evidence to close the loop across GitHub, source surfaces, Inbox notes, and
   durable knowledge sync decisions.
@@ -155,13 +155,27 @@ Reference pricing pages:
 
 ## Gate Policy
 
+Review service selection is governed by
+`docs/automation/code-review-policy.md`:
+
+- Codex self-review is mandatory before agents mark work ready, approve an AI
+  gate, or recommend implementation merge readiness.
+- Copilot is the default automated PR reviewer and the default required
+  evidence source for file-based Stage 7 and Stage 9 gates.
+- CodeRabbit is advisory when present; it is not a DUUMBI gate unless branch
+  protection explicitly requires it.
+- Greptile is manual-only, quota-limited, and reserved for stable high-risk
+  implementation PRs or explicitly requested deep review. Do not include
+  Greptile in `DUUMBI_REQUIRED_SPEC_REVIEWERS`.
+
 Stage 7 and Stage 9 AI gates may approve only when:
 
 - the PR is spec-only
 - the PR is open, non-draft, and ready for approval merge
-- actual non-dismissed configured automated review submissions exist. By
+- actual non-dismissed required automated review submissions exist. By
   default this means `copilot-pull-request-reviewer`; repositories can override
-  the comma-separated list with `DUUMBI_REQUIRED_SPEC_REVIEWERS`
+  the comma-separated low-cost reviewer list with
+  `DUUMBI_REQUIRED_SPEC_REVIEWERS`
 - reviewer-request workflow success does not count as review evidence
 - automated reviews and human reviews have no blocking `CHANGES_REQUESTED`
   decision
@@ -175,8 +189,8 @@ Stage 7 and Stage 9 AI gates may approve only when:
 Stage 7 and Stage 9 human Slack approvals are merge finalizers for file-based
 specs. The review request workflows send Slack approval cards only after the
 linked PRODUCT.md or TECHNICAL.md PR is review-clean. Review-clean means the
-PR has actual non-dismissed configured automated reviewer submissions, green checks, no
-blocking review decisions, and no unresolved review threads. Approval then
+PR has actual non-dismissed required automated reviewer submissions, green
+checks, no blocking review decisions, and no unresolved review threads. Approval then
 revalidates the exact PR, squash-merges the spec artifact with non-closing issue
 references, records the stage decision, and advances the issue to the next
 workflow state. If the PR is draft, dirty, not spec-only, missing required
@@ -184,7 +198,7 @@ reviewer submissions, or has unresolved review threads, the workflow fails
 closed or defers notification.
 
 The Stage 7 approval prompt is intentionally a Stage 8-to-Ready handoff. It
-instructs Codex to draft the technical spec, wait for configured automated
+instructs Codex to draft the technical spec, wait for required automated
 reviewers, fix and resolve review feedback, route to `Technical Spec Review`,
 then run Stage 9 through the configured AI or human gate. Only a satisfied
 Stage 9 gate may merge the technical spec PR, move the issue to `Ready for
@@ -201,7 +215,8 @@ or validation failures while preserving GitHub Issues and Project V2 as the
 source of truth.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
-human decision, Stage 11 review artifact, green checks, clean Copilot review,
+human decision, Stage 11 review artifact, green checks, clean or handled
+Copilot review,
 and an open non-draft implementation PR. It uses squash merge by default and
 emits the Stage 12 closure prompt after merge.
 
