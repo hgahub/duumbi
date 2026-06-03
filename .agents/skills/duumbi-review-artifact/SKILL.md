@@ -39,6 +39,18 @@ Stage 10 owns implementation changes after review findings. Human reviewers own 
 - The review artifact must map claims to source evidence.
 - Do not claim CI status, review status, changed-file coverage, or completion criteria unless verified.
 
+## AI Review Service Policy
+
+- Stage 11 always includes Codex self-review as part of the review artifact.
+- Inspect Copilot review state as the default automated PR review evidence.
+  A reviewer-request workflow alone is not enough.
+- Treat CodeRabbit as advisory unless branch protection explicitly requires it.
+- Greptile is manual-only and quota-limited. Do not invoke it by default. If a
+  PR meets high-risk criteria from `docs/automation/code-review-policy.md`,
+  record whether Greptile was `not requested`, `recommended for human decision`,
+  `manually requested`, or `completed`. Only treat Greptile findings as gate
+  inputs after an actual configured or manually requested review exists.
+
 ## Language Rules
 
 - User-facing replies follow the language the user initiated.
@@ -62,6 +74,8 @@ Before reviewing:
 
 - GitHub issue title, body, comments, labels, Project status, and linked artifacts
 - implementation PR title, body, commits, changed files, review threads, and check/CI status
+- PR AI review plan from the body or Stage 10 evidence, including Codex
+  self-review, Copilot, CodeRabbit when present, and Greptile status
 - approved product spec and product-spec `Checks`
 - approved product spec BDD scenarios
 - approved technical spec, BDD-to-test mapping, live E2E plan, and completion criteria
@@ -90,6 +104,10 @@ Verify:
 - product-spec BDD scenarios are covered by mapped evidence
 - live E2E evidence exists for the canonical interface when required by the technical spec
 - technical-spec completion criteria are satisfied
+- Codex self-review was performed and has no unresolved blocking finding
+- Copilot review is clean, handled, or explicitly unavailable with rationale
+- Greptile was not needed, recommended but not run, or manually requested and
+  handled according to the policy
 - Ralph cycle resource approvals exist for any cycles that exceeded the resource gate, and evidence exists for all cycles
 - no unapproved scope expansion, broad refactor, or unrelated cleanup is present
 - risks and open questions are documented
@@ -125,6 +143,12 @@ Write or return:
 
 ## Ralph Cycle Evidence
 - Cycle <N>: <resource approval when required/evidence link and summary>
+
+## AI Review Evidence
+- Codex self-review:
+- Copilot review:
+- CodeRabbit review:
+- Greptile review:
 
 ## Changed Files Review
 - <file/module>: <expected by spec | resource-approved or permitted cycle | unexpected> - <note>

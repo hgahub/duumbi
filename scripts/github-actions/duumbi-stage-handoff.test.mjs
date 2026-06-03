@@ -165,6 +165,7 @@ test("Stage 11 prompt and Slack message include issue, PR, specs, checks, and ev
   const prompt = buildStage11Prompt(input);
   assert.match(prompt, /duumbi-review-artifact/);
   assert.match(prompt, /Implementation PR: https:\/\/github\.com\/hgahub\/duumbi\/pull\/619/);
+  assert.match(prompt, /Greptile unless the PR is a stable high-risk implementation change/);
   assert.match(prompt, /Do not merge PRs/);
 
   const message = buildStage11ReviewSlackMessage({ ...input, prompt });

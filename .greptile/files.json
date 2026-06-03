@@ -1,0 +1,20 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "description": "Repository-local agent and coding contract for DUUMBI."
+    },
+    {
+      "path": "docs/architecture.md",
+      "description": "DUUMBI architecture overview and subsystem boundaries."
+    },
+    {
+      "path": "docs/coding-conventions.md",
+      "description": "Repository coding and review conventions."
+    },
+    {
+      "path": "docs/automation/code-review-policy.md",
+      "description": "DUUMBI policy for Codex self-review, Copilot, CodeRabbit, and Greptile usage."
+    }
+  ]
+}

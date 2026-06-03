@@ -1,0 +1,35 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "triggerOnUpdates": false,
+  "skipReview": "AUTOMATIC",
+  "statusCheck": false,
+  "updateExistingSummaryComment": true,
+  "ignorePatterns": "target/**\n**/target/**\nnode_modules/**\ndist/**\ncoverage/**\n.duumbi/cache/**\nspecs/**\ndocs/**\n**/*.md\n**/*.svg\n**/*.png\n**/*.drawio",
+  "instructions": "DUUMBI uses Greptile as a manual, quota-limited reviewer only. Prioritize correctness, security, Rust compile/runtime behavior, graph invariants, async/concurrency safety, provider/auth handling, registry integrity, MCP/intent boundaries, and tests. Do not request wording-only, style-only, or documentation-only changes. Treat P0/P1 findings as blocking. Treat P2 maintainability findings as non-blocking unless they can cause incorrect behavior, security risk, data loss, crashes, or violated specs.",
+  "rules": [
+    {
+      "id": "rust-error-handling",
+      "rule": "Rust library code must not use unwrap. Prefer thiserror for module errors, anyhow only at application boundaries, and contextual error propagation with ?. Use expect only for documented invariants.",
+      "scope": ["src/**", "crates/**", "runtime/**", "tests/**"],
+      "severity": "high"
+    },
+    {
+      "id": "graph-ir-invariants",
+      "rule": "Treat the semantic graph IR as the source of truth. Flag changes that can desynchronize parser, graph, validator, lowering, runtime, or registry assumptions.",
+      "scope": ["src/parser/**", "src/graph/**", "src/compiler/**", "src/runtime/**", "runtime/**"],
+      "severity": "high"
+    },
+    {
+      "id": "async-provider-safety",
+      "rule": "Flag blocking work in async contexts, unsafe provider credential handling, missing timeout/retry behavior, unbounded external calls, and unreviewed live-provider side effects.",
+      "scope": ["src/agents/**", "src/mcp/**", "src/intent/**", "src/registry/**", "crates/**"],
+      "severity": "high"
+    },
+    {
+      "id": "spec-boundary",
+      "rule": "For implementation PRs, flag behavior that exceeds the linked product or technical spec, bypasses Ralph-cycle resource gates, or weakens required verification evidence.",
+      "severity": "medium"
+    }
+  ]
+}

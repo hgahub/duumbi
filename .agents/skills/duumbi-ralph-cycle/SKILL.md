@@ -41,6 +41,17 @@ Stage 9 owns technical spec approval. `duumbi-implementation` owns Stage 10 coor
 - The source repo `AGENTS.md` controls local implementation conventions.
 - Do not claim GitHub status, approval state, branch state, PR state, source facts, resource use, or check results unless verified.
 
+## AI Review Hygiene
+
+- Ralph cycles produce implementation evidence; they do not request external AI
+  code reviews by default.
+- Run Codex self-review of the cycle diff before reporting `ready for PR
+  review`.
+- Do not invoke Greptile from a Ralph cycle unless the developer explicitly
+  requested a manual deep review. If the current diff appears high-risk under
+  `docs/automation/code-review-policy.md`, mention that in the evidence report
+  for Stage 10/11 routing instead of triggering Greptile automatically.
+
 ## Language Rules
 
 - User-facing replies follow the language the user initiated.

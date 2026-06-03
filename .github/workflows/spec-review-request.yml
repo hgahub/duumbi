@@ -227,6 +227,8 @@ jobs:
               return [...latest.values()];
             };
 
+            // Low-cost required review gate. Keep quota-limited manual reviewers
+            // such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
             const requiredAutomatedReviewers = () =>
               String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "copilot-pull-request-reviewer")
                 .split(",")
@@ -351,7 +353,7 @@ jobs:
                 return {
                   ready: false,
                   prNumber,
-                  summary: `required automated review evidence missing from ${missingReviewers.join(", ")}; review-request checks do not count`,
+                  summary: `required automated review evidence missing from ${missingReviewers.join(", ")}; review-request checks do not count; Greptile is manual-only and not part of the default spec gate`,
                 };
               }
               if (blockingReviews.length > 0) return { ready: false, prNumber, summary: "blocking review decision remains" };

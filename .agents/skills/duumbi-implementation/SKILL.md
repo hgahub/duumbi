@@ -40,6 +40,20 @@ Stage 9 owns technical spec approval. `duumbi-ralph-cycle` owns per-cycle implem
 - The source repo `AGENTS.md` controls local implementation conventions.
 - Do not claim GitHub status, approval state, branch state, PR state, source facts, or check results unless verified.
 
+## AI Review Service Policy
+
+- Before moving an implementation PR to `In Review`, require Codex self-review
+  of the consolidated diff and evidence.
+- Copilot is the default automated PR reviewer to inspect for implementation
+  readiness; a reviewer-request workflow alone is not review evidence.
+- CodeRabbit comments are advisory when present unless branch protection makes
+  them required.
+- Greptile is manual-only and quota-limited. Do not invoke it from Stage 10
+  unless the developer explicitly asks for a deep review. If the implementation
+  PR meets high-risk criteria from `docs/automation/code-review-policy.md`,
+  record that Greptile is recommended or requested, but do not create a review
+  loop.
+
 ## Language Rules
 
 - User-facing replies follow the language the user initiated.
@@ -167,6 +181,9 @@ When consolidating PR evidence, include:
 - affected files or modules
 - Ralph cycle resource approvals and evidence reports
 - commands/checks and results
+- AI review plan: Codex self-review status, Copilot review state, CodeRabbit
+  advisory state when present, and Greptile status (`not needed`, `recommended
+  for human decision`, `manually requested`, or `completed`)
 - screenshots/logs when relevant
 - remaining risks and open questions
 - readiness state: `ready for human review` or `blocked`
@@ -205,6 +222,7 @@ For `Move To In Review`:
 
 - require an implementation PR with evidence
 - require product and technical completion criteria to be addressed
+- require Codex self-review and an explicit AI review plan in the PR evidence
 - trigger or report the deterministic Stage 11 handoff path through
   `.github/workflows/implementation-review-request.yml`; use the existing
   `needs-review` label only when it is already available, and do not create it

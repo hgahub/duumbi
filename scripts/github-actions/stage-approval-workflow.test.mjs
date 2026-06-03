@@ -23,6 +23,8 @@ test("stage approval merges only reviewed spec PRs for Stage 7 and Stage 9 appro
   assert.match(workflow, /specs\/DUUMBI-\$\{issueNumber\}\/TECHNICAL\.md/);
   assert.match(workflow, /required automated review evidence from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
+  assert.match(workflow, /Greptile is manual-only/);
+  assert.match(workflow, /out of DUUMBI_REQUIRED_SPEC_REVIEWERS/);
   assert.match(workflow, /normalizeReviewerLogin/);
   assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /has unresolved review threads/);
@@ -37,6 +39,8 @@ test("product spec Slack review requests wait for review-clean PRs", () => {
   assert.match(workflow, /PR is still draft/);
   assert.match(workflow, /required automated review evidence missing from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
+  assert.match(workflow, /Greptile is manual-only/);
+  assert.match(workflow, /out of DUUMBI_REQUIRED_SPEC_REVIEWERS/);
   assert.match(workflow, /normalizeReviewerLogin/);
   assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /unresolved review threads remain/);
@@ -55,6 +59,8 @@ test("technical spec Slack review requests wait for review-clean PRs", () => {
   assert.match(workflow, /PR is still draft/);
   assert.match(workflow, /required automated review evidence missing from/);
   assert.match(workflow, /requiredAutomatedReviewers/);
+  assert.match(workflow, /Greptile is manual-only/);
+  assert.match(workflow, /out of DUUMBI_REQUIRED_SPEC_REVIEWERS/);
   assert.match(workflow, /normalizeReviewerLogin/);
   assert.match(workflow, reviewerBotSuffixReplacement);
   assert.match(workflow, /unresolved review threads remain/);

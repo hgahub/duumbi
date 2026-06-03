@@ -435,6 +435,11 @@ export function buildStage11Prompt(input) {
     "Ralph Cycle evidence against the approved specs; produce a structured review",
     "artifact and recommendation for a human merge decision.",
     "",
+    "Review policy: run Codex self-review as part of the artifact, inspect Copilot",
+    "review state, treat CodeRabbit as advisory when present, and do not invoke",
+    "Greptile unless the PR is a stable high-risk implementation change and the",
+    "developer explicitly requested a manual deep review.",
+    "",
     "Do not merge PRs, close issues, move work to Done, perform Stage 12 closure, or",
     "modify implementation code, specs, generated artifacts, or runtime assets.",
   ].join("\n");

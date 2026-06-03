@@ -1,6 +1,10 @@
 # Copilot Review Instructions for DUUMBI
 
 Review pull requests with emphasis on correctness, safety, and docs consistency.
+DUUMBI uses Copilot as the default automated PR reviewer. Codex self-review
+provides stage-aware evidence, and Greptile is manual-only for scarce high-risk
+deep reviews. Do not assume Greptile evidence is required unless a human asked
+for it.
 
 ## High-priority checks
 
@@ -33,3 +37,5 @@ When PR changes CLI behavior, JSON-LD schema/types/ops, module/dependency behavi
 - Prioritize findings: bugs, risks, regressions, and missing tests first.
 - Be specific: include impacted files and exact behavior concerns.
 - Keep suggestions actionable and minimal.
+- Mark wording, style, and optional maintainability suggestions as non-blocking
+  unless they create correctness, security, data-loss, or spec-compliance risk.
