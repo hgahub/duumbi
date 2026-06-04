@@ -247,9 +247,19 @@ Required behavior:
   temporary workspace clone and replace only the selected module path in the
   temporary copy.
 - `--test` is repeatable. If no tests are supplied, the implementation must use
-  the conservative default test plan below or mark the relevant-tests gate as
-  failed/unavailable. It must not report local validation success without a
-  passing test gate.
+  the candidate-aware default below or mark the relevant-tests gate as
+  failed/unavailable. Generic repository tests are supplemental evidence only;
+  they cannot satisfy the relevant-tests gate unless at least one test executes
+  against the temporary patched graph, rebuilt candidate binary, or candidate
+  workspace.
+- `--test` commands must support candidate placeholders or equivalent
+  environment variables. Required placeholders:
+  - `{candidate_graph}` for the temporary patched JSON-LD graph.
+  - `{candidate_binary}` for the rebuilt candidate binary when native rebuild
+    produces one.
+  - `{candidate_workspace}` for a temporary patched workspace when workspace
+    mode is used.
+  - `{original_graph}` for the original source graph path.
 - `--output` writes the bounded evidence JSON to the requested path. Without
   `--output`, evidence goes only to stdout.
 - The command must not call a provider, create a repair proposal, apply a patch
@@ -375,7 +385,8 @@ Gate order:
      `workspace::build_workspace_with_options()` or equivalent CLI behavior.
    - record command/API summary, exit status, and bounded stderr/stdout.
 8. Relevant tests:
-   - run the explicit test commands or conservative default test plan.
+   - run the explicit candidate-aware test commands or a candidate-aware
+     conservative default.
    - record each command, exit status, and bounded output summary.
 9. Human-review boundary:
    - if every local gate passed, set local validation passed and human review
@@ -413,16 +424,28 @@ Workspace rebuild:
 
 Relevant tests:
 
-- Explicit `--test` commands are preferred for implementation PR evidence.
+- Explicit `--test` commands are preferred for implementation PR evidence and
+  must exercise the temporary patched candidate through `{candidate_graph}`,
+  `{candidate_binary}`, `{candidate_workspace}`, or equivalent environment
+  variables such as `DUUMBI_REPAIR_CANDIDATE_GRAPH` and
+  `DUUMBI_REPAIR_CANDIDATE_BINARY`.
 - Command output must be bounded. Store full logs only when an explicit artifact
   path is configured and it stays out of committed generated files.
-- If no explicit tests are supplied, use this conservative default when the
-  repo root is available:
-  - `cargo test telemetry --lib`
-  - `cargo test --test integration_telemetry`
+- A command that only runs generic repository tests against the original repo
+  does not satisfy the relevant-tests gate. Generic commands such as
+  `cargo test telemetry --lib` and `cargo test --test integration_telemetry`
+  may supplement evidence, but they are not sufficient unless a separate
+  candidate-aware test also runs.
+- If no explicit tests are supplied, use a candidate-aware conservative default
+  only when it can be built deterministically from the validation request. For
+  the controlled single-file smoke path, the minimum default is to run the
+  rebuilt `{candidate_binary}` and require a successful exit. If no
+  candidate-aware default can be constructed, mark the relevant-tests gate
+  failed/unavailable.
 - If the changed graph or repair context is broader than telemetry fixtures, the
-  implementation agent must either supply explicit relevant tests or run
-  `cargo test --all` before claiming local validation success.
+  implementation agent must supply explicit candidate-aware relevant tests.
+  Running `cargo test --all` can supplement the evidence but cannot replace a
+  candidate-aware test.
 - A skipped, missing, or unavailable test plan fails the relevant-tests gate.
 
 ### 6. Produce Bounded Human-Review Evidence
@@ -508,8 +531,8 @@ Required proof:
 | Graph build failure blocks local success | Unit test applies a patch that parses to AST but fails `builder::build_graph()`; asserts graph build gate or subgate fails distinctly from semantic graph validation. |
 | Graph validation failure blocks local success | Unit test applies a patch that builds graph IR but produces validator diagnostics; asserts graph validation gate fails and diagnostics are included. |
 | Native rebuild failure blocks local success | Unit test uses a rebuild runner trait seam or temp graph fixture that fails compile/link; asserts native rebuild gate fails with command/API summary. Add an integration variant if a stable fixture can trigger this without broad compiler changes. |
-| Relevant test failure blocks local success | Unit test uses a test-runner trait seam or explicit failing command in a temp workspace; asserts relevant tests gate fails and failed command summary is included. |
-| All local gates pass but human review is still required | Unit/integration test with a valid candidate and passing rebuild/test runners asserts every required local gate passes, `local_validation_passed == true`, `requires_human_review == true`, `accepted_for_application == false`, and `human_review_state == "pending"`. |
+| Relevant test failure blocks local success | Unit test uses a test-runner trait seam or explicit failing command that receives `{candidate_graph}`, `{candidate_binary}`, or `{candidate_workspace}`; asserts relevant tests gate fails and failed command summary is included. A separate test proves a generic repo test that ignores the candidate cannot satisfy this gate by itself. |
+| All local gates pass but human review is still required | Unit/integration test with a valid candidate and passing rebuild plus candidate-aware test runners asserts every required local gate passes, `local_validation_passed == true`, `requires_human_review == true`, `accepted_for_application == false`, and `human_review_state == "pending"`. |
 | Human reviewer requests revision after local validation | Unit test for evidence or linked review-state helper records `revision_requested` or equivalent external review state without setting `accepted_for_application`. If Stage 10 does not implement reviewer-state persistence, review evidence must show local validation stays pending and human review is outside #587. |
 | Evidence report links crash, patch, validation, rebuild, and tests | Serialization test asserts evidence includes crash context, proposed patch/summary, source artifact, every gate result, rebuild summary, test summary, local status, and human-review requirement. |
 | Failed validation remains reviewable | Unit test triggers a failed middle gate and asserts earlier passed gates and failed gate output remain visible while local validation stays false. |
@@ -562,10 +585,39 @@ cat > "$tmp/repair-patch.json" <<'JSON'
 {
   "ops": [
     {
-      "kind": "modify_op",
-      "node_id": "duumbi:telemetry/main/entry/0",
-      "field": "duumbi:value",
-      "value": 1
+      "kind": "replace_block",
+      "block_id": "duumbi:telemetry/main/entry",
+      "ops": [
+        {
+          "@type": "duumbi:Const",
+          "@id": "duumbi:telemetry/main/entry/0",
+          "duumbi:value": 0,
+          "duumbi:resultType": "i64"
+        },
+        {
+          "@type": "duumbi:OptionSome",
+          "@id": "duumbi:telemetry/main/entry/1",
+          "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/0"},
+          "duumbi:resultType": "option<i64>"
+        },
+        {
+          "@type": "duumbi:OptionIsSome",
+          "@id": "duumbi:telemetry/main/entry/2",
+          "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/1"},
+          "duumbi:resultType": "bool"
+        },
+        {
+          "@type": "duumbi:OptionUnwrap",
+          "@id": "duumbi:telemetry/main/entry/3",
+          "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/1"},
+          "duumbi:resultType": "i64"
+        },
+        {
+          "@type": "duumbi:Return",
+          "@id": "duumbi:telemetry/main/entry/4",
+          "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/3"}
+        }
+      ]
     }
   ]
 }
@@ -574,8 +626,7 @@ target/debug/duumbi telemetry repair-validate \
   --context "$tmp/repair-context.json" \
   --patch "$tmp/repair-patch.json" \
   --graph tests/fixtures/telemetry/option_none_unwrap.jsonld \
-  --test "cargo test telemetry --lib" \
-  --test "cargo test --test integration_telemetry" \
+  --test "{candidate_binary}" \
   --output "$tmp/repair-validation.json"
 ```
 
@@ -584,6 +635,8 @@ Pass criteria:
 - traced fixture exits nonzero before the candidate patch.
 - crash context is assembled from mapped local artifacts.
 - repair validation exits successfully only when all local gates pass.
+- the relevant-tests gate runs the rebuilt `{candidate_binary}` from the
+  temporary patched graph and observes a successful exit.
 - evidence JSON includes source artifact, proposed patch, every required gate,
   rebuild summary, test summary, `local_validation_passed`, human-review
   requirement, and `accepted_for_application: false`.
