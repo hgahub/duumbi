@@ -235,9 +235,10 @@ pub struct TraceCorrelation {
 }
 
 /// Selected crash entry for repair-context assembly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CrashEntrySelection {
     /// Select the latest non-empty JSONL crash entry.
+    #[default]
     Latest,
     /// Select a specific 1-based JSONL line from the crash artifact.
     LineNumber(usize),
@@ -249,12 +250,6 @@ impl CrashEntrySelection {
             Self::Latest => "latest".to_string(),
             Self::LineNumber(_) => format!("line:{selected_line}"),
         }
-    }
-}
-
-impl Default for CrashEntrySelection {
-    fn default() -> Self {
-        Self::Latest
     }
 }
 
