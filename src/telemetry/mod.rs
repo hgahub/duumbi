@@ -1755,6 +1755,134 @@ mod tests {
     }
 
     #[test]
+    fn repair_crash_context_rejects_missing_crash_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("missing crash artifact should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Io { context, .. } if context.contains("Failed to read crash artifact"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_malformed_crash_json() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), "{not json}\n")
+            .expect("malformed crash artifact should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("malformed crash JSON should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Parse { path, .. } if path.ends_with("crash_dump.jsonl:1"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_missing_trace_map() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_test_crash(&dir, &map, "missing trace map");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("missing trace map should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Io { context, .. } if context.contains("Failed to read trace map"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_malformed_trace_map() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_test_crash(&dir, &map, "malformed trace map");
+        std::fs::write(dir.path().join(TRACE_MAP_FILE), "{not json}")
+            .expect("malformed trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("malformed trace map should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Parse { path, .. } if path.ends_with(TRACE_MAP_FILE))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_untraced_crash_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (function_trace_id, block_trace_id) = test_trace_ids(&map);
+        write_test_crash_with_ids(
+            &dir,
+            "untraced crash",
+            function_trace_id,
+            block_trace_id,
+            false,
+        );
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("untraced crash should fail");
+
+        assert!(
+            matches!(err, TelemetryError::MissingEvidence(message) if message.contains("active traced run"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_unmapped_function_trace_id() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (_, block_trace_id) = test_trace_ids(&map);
+        write_test_crash_with_ids(&dir, "unmapped function", u64::MAX, block_trace_id, true);
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("unmapped function ID should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Unmapped(message) if message.contains("function trace ID"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_unmapped_block_trace_id() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (function_trace_id, _) = test_trace_ids(&map);
+        write_test_crash_with_ids(&dir, "unmapped block", function_trace_id, u64::MAX, true);
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("unmapped block ID should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Unmapped(message) if message.contains("block trace ID"))
+        );
+    }
+
+    #[test]
     fn repair_crash_context_rejects_stale_graph_ids() {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
@@ -2213,6 +2341,34 @@ mod tests {
     }
 
     fn write_test_crash_entries(dir: &TempDir, map: &TraceMap, messages: &[&str]) -> (u64, u64) {
+        let (function_trace_id, block_trace_id) = test_trace_ids(map);
+        let mut content = String::new();
+        for (index, message) in messages.iter().enumerate() {
+            if index > 0 {
+                content.push('\n');
+            }
+            let crash = test_crash_json(message, function_trace_id, block_trace_id, true);
+            content.push_str(&crash.to_string());
+            content.push('\n');
+        }
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), content)
+            .expect("crash artifact should be written");
+        (function_trace_id, block_trace_id)
+    }
+
+    fn write_test_crash_with_ids(
+        dir: &TempDir,
+        message: &str,
+        function_trace_id: u64,
+        block_trace_id: u64,
+        trace_active: bool,
+    ) {
+        let crash = test_crash_json(message, function_trace_id, block_trace_id, trace_active);
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+    }
+
+    fn test_trace_ids(map: &TraceMap) -> (u64, u64) {
         let function = map
             .entries
             .iter()
@@ -2223,24 +2379,22 @@ mod tests {
             .iter()
             .find(|entry| entry.kind == TraceMapKind::Block)
             .expect("block entry should exist");
-        let mut content = String::new();
-        for (index, message) in messages.iter().enumerate() {
-            if index > 0 {
-                content.push('\n');
-            }
-            let crash = serde_json::json!({
-                "schema_version": CRASH_SCHEMA_VERSION,
-                "event": "panic",
-                "message": message,
-                "function_id": function.trace_id,
-                "block_id": block.trace_id,
-                "trace_active": true
-            });
-            content.push_str(&crash.to_string());
-            content.push('\n');
-        }
-        std::fs::write(dir.path().join(CRASH_DUMP_FILE), content)
-            .expect("crash artifact should be written");
         (function.trace_id, block.trace_id)
+    }
+
+    fn test_crash_json(
+        message: &str,
+        function_trace_id: u64,
+        block_trace_id: u64,
+        trace_active: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": CRASH_SCHEMA_VERSION,
+            "event": "panic",
+            "message": message,
+            "function_id": function_trace_id,
+            "block_id": block_trace_id,
+            "trace_active": trace_active
+        })
     }
 }
