@@ -582,6 +582,10 @@ pub fn inspect_crash_artifacts(
 /// Always returns [`TelemetryError::MissingEvidence`] because successful repair
 /// context assembly requires explicit graph source paths. Use
 /// [`repair_crash_context`] with graph-source-aware options instead.
+#[deprecated(
+    since = "0.3.3",
+    note = "use repair_crash_context with RepairContextOptions instead"
+)]
 pub fn repair_crash_context_from_artifacts(
     _telemetry_dir: &Path,
     _crash_path: Option<&Path>,
@@ -1695,6 +1699,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn repair_crash_context_legacy_helper_requires_graph_sources() {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
 
