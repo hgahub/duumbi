@@ -238,10 +238,10 @@ Required behavior:
 
 - `--context` points to a serialized `RepairCrashContext` or the approved #588
   equivalent mapped repair crash context.
-- `--patch` points to proposed GraphPatch JSON. Accepted file shapes:
-  - `{"ops":[...]}` for a complete `GraphPatch`.
-  - `[...]` only if Stage 10 deliberately wraps it into `GraphPatch { ops }`
-    and records that normalization in evidence.
+- `--patch` points to proposed GraphPatch JSON. The only accepted file shape is
+  `{"ops":[...]}` for a complete `GraphPatch`; bare operation arrays must fail
+  the GraphPatch parse gate because they do not deserialize through the
+  canonical contract.
 - `--graph` points to the original JSON-LD source graph being validated.
 - `--workspace` and `--module` are optional. If supplied, validation may build a
   temporary workspace clone and replace only the selected module path in the
