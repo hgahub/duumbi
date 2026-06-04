@@ -93,6 +93,11 @@ fn default_untraced_option_none_unwrap_is_not_back_mapping_proof() {
         !inspect.status.success(),
         "untraced failure must not inspect as mapped telemetry evidence"
     );
+    let stderr = String::from_utf8_lossy(&inspect.stderr);
+    assert!(
+        stderr.contains("Failed to read crash artifact") && stderr.contains("crash_dump.jsonl"),
+        "untraced failure should fail because crash evidence is missing, got: {stderr}"
+    );
     let stdout = String::from_utf8_lossy(&inspect.stdout);
     assert!(
         !stdout.contains("Function:") && !stdout.contains("Block:"),
