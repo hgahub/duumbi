@@ -529,6 +529,29 @@ fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Resu
             println!("{}", report.to_cli_output());
             Ok(())
         }
+        cli::TelemetrySubcommand::RepairContext {
+            telemetry_dir,
+            crash,
+            map_path,
+            graph_sources,
+            crash_entry,
+        } => {
+            let telemetry_dir = match telemetry_dir {
+                Some(telemetry_dir) => telemetry_dir,
+                None => default_telemetry_dir(workspace)?,
+            };
+            let mut options = telemetry::RepairContextOptions::new(telemetry_dir);
+            options.crash_path = crash;
+            options.map_path = map_path;
+            options.graph_sources = graph_sources;
+            if let Some(line) = crash_entry {
+                options.crash_entry = telemetry::CrashEntrySelection::LineNumber(line as usize);
+            }
+
+            let context = telemetry::repair_crash_context(&options)?;
+            println!("{}", serde_json::to_string_pretty(&context)?);
+            Ok(())
+        }
     }
 }
 

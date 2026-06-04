@@ -34,6 +34,9 @@ pub const CRASH_SCHEMA_VERSION: &str = "duumbi.telemetry.crash.v1";
 /// Schema version for repair validation evidence artifacts.
 pub const REPAIR_VALIDATION_SCHEMA_VERSION: &str = "duumbi.telemetry.repair_validation.v1";
 
+/// Schema version for repair context artifacts.
+pub const REPAIR_CONTEXT_SCHEMA_VERSION: &str = "duumbi.telemetry.repair_context.v1";
+
 const DEFAULT_ARTIFACT_DIR: &str = ".duumbi/telemetry";
 const TRACE_ID_DOMAIN: &[u8] = b"duumbi-trace-v1\0";
 
@@ -231,12 +234,79 @@ pub struct TraceCorrelation {
     pub block_trace_id: u64,
 }
 
+/// Selected crash entry for repair-context assembly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CrashEntrySelection {
+    /// Select the latest non-empty JSONL crash entry.
+    #[default]
+    Latest,
+    /// Select a specific 1-based JSONL line from the crash artifact.
+    LineNumber(usize),
+}
+
+impl CrashEntrySelection {
+    fn evidence_value(self, selected_line: usize) -> String {
+        match self {
+            Self::Latest => "latest".to_string(),
+            Self::LineNumber(_) => format!("line:{selected_line}"),
+        }
+    }
+}
+
+/// Local evidence provenance for one repair context.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairContextEvidence {
+    /// Canonical evidence source.
+    pub source: String,
+    /// Crash artifact path used to build the context.
+    pub crash_path: String,
+    /// Trace map artifact path used to build the context.
+    pub map_path: String,
+    /// Selected 1-based JSONL crash line.
+    pub selected_crash_line: usize,
+    /// Canonical selection value: `latest` or `line:<N>`.
+    pub selection: String,
+    /// Graph source paths used to build bounded graph context.
+    pub graph_sources: Vec<String>,
+}
+
+/// Options for assembling a repair context from local telemetry artifacts.
+#[derive(Debug, Clone)]
+pub struct RepairContextOptions {
+    /// Telemetry artifact directory.
+    pub telemetry_dir: PathBuf,
+    /// Explicit crash artifact path.
+    pub crash_path: Option<PathBuf>,
+    /// Explicit trace map artifact path.
+    pub map_path: Option<PathBuf>,
+    /// Graph source paths used for bounded context.
+    pub graph_sources: Vec<PathBuf>,
+    /// Crash entry selection mode.
+    pub crash_entry: CrashEntrySelection,
+}
+
+impl RepairContextOptions {
+    /// Creates repair-context assembly options for the supplied telemetry directory.
+    #[must_use]
+    pub fn new(telemetry_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            telemetry_dir: telemetry_dir.into(),
+            crash_path: None,
+            map_path: None,
+            graph_sources: Vec::new(),
+            crash_entry: CrashEntrySelection::Latest,
+        }
+    }
+}
+
 /// Agent-facing crash context for proposing a graph repair.
 ///
 /// This context is derived from mapped telemetry artifacts only. It does not
 /// include provider output, patch application results, or repair acceptance.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RepairCrashContext {
+    /// Repair context schema version.
+    pub schema_version: String,
     /// Crash message captured by the traced runtime.
     pub crash_message: String,
     /// Mapped function graph ID.
@@ -249,10 +319,14 @@ pub struct RepairCrashContext {
     pub trace_ids: TraceCorrelation,
     /// Bounded mapped graph context available for repair review.
     pub graph_context: serde_json::Value,
+    /// Local artifact provenance for this context.
+    pub evidence: RepairContextEvidence,
     /// Validation checks expected before any proposed repair can be reviewed.
     pub validation_expectations: Vec<String>,
     /// Test checks expected before any proposed repair can be reviewed.
     pub test_expectations: Vec<String>,
+    /// Repairs proposed from this context still require human review.
+    pub human_review_required: bool,
 }
 
 /// A required gate in repair validation evidence.
@@ -487,7 +561,12 @@ pub fn inspect_crash_artifacts(
     crash_path: Option<&Path>,
     map_path: Option<&Path>,
 ) -> Result<InspectReport, TelemetryError> {
-    let mapped = mapped_crash_evidence(telemetry_dir, crash_path, map_path)?;
+    let mapped = mapped_crash_evidence(
+        telemetry_dir,
+        crash_path,
+        map_path,
+        CrashEntrySelection::Latest,
+    )?;
 
     Ok(InspectReport {
         message: mapped.crash.message,
@@ -500,16 +579,49 @@ pub fn inspect_crash_artifacts(
 ///
 /// # Errors
 ///
-/// Returns [`TelemetryError`] when crash/map evidence is missing, malformed, or
-/// cannot map the crash trace IDs to graph entries.
+/// Always returns [`TelemetryError::MissingEvidence`] because successful repair
+/// context assembly requires explicit graph source paths. Use
+/// [`repair_crash_context`] with graph-source-aware options instead.
+#[deprecated(
+    since = "0.3.3",
+    note = "use repair_crash_context with RepairContextOptions instead"
+)]
 pub fn repair_crash_context_from_artifacts(
-    telemetry_dir: &Path,
-    crash_path: Option<&Path>,
-    map_path: Option<&Path>,
+    _telemetry_dir: &Path,
+    _crash_path: Option<&Path>,
+    _map_path: Option<&Path>,
 ) -> Result<RepairCrashContext, TelemetryError> {
-    let mapped = mapped_crash_evidence(telemetry_dir, crash_path, map_path)?;
+    Err(TelemetryError::MissingEvidence(
+        "repair context requires at least one graph source; use graph-source-aware repair context options"
+            .to_string(),
+    ))
+}
+
+/// Builds an agent-facing repair context from mapped crash evidence and graph sources.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when crash/map/graph evidence is missing,
+/// malformed, unmapped, stale, or ambiguous.
+pub fn repair_crash_context(
+    options: &RepairContextOptions,
+) -> Result<RepairCrashContext, TelemetryError> {
+    let mapped = mapped_crash_evidence(
+        &options.telemetry_dir,
+        options.crash_path.as_deref(),
+        options.map_path.as_deref(),
+        options.crash_entry,
+    )?;
+    let graph_context =
+        repair_graph_context_from_sources(&mapped.function, &mapped.block, &options.graph_sources)?;
+    let graph_sources = options
+        .graph_sources
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
 
     Ok(RepairCrashContext {
+        schema_version: REPAIR_CONTEXT_SCHEMA_VERSION.to_string(),
         crash_message: mapped.crash.message,
         function_id: mapped.function.graph_id.clone(),
         block_id: mapped.block.graph_id.clone(),
@@ -518,9 +630,18 @@ pub fn repair_crash_context_from_artifacts(
             function_trace_id: mapped.crash.function_id,
             block_trace_id: mapped.crash.block_id,
         },
-        graph_context: repair_graph_context(&mapped.function, &mapped.block),
+        graph_context,
+        evidence: RepairContextEvidence {
+            source: "local_telemetry_artifacts".to_string(),
+            crash_path: mapped.crash_path.display().to_string(),
+            map_path: mapped.map_path.display().to_string(),
+            selected_crash_line: mapped.selected_crash_line,
+            selection: mapped.selection.evidence_value(mapped.selected_crash_line),
+            graph_sources,
+        },
         validation_expectations: default_validation_expectations(),
         test_expectations: default_test_expectations(),
+        human_review_required: true,
     })
 }
 
@@ -560,6 +681,10 @@ pub fn repair_validation_evidence_from_graph_patch(
 #[derive(Debug, Clone)]
 struct MappedCrashEvidence {
     crash: CrashArtifact,
+    crash_path: PathBuf,
+    map_path: PathBuf,
+    selected_crash_line: usize,
+    selection: CrashEntrySelection,
     function: TraceMapEntry,
     block: TraceMapEntry,
 }
@@ -568,6 +693,7 @@ fn mapped_crash_evidence(
     telemetry_dir: &Path,
     crash_path: Option<&Path>,
     map_path: Option<&Path>,
+    selection: CrashEntrySelection,
 ) -> Result<MappedCrashEvidence, TelemetryError> {
     let crash_path = crash_path
         .map(Path::to_path_buf)
@@ -575,10 +701,10 @@ fn mapped_crash_evidence(
     let map_path = map_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| telemetry_dir.join(TRACE_MAP_FILE));
-    let crash = read_latest_crash(&crash_path)?;
+    let selected_crash = read_selected_crash(&crash_path, selection)?;
     let trace_map = read_trace_map(&map_path)?;
 
-    if !crash.trace_active {
+    if !selected_crash.artifact.trace_active {
         return Err(TelemetryError::MissingEvidence(
             "crash artifact was not written from an active traced run".to_string(),
         ));
@@ -587,36 +713,217 @@ fn mapped_crash_evidence(
     let function = trace_map
         .entries
         .iter()
-        .find(|entry| entry.kind == TraceMapKind::Function && entry.trace_id == crash.function_id)
+        .find(|entry| {
+            entry.kind == TraceMapKind::Function
+                && entry.trace_id == selected_crash.artifact.function_id
+        })
         .ok_or_else(|| {
             TelemetryError::Unmapped(format!(
                 "function trace ID {} was not found in '{}'",
-                crash.function_id,
+                selected_crash.artifact.function_id,
                 map_path.display()
             ))
         })?;
     let block = trace_map
         .entries
         .iter()
-        .find(|entry| entry.kind == TraceMapKind::Block && entry.trace_id == crash.block_id)
+        .find(|entry| {
+            entry.kind == TraceMapKind::Block && entry.trace_id == selected_crash.artifact.block_id
+        })
         .ok_or_else(|| {
             TelemetryError::Unmapped(format!(
                 "block trace ID {} was not found in '{}'",
-                crash.block_id,
+                selected_crash.artifact.block_id,
                 map_path.display()
             ))
         })?;
 
     Ok(MappedCrashEvidence {
-        crash,
+        crash: selected_crash.artifact,
+        crash_path,
+        map_path,
+        selected_crash_line: selected_crash.line_number,
+        selection,
         function: function.clone(),
         block: block.clone(),
     })
 }
 
-fn repair_graph_context(function: &TraceMapEntry, block: &TraceMapEntry) -> serde_json::Value {
-    serde_json::json!({
-        "source": "mapped_trace_artifacts",
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedCrash {
+    artifact: CrashArtifact,
+    line_number: usize,
+}
+
+fn read_selected_crash(
+    path: &Path,
+    selection: CrashEntrySelection,
+) -> Result<SelectedCrash, TelemetryError> {
+    let content = fs::read_to_string(path).map_err(|source| TelemetryError::Io {
+        context: format!("Failed to read crash artifact '{}'", path.display()),
+        source,
+    })?;
+
+    let (line_number, line) = match selection {
+        CrashEntrySelection::Latest => {
+            let latest = content
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| !line.trim().is_empty())
+                .last()
+                .map(|(index, line)| (index + 1, line));
+            latest.ok_or_else(|| {
+                TelemetryError::MissingEvidence(format!(
+                    "crash artifact '{}' did not contain any JSONL entries",
+                    path.display()
+                ))
+            })?
+        }
+        CrashEntrySelection::LineNumber(line_number) if line_number > 0 => {
+            let line = content.lines().nth(line_number - 1).ok_or_else(|| {
+                TelemetryError::MissingEvidence(format!(
+                    "crash artifact '{}' did not contain line {}",
+                    path.display(),
+                    line_number
+                ))
+            })?;
+            if line.trim().is_empty() {
+                return Err(TelemetryError::MissingEvidence(format!(
+                    "crash artifact '{}' line {} is empty",
+                    path.display(),
+                    line_number
+                )));
+            }
+            (line_number, line)
+        }
+        CrashEntrySelection::LineNumber(_) => {
+            return Err(TelemetryError::MissingEvidence(
+                "crash entry line numbers are 1-based".to_string(),
+            ));
+        }
+    };
+
+    let artifact = serde_json::from_str(line).map_err(|source| TelemetryError::Parse {
+        path: format!("{}:{line_number}", path.display()),
+        source,
+    })?;
+    Ok(SelectedCrash {
+        artifact,
+        line_number,
+    })
+}
+
+fn repair_graph_context_from_sources(
+    function: &TraceMapEntry,
+    block: &TraceMapEntry,
+    graph_sources: &[PathBuf],
+) -> Result<serde_json::Value, TelemetryError> {
+    if graph_sources.is_empty() {
+        return Err(TelemetryError::MissingEvidence(
+            "repair context requires at least one graph source".to_string(),
+        ));
+    }
+
+    let mut function_matches = Vec::new();
+    let mut block_matches = Vec::new();
+    for graph_source in graph_sources {
+        let source = read_graph_source(graph_source)?;
+        let functions = graph_functions(&source.value);
+        for candidate_function in &functions {
+            for candidate_block in graph_blocks(candidate_function) {
+                if graph_id(candidate_block) == Some(block.graph_id.as_str()) {
+                    block_matches.push((
+                        source.path.clone(),
+                        graph_id(candidate_function)
+                            .unwrap_or("<missing function @id>")
+                            .to_string(),
+                        candidate_block.clone(),
+                    ));
+                }
+            }
+        }
+
+        let matches: Vec<_> = functions
+            .iter()
+            .copied()
+            .filter(|candidate| graph_id(candidate) == Some(function.graph_id.as_str()))
+            .collect();
+        if matches.len() > 1 {
+            return Err(TelemetryError::Unmapped(format!(
+                "ambiguous graph source: function '{}' appears more than once in '{}'",
+                function.graph_id,
+                graph_source.display()
+            )));
+        }
+        if let Some(candidate) = matches.into_iter().next() {
+            function_matches.push((source.path, candidate.clone()));
+        }
+    }
+
+    if block_matches.len() > 1 {
+        return Err(TelemetryError::Unmapped(format!(
+            "ambiguous graph source: block '{}' appears in more than one supplied graph context",
+            block.graph_id
+        )));
+    }
+
+    let (source_path, function_value) = match function_matches.len() {
+        0 => {
+            return Err(TelemetryError::Unmapped(format!(
+                "stale or missing function graph context: '{}' was not found in supplied graph sources",
+                function.graph_id
+            )));
+        }
+        1 => function_matches
+            .into_iter()
+            .next()
+            .expect("invariant: one function match exists"),
+        _ => {
+            return Err(TelemetryError::Unmapped(format!(
+                "ambiguous graph source: function '{}' appears in more than one supplied graph file",
+                function.graph_id
+            )));
+        }
+    };
+
+    let blocks = graph_blocks(&function_value);
+    let block_matches: Vec<_> = blocks
+        .into_iter()
+        .filter(|candidate| graph_id(candidate) == Some(block.graph_id.as_str()))
+        .collect();
+    let block_value = match block_matches.len() {
+        0 => {
+            return Err(TelemetryError::Unmapped(format!(
+                "stale or missing block graph context: '{}' was not found in mapped function '{}'",
+                block.graph_id, function.graph_id
+            )));
+        }
+        1 => block_matches
+            .into_iter()
+            .next()
+            .expect("invariant: one block match exists")
+            .clone(),
+        _ => {
+            return Err(TelemetryError::Unmapped(format!(
+                "ambiguous graph source: block '{}' appears more than once in mapped function '{}'",
+                block.graph_id, function.graph_id
+            )));
+        }
+    };
+
+    let mut function_shell = serde_json::Map::new();
+    copy_json_field(&function_value, &mut function_shell, "@id");
+    copy_json_field(&function_value, &mut function_shell, "@type");
+    copy_json_field(&function_value, &mut function_shell, "duumbi:name");
+    copy_json_field(&function_value, &mut function_shell, "duumbi:returnType");
+    function_shell.insert(
+        "duumbi:blocks".to_string(),
+        serde_json::Value::Array(vec![block_value.clone()]),
+    );
+
+    Ok(serde_json::json!({
+        "source": "mapped_graph_source",
+        "source_path": source_path.display().to_string(),
         "function": {
             "trace_id": function.trace_id,
             "graph_id": function.graph_id,
@@ -630,9 +937,71 @@ fn repair_graph_context(function: &TraceMapEntry, block: &TraceMapEntry) -> serd
             "function": block.function,
             "block": block.block
         },
+        "function_context": serde_json::Value::Object(function_shell),
+        "selected_block": block_value,
         "exact_node_evidence": null,
-        "context_limit": "function_and_block_identity_only"
+        "context_limit": "containing_function_and_selected_block"
+    }))
+}
+
+#[derive(Debug)]
+struct GraphSource {
+    path: PathBuf,
+    value: serde_json::Value,
+}
+
+fn read_graph_source(path: &Path) -> Result<GraphSource, TelemetryError> {
+    let content = fs::read_to_string(path).map_err(|source| TelemetryError::Io {
+        context: format!("Failed to read graph source '{}'", path.display()),
+        source,
+    })?;
+    let value = serde_json::from_str(&content).map_err(|source| TelemetryError::Parse {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(GraphSource {
+        path: path.to_path_buf(),
+        value,
     })
+}
+
+fn graph_functions(value: &serde_json::Value) -> Vec<&serde_json::Value> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut functions = Vec::new();
+            if object.get("@type").and_then(serde_json::Value::as_str) == Some("duumbi:Function") {
+                functions.push(value);
+            }
+            for child in object.values() {
+                functions.extend(graph_functions(child));
+            }
+            functions
+        }
+        serde_json::Value::Array(items) => items.iter().flat_map(graph_functions).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn graph_blocks(function: &serde_json::Value) -> Vec<&serde_json::Value> {
+    function
+        .get("duumbi:blocks")
+        .and_then(serde_json::Value::as_array)
+        .map(|blocks| blocks.iter().collect())
+        .unwrap_or_default()
+}
+
+fn graph_id(value: &serde_json::Value) -> Option<&str> {
+    value.get("@id").and_then(serde_json::Value::as_str)
+}
+
+fn copy_json_field(
+    source: &serde_json::Value,
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) {
+    if let Some(value) = source.get(field) {
+        target.insert(field.to_string(), value.clone());
+    }
 }
 
 fn default_validation_expectations() -> Vec<String> {
@@ -665,28 +1034,6 @@ fn read_trace_map(path: &Path) -> Result<TraceMap, TelemetryError> {
         source,
     })?;
     serde_json::from_str(&content).map_err(|source| TelemetryError::Parse {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-fn read_latest_crash(path: &Path) -> Result<CrashArtifact, TelemetryError> {
-    let content = fs::read_to_string(path).map_err(|source| TelemetryError::Io {
-        context: format!("Failed to read crash artifact '{}'", path.display()),
-        source,
-    })?;
-    let latest = content
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| {
-            TelemetryError::MissingEvidence(format!(
-                "crash artifact '{}' did not contain any JSONL entries",
-                path.display()
-            ))
-        })?;
-
-    serde_json::from_str(latest).map_err(|source| TelemetryError::Parse {
         path: path.display().to_string(),
         source,
     })
@@ -1277,12 +1624,16 @@ mod tests {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
         write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
         let (function_trace_id, block_trace_id) =
             write_test_crash(&dir, &map, "called Option::unwrap() on a None value");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source.clone());
 
-        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
+        let context = repair_crash_context(&options)
             .expect("repair context should be built from mapped evidence");
 
+        assert_eq!(context.schema_version, REPAIR_CONTEXT_SCHEMA_VERSION);
         assert_eq!(
             context.crash_message,
             "called Option::unwrap() on a None value"
@@ -1292,13 +1643,36 @@ mod tests {
         assert_eq!(context.exact_node_id, None);
         assert_eq!(context.trace_ids.function_trace_id, function_trace_id);
         assert_eq!(context.trace_ids.block_trace_id, block_trace_id);
+        assert!(context.human_review_required);
+        assert_eq!(context.evidence.source, "local_telemetry_artifacts");
+        assert_eq!(context.evidence.selected_crash_line, 1);
+        assert_eq!(context.evidence.selection, "latest");
+        assert_eq!(
+            context.evidence.graph_sources,
+            vec![graph_source.display().to_string()]
+        );
         assert_eq!(
             context.graph_context["source"],
-            serde_json::json!("mapped_trace_artifacts")
+            serde_json::json!("mapped_graph_source")
         );
         assert_eq!(
             context.graph_context["block"]["graph_id"],
             serde_json::json!("duumbi:t/main/entry")
+        );
+        assert_eq!(
+            context.graph_context["context_limit"],
+            serde_json::json!("containing_function_and_selected_block")
+        );
+        assert_eq!(
+            context.graph_context["exact_node_evidence"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            context.graph_context["function_context"]["duumbi:blocks"]
+                .as_array()
+                .expect("bounded function context should include blocks")
+                .len(),
+            1
         );
         assert!(
             context
@@ -1315,9 +1689,320 @@ mod tests {
         );
 
         let serialized = serde_json::to_string(&context).expect("repair context should serialize");
+        assert!(!serialized.contains("argument"));
+        assert!(!serialized.contains("heap"));
+        assert!(!serialized.contains("stack"));
+        assert!(!serialized.contains("snapshot"));
         let roundtrip: RepairCrashContext =
             serde_json::from_str(&serialized).expect("repair context should deserialize");
         assert_eq!(roundtrip, context);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn repair_crash_context_legacy_helper_requires_graph_sources() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+
+        let err = repair_crash_context_from_artifacts(dir.path(), None, None)
+            .expect_err("legacy helper should not emit trace-map-only context");
+
+        assert!(matches!(err, TelemetryError::MissingEvidence(_)));
+        assert!(err.to_string().contains("graph source"));
+    }
+
+    #[test]
+    fn repair_crash_context_selects_latest_non_empty_crash_entry() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        write_test_crash_entries(&dir, &map, &["first crash", "second crash"]);
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let context = repair_crash_context(&options).expect("latest crash should map");
+
+        assert_eq!(context.crash_message, "second crash");
+        assert_eq!(context.evidence.selected_crash_line, 3);
+        assert_eq!(context.evidence.selection, "latest");
+    }
+
+    #[test]
+    fn repair_crash_context_selects_explicit_crash_line() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        write_test_crash_entries(&dir, &map, &["first crash", "second crash"]);
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+        options.crash_entry = CrashEntrySelection::LineNumber(1);
+
+        let context = repair_crash_context(&options).expect("explicit crash line should map");
+
+        assert_eq!(context.crash_message, "first crash");
+        assert_eq!(context.evidence.selected_crash_line, 1);
+        assert_eq!(context.evidence.selection, "line:1");
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_missing_graph_source() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "missing graph source");
+        let options = RepairContextOptions::new(dir.path());
+
+        let err = repair_crash_context(&options).expect_err("graph source should be required");
+
+        assert!(matches!(err, TelemetryError::MissingEvidence(_)));
+        assert!(err.to_string().contains("graph source"));
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_missing_crash_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("missing crash artifact should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Io { context, .. } if context.contains("Failed to read crash artifact"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_malformed_crash_json() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), "{not json}\n")
+            .expect("malformed crash artifact should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("malformed crash JSON should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Parse { path, .. } if path.ends_with("crash_dump.jsonl:1"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_missing_trace_map() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_test_crash(&dir, &map, "missing trace map");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("missing trace map should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Io { context, .. } if context.contains("Failed to read trace map"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_malformed_trace_map() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_test_crash(&dir, &map, "malformed trace map");
+        std::fs::write(dir.path().join(TRACE_MAP_FILE), "{not json}")
+            .expect("malformed trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("malformed trace map should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Parse { path, .. } if path.ends_with(TRACE_MAP_FILE))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_untraced_crash_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (function_trace_id, block_trace_id) = test_trace_ids(&map);
+        write_test_crash_with_ids(
+            &dir,
+            "untraced crash",
+            function_trace_id,
+            block_trace_id,
+            false,
+        );
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("untraced crash should fail");
+
+        assert!(
+            matches!(err, TelemetryError::MissingEvidence(message) if message.contains("active traced run"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_unmapped_function_trace_id() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (_, block_trace_id) = test_trace_ids(&map);
+        write_test_crash_with_ids(&dir, "unmapped function", u64::MAX, block_trace_id, true);
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("unmapped function ID should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Unmapped(message) if message.contains("function trace ID"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_unmapped_block_trace_id() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let (function_trace_id, _) = test_trace_ids(&map);
+        write_test_crash_with_ids(&dir, "unmapped block", function_trace_id, u64::MAX, true);
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("unmapped block ID should fail");
+
+        assert!(
+            matches!(err, TelemetryError::Unmapped(message) if message.contains("block trace ID"))
+        );
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_stale_graph_ids() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "stale graph");
+        let graph_source = write_test_graph_source(
+            &dir,
+            r#"{
+                "@type": "duumbi:Module",
+                "@id": "duumbi:other",
+                "duumbi:functions": []
+            }"#,
+            "stale.jsonld",
+        );
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("stale graph IDs should fail");
+
+        assert!(matches!(err, TelemetryError::Unmapped(_)));
+        assert!(err.to_string().contains("stale or missing function"));
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_duplicate_graph_ids_in_one_source() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "duplicate graph");
+        let mut graph_source: serde_json::Value =
+            serde_json::from_str(test_graph_source()).expect("graph source should parse");
+        let functions = graph_source["duumbi:functions"]
+            .as_array_mut()
+            .expect("test source should include function array");
+        functions.push(functions[0].clone());
+        let graph_source = write_test_graph_source(
+            &dir,
+            &serde_json::to_string_pretty(&graph_source).expect("graph should serialize"),
+            "duplicate.jsonld",
+        );
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("duplicate graph IDs should fail");
+
+        assert!(matches!(err, TelemetryError::Unmapped(_)));
+        assert!(err.to_string().contains("ambiguous graph source"));
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_duplicate_block_ids_in_one_function() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "duplicate block");
+        let mut graph_source: serde_json::Value =
+            serde_json::from_str(test_graph_source()).expect("graph source should parse");
+        let functions = graph_source["duumbi:functions"]
+            .as_array_mut()
+            .expect("test source should include function array");
+        let blocks = functions[0]["duumbi:blocks"]
+            .as_array_mut()
+            .expect("test source should include block array");
+        blocks.push(blocks[0].clone());
+        let graph_source = write_test_graph_source(
+            &dir,
+            &serde_json::to_string_pretty(&graph_source).expect("graph should serialize"),
+            "duplicate-block.jsonld",
+        );
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+
+        let err = repair_crash_context(&options).expect_err("duplicate block IDs should fail");
+
+        assert!(matches!(err, TelemetryError::Unmapped(_)));
+        assert!(err.to_string().contains("ambiguous graph source"));
+    }
+
+    #[test]
+    fn repair_crash_context_rejects_duplicate_block_ids_across_sources() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        write_test_crash(&dir, &map, "duplicate block across sources");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let duplicate_block_source = write_test_graph_source(
+            &dir,
+            r#"{
+                "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+                "@type": "duumbi:Module",
+                "@id": "duumbi:duplicate",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:duplicate/main",
+                    "duumbi:name": "main",
+                    "duumbi:returnType": "void",
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block",
+                        "@id": "duumbi:t/main/entry",
+                        "duumbi:name": "entry",
+                        "duumbi:operations": []
+                    }]
+                }]
+            }"#,
+            "duplicate-block-source.jsonld",
+        );
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+        options.graph_sources.push(duplicate_block_source);
+
+        let err =
+            repair_crash_context(&options).expect_err("duplicate block IDs across sources fail");
+
+        assert!(matches!(err, TelemetryError::Unmapped(_)));
+        assert!(err.to_string().contains("ambiguous graph source"));
     }
 
     #[test]
@@ -1325,9 +2010,11 @@ mod tests {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
         write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
         write_test_crash(&dir, &map, "candidate repair");
-        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
-            .expect("repair context should be built");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+        let context = repair_crash_context(&options).expect("repair context should be built");
         let patch = crate::patch::GraphPatch {
             ops: vec![crate::patch::PatchOp::ModifyOp {
                 node_id: "duumbi:t/main/entry/0".to_string(),
@@ -1356,9 +2043,11 @@ mod tests {
         let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
         let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
         write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
         write_test_crash(&dir, &map, "candidate repair");
-        let context = repair_crash_context_from_artifacts(dir.path(), None, None)
-            .expect("repair context should be built");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+        let context = repair_crash_context(&options).expect("repair context should be built");
         let patch = serde_json::json!({ "ops": [] });
         let gates = vec![RepairValidationGateEvidence::new(
             RepairValidationGate::GraphPatchParse,
@@ -1609,7 +2298,12 @@ mod tests {
     }
 
     fn test_graph() -> crate::graph::SemanticGraph {
-        let source = r#"{
+        let ast = crate::parser::parse_jsonld(test_graph_source()).expect("fixture should parse");
+        crate::graph::builder::build_graph(&ast).expect("fixture should build")
+    }
+
+    fn test_graph_source() -> &'static str {
+        r#"{
             "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
             "@type": "duumbi:Module",
             "@id": "duumbi:t",
@@ -1638,12 +2332,48 @@ mod tests {
                     ]
                 }]
             }]
-        }"#;
-        let ast = crate::parser::parse_jsonld(source).expect("fixture should parse");
-        crate::graph::builder::build_graph(&ast).expect("fixture should build")
+        }"#
+    }
+
+    fn write_test_graph_source(dir: &TempDir, source: &str, file_name: &str) -> PathBuf {
+        let path = dir.path().join(file_name);
+        std::fs::write(&path, source).expect("graph source should be written");
+        path
     }
 
     fn write_test_crash(dir: &TempDir, map: &TraceMap, message: &str) -> (u64, u64) {
+        write_test_crash_entries(dir, map, &[message])
+    }
+
+    fn write_test_crash_entries(dir: &TempDir, map: &TraceMap, messages: &[&str]) -> (u64, u64) {
+        let (function_trace_id, block_trace_id) = test_trace_ids(map);
+        let mut content = String::new();
+        for (index, message) in messages.iter().enumerate() {
+            if index > 0 {
+                content.push('\n');
+            }
+            let crash = test_crash_json(message, function_trace_id, block_trace_id, true);
+            content.push_str(&crash.to_string());
+            content.push('\n');
+        }
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), content)
+            .expect("crash artifact should be written");
+        (function_trace_id, block_trace_id)
+    }
+
+    fn write_test_crash_with_ids(
+        dir: &TempDir,
+        message: &str,
+        function_trace_id: u64,
+        block_trace_id: u64,
+        trace_active: bool,
+    ) {
+        let crash = test_crash_json(message, function_trace_id, block_trace_id, trace_active);
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+    }
+
+    fn test_trace_ids(map: &TraceMap) -> (u64, u64) {
         let function = map
             .entries
             .iter()
@@ -1654,16 +2384,22 @@ mod tests {
             .iter()
             .find(|entry| entry.kind == TraceMapKind::Block)
             .expect("block entry should exist");
-        let crash = serde_json::json!({
+        (function.trace_id, block.trace_id)
+    }
+
+    fn test_crash_json(
+        message: &str,
+        function_trace_id: u64,
+        block_trace_id: u64,
+        trace_active: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
             "schema_version": CRASH_SCHEMA_VERSION,
             "event": "panic",
             "message": message,
-            "function_id": function.trace_id,
-            "block_id": block.trace_id,
-            "trace_active": true
-        });
-        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
-            .expect("crash artifact should be written");
-        (function.trace_id, block.trace_id)
+            "function_id": function_trace_id,
+            "block_id": block_trace_id,
+            "trace_active": trace_active
+        })
     }
 }

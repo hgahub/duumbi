@@ -27,6 +27,76 @@ fn traced_option_none_unwrap_writes_crash_evidence_and_inspects() {
 }
 
 #[test]
+fn traced_option_none_unwrap_emits_repair_context() {
+    let evidence = traced_fixture_evidence(
+        "tests/fixtures/telemetry/option_none_unwrap.jsonld",
+        "panic_repair_context",
+    );
+    let repair_context_stdout = repair_context_stdout(
+        &evidence,
+        "tests/fixtures/telemetry/option_none_unwrap.jsonld",
+    );
+
+    let context: serde_json::Value =
+        serde_json::from_str(&repair_context_stdout).expect("repair context stdout must be JSON");
+
+    assert_eq!(
+        context["schema_version"],
+        serde_json::json!("duumbi.telemetry.repair_context.v1")
+    );
+    assert_eq!(
+        context["crash_message"],
+        serde_json::json!("called Option::unwrap() on a None value")
+    );
+    assert_eq!(
+        context["function_id"],
+        serde_json::json!("duumbi:telemetry/main")
+    );
+    assert_eq!(
+        context["block_id"],
+        serde_json::json!("duumbi:telemetry/main/entry")
+    );
+    assert_eq!(context["exact_node_id"], serde_json::Value::Null);
+    assert_eq!(
+        context["graph_context"]["context_limit"],
+        serde_json::json!("containing_function_and_selected_block")
+    );
+    assert_eq!(
+        context["evidence"]["source"],
+        serde_json::json!("local_telemetry_artifacts")
+    );
+    assert_eq!(
+        context["evidence"]["selected_crash_line"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        context["evidence"]["selection"],
+        serde_json::json!("latest")
+    );
+    assert_eq!(context["human_review_required"], serde_json::json!(true));
+    assert!(
+        context["validation_expectations"]
+            .as_array()
+            .expect("validation expectations must be an array")
+            .iter()
+            .any(|expectation| expectation == "proposed patch parses as GraphPatch")
+    );
+    assert!(
+        context["test_expectations"]
+            .as_array()
+            .expect("test expectations must be an array")
+            .iter()
+            .any(|expectation| expectation == "default untraced build behavior remains unchanged")
+    );
+
+    let serialized = repair_context_stdout.as_str();
+    assert!(!serialized.contains("heap"));
+    assert!(!serialized.contains("stack"));
+    assert!(!serialized.contains("runtime_value"));
+    assert!(!serialized.contains("value_snapshot"));
+}
+
+#[test]
 fn traced_call_then_panic_preserves_caller_context() {
     let evidence = traced_fixture_evidence(
         "tests/fixtures/telemetry/call_then_panic.jsonld",
@@ -193,7 +263,10 @@ fn traced_fixture_evidence(fixture: &str, binary_name: &str) -> TraceFixtureEvid
         "telemetry inspect failed: {}",
         String::from_utf8_lossy(&inspect.stderr)
     );
+
     TraceFixtureEvidence {
+        _tmp: tmp,
+        telemetry_dir,
         inspect_stdout: String::from_utf8(inspect.stdout)
             .expect("invariant: inspect stdout must be UTF-8"),
         trace_map,
@@ -204,6 +277,8 @@ fn traced_fixture_evidence(fixture: &str, binary_name: &str) -> TraceFixtureEvid
 
 #[derive(Debug)]
 struct TraceFixtureEvidence {
+    _tmp: tempfile::TempDir,
+    telemetry_dir: std::path::PathBuf,
     inspect_stdout: String,
     trace_map: TraceMap,
     trace_events: Vec<TraceEvent>,
@@ -268,6 +343,32 @@ fn untraced_fixture_failure(fixture: &str, binary_name: &str) -> UntracedFailure
         _tmp: tmp,
         telemetry_dir: telemetry_dir.clone(),
     }
+}
+
+fn repair_context_stdout(evidence: &TraceFixtureEvidence, fixture: &str) -> String {
+    let duumbi = env!("CARGO_BIN_EXE_duumbi");
+    let repair_context = Command::new(duumbi)
+        .args([
+            "telemetry",
+            "repair-context",
+            "--telemetry-dir",
+            evidence
+                .telemetry_dir
+                .to_str()
+                .expect("invariant: telemetry path must be UTF-8"),
+            "--graph",
+            fixture,
+        ])
+        .output()
+        .expect("invariant: telemetry repair-context must run");
+    assert!(
+        repair_context.status.success(),
+        "telemetry repair-context failed: {}",
+        String::from_utf8_lossy(&repair_context.stderr)
+    );
+
+    String::from_utf8(repair_context.stdout)
+        .expect("invariant: repair-context stdout must be UTF-8")
 }
 
 fn read_trace_map(telemetry_dir: &std::path::Path) -> TraceMap {
