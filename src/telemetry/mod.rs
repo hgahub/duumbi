@@ -1965,6 +1965,30 @@ mod tests {
     }
 
     #[test]
+    fn inspect_crash_artifacts_rejects_unmapped_crash_ids() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+
+        let crash = serde_json::json!({
+            "schema_version": CRASH_SCHEMA_VERSION,
+            "event": "panic",
+            "message": "failure",
+            "function_id": u64::MAX,
+            "block_id": u64::MAX,
+            "trace_active": true
+        });
+        std::fs::write(dir.path().join(CRASH_DUMP_FILE), format!("{crash}\n"))
+            .expect("crash artifact should be written");
+
+        let result = inspect_crash_artifacts(dir.path(), None, None);
+
+        assert!(
+            matches!(result, Err(TelemetryError::Unmapped(message)) if message.contains("function trace ID"))
+        );
+    }
+
+    #[test]
     fn telemetry_artifact_dir_resolves_relative_to_workspace() {
         let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
         let section = TelemetrySection {
