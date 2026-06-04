@@ -353,6 +353,28 @@ pub enum TelemetrySubcommand {
         #[arg(long = "map")]
         map_path: Option<PathBuf>,
     },
+    /// Emit repair-agent context JSON from mapped crash evidence.
+    RepairContext {
+        /// Telemetry artifact directory.
+        #[arg(long)]
+        telemetry_dir: Option<PathBuf>,
+
+        /// Explicit crash artifact path.
+        #[arg(long)]
+        crash: Option<PathBuf>,
+
+        /// Explicit trace map artifact path.
+        #[arg(long = "map")]
+        map_path: Option<PathBuf>,
+
+        /// Graph source file used for bounded context.
+        #[arg(long = "graph", required = true)]
+        graph_sources: Vec<PathBuf>,
+
+        /// Explicit 1-based crash JSONL line.
+        #[arg(long = "crash-entry", value_parser = clap::value_parser!(u32).range(1..))]
+        crash_entry: Option<u32>,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
@@ -644,6 +666,36 @@ mod tests {
             cli.command,
             Commands::Telemetry {
                 subcommand: TelemetrySubcommand::Inspect { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn telemetry_repair_context_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "telemetry",
+            "repair-context",
+            "--telemetry-dir",
+            "tmp/telemetry",
+            "--crash",
+            "tmp/crash.jsonl",
+            "--map",
+            "tmp/trace_map.json",
+            "--graph",
+            "graph.jsonld",
+            "--crash-entry",
+            "1",
+        ])
+        .expect("CLI must parse telemetry repair-context");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Telemetry {
+                subcommand: TelemetrySubcommand::RepairContext {
+                    crash_entry: Some(1),
+                    ..
+                }
             }
         ));
     }
