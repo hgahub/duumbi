@@ -1536,13 +1536,23 @@ fn compile_function(
                 Op::ResultUnwrap => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(result_unwrap_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::ResultUnwrapErr => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(result_unwrap_err_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
 
@@ -1568,7 +1578,12 @@ fn compile_function(
                 Op::OptionUnwrap => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(option_unwrap_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
 
