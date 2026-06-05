@@ -264,6 +264,87 @@ fn default_untraced_option_none_unwrap_is_not_back_mapping_proof() {
 }
 
 #[test]
+fn workspace_run_uses_configured_telemetry_artifact_dir() {
+    let duumbi = env!("CARGO_BIN_EXE_duumbi");
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
+    let workspace = tmp.path().join("workspace");
+    let graph_dir = workspace.join(".duumbi/graph");
+    let build_dir = workspace.join(".duumbi/build");
+    fs::create_dir_all(&graph_dir).expect("invariant: graph dir must be created");
+    fs::create_dir_all(&build_dir).expect("invariant: build dir must be created");
+
+    let fixture = "tests/fixtures/telemetry/option_none_unwrap.jsonld";
+    let original_graph = fs::read(fixture).expect("invariant: fixture must be readable");
+    let graph_path = graph_dir.join("main.jsonld");
+    fs::write(&graph_path, &original_graph).expect("invariant: graph fixture must be copied");
+    fs::write(
+        workspace.join(".duumbi/config.toml"),
+        "[workspace]\nname = \"telemetry-config-e2e\"\n\n[telemetry]\nartifact-dir = \"custom/telemetry\"\n",
+    )
+    .expect("invariant: workspace config must be written");
+
+    let output_path = format!(".duumbi/build/output{}", std::env::consts::EXE_SUFFIX);
+    let build = Command::new(duumbi)
+        .args(["build", "--trace", "-o"])
+        .arg(&output_path)
+        .current_dir(&workspace)
+        .env_remove("DUUMBI_TELEMETRY_DIR")
+        .output()
+        .expect("invariant: duumbi build must run");
+    assert!(
+        build.status.success(),
+        "workspace traced build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(duumbi)
+        .arg("run")
+        .current_dir(&workspace)
+        .env("DUUMBI_TELEMETRY_DIR", "")
+        .output()
+        .expect("invariant: duumbi run must run");
+    assert!(
+        !run.status.success(),
+        "controlled panic fixture must exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("duumbi panic: called Option::unwrap() on a None value"),
+        "panic stderr must preserve original message, got: {stderr}"
+    );
+
+    let configured_dir = workspace.join("custom/telemetry");
+    assert!(configured_dir.join("trace_map.json").exists());
+    assert!(configured_dir.join("traces.jsonl").exists());
+    assert!(configured_dir.join("crash_dump.jsonl").exists());
+    assert!(
+        !workspace.join(".duumbi/telemetry/traces.jsonl").exists(),
+        "workspace run should not split trace events into the default telemetry dir"
+    );
+    assert_eq!(
+        fs::read(&graph_path).expect("invariant: graph file must be readable"),
+        original_graph,
+        "workspace run must not mutate source graph files"
+    );
+
+    let inspect = Command::new(duumbi)
+        .args(["telemetry", "inspect"])
+        .current_dir(&workspace)
+        .env_remove("DUUMBI_TELEMETRY_DIR")
+        .output()
+        .expect("invariant: telemetry inspect must run");
+    assert!(
+        inspect.status.success(),
+        "telemetry inspect failed: {}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let stdout = String::from_utf8(inspect.stdout).expect("invariant: inspect stdout is UTF-8");
+    assert!(stdout.contains("Function: duumbi:telemetry/main"));
+    assert!(stdout.contains("Block: duumbi:telemetry/main/entry"));
+    assert!(stdout.contains("Exact node evidence: unavailable in v1"));
+}
+
+#[test]
 fn telemetry_inspect_without_dir_reports_malformed_config() {
     let duumbi = env!("CARGO_BIN_EXE_duumbi");
     let workspace = tempfile::TempDir::new().expect("invariant: temp dir must be created");
