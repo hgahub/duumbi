@@ -16,7 +16,7 @@
           "duumbi:label": "entry",
           "duumbi:ops": [
             {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0",
-              "duumbi:value": "{\"name\":\"duumbi\",\"enabled\":true,\"label\":\"caf\\u00e9\",\"items\":[10,20,30]}",
+              "duumbi:value": "{\"name\":\"duumbi\",\"enabled\":true,\"label\":\"caf\\u00e9\",\"nul\":\"a\\u0000b\",\"items\":[10,20,30]}",
               "duumbi:resultType": "string"},
             {"@type": "duumbi:JsonParse", "@id": "duumbi:main/main/entry/1",
               "duumbi:operand": {"@id": "duumbi:main/main/entry/0"},
@@ -111,9 +111,30 @@
             {"@type": "duumbi:PrintString", "@id": "duumbi:main/main/entry/26",
               "duumbi:operand": {"@id": "duumbi:main/main/entry/25"}},
             {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/27",
+              "duumbi:value": "nul", "duumbi:resultType": "string"},
+            {"@type": "duumbi:JsonGetField", "@id": "duumbi:main/main/entry/28",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/2"},
+              "duumbi:left": {"@id": "duumbi:main/main/entry/27"},
+              "duumbi:resultType": "result<json,string>"},
+            {"@type": "duumbi:ResultIsOk", "@id": "duumbi:main/main/entry/28_check",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/28"}},
+            {"@type": "duumbi:ResultUnwrap", "@id": "duumbi:main/main/entry/29",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/28"},
+              "duumbi:resultType": "json"},
+            {"@type": "duumbi:JsonStringify", "@id": "duumbi:main/main/entry/30",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/29"},
+              "duumbi:resultType": "result<string,string>"},
+            {"@type": "duumbi:ResultIsOk", "@id": "duumbi:main/main/entry/30_check",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/30"}},
+            {"@type": "duumbi:ResultUnwrap", "@id": "duumbi:main/main/entry/31",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/30"},
+              "duumbi:resultType": "string"},
+            {"@type": "duumbi:PrintString", "@id": "duumbi:main/main/entry/32",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/31"}},
+            {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/33",
               "duumbi:value": 0, "duumbi:resultType": "i64"},
-            {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/28",
-              "duumbi:operand": {"@id": "duumbi:main/main/entry/27"}}
+            {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/34",
+              "duumbi:operand": {"@id": "duumbi:main/main/entry/33"}}
           ]
         }
       ]

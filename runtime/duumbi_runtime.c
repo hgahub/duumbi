@@ -622,6 +622,7 @@ typedef struct DuumbiJson DuumbiJson;
 
 typedef struct {
     char       *key;
+    size_t      key_len;
     DuumbiJson *value;
 } DuumbiJsonObjectEntry;
 
@@ -630,6 +631,7 @@ struct DuumbiJson {
     int            bool_value;
     double         number_value;
     char          *string_value;
+    size_t         string_len;
     DuumbiJson   **array_items;
     uint64_t       array_len;
     uint64_t       array_cap;
@@ -716,7 +718,8 @@ static DuumbiJson *duumbi_json_clone(const DuumbiJson *json) {
     copy->bool_value = json->bool_value;
     copy->number_value = json->number_value;
     if (json->kind == DUUMBI_JSON_STRING) {
-        copy->string_value = duumbi_json_strndup(json->string_value, strlen(json->string_value));
+        copy->string_len = json->string_len;
+        copy->string_value = duumbi_json_strndup(json->string_value, json->string_len);
     } else if (json->kind == DUUMBI_JSON_ARRAY) {
         copy->array_len = json->array_len;
         copy->array_cap = json->array_len;
@@ -734,9 +737,11 @@ static DuumbiJson *duumbi_json_clone(const DuumbiJson *json) {
             copy->object_entries = (DuumbiJsonObjectEntry *)duumbi_alloc(
                 sizeof(DuumbiJsonObjectEntry) * copy->object_len);
             for (uint64_t i = 0; i < copy->object_len; i++) {
-                copy->object_entries[i].key =
-                    duumbi_json_strndup(json->object_entries[i].key,
-                                        strlen(json->object_entries[i].key));
+                copy->object_entries[i].key_len = json->object_entries[i].key_len;
+                copy->object_entries[i].key = duumbi_json_strndup(
+                    json->object_entries[i].key,
+                    json->object_entries[i].key_len
+                );
                 copy->object_entries[i].value =
                     duumbi_json_clone(json->object_entries[i].value);
             }
@@ -776,9 +781,7 @@ static int duumbi_json_buffer_reserve(DuumbiJsonBuffer *buf, size_t extra) {
         new_cap *= 2;
     }
     char *new_data = (char *)realloc(buf->data, new_cap);
-    if (new_data == NULL) {
-        return 0;
-    }
+    if (new_data == NULL) duumbi_panic("out of memory on JSON buffer grow");
     buf->data = new_data;
     buf->cap = new_cap;
     return 1;
@@ -850,7 +853,7 @@ static int duumbi_json_parse_hex4(DuumbiJsonParser *parser, uint32_t *out) {
     return 1;
 }
 
-static char *duumbi_json_parse_string_raw(DuumbiJsonParser *parser) {
+static char *duumbi_json_parse_string_raw(DuumbiJsonParser *parser, size_t *out_len) {
     if (parser->cursor >= parser->end || *parser->cursor != '"') {
         parser->error = "JSON string expected";
         return NULL;
@@ -863,6 +866,7 @@ static char *duumbi_json_parse_string_raw(DuumbiJsonParser *parser) {
         unsigned char ch = (unsigned char)*parser->cursor++;
         if (ch == '"') {
             char *result = duumbi_json_strndup(buf.data, buf.len);
+            if (out_len != NULL) *out_len = buf.len;
             duumbi_dealloc(buf.data);
             return result;
         }
@@ -953,7 +957,12 @@ static int duumbi_json_array_push_item(DuumbiJson *array, DuumbiJson *item) {
     return 1;
 }
 
-static int duumbi_json_object_add(DuumbiJson *object, char *key, DuumbiJson *value) {
+static int duumbi_json_object_add(
+    DuumbiJson *object,
+    char *key,
+    size_t key_len,
+    DuumbiJson *value
+) {
     if (object->object_len == object->object_cap) {
         uint64_t new_cap = object->object_cap == 0 ? 4 : object->object_cap * 2;
         DuumbiJsonObjectEntry *new_entries = (DuumbiJsonObjectEntry *)realloc(
@@ -965,6 +974,7 @@ static int duumbi_json_object_add(DuumbiJson *object, char *key, DuumbiJson *val
         object->object_cap = new_cap;
     }
     object->object_entries[object->object_len].key = key;
+    object->object_entries[object->object_len].key_len = key_len;
     object->object_entries[object->object_len].value = value;
     object->object_len++;
     return 1;
@@ -1021,7 +1031,8 @@ static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser) {
     }
 
     while (parser->cursor < parser->end) {
-        char *key = duumbi_json_parse_string_raw(parser);
+        size_t key_len = 0;
+        char *key = duumbi_json_parse_string_raw(parser, &key_len);
         if (key == NULL) {
             duumbi_json_free(object);
             return NULL;
@@ -1040,7 +1051,7 @@ static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser) {
             duumbi_json_free(object);
             return NULL;
         }
-        if (!duumbi_json_object_add(object, key, value)) {
+        if (!duumbi_json_object_add(object, key, key_len, value)) {
             parser->error = "Out of memory while parsing JSON object";
             duumbi_dealloc(key);
             duumbi_json_free(value);
@@ -1144,10 +1155,12 @@ static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser) {
     if (ch == '{') return duumbi_json_parse_object(parser);
     if (ch == '[') return duumbi_json_parse_array(parser);
     if (ch == '"') {
-        char *s = duumbi_json_parse_string_raw(parser);
+        size_t string_len = 0;
+        char *s = duumbi_json_parse_string_raw(parser, &string_len);
         if (s == NULL) return NULL;
         DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_STRING);
         json->string_value = s;
+        json->string_len = string_len;
         return json;
     }
     if (ch == '-' || (ch >= '0' && ch <= '9')) {
@@ -1173,10 +1186,11 @@ static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser) {
 
 static int duumbi_json_stringify_value(const DuumbiJson *json, DuumbiJsonBuffer *buf);
 
-static int duumbi_json_stringify_string(const char *s, DuumbiJsonBuffer *buf) {
+static int duumbi_json_stringify_string(const char *s, size_t len, DuumbiJsonBuffer *buf) {
     if (!duumbi_json_buffer_char(buf, '"')) return 0;
-    for (const unsigned char *p = (const unsigned char *)s; *p != '\0'; p++) {
-        switch (*p) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        switch (ch) {
             case '"': if (!duumbi_json_buffer_text(buf, "\\\"")) return 0; break;
             case '\\': if (!duumbi_json_buffer_text(buf, "\\\\")) return 0; break;
             case '\b': if (!duumbi_json_buffer_text(buf, "\\b")) return 0; break;
@@ -1185,11 +1199,11 @@ static int duumbi_json_stringify_string(const char *s, DuumbiJsonBuffer *buf) {
             case '\r': if (!duumbi_json_buffer_text(buf, "\\r")) return 0; break;
             case '\t': if (!duumbi_json_buffer_text(buf, "\\t")) return 0; break;
             default:
-                if (*p < 0x20) {
+                if (ch < 0x20) {
                     char esc[7];
-                    snprintf(esc, sizeof(esc), "\\u%04x", *p);
+                    snprintf(esc, sizeof(esc), "\\u%04x", ch);
                     if (!duumbi_json_buffer_text(buf, esc)) return 0;
-                } else if (!duumbi_json_buffer_char(buf, (char)*p)) {
+                } else if (!duumbi_json_buffer_char(buf, (char)ch)) {
                     return 0;
                 }
         }
@@ -1208,7 +1222,7 @@ static int duumbi_json_stringify_value(const DuumbiJson *json, DuumbiJsonBuffer 
             snprintf(number_buf, sizeof(number_buf), "%.15g", json->number_value);
             return duumbi_json_buffer_text(buf, number_buf);
         case DUUMBI_JSON_STRING:
-            return duumbi_json_stringify_string(json->string_value, buf);
+            return duumbi_json_stringify_string(json->string_value, json->string_len, buf);
         case DUUMBI_JSON_ARRAY:
             if (!duumbi_json_buffer_char(buf, '[')) return 0;
             for (uint64_t i = 0; i < json->array_len; i++) {
@@ -1220,7 +1234,11 @@ static int duumbi_json_stringify_value(const DuumbiJson *json, DuumbiJsonBuffer 
             if (!duumbi_json_buffer_char(buf, '{')) return 0;
             for (uint64_t i = 0; i < json->object_len; i++) {
                 if (i > 0 && !duumbi_json_buffer_char(buf, ',')) return 0;
-                if (!duumbi_json_stringify_string(json->object_entries[i].key, buf)) return 0;
+                if (!duumbi_json_stringify_string(
+                    json->object_entries[i].key,
+                    json->object_entries[i].key_len,
+                    buf
+                )) return 0;
                 if (!duumbi_json_buffer_char(buf, ':')) return 0;
                 if (!duumbi_json_stringify_value(json->object_entries[i].value, buf)) return 0;
             }
@@ -1278,7 +1296,7 @@ void *duumbi_json_get_field(void *value, void *key) {
     }
     for (uint64_t i = 0; i < json->object_len; i++) {
         const char *entry_key = json->object_entries[i].key;
-        size_t entry_len = strlen(entry_key);
+        size_t entry_len = json->object_entries[i].key_len;
         if (field->len == entry_len && memcmp(field->data, entry_key, entry_len) == 0) {
             return duumbi_json_ok_ptr(duumbi_json_clone(json->object_entries[i].value));
         }
@@ -1621,9 +1639,13 @@ void *duumbi_tcp_read(void *socket_ptr, int64_t max_bytes, int64_t timeout_ms) {
     if (ready < 0) return duumbi_tcp_err("TCP read failed");
     char *buf = (char *)duumbi_alloc((uint64_t)max_bytes);
     int n = (int)recv(socket_resource->handle, buf, (int)max_bytes, 0);
-    if (n <= 0) {
+    if (n == 0) {
         duumbi_dealloc(buf);
         return duumbi_tcp_err("TCP read failed: peer closed");
+    }
+    if (n < 0) {
+        duumbi_dealloc(buf);
+        return duumbi_tcp_err("TCP read failed: socket error");
     }
     if (!duumbi_tcp_valid_utf8((const unsigned char *)buf, (size_t)n)) {
         duumbi_dealloc(buf);
