@@ -591,7 +591,7 @@ Feature: HTTP client functions return inspectable responses
 
   Scenario: GET returns status, headers, and body from a loopback service
     Given a loopback HTTP service responds to `/status` with status `200`
-    And the response includes header `content-type: application/json`
+    And the response includes a Content-Type header with value `application/json`
     And the response body is `{"ok":true}`
     And a DUUMBI program imports `@duumbi/stdlib-http`
     When the program calls `http_get` with the loopback URL, empty JSON headers,
@@ -599,7 +599,8 @@ Feature: HTTP client functions return inspectable responses
     And the program calls `http_status`, `http_headers`, and `http_body`
     Then `http_get` returns `Ok(http_response)`
     And `http_status` returns `Ok(200)`
-    And `http_headers` returns `Ok(json)` containing the content type
+    And `http_headers` returns `Ok(json)` containing the Content-Type header in
+      the runtime's documented canonical form with value `application/json`
     And `http_body` returns `Ok("{\"ok\":true}")`
 
   Scenario: Non-2xx responses remain inspectable
@@ -617,7 +618,7 @@ Feature: HTTP client functions return inspectable responses
     And the body string is `{"name":"duumbi"}`
     When the program calls `http_post` with a positive timeout
     Then the result is `Ok(http_response)`
-    And the service receives the content-type header
+    And the service receives the Content-Type header
     And the service receives the exact request body
 
   Scenario: Invalid header JSON is a recoverable error
@@ -635,11 +636,12 @@ Feature: HTTP client functions return inspectable responses
 
   Scenario: Redirects are returned as ordinary responses
     Given a loopback HTTP service responds with status `302`
-    And the response includes a `location` header
+    And the response includes a Location header
     When the program calls `http_get`
     Then the result is `Ok(http_response)`
     And `http_status` returns `Ok(302)`
-    And `http_headers` exposes the location header
+    And `http_headers` exposes the Location header in the runtime's documented
+      canonical form
     And the client does not automatically issue a second request
 
   Scenario: Response resources can be released safely
@@ -695,6 +697,7 @@ Feature: SQLite local persistence works through opaque resources
 
   Scenario: File-backed databases stay inside the workspace
     Given a DUUMBI workspace root
+    And the workspace contains a `data` directory
     And a DUUMBI program imports `@duumbi/stdlib-db`
     When the program calls `db_open("data/demo.sqlite")`
     Then the result is `Ok(db_connection)`
