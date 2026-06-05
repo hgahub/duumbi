@@ -375,16 +375,21 @@ fn object_target_triple() -> Triple {
     object_target_triple_for_host(Triple::host())
 }
 
-fn object_target_triple_for_host(mut triple: Triple) -> Triple {
+fn object_target_triple_for_host(triple: Triple) -> Triple {
     #[cfg(target_os = "macos")]
-    if matches!(
-        triple.operating_system,
-        target_lexicon::OperatingSystem::Darwin(_)
-    ) {
-        triple.operating_system =
-            target_lexicon::OperatingSystem::MacOSX(Some(macos_deployment_target(&triple)));
+    {
+        let mut triple = triple;
+        if matches!(
+            triple.operating_system,
+            target_lexicon::OperatingSystem::Darwin(_)
+        ) {
+            triple.operating_system =
+                target_lexicon::OperatingSystem::MacOSX(Some(macos_deployment_target(&triple)));
+        }
+        triple
     }
 
+    #[cfg(not(target_os = "macos"))]
     triple
 }
 
