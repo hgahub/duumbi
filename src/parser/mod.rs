@@ -122,6 +122,9 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         "bool" => Ok(DuumbiType::Bool),
         "void" => Ok(DuumbiType::Void),
         "string" => Ok(DuumbiType::String),
+        "json" => Ok(DuumbiType::Json),
+        "tcp_socket" => Ok(DuumbiType::TcpSocket),
+        "tcp_listener" => Ok(DuumbiType::TcpListener),
         _ if s.starts_with("array<") && s.ends_with('>') => {
             let inner = &s[6..s.len() - 1];
             let elem_type = parse_type_str(inner)?;
@@ -924,6 +927,69 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             ast.operand = Some(operand);
             Ok(ast)
         }
+        // -- JSON ops (DUUMBI-379) --
+        "duumbi:JsonParse" | "duumbi:JsonStringify" | "duumbi:JsonArrayLen" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let op = match at_type {
+                "duumbi:JsonParse" => Op::JsonParse,
+                "duumbi:JsonStringify" => Op::JsonStringify,
+                "duumbi:JsonArrayLen" => Op::JsonArrayLen,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:JsonGetField" | "duumbi:JsonArrayGet" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let op = match at_type {
+                "duumbi:JsonGetField" => Op::JsonGetField,
+                "duumbi:JsonArrayGet" => Op::JsonArrayGet,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            Ok(ast)
+        }
+        // -- TCP ops (DUUMBI-379) --
+        "duumbi:TcpConnect" | "duumbi:TcpListen" | "duumbi:TcpRead" | "duumbi:TcpWrite" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:TcpConnect" => Op::TcpConnect,
+                "duumbi:TcpListen" => Op::TcpListen,
+                "duumbi:TcpRead" => Op::TcpRead,
+                "duumbi:TcpWrite" => Op::TcpWrite,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:TcpAccept" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::TcpAccept, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            Ok(ast)
+        }
+        "duumbi:TcpClose" | "duumbi:TcpListenerClose" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let op = match at_type {
+                "duumbi:TcpClose" => Op::TcpClose,
+                "duumbi:TcpListenerClose" => Op::TcpListenerClose,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
         // -- Match op (Phase 9a-3) --
         "duumbi:Match" => {
             let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
@@ -1584,6 +1650,126 @@ mod tests {
         assert_eq!(
             parse_type_str("&mut struct<Point>").unwrap(),
             DuumbiType::RefMut(Box::new(DuumbiType::Struct("Point".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_type_str_json_tcp_resources() {
+        assert_eq!(parse_type_str("json").unwrap(), DuumbiType::Json);
+        assert_eq!(parse_type_str("tcp_socket").unwrap(), DuumbiType::TcpSocket);
+        assert_eq!(
+            parse_type_str("tcp_listener").unwrap(),
+            DuumbiType::TcpListener
+        );
+        assert_eq!(
+            parse_type_str("result<json,string>").unwrap(),
+            DuumbiType::Result(Box::new(DuumbiType::Json), Box::new(DuumbiType::String))
+        );
+        assert_eq!(
+            parse_type_str("result<tcp_socket,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::TcpSocket),
+                Box::new(DuumbiType::String)
+            )
+        );
+        assert_eq!(
+            parse_type_str("result<tcp_listener,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::TcpListener),
+                Box::new(DuumbiType::String)
+            )
+        );
+    }
+
+    #[test]
+    fn parse_json_tcp_ops() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:JsonParse", "@id": "duumbi:t/main/e/0",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/input"},
+                         "duumbi:resultType": "result<json,string>"},
+                        {"@type": "duumbi:JsonStringify", "@id": "duumbi:t/main/e/1",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/json"},
+                         "duumbi:resultType": "result<string,string>"},
+                        {"@type": "duumbi:JsonGetField", "@id": "duumbi:t/main/e/2",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/json"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/key"},
+                         "duumbi:resultType": "result<json,string>"},
+                        {"@type": "duumbi:JsonArrayLen", "@id": "duumbi:t/main/e/3",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/json"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:JsonArrayGet", "@id": "duumbi:t/main/e/4",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/json"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/index"},
+                         "duumbi:resultType": "result<json,string>"},
+                        {"@type": "duumbi:TcpConnect", "@id": "duumbi:t/main/e/5",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/host"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/port"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<tcp_socket,string>"},
+                        {"@type": "duumbi:TcpListen", "@id": "duumbi:t/main/e/6",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/host"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/port"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<tcp_listener,string>"},
+                        {"@type": "duumbi:TcpAccept", "@id": "duumbi:t/main/e/7",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/listener"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<tcp_socket,string>"},
+                        {"@type": "duumbi:TcpRead", "@id": "duumbi:t/main/e/8",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/socket"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/max"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<string,string>"},
+                        {"@type": "duumbi:TcpWrite", "@id": "duumbi:t/main/e/9",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/socket"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/data"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:TcpClose", "@id": "duumbi:t/main/e/10",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/socket"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:TcpListenerClose", "@id": "duumbi:t/main/e/11",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/listener"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/12",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/13",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/12"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let module = parse_jsonld(json).expect("json/tcp ops should parse");
+        let ops = &module.functions[0].blocks[0].ops;
+        assert!(matches!(ops[0].op, Op::JsonParse));
+        assert!(matches!(ops[1].op, Op::JsonStringify));
+        assert!(matches!(ops[2].op, Op::JsonGetField));
+        assert!(matches!(ops[3].op, Op::JsonArrayLen));
+        assert!(matches!(ops[4].op, Op::JsonArrayGet));
+        assert!(matches!(ops[5].op, Op::TcpConnect));
+        assert!(matches!(ops[6].op, Op::TcpListen));
+        assert!(matches!(ops[7].op, Op::TcpAccept));
+        assert!(matches!(ops[8].op, Op::TcpRead));
+        assert!(matches!(ops[9].op, Op::TcpWrite));
+        assert!(matches!(ops[10].op, Op::TcpClose));
+        assert!(matches!(ops[11].op, Op::TcpListenerClose));
+        assert_eq!(
+            ops[0].operand.as_ref().unwrap().id.0,
+            "duumbi:t/main/e/input"
+        );
+        assert_eq!(ops[2].left.as_ref().unwrap().id.0, "duumbi:t/main/e/key");
+        assert_eq!(
+            ops[5].right.as_ref().unwrap().id.0,
+            "duumbi:t/main/e/timeout"
         );
     }
 

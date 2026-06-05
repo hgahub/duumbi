@@ -23,9 +23,12 @@ pub fn find_cc() -> String {
 /// On macOS, Cranelift object files lack the `LC_BUILD_VERSION` Mach-O load
 /// command, causing `ld` to emit "no platform load command found" warnings.
 /// This is a known Cranelift limitation — the generated binaries work correctly.
-/// We suppress linker warnings with `-w` to avoid confusing users.
+/// On macOS we suppress linker warnings with `-Wl,-w` to avoid confusing users.
+/// On Windows, TCP runtime support requires Winsock linkage.
 fn platform_link_args() -> Vec<&'static str> {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "windows") {
+        vec!["-lm", "-lws2_32"]
+    } else if cfg!(target_os = "macos") {
         vec!["-Wl,-w", "-lm"]
     } else {
         vec!["-lm"]
@@ -211,6 +214,9 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         assert!(!args.contains(&"-Wl,-w"));
+
+        #[cfg(target_os = "windows")]
+        assert!(args.contains(&"-lws2_32"));
     }
 
     #[test]
