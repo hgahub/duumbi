@@ -31,7 +31,7 @@ When this is done:
 - DUUMBI users can test whether a workspace-confined path exists before reading or writing.
 - DUUMBI users can list directory entries in deterministic sorted order.
 - DUUMBI users can join simple path components without gaining a bypass around the workspace path policy.
-- Errors are visible as `Err(string)` values instead of silent return codes or panics for expected I/O failures.
+- Errors from the new result-returning APIs are visible as `Err(string)` values instead of silent return codes or panics for expected I/O failures.
 - Distribution remains clear: `@duumbi/stdlib-io` is updated in the default init/cache path; `@duumbi/stdlib-file` stays registry-add-only until #381 or product review explicitly changes default workspace dependencies.
 
 ## Scope
@@ -128,6 +128,9 @@ Constraints:
 - **Decision:** `path_join` is included in v1 as the minimal accepted path helper.
   **Evidence:** Issue #378 lists `path_join` as the candidate v1 helper. Keeping it minimal gives users a practical way to compose workspace-relative paths while preserving the rule that actual file operations validate final paths independently.
 
+- **Decision:** `path_join` returns DUUMBI-relative paths using `/` separators.
+  **Evidence:** Cross-platform tests and graph fixtures need deterministic strings. Using `/` as the DUUMBI-relative separator avoids platform-dependent fixture output while still allowing implementation code to translate to native paths internally.
+
 - **Decision:** File paths are workspace-confined.
   **Evidence:** Issue #378 requires rejecting absolute paths and rejecting `..` escapes after path normalization/canonicalization, and warns that runtime behavior must not imply unrestricted filesystem access.
 
@@ -150,6 +153,15 @@ Constraints:
 The existing `print_i64`, `print_f64`, `print_bool`, and `print_string` APIs remain exported with their current signatures and visible output behavior.
 
 Existing programs that import and call those print wrappers should compile and run the same way after this work.
+
+The compatibility contract is:
+
+- `print_i64(x)` prints the decimal integer representation followed by one appended newline and returns `0`.
+- `print_f64(x)` prints DUUMBI's existing finite floating-point text representation followed by one appended newline and returns `0`; representative values such as `3.5` should remain stable in compatibility tests.
+- `print_bool(x)` prints `true` or `false` followed by one appended newline and returns `0`.
+- `print_string(s)` prints the string contents followed by one appended newline and returns `0`.
+
+These legacy wrappers are intentionally not changed to `result<_, string>` in v1.
 
 ### New Console Input And Output
 
@@ -261,6 +273,7 @@ On expected failure:
 On success:
 
 - The result contains entry names as strings, not absolute paths.
+- The result excludes pseudo-entries such as `.` and `..`.
 - The result is sorted deterministically.
 - An empty directory returns an empty array.
 
@@ -277,7 +290,7 @@ Recursive listing, globbing, hidden-file filtering rules, metadata, and symlink-
 
 On success:
 
-- The output is a relative path string suitable for display or for passing to file operations.
+- The output is a `/`-separated DUUMBI-relative path string suitable for display or for passing to file operations.
 - Redundant separators and simple `.` segments are normalized.
 
 On expected failure:
@@ -435,7 +448,7 @@ Feature: Workspace-confined text file operations
       Given a graph program calls `path_join("data", "input.txt")`
       And passes the result to `read_file`
       When both calls run
-      Then `path_join` returns `Ok("data/input.txt")` or the platform-neutral equivalent
+      Then `path_join` returns `Ok("data/input.txt")`
       And `read_file` validates that final path against the workspace boundary before reading
 
 ## Tasks
@@ -546,7 +559,6 @@ Non-blocking items for Stage 7 or Stage 8:
 - Should EOF before any stdin bytes be represented only as `Err(string)`, or should DUUMBI later introduce a separate EOF-aware API?
 - Should `write_file_new(path, contents)` be included in v1 as fail-if-exists behavior, or deferred to a follow-up?
 - Should `path_join("", "file.txt")` be accepted as `file.txt`, or should empty path components be rejected consistently?
-- How much of a platform-native path separator should be exposed in `path_join` output versus normalized DUUMBI-relative `/` separators?
 - Should `@duumbi/stdlib-file` become a default dependency before #381, despite the accepted issue's registry-add-only recommendation?
 
 ## Sources
