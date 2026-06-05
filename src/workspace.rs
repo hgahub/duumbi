@@ -217,15 +217,30 @@ fn validate_trace_config(
 /// Runs a compiled workspace binary, capturing stdout and stderr.
 #[must_use = "the captured process output should be inspected"]
 pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<BinaryRunOutput> {
-    run_workspace_binary_with_stdin(workspace_root, args, "")
+    run_workspace_binary_inner(workspace_root, args, BinaryStdin::Inherit)
 }
 
 /// Runs a compiled workspace binary with supplied stdin, capturing stdout and stderr.
+#[allow(dead_code)] // Public lib API used by integration tests; binary target uses inherited stdin.
 #[must_use = "the captured process output should be inspected"]
 pub fn run_workspace_binary_with_stdin(
     workspace_root: &Path,
     args: &[String],
     stdin: &str,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner(workspace_root, args, BinaryStdin::Bytes(stdin))
+}
+
+#[allow(dead_code)] // The binary target only constructs inherited stdin.
+enum BinaryStdin<'a> {
+    Inherit,
+    Bytes(&'a str),
+}
+
+fn run_workspace_binary_inner(
+    workspace_root: &Path,
+    args: &[String],
+    stdin: BinaryStdin<'_>,
 ) -> Result<BinaryRunOutput> {
     let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
@@ -235,23 +250,36 @@ pub fn run_workspace_binary_with_stdin(
         );
     }
 
-    let mut child = std::process::Command::new(&output_path)
+    let mut command = std::process::Command::new(&output_path);
+    command
         .args(args)
         .current_dir(workspace_root)
         .env("DUUMBI_WORKSPACE_ROOT", workspace_root)
-        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    match stdin {
+        BinaryStdin::Inherit => {
+            command.stdin(std::process::Stdio::inherit());
+        }
+        BinaryStdin::Bytes(_) => {
+            command.stdin(std::process::Stdio::piped());
+        }
+    }
+
+    let mut child = command
         .spawn()
         .with_context(|| format!("Failed to execute '{}'", output_path.display()))?;
 
-    if !stdin.is_empty() {
-        let child_stdin = child.stdin.as_mut().context("Failed to open child stdin")?;
-        child_stdin
-            .write_all(stdin.as_bytes())
-            .context("Failed to write child stdin")?;
+    if let BinaryStdin::Bytes(input) = stdin {
+        if !input.is_empty() {
+            let child_stdin = child.stdin.as_mut().context("Failed to open child stdin")?;
+            child_stdin
+                .write_all(input.as_bytes())
+                .context("Failed to write child stdin")?;
+        }
+        drop(child.stdin.take());
     }
-    drop(child.stdin.take());
 
     let output = child
         .wait_with_output()
@@ -286,12 +314,11 @@ fn find_runtime_c() -> Result<PathBuf> {
     Ok(runtime_path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[cfg(unix)]
     #[test]
     fn run_workspace_binary_sets_workspace_root_and_writes_stdin() {
         use std::os::unix::fs::PermissionsExt;

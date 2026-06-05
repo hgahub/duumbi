@@ -22,6 +22,22 @@
 #define DUUMBI_REALPATH(path, resolved) realpath((path), (resolved))
 #endif
 
+#ifndef S_IFMT
+#define S_IFMT _S_IFMT
+#endif
+#ifndef S_IFREG
+#define S_IFREG _S_IFREG
+#endif
+#ifndef S_IFDIR
+#define S_IFDIR _S_IFDIR
+#endif
+#ifndef S_ISREG
+#define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
+#endif
+
 #if defined(_MSC_VER)
 #define DUUMBI_THREAD_LOCAL __declspec(thread)
 #else
@@ -814,6 +830,11 @@ static int duumbi_string_to_cstr(void *ptr, char *out, size_t out_len) {
     if (s == NULL || s->len == 0 || s->len >= out_len) {
         return -1;
     }
+    for (uint64_t i = 0; i < s->len; i++) {
+        if (s->data[i] == '\0') {
+            return -1;
+        }
+    }
     memcpy(out, s->data, (size_t)s->len);
     out[s->len] = '\0';
     return 0;
@@ -881,6 +902,11 @@ static int duumbi_join_workspace_path(const char *normalized, char *out, size_t 
     return 0;
 }
 
+static int duumbi_workspace_root_available(void) {
+    const char *root = getenv(DUUMBI_WORKSPACE_ROOT_ENV);
+    return root != NULL && root[0] != '\0';
+}
+
 static int duumbi_canonical_workspace_root(char *out, size_t out_len) {
     const char *root = getenv(DUUMBI_WORKSPACE_ROOT_ENV);
     if (root == NULL || root[0] == '\0') {
@@ -904,6 +930,35 @@ static int duumbi_path_inside_root(const char *root, const char *path) {
         return 0;
     }
     return path[root_len] == '\0' || path[root_len] == '/' || path[root_len] == '\\';
+}
+
+static int duumbi_nearest_existing_parent_inside_root(const char *joined, const char *root) {
+    char probe[DUUMBI_PATH_BUFFER_LEN];
+    char resolved[DUUMBI_PATH_BUFFER_LEN];
+    size_t joined_len = strlen(joined);
+    if (joined_len == 0 || joined_len >= sizeof(probe)) {
+        return 0;
+    }
+    memcpy(probe, joined, joined_len + 1);
+
+    while (1) {
+        char *slash = strrchr(probe, DUUMBI_PATH_SEP);
+        if (slash == NULL) {
+            return 0;
+        }
+        if (slash == probe) {
+            probe[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+
+        if (DUUMBI_REALPATH(probe, resolved) != NULL) {
+            return duumbi_path_inside_root(root, resolved);
+        }
+        if (slash == probe) {
+            return 0;
+        }
+    }
 }
 
 static int duumbi_resolve_existing_workspace_path(void *path_ptr, char *out, size_t out_len) {
@@ -975,7 +1030,7 @@ void *duumbi_read_line(void) {
     size_t len = 0;
     char *buffer = (char *)malloc(capacity);
     if (buffer == NULL) {
-        return duumbi_err_cstr("out of memory");
+        return duumbi_err_cstr("io_error: out of memory");
     }
 
     int ch;
@@ -985,7 +1040,7 @@ void *duumbi_read_line(void) {
             char *grown = (char *)realloc(buffer, capacity);
             if (grown == NULL) {
                 free(buffer);
-                return duumbi_err_cstr("out of memory");
+                return duumbi_err_cstr("io_error: out of memory");
             }
             buffer = grown;
         }
@@ -997,11 +1052,11 @@ void *duumbi_read_line(void) {
 
     if (ferror(stdin)) {
         free(buffer);
-        return duumbi_err_cstr("failed to read stdin");
+        return duumbi_err_cstr("io_error: failed to read stdin");
     }
     if (len == 0 && ch == EOF) {
         free(buffer);
-        return duumbi_err_cstr("end of input");
+        return duumbi_err_cstr("stdin_eof: end of input");
     }
     if (len > 0 && buffer[len - 1] == '\n') {
         len--;
@@ -1011,7 +1066,7 @@ void *duumbi_read_line(void) {
     }
     if (!duumbi_utf8_valid(buffer, (uint64_t)len)) {
         free(buffer);
-        return duumbi_err_cstr("stdin line is not valid UTF-8");
+        return duumbi_err_cstr("stdin_invalid_utf8: stdin line is not valid UTF-8");
     }
 
     void *result = duumbi_ok_string(buffer, (uint64_t)len);
@@ -1022,59 +1077,69 @@ void *duumbi_read_line(void) {
 void *duumbi_print_ln(void *ptr) {
     DuumbiString *s = (DuumbiString *)ptr;
     if (s == NULL) {
-        return duumbi_err_cstr("print_ln received null string");
+        return duumbi_err_cstr("io_error: print_ln received null string");
     }
     if ((s->len > 0 && fwrite(s->data, 1, (size_t)s->len, stdout) != s->len) ||
         fputc('\n', stdout) == EOF || fflush(stdout) != 0) {
-        return duumbi_err_cstr("failed to write stdout");
+        return duumbi_err_cstr("stdout_write_failed: failed to write stdout");
     }
     return duumbi_ok_i64(0);
 }
 
 void *duumbi_file_read(void *path_ptr, int64_t max_bytes) {
     if (max_bytes < 0) {
-        return duumbi_err_cstr("max_bytes must be non-negative");
+        return duumbi_err_cstr("byte_limit: max_bytes must be non-negative");
+    }
+    if (!duumbi_workspace_root_available()) {
+        return duumbi_err_cstr("workspace_root_unavailable: DUUMBI_WORKSPACE_ROOT is not set");
     }
 
     char path[DUUMBI_PATH_BUFFER_LEN];
     if (duumbi_resolve_existing_workspace_path(path_ptr, path, sizeof(path)) != 0) {
-        return duumbi_err_cstr("path is outside the workspace or does not exist");
+        return duumbi_err_cstr("path_policy: path is outside the workspace or does not exist");
+    }
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return duumbi_err_cstr("io_error: failed to inspect file");
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return duumbi_err_cstr("not_file: path is not a file");
     }
 
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
-        return duumbi_err_cstr("failed to open file");
+        return duumbi_err_cstr("io_error: failed to open file");
     }
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
-        return duumbi_err_cstr("failed to inspect file");
+        return duumbi_err_cstr("io_error: failed to inspect file");
     }
     long size = ftell(file);
     if (size < 0) {
         fclose(file);
-        return duumbi_err_cstr("failed to inspect file");
+        return duumbi_err_cstr("io_error: failed to inspect file");
     }
     if ((int64_t)size > max_bytes) {
         fclose(file);
-        return duumbi_err_cstr("file exceeds max_bytes");
+        return duumbi_err_cstr("byte_limit: file exceeds max_bytes");
     }
     rewind(file);
 
     char *buffer = (char *)malloc((size_t)size + 1);
     if (buffer == NULL) {
         fclose(file);
-        return duumbi_err_cstr("out of memory");
+        return duumbi_err_cstr("io_error: out of memory");
     }
     size_t read = fread(buffer, 1, (size_t)size, file);
     int read_error = ferror(file);
     fclose(file);
     if (read_error || read != (size_t)size) {
         free(buffer);
-        return duumbi_err_cstr("failed to read file");
+        return duumbi_err_cstr("io_error: failed to read file");
     }
     if (!duumbi_utf8_valid(buffer, (uint64_t)size)) {
         free(buffer);
-        return duumbi_err_cstr("file is not valid UTF-8");
+        return duumbi_err_cstr("invalid_utf8: file is not valid UTF-8");
     }
 
     void *result = duumbi_ok_string(buffer, (uint64_t)size);
@@ -1085,22 +1150,28 @@ void *duumbi_file_read(void *path_ptr, int64_t max_bytes) {
 void *duumbi_file_write(void *path_ptr, void *contents_ptr) {
     DuumbiString *contents = (DuumbiString *)contents_ptr;
     if (contents == NULL) {
-        return duumbi_err_cstr("write_file received null contents");
+        return duumbi_err_cstr("io_error: write_file received null contents");
+    }
+    if (!duumbi_utf8_valid(contents->data, contents->len)) {
+        return duumbi_err_cstr("invalid_utf8: write_file contents are not valid UTF-8");
+    }
+    if (!duumbi_workspace_root_available()) {
+        return duumbi_err_cstr("workspace_root_unavailable: DUUMBI_WORKSPACE_ROOT is not set");
     }
 
     char path[DUUMBI_PATH_BUFFER_LEN];
     if (duumbi_resolve_write_workspace_path(path_ptr, path, sizeof(path)) != 0) {
-        return duumbi_err_cstr("path is outside the workspace");
+        return duumbi_err_cstr("path_policy: path is outside the workspace");
     }
 
     FILE *file = fopen(path, "wb");
     if (file == NULL) {
-        return duumbi_err_cstr("failed to open file for writing");
+        return duumbi_err_cstr("io_error: failed to open file for writing");
     }
     size_t written = fwrite(contents->data, 1, (size_t)contents->len, file);
     int close_error = fclose(file);
     if (written != contents->len || close_error != 0) {
-        return duumbi_err_cstr("failed to write file");
+        return duumbi_err_cstr("io_error: failed to write file");
     }
     return duumbi_ok_i64(0);
 }
@@ -1112,17 +1183,23 @@ void *duumbi_file_exists(void *path_ptr) {
     char root[DUUMBI_PATH_BUFFER_LEN];
     char resolved[DUUMBI_PATH_BUFFER_LEN];
 
+    if (!duumbi_workspace_root_available()) {
+        return duumbi_err_cstr("workspace_root_unavailable: DUUMBI_WORKSPACE_ROOT is not set");
+    }
     if (duumbi_string_to_cstr(path_ptr, raw, sizeof(raw)) != 0 ||
         duumbi_normalize_relative_path(raw, normalized, sizeof(normalized)) != 0 ||
         duumbi_join_workspace_path(normalized, joined, sizeof(joined)) != 0 ||
         duumbi_canonical_workspace_root(root, sizeof(root)) != 0) {
-        return duumbi_err_cstr("path is outside the workspace");
+        return duumbi_err_cstr("path_policy: path is outside the workspace");
     }
     if (DUUMBI_REALPATH(joined, resolved) == NULL) {
+        if (!duumbi_nearest_existing_parent_inside_root(joined, root)) {
+            return duumbi_err_cstr("path_policy: path is outside the workspace");
+        }
         return duumbi_ok_bool(0);
     }
     if (!duumbi_path_inside_root(root, resolved)) {
-        return duumbi_err_cstr("path is outside the workspace");
+        return duumbi_err_cstr("path_policy: path is outside the workspace");
     }
     return duumbi_ok_bool(1);
 }
@@ -1169,16 +1246,27 @@ static void duumbi_free_dir_names(char **names, size_t count) {
 }
 
 void *duumbi_list_dir(void *path_ptr) {
+    if (!duumbi_workspace_root_available()) {
+        return duumbi_err_cstr("workspace_root_unavailable: DUUMBI_WORKSPACE_ROOT is not set");
+    }
+
     char path[DUUMBI_PATH_BUFFER_LEN];
     if (duumbi_resolve_existing_workspace_path(path_ptr, path, sizeof(path)) != 0) {
-        return duumbi_err_cstr("path is outside the workspace or does not exist");
+        return duumbi_err_cstr("path_policy: path is outside the workspace or does not exist");
+    }
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return duumbi_err_cstr("io_error: failed to inspect directory");
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return duumbi_err_cstr("not_directory: path is not a directory");
     }
 
     size_t count = 0;
     size_t capacity = 8;
     char **names = (char **)calloc(capacity, sizeof(char *));
     if (names == NULL) {
-        return duumbi_err_cstr("out of memory");
+        return duumbi_err_cstr("io_error: out of memory");
     }
 
 #if defined(_WIN32)
@@ -1186,20 +1274,20 @@ void *duumbi_list_dir(void *path_ptr) {
     int written = snprintf(pattern, sizeof(pattern), "%s\\*", path);
     if (written < 0 || (size_t)written >= sizeof(pattern)) {
         free(names);
-        return duumbi_err_cstr("directory path is too long");
+        return duumbi_err_cstr("path_policy: directory path is too long");
     }
 
     WIN32_FIND_DATAA data;
     HANDLE handle = FindFirstFileA(pattern, &data);
     if (handle == INVALID_HANDLE_VALUE) {
         free(names);
-        return duumbi_err_cstr("failed to open directory");
+        return duumbi_err_cstr("io_error: failed to open directory");
     }
     do {
         if (duumbi_collect_dir_name(&names, &count, &capacity, data.cFileName) != 0) {
             FindClose(handle);
             duumbi_free_dir_names(names, count);
-            return duumbi_err_cstr("failed to read directory entry");
+            return duumbi_err_cstr("invalid_utf8: failed to read directory entry");
         }
     } while (FindNextFileA(handle, &data) != 0);
     FindClose(handle);
@@ -1207,7 +1295,7 @@ void *duumbi_list_dir(void *path_ptr) {
     DIR *dir = opendir(path);
     if (dir == NULL) {
         free(names);
-        return duumbi_err_cstr("failed to open directory");
+        return duumbi_err_cstr("io_error: failed to open directory");
     }
 
     struct dirent *entry;
@@ -1215,7 +1303,7 @@ void *duumbi_list_dir(void *path_ptr) {
         if (duumbi_collect_dir_name(&names, &count, &capacity, entry->d_name) != 0) {
             closedir(dir);
             duumbi_free_dir_names(names, count);
-            return duumbi_err_cstr("failed to read directory entry");
+            return duumbi_err_cstr("invalid_utf8: failed to read directory entry");
         }
     }
     closedir(dir);
@@ -1239,12 +1327,12 @@ void *duumbi_path_join(void *left_ptr, void *right_ptr) {
 
     if (duumbi_string_to_cstr(left_ptr, left, sizeof(left)) != 0 ||
         duumbi_string_to_cstr(right_ptr, right, sizeof(right)) != 0) {
-        return duumbi_err_cstr("path_join components must be non-empty");
+        return duumbi_err_cstr("path_policy: path_join components must be non-empty");
     }
     int written = snprintf(joined, sizeof(joined), "%s/%s", left, right);
     if (written < 0 || (size_t)written >= sizeof(joined) ||
         duumbi_normalize_relative_path(joined, normalized, sizeof(normalized)) != 0) {
-        return duumbi_err_cstr("path_join produced an invalid path");
+        return duumbi_err_cstr("path_policy: path_join produced an invalid path");
     }
     return duumbi_ok_string(normalized, (uint64_t)strlen(normalized));
 }
