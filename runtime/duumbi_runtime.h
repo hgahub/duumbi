@@ -71,4 +71,40 @@ int64_t  duumbi_struct_field_get(void *s, uint64_t offset);
 void     duumbi_struct_field_set(void *s, uint64_t offset, int64_t value);
 void     duumbi_struct_free(void *s);
 
+/* ── Result / Option ──────────────────────────────────────────────── */
+
+void    *duumbi_result_new_ok(int64_t payload);
+void    *duumbi_result_new_err(int64_t payload);
+int8_t   duumbi_result_is_ok(void *ptr);
+int64_t  duumbi_result_unwrap(void *ptr);
+int64_t  duumbi_result_unwrap_err(void *ptr);
+void     duumbi_result_free(void *ptr);
+
+void    *duumbi_option_new_some(int64_t payload);
+void    *duumbi_option_new_none(void);
+int8_t   duumbi_option_is_some(void *ptr);
+int64_t  duumbi_option_unwrap(void *ptr);
+void     duumbi_option_free(void *ptr);
+
+/* ── JSON ─────────────────────────────────────────────────────────── */
+
+void    *duumbi_json_parse(void *input);
+void    *duumbi_json_stringify(void *value);
+void    *duumbi_json_get_field(void *value, void *key);
+void    *duumbi_json_array_len(void *value);
+void    *duumbi_json_array_get(void *value, int64_t index);
+void     duumbi_json_free(void *value);
+
+/* ── TCP ──────────────────────────────────────────────────────────── */
+
+void    *duumbi_tcp_connect(void *host, int64_t port, int64_t timeout_ms);
+void    *duumbi_tcp_listen(void *host, int64_t port, int64_t timeout_ms);
+void    *duumbi_tcp_accept(void *listener, int64_t timeout_ms);
+void    *duumbi_tcp_read(void *socket, int64_t max_bytes, int64_t timeout_ms);
+void    *duumbi_tcp_write(void *socket, void *data, int64_t timeout_ms);
+void    *duumbi_tcp_close(void *socket);
+void    *duumbi_tcp_listener_close(void *listener);
+void     duumbi_tcp_socket_free(void *socket);
+void     duumbi_tcp_listener_free(void *listener);
+
 #endif /* DUUMBI_RUNTIME_H */

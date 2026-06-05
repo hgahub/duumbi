@@ -85,6 +85,26 @@ struct RuntimeFuncs {
     string_to_upper: FuncId,
     string_to_lower: FuncId,
     string_replace: FuncId,
+
+    // JSON functions (DUUMBI-379)
+    json_parse: FuncId,
+    json_stringify: FuncId,
+    json_get_field: FuncId,
+    json_array_len: FuncId,
+    json_array_get: FuncId,
+    json_free: FuncId,
+
+    // TCP functions (DUUMBI-379)
+    tcp_connect: FuncId,
+    tcp_listen: FuncId,
+    tcp_accept: FuncId,
+    tcp_read: FuncId,
+    tcp_write: FuncId,
+    tcp_close: FuncId,
+    tcp_listener_close: FuncId,
+    tcp_socket_free: FuncId,
+    tcp_listener_free: FuncId,
+
     trace: Option<RuntimeTraceFuncs>,
 }
 
@@ -284,6 +304,41 @@ fn declare_all_runtime_fns(
             &[i64t, i64t, i64t],
             &[i64t],
         )?,
+        json_parse: declare_runtime_fn(module, "duumbi_json_parse", &[i64t], &[i64t])?,
+        json_stringify: declare_runtime_fn(module, "duumbi_json_stringify", &[i64t], &[i64t])?,
+        json_get_field: declare_runtime_fn(
+            module,
+            "duumbi_json_get_field",
+            &[i64t, i64t],
+            &[i64t],
+        )?,
+        json_array_len: declare_runtime_fn(module, "duumbi_json_array_len", &[i64t], &[i64t])?,
+        json_array_get: declare_runtime_fn(
+            module,
+            "duumbi_json_array_get",
+            &[i64t, i64t],
+            &[i64t],
+        )?,
+        json_free: declare_runtime_fn(module, "duumbi_json_free", &[i64t], &[])?,
+        tcp_connect: declare_runtime_fn(
+            module,
+            "duumbi_tcp_connect",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        tcp_listen: declare_runtime_fn(module, "duumbi_tcp_listen", &[i64t, i64t, i64t], &[i64t])?,
+        tcp_accept: declare_runtime_fn(module, "duumbi_tcp_accept", &[i64t, i64t], &[i64t])?,
+        tcp_read: declare_runtime_fn(module, "duumbi_tcp_read", &[i64t, i64t, i64t], &[i64t])?,
+        tcp_write: declare_runtime_fn(module, "duumbi_tcp_write", &[i64t, i64t, i64t], &[i64t])?,
+        tcp_close: declare_runtime_fn(module, "duumbi_tcp_close", &[i64t], &[i64t])?,
+        tcp_listener_close: declare_runtime_fn(
+            module,
+            "duumbi_tcp_listener_close",
+            &[i64t],
+            &[i64t],
+        )?,
+        tcp_socket_free: declare_runtime_fn(module, "duumbi_tcp_socket_free", &[i64t], &[])?,
+        tcp_listener_free: declare_runtime_fn(module, "duumbi_tcp_listener_free", &[i64t], &[])?,
         trace,
     })
 }
@@ -300,7 +355,12 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         DuumbiType::Bool => types::I8,
         DuumbiType::Void => types::I64, // should not be used for values
         // Heap types are pointer-sized (opaque pointers to C runtime memory)
-        DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => types::I64,
+        DuumbiType::String
+        | DuumbiType::Json
+        | DuumbiType::TcpSocket
+        | DuumbiType::TcpListener
+        | DuumbiType::Array(_)
+        | DuumbiType::Struct(_) => types::I64,
         // References are pointer-sized (Phase 9a-2)
         DuumbiType::Ref(_) | DuumbiType::RefMut(_) => types::I64,
         // Result/Option are pointer-sized tagged unions (Phase 9a-3)
@@ -802,6 +862,24 @@ fn compile_function(
     let string_to_lower_ref =
         obj_module.declare_func_in_func(runtime.string_to_lower, builder.func);
     let string_replace_ref = obj_module.declare_func_in_func(runtime.string_replace, builder.func);
+    let json_parse_ref = obj_module.declare_func_in_func(runtime.json_parse, builder.func);
+    let json_stringify_ref = obj_module.declare_func_in_func(runtime.json_stringify, builder.func);
+    let json_get_field_ref = obj_module.declare_func_in_func(runtime.json_get_field, builder.func);
+    let json_array_len_ref = obj_module.declare_func_in_func(runtime.json_array_len, builder.func);
+    let json_array_get_ref = obj_module.declare_func_in_func(runtime.json_array_get, builder.func);
+    let json_free_ref = obj_module.declare_func_in_func(runtime.json_free, builder.func);
+    let tcp_connect_ref = obj_module.declare_func_in_func(runtime.tcp_connect, builder.func);
+    let tcp_listen_ref = obj_module.declare_func_in_func(runtime.tcp_listen, builder.func);
+    let tcp_accept_ref = obj_module.declare_func_in_func(runtime.tcp_accept, builder.func);
+    let tcp_read_ref = obj_module.declare_func_in_func(runtime.tcp_read, builder.func);
+    let tcp_write_ref = obj_module.declare_func_in_func(runtime.tcp_write, builder.func);
+    let tcp_close_ref = obj_module.declare_func_in_func(runtime.tcp_close, builder.func);
+    let tcp_listener_close_ref =
+        obj_module.declare_func_in_func(runtime.tcp_listener_close, builder.func);
+    let tcp_socket_free_ref =
+        obj_module.declare_func_in_func(runtime.tcp_socket_free, builder.func);
+    let tcp_listener_free_ref =
+        obj_module.declare_func_in_func(runtime.tcp_listener_free, builder.func);
     let trace_refs = runtime.trace.as_ref().map(|trace| RuntimeTraceRefs {
         init: obj_module.declare_func_in_func(trace.init, builder.func),
         function_enter: obj_module.declare_func_in_func(trace.function_enter, builder.func),
@@ -1058,6 +1136,15 @@ fn compile_function(
                         match ty {
                             DuumbiType::String => {
                                 builder.ins().call(string_free_ref, &[*val]);
+                            }
+                            DuumbiType::Json => {
+                                builder.ins().call(json_free_ref, &[*val]);
+                            }
+                            DuumbiType::TcpSocket => {
+                                builder.ins().call(tcp_socket_free_ref, &[*val]);
+                            }
+                            DuumbiType::TcpListener => {
+                                builder.ins().call(tcp_listener_free_ref, &[*val]);
                             }
                             DuumbiType::Array(_) => {
                                 builder.ins().call(array_free_ref, &[*val]);
@@ -1425,6 +1512,15 @@ fn compile_function(
                         Some(DuumbiType::String) => {
                             builder.ins().call(string_free_ref, &[operand_val]);
                         }
+                        Some(DuumbiType::Json) => {
+                            builder.ins().call(json_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::TcpSocket) => {
+                            builder.ins().call(tcp_socket_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::TcpListener) => {
+                            builder.ins().call(tcp_listener_free_ref, &[operand_val]);
+                        }
                         Some(DuumbiType::Array(_)) => {
                             builder.ins().call(array_free_ref, &[operand_val]);
                         }
@@ -1636,6 +1732,104 @@ fn compile_function(
                 Op::ShiftRight => {
                     let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
                     let result = builder.ins().sshr(left_val, right_val);
+                    value_map.insert(node.id.clone(), result);
+                }
+
+                Op::JsonParse => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(json_parse_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::JsonStringify => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(json_stringify_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::JsonGetField => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let key_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(json_get_field_ref, &[operand_val, key_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::JsonArrayLen => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(json_array_len_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::JsonArrayGet => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let index_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(json_array_get_ref, &[operand_val, index_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpConnect => {
+                    let host_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let port_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(tcp_connect_ref, &[host_val, port_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpListen => {
+                    let host_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let port_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(tcp_listen_ref, &[host_val, port_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpAccept => {
+                    let listener_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(tcp_accept_ref, &[listener_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpRead => {
+                    let socket_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let max_bytes_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(tcp_read_ref, &[socket_val, max_bytes_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpWrite => {
+                    let socket_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let data_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(tcp_write_ref, &[socket_val, data_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpClose => {
+                    let socket_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(tcp_close_ref, &[socket_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::TcpListenerClose => {
+                    let listener_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(tcp_listener_close_ref, &[listener_val]);
+                    let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
             }
@@ -1976,12 +2170,47 @@ fn type_size(ty: &DuumbiType) -> i64 {
         DuumbiType::Bool => 1,
         DuumbiType::Void => 0,
         // Heap types are pointer-sized
-        DuumbiType::String | DuumbiType::Array(_) | DuumbiType::Struct(_) => 8,
+        DuumbiType::String
+        | DuumbiType::Json
+        | DuumbiType::TcpSocket
+        | DuumbiType::TcpListener
+        | DuumbiType::Array(_)
+        | DuumbiType::Struct(_) => 8,
         // References are pointer-sized (Phase 9a-2)
         DuumbiType::Ref(_) | DuumbiType::RefMut(_) => 8,
         // Result/Option are pointer-sized tagged unions (Phase 9a-3)
         DuumbiType::Result(_, _) | DuumbiType::Option(_) => 8,
     }
+}
+
+/// Resolves the left operand SSA value for a node.
+fn get_left_operand(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    value_map: &HashMap<NodeId, Value>,
+) -> Result<Value, CompileError> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Left) {
+            let source_node = &graph.graph[edge_ref.source()];
+            return value_map.get(&source_node.id).copied().ok_or_else(|| {
+                CompileError::Cranelift {
+                    message: format!(
+                        "SSA value not found for left operand '{}' of node '{}'",
+                        source_node.id, graph.graph[node_idx].id
+                    ),
+                }
+            });
+        }
+    }
+    Err(CompileError::Cranelift {
+        message: format!(
+            "Missing left operand for node '{}'",
+            graph.graph[node_idx].id
+        ),
+    })
 }
 
 /// Resolves the right operand SSA value for a node.

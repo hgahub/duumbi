@@ -1,0 +1,152 @@
+{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:net",
+  "duumbi:name": "net",
+  "duumbi:exports": [
+    "tcp_connect",
+    "tcp_listen",
+    "tcp_accept",
+    "tcp_read",
+    "tcp_write",
+    "tcp_close",
+    "tcp_listener_close"
+  ],
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_connect",
+      "duumbi:name": "tcp_connect",
+      "duumbi:returnType": "result<tcp_socket,string>",
+      "duumbi:params": [
+        {"duumbi:name": "host", "duumbi:paramType": "string"},
+        {"duumbi:name": "port", "duumbi:paramType": "i64"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_connect/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_connect/entry/0", "duumbi:variable": "host", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_connect/entry/1", "duumbi:variable": "port", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_connect/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:TcpConnect", "@id": "duumbi:net/tcp_connect/entry/3",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_connect/entry/0"},
+          "duumbi:left": {"@id": "duumbi:net/tcp_connect/entry/1"},
+          "duumbi:right": {"@id": "duumbi:net/tcp_connect/entry/2"},
+          "duumbi:resultType": "result<tcp_socket,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_connect/entry/4", "duumbi:operand": {"@id": "duumbi:net/tcp_connect/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_listen",
+      "duumbi:name": "tcp_listen",
+      "duumbi:returnType": "result<tcp_listener,string>",
+      "duumbi:params": [
+        {"duumbi:name": "host", "duumbi:paramType": "string"},
+        {"duumbi:name": "port", "duumbi:paramType": "i64"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_listen/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_listen/entry/0", "duumbi:variable": "host", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_listen/entry/1", "duumbi:variable": "port", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_listen/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:TcpListen", "@id": "duumbi:net/tcp_listen/entry/3",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_listen/entry/0"},
+          "duumbi:left": {"@id": "duumbi:net/tcp_listen/entry/1"},
+          "duumbi:right": {"@id": "duumbi:net/tcp_listen/entry/2"},
+          "duumbi:resultType": "result<tcp_listener,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_listen/entry/4", "duumbi:operand": {"@id": "duumbi:net/tcp_listen/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_accept",
+      "duumbi:name": "tcp_accept",
+      "duumbi:returnType": "result<tcp_socket,string>",
+      "duumbi:params": [
+        {"duumbi:name": "listener", "duumbi:paramType": "tcp_listener"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_accept/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_accept/entry/0", "duumbi:variable": "listener", "duumbi:resultType": "tcp_listener"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_accept/entry/1", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:TcpAccept", "@id": "duumbi:net/tcp_accept/entry/2",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_accept/entry/0"},
+          "duumbi:left": {"@id": "duumbi:net/tcp_accept/entry/1"},
+          "duumbi:resultType": "result<tcp_socket,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_accept/entry/3", "duumbi:operand": {"@id": "duumbi:net/tcp_accept/entry/2"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_read",
+      "duumbi:name": "tcp_read",
+      "duumbi:returnType": "result<string,string>",
+      "duumbi:params": [
+        {"duumbi:name": "socket", "duumbi:paramType": "tcp_socket"},
+        {"duumbi:name": "max_bytes", "duumbi:paramType": "i64"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_read/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_read/entry/0", "duumbi:variable": "socket", "duumbi:resultType": "tcp_socket"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_read/entry/1", "duumbi:variable": "max_bytes", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_read/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:TcpRead", "@id": "duumbi:net/tcp_read/entry/3",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_read/entry/0"},
+          "duumbi:left": {"@id": "duumbi:net/tcp_read/entry/1"},
+          "duumbi:right": {"@id": "duumbi:net/tcp_read/entry/2"},
+          "duumbi:resultType": "result<string,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_read/entry/4", "duumbi:operand": {"@id": "duumbi:net/tcp_read/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_write",
+      "duumbi:name": "tcp_write",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [
+        {"duumbi:name": "socket", "duumbi:paramType": "tcp_socket"},
+        {"duumbi:name": "data", "duumbi:paramType": "string"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_write/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_write/entry/0", "duumbi:variable": "socket", "duumbi:resultType": "tcp_socket"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_write/entry/1", "duumbi:variable": "data", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_write/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:TcpWrite", "@id": "duumbi:net/tcp_write/entry/3",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_write/entry/0"},
+          "duumbi:left": {"@id": "duumbi:net/tcp_write/entry/1"},
+          "duumbi:right": {"@id": "duumbi:net/tcp_write/entry/2"},
+          "duumbi:resultType": "result<i64,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_write/entry/4", "duumbi:operand": {"@id": "duumbi:net/tcp_write/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_close",
+      "duumbi:name": "tcp_close",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [{"duumbi:name": "socket", "duumbi:paramType": "tcp_socket"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_close/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_close/entry/0", "duumbi:variable": "socket", "duumbi:resultType": "tcp_socket"},
+        {"@type": "duumbi:TcpClose", "@id": "duumbi:net/tcp_close/entry/1",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_close/entry/0"},
+          "duumbi:resultType": "result<i64,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_close/entry/2", "duumbi:operand": {"@id": "duumbi:net/tcp_close/entry/1"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:net/tcp_listener_close",
+      "duumbi:name": "tcp_listener_close",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [{"duumbi:name": "listener", "duumbi:paramType": "tcp_listener"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:net/tcp_listener_close/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:net/tcp_listener_close/entry/0", "duumbi:variable": "listener", "duumbi:resultType": "tcp_listener"},
+        {"@type": "duumbi:TcpListenerClose", "@id": "duumbi:net/tcp_listener_close/entry/1",
+          "duumbi:operand": {"@id": "duumbi:net/tcp_listener_close/entry/0"},
+          "duumbi:resultType": "result<i64,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:net/tcp_listener_close/entry/2", "duumbi:operand": {"@id": "duumbi:net/tcp_listener_close/entry/1"}}
+      ]}]
+    }
+  ]
+}

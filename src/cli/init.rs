@@ -23,6 +23,12 @@ const STDLIB_LANG: &str = include_str!("../../stdlib/lang.jsonld");
 /// Embedded `stdlib/string.jsonld` — string utilities (length, contains, find, trim, to_upper, to_lower, replace).
 const STDLIB_STRING: &str = include_str!("../../stdlib/string.jsonld");
 
+/// Embedded `stdlib/json.jsonld` — JSON parse, stringify, object, and array helpers.
+const STDLIB_JSON: &str = include_str!("../../stdlib/json.jsonld");
+
+/// Embedded `stdlib/net.jsonld` — bounded TCP socket and listener helpers.
+const STDLIB_NET: &str = include_str!("../../stdlib/net.jsonld");
+
 /// Stdlib module versions pinned at init time.
 const STDLIB_VERSION: &str = "1.0.0";
 
@@ -353,6 +359,56 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
     )
     .context("Failed to write stdlib string module")?;
 
+    // Write stdlib json module to cache. It remains opt-in and is not added to
+    // default dependencies by this issue.
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-json",
+        STDLIB_VERSION,
+        "json.jsonld",
+        STDLIB_JSON,
+        ModuleManifest::new(
+            "@duumbi/stdlib-json",
+            STDLIB_VERSION,
+            "JSON utility functions (parse, stringify, get_field, array_len, array_get)",
+            vec![
+                "parse".to_string(),
+                "stringify".to_string(),
+                "get_field".to_string(),
+                "array_len".to_string(),
+                "array_get".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib json module")?;
+
+    // Write stdlib net module to cache. It remains opt-in and is not added to
+    // default dependencies by this issue.
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-net",
+        STDLIB_VERSION,
+        "net.jsonld",
+        STDLIB_NET,
+        ModuleManifest::new(
+            "@duumbi/stdlib-net",
+            STDLIB_VERSION,
+            "TCP utility functions (connect, listen, accept, read, write, close)",
+            vec![
+                "tcp_connect".to_string(),
+                "tcp_listen".to_string(),
+                "tcp_accept".to_string(),
+                "tcp_read".to_string(),
+                "tcp_write".to_string(),
+                "tcp_close".to_string(),
+                "tcp_listener_close".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib net module")?;
+
     // Write config (includes stdlib deps by default).
     //
     // The `[workspace]` block is built via formatting (not chained string
@@ -476,6 +532,26 @@ mod tests {
                 .exists(),
             "stdlib-string manifest must exist"
         );
+        assert!(
+            d.join("cache/@duumbi/stdlib-json@1.0.0/graph/json.jsonld")
+                .exists(),
+            "stdlib-json jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-json@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-json manifest must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-net@1.0.0/graph/net.jsonld")
+                .exists(),
+            "stdlib-net jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-net@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-net manifest must exist"
+        );
     }
 
     #[test]
@@ -504,6 +580,49 @@ mod tests {
         assert_eq!(math_manifest.module.name, "@duumbi/stdlib-math");
         assert_eq!(math_manifest.module.version, "1.0.0");
         assert!(math_manifest.exports.functions.contains(&"abs".to_string()));
+
+        let json_manifest = crate::manifest::parse_manifest(
+            &d.join("cache/@duumbi/stdlib-json@1.0.0/manifest.toml"),
+        )
+        .expect("json manifest must parse");
+        assert_eq!(json_manifest.module.name, "@duumbi/stdlib-json");
+        assert_eq!(
+            json_manifest.exports.functions,
+            vec!["parse", "stringify", "get_field", "array_len", "array_get"]
+        );
+
+        let net_manifest = crate::manifest::parse_manifest(
+            &d.join("cache/@duumbi/stdlib-net@1.0.0/manifest.toml"),
+        )
+        .expect("net manifest must parse");
+        assert_eq!(net_manifest.module.name, "@duumbi/stdlib-net");
+        assert_eq!(
+            net_manifest.exports.functions,
+            vec![
+                "tcp_connect",
+                "tcp_listen",
+                "tcp_accept",
+                "tcp_read",
+                "tcp_write",
+                "tcp_close",
+                "tcp_listener_close"
+            ]
+        );
+    }
+
+    #[test]
+    fn init_keeps_json_net_out_of_default_dependencies() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let config = std::fs::read_to_string(tmp.path().join(".duumbi/config.toml"))
+            .expect("config.toml should be readable");
+        assert!(config.contains("\"@duumbi/stdlib-math\" = \"1.0.0\""));
+        assert!(config.contains("\"@duumbi/stdlib-io\" = \"1.0.0\""));
+        assert!(config.contains("\"@duumbi/stdlib-lang\" = \"1.0.0\""));
+        assert!(config.contains("\"@duumbi/stdlib-string\" = \"1.0.0\""));
+        assert!(!config.contains("@duumbi/stdlib-json"));
+        assert!(!config.contains("@duumbi/stdlib-net"));
     }
 
     #[test]

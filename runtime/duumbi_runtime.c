@@ -4,14 +4,22 @@
 #include <string.h>
 #include <math.h>
 #include <errno.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <direct.h>
 #define DUUMBI_MKDIR(path) _mkdir(path)
 #define DUUMBI_PATH_SEP '\\'
 #else
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <netdb.h>
+#include <sys/socket.h>
 #define DUUMBI_MKDIR(path) mkdir(path, 0777)
 #define DUUMBI_PATH_SEP '/'
 #endif
@@ -597,6 +605,1069 @@ int64_t duumbi_result_unwrap_err(void *ptr) {
 
 void duumbi_result_free(void *ptr) {
     duumbi_dealloc(ptr);
+}
+
+/* ── JSON (owned recursive runtime tree) ──────────────────────────── */
+
+typedef enum {
+    DUUMBI_JSON_NULL,
+    DUUMBI_JSON_BOOL,
+    DUUMBI_JSON_NUMBER,
+    DUUMBI_JSON_STRING,
+    DUUMBI_JSON_ARRAY,
+    DUUMBI_JSON_OBJECT
+} DuumbiJsonKind;
+
+typedef struct DuumbiJson DuumbiJson;
+
+typedef struct {
+    char       *key;
+    DuumbiJson *value;
+} DuumbiJsonObjectEntry;
+
+struct DuumbiJson {
+    DuumbiJsonKind kind;
+    int            bool_value;
+    double         number_value;
+    char          *string_value;
+    DuumbiJson   **array_items;
+    uint64_t       array_len;
+    uint64_t       array_cap;
+    DuumbiJsonObjectEntry *object_entries;
+    uint64_t       object_len;
+    uint64_t       object_cap;
+};
+
+typedef struct {
+    const char *cursor;
+    const char *end;
+    const char *error;
+} DuumbiJsonParser;
+
+typedef struct {
+    char   *data;
+    size_t  len;
+    size_t  cap;
+} DuumbiJsonBuffer;
+
+static void *duumbi_json_err(const char *message) {
+    void *err = duumbi_string_new(message, (uint64_t)strlen(message));
+    return duumbi_result_new_err((int64_t)(intptr_t)err);
+}
+
+static void *duumbi_json_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static void *duumbi_json_ok_i64(int64_t value) {
+    return duumbi_result_new_ok(value);
+}
+
+static DuumbiJson *duumbi_json_new(DuumbiJsonKind kind) {
+    DuumbiJson *json = (DuumbiJson *)duumbi_alloc(sizeof(DuumbiJson));
+    memset(json, 0, sizeof(DuumbiJson));
+    json->kind = kind;
+    return json;
+}
+
+static char *duumbi_json_strndup(const char *data, size_t len) {
+    char *out = (char *)duumbi_alloc((uint64_t)len + 1);
+    memcpy(out, data, len);
+    out[len] = '\0';
+    return out;
+}
+
+void duumbi_json_free(void *value) {
+    DuumbiJson *json = (DuumbiJson *)value;
+    if (json == NULL) {
+        return;
+    }
+
+    switch (json->kind) {
+        case DUUMBI_JSON_STRING:
+            duumbi_dealloc(json->string_value);
+            break;
+        case DUUMBI_JSON_ARRAY:
+            for (uint64_t i = 0; i < json->array_len; i++) {
+                duumbi_json_free(json->array_items[i]);
+            }
+            duumbi_dealloc(json->array_items);
+            break;
+        case DUUMBI_JSON_OBJECT:
+            for (uint64_t i = 0; i < json->object_len; i++) {
+                duumbi_dealloc(json->object_entries[i].key);
+                duumbi_json_free(json->object_entries[i].value);
+            }
+            duumbi_dealloc(json->object_entries);
+            break;
+        default:
+            break;
+    }
+
+    duumbi_dealloc(json);
+}
+
+static DuumbiJson *duumbi_json_clone(const DuumbiJson *json) {
+    if (json == NULL) {
+        return NULL;
+    }
+
+    DuumbiJson *copy = duumbi_json_new(json->kind);
+    copy->bool_value = json->bool_value;
+    copy->number_value = json->number_value;
+    if (json->kind == DUUMBI_JSON_STRING) {
+        copy->string_value = duumbi_json_strndup(json->string_value, strlen(json->string_value));
+    } else if (json->kind == DUUMBI_JSON_ARRAY) {
+        copy->array_len = json->array_len;
+        copy->array_cap = json->array_len;
+        if (copy->array_len > 0) {
+            copy->array_items = (DuumbiJson **)duumbi_alloc(
+                sizeof(DuumbiJson *) * copy->array_len);
+            for (uint64_t i = 0; i < copy->array_len; i++) {
+                copy->array_items[i] = duumbi_json_clone(json->array_items[i]);
+            }
+        }
+    } else if (json->kind == DUUMBI_JSON_OBJECT) {
+        copy->object_len = json->object_len;
+        copy->object_cap = json->object_len;
+        if (copy->object_len > 0) {
+            copy->object_entries = (DuumbiJsonObjectEntry *)duumbi_alloc(
+                sizeof(DuumbiJsonObjectEntry) * copy->object_len);
+            for (uint64_t i = 0; i < copy->object_len; i++) {
+                copy->object_entries[i].key =
+                    duumbi_json_strndup(json->object_entries[i].key,
+                                        strlen(json->object_entries[i].key));
+                copy->object_entries[i].value =
+                    duumbi_json_clone(json->object_entries[i].value);
+            }
+        }
+    }
+    return copy;
+}
+
+static void duumbi_json_skip_ws(DuumbiJsonParser *parser) {
+    while (parser->cursor < parser->end &&
+           (*parser->cursor == ' ' || *parser->cursor == '\n' ||
+            *parser->cursor == '\r' || *parser->cursor == '\t')) {
+        parser->cursor++;
+    }
+}
+
+static int duumbi_json_hex(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+    if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
+    return -1;
+}
+
+static int duumbi_json_buffer_init(DuumbiJsonBuffer *buf) {
+    buf->cap = 64;
+    buf->len = 0;
+    buf->data = (char *)duumbi_alloc((uint64_t)buf->cap);
+    return 1;
+}
+
+static int duumbi_json_buffer_reserve(DuumbiJsonBuffer *buf, size_t extra) {
+    if (buf->len + extra + 1 <= buf->cap) {
+        return 1;
+    }
+    size_t new_cap = buf->cap;
+    while (buf->len + extra + 1 > new_cap) {
+        new_cap *= 2;
+    }
+    char *new_data = (char *)realloc(buf->data, new_cap);
+    if (new_data == NULL) {
+        return 0;
+    }
+    buf->data = new_data;
+    buf->cap = new_cap;
+    return 1;
+}
+
+static int duumbi_json_buffer_char(DuumbiJsonBuffer *buf, char ch) {
+    if (!duumbi_json_buffer_reserve(buf, 1)) {
+        return 0;
+    }
+    buf->data[buf->len++] = ch;
+    buf->data[buf->len] = '\0';
+    return 1;
+}
+
+static int duumbi_json_buffer_text(DuumbiJsonBuffer *buf, const char *text) {
+    size_t len = strlen(text);
+    if (!duumbi_json_buffer_reserve(buf, len)) {
+        return 0;
+    }
+    memcpy(buf->data + buf->len, text, len);
+    buf->len += len;
+    buf->data[buf->len] = '\0';
+    return 1;
+}
+
+static int duumbi_json_buffer_utf8(DuumbiJsonBuffer *buf, uint32_t codepoint) {
+    if (codepoint <= 0x7f) {
+        return duumbi_json_buffer_char(buf, (char)codepoint);
+    }
+    if (codepoint <= 0x7ff) {
+        if (!duumbi_json_buffer_reserve(buf, 2)) return 0;
+        buf->data[buf->len++] = (char)(0xc0 | (codepoint >> 6));
+        buf->data[buf->len++] = (char)(0x80 | (codepoint & 0x3f));
+    } else if (codepoint <= 0xffff) {
+        if (codepoint >= 0xd800 && codepoint <= 0xdfff) return 0;
+        if (!duumbi_json_buffer_reserve(buf, 3)) return 0;
+        buf->data[buf->len++] = (char)(0xe0 | (codepoint >> 12));
+        buf->data[buf->len++] = (char)(0x80 | ((codepoint >> 6) & 0x3f));
+        buf->data[buf->len++] = (char)(0x80 | (codepoint & 0x3f));
+    } else if (codepoint <= 0x10ffff) {
+        if (!duumbi_json_buffer_reserve(buf, 4)) return 0;
+        buf->data[buf->len++] = (char)(0xf0 | (codepoint >> 18));
+        buf->data[buf->len++] = (char)(0x80 | ((codepoint >> 12) & 0x3f));
+        buf->data[buf->len++] = (char)(0x80 | ((codepoint >> 6) & 0x3f));
+        buf->data[buf->len++] = (char)(0x80 | (codepoint & 0x3f));
+    } else {
+        return 0;
+    }
+    buf->data[buf->len] = '\0';
+    return 1;
+}
+
+static int duumbi_json_parse_hex4(DuumbiJsonParser *parser, uint32_t *out) {
+    if (parser->end - parser->cursor < 4) {
+        parser->error = "Short JSON unicode escape";
+        return 0;
+    }
+    uint32_t code = 0;
+    for (int i = 0; i < 4; i++) {
+        int hex = duumbi_json_hex(parser->cursor[i]);
+        if (hex < 0) {
+            parser->error = "Invalid JSON unicode escape";
+            return 0;
+        }
+        code = (code << 4) | (uint32_t)hex;
+    }
+    parser->cursor += 4;
+    *out = code;
+    return 1;
+}
+
+static char *duumbi_json_parse_string_raw(DuumbiJsonParser *parser) {
+    if (parser->cursor >= parser->end || *parser->cursor != '"') {
+        parser->error = "JSON string expected";
+        return NULL;
+    }
+    parser->cursor++;
+
+    DuumbiJsonBuffer buf;
+    duumbi_json_buffer_init(&buf);
+    while (parser->cursor < parser->end) {
+        unsigned char ch = (unsigned char)*parser->cursor++;
+        if (ch == '"') {
+            char *result = duumbi_json_strndup(buf.data, buf.len);
+            duumbi_dealloc(buf.data);
+            return result;
+        }
+        if (ch < 0x20) {
+            parser->error = "Invalid control character in JSON string";
+            duumbi_dealloc(buf.data);
+            return NULL;
+        }
+        if (ch != '\\') {
+            duumbi_json_buffer_char(&buf, (char)ch);
+            continue;
+        }
+
+        if (parser->cursor >= parser->end) {
+            parser->error = "Unterminated JSON escape";
+            duumbi_dealloc(buf.data);
+            return NULL;
+        }
+        char esc = *parser->cursor++;
+        switch (esc) {
+            case '"': duumbi_json_buffer_char(&buf, '"'); break;
+            case '\\': duumbi_json_buffer_char(&buf, '\\'); break;
+            case '/': duumbi_json_buffer_char(&buf, '/'); break;
+            case 'b': duumbi_json_buffer_char(&buf, '\b'); break;
+            case 'f': duumbi_json_buffer_char(&buf, '\f'); break;
+            case 'n': duumbi_json_buffer_char(&buf, '\n'); break;
+            case 'r': duumbi_json_buffer_char(&buf, '\r'); break;
+            case 't': duumbi_json_buffer_char(&buf, '\t'); break;
+            case 'u': {
+                uint32_t code = 0;
+                if (!duumbi_json_parse_hex4(parser, &code)) {
+                    duumbi_dealloc(buf.data);
+                    return NULL;
+                }
+                if (code >= 0xd800 && code <= 0xdbff) {
+                    if (parser->end - parser->cursor < 6 ||
+                        parser->cursor[0] != '\\' || parser->cursor[1] != 'u') {
+                        parser->error = "Missing JSON unicode low surrogate";
+                        duumbi_dealloc(buf.data);
+                        return NULL;
+                    }
+                    parser->cursor += 2;
+                    uint32_t low = 0;
+                    if (!duumbi_json_parse_hex4(parser, &low) || low < 0xdc00 || low > 0xdfff) {
+                        parser->error = "Invalid JSON unicode low surrogate";
+                        duumbi_dealloc(buf.data);
+                        return NULL;
+                    }
+                    code = 0x10000 + (((code - 0xd800) << 10) | (low - 0xdc00));
+                } else if (code >= 0xdc00 && code <= 0xdfff) {
+                    parser->error = "Unexpected JSON unicode low surrogate";
+                    duumbi_dealloc(buf.data);
+                    return NULL;
+                }
+                if (!duumbi_json_buffer_utf8(&buf, code)) {
+                    parser->error = "Invalid JSON unicode codepoint";
+                    duumbi_dealloc(buf.data);
+                    return NULL;
+                }
+                break;
+            }
+            default:
+                parser->error = "Invalid JSON string escape";
+                duumbi_dealloc(buf.data);
+                return NULL;
+        }
+    }
+
+    parser->error = "Unterminated JSON string";
+    duumbi_dealloc(buf.data);
+    return NULL;
+}
+
+static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser);
+
+static int duumbi_json_array_push_item(DuumbiJson *array, DuumbiJson *item) {
+    if (array->array_len == array->array_cap) {
+        uint64_t new_cap = array->array_cap == 0 ? 4 : array->array_cap * 2;
+        DuumbiJson **new_items =
+            (DuumbiJson **)realloc(array->array_items, sizeof(DuumbiJson *) * new_cap);
+        if (new_items == NULL) {
+            return 0;
+        }
+        array->array_items = new_items;
+        array->array_cap = new_cap;
+    }
+    array->array_items[array->array_len++] = item;
+    return 1;
+}
+
+static int duumbi_json_object_add(DuumbiJson *object, char *key, DuumbiJson *value) {
+    if (object->object_len == object->object_cap) {
+        uint64_t new_cap = object->object_cap == 0 ? 4 : object->object_cap * 2;
+        DuumbiJsonObjectEntry *new_entries = (DuumbiJsonObjectEntry *)realloc(
+            object->object_entries, sizeof(DuumbiJsonObjectEntry) * new_cap);
+        if (new_entries == NULL) {
+            return 0;
+        }
+        object->object_entries = new_entries;
+        object->object_cap = new_cap;
+    }
+    object->object_entries[object->object_len].key = key;
+    object->object_entries[object->object_len].value = value;
+    object->object_len++;
+    return 1;
+}
+
+static DuumbiJson *duumbi_json_parse_array(DuumbiJsonParser *parser) {
+    parser->cursor++;
+    DuumbiJson *array = duumbi_json_new(DUUMBI_JSON_ARRAY);
+    duumbi_json_skip_ws(parser);
+    if (parser->cursor < parser->end && *parser->cursor == ']') {
+        parser->cursor++;
+        return array;
+    }
+
+    while (parser->cursor < parser->end) {
+        DuumbiJson *item = duumbi_json_parse_value(parser);
+        if (item == NULL) {
+            duumbi_json_free(array);
+            return NULL;
+        }
+        if (!duumbi_json_array_push_item(array, item)) {
+            parser->error = "Out of memory while parsing JSON array";
+            duumbi_json_free(item);
+            duumbi_json_free(array);
+            return NULL;
+        }
+        duumbi_json_skip_ws(parser);
+        if (parser->cursor < parser->end && *parser->cursor == ',') {
+            parser->cursor++;
+            duumbi_json_skip_ws(parser);
+            continue;
+        }
+        if (parser->cursor < parser->end && *parser->cursor == ']') {
+            parser->cursor++;
+            return array;
+        }
+        parser->error = "Expected ',' or ']' in JSON array";
+        duumbi_json_free(array);
+        return NULL;
+    }
+
+    parser->error = "Unterminated JSON array";
+    duumbi_json_free(array);
+    return NULL;
+}
+
+static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser) {
+    parser->cursor++;
+    DuumbiJson *object = duumbi_json_new(DUUMBI_JSON_OBJECT);
+    duumbi_json_skip_ws(parser);
+    if (parser->cursor < parser->end && *parser->cursor == '}') {
+        parser->cursor++;
+        return object;
+    }
+
+    while (parser->cursor < parser->end) {
+        char *key = duumbi_json_parse_string_raw(parser);
+        if (key == NULL) {
+            duumbi_json_free(object);
+            return NULL;
+        }
+        duumbi_json_skip_ws(parser);
+        if (parser->cursor >= parser->end || *parser->cursor != ':') {
+            parser->error = "Expected ':' in JSON object";
+            duumbi_dealloc(key);
+            duumbi_json_free(object);
+            return NULL;
+        }
+        parser->cursor++;
+        DuumbiJson *value = duumbi_json_parse_value(parser);
+        if (value == NULL) {
+            duumbi_dealloc(key);
+            duumbi_json_free(object);
+            return NULL;
+        }
+        if (!duumbi_json_object_add(object, key, value)) {
+            parser->error = "Out of memory while parsing JSON object";
+            duumbi_dealloc(key);
+            duumbi_json_free(value);
+            duumbi_json_free(object);
+            return NULL;
+        }
+        duumbi_json_skip_ws(parser);
+        if (parser->cursor < parser->end && *parser->cursor == ',') {
+            parser->cursor++;
+            duumbi_json_skip_ws(parser);
+            continue;
+        }
+        if (parser->cursor < parser->end && *parser->cursor == '}') {
+            parser->cursor++;
+            return object;
+        }
+        parser->error = "Expected ',' or '}' in JSON object";
+        duumbi_json_free(object);
+        return NULL;
+    }
+
+    parser->error = "Unterminated JSON object";
+    duumbi_json_free(object);
+    return NULL;
+}
+
+static DuumbiJson *duumbi_json_parse_number(DuumbiJsonParser *parser) {
+    const char *start = parser->cursor;
+    if (parser->cursor < parser->end && *parser->cursor == '-') {
+        parser->cursor++;
+    }
+    if (parser->cursor >= parser->end || !isdigit((unsigned char)*parser->cursor)) {
+        parser->error = "Invalid JSON number";
+        return NULL;
+    }
+    if (*parser->cursor == '0') {
+        parser->cursor++;
+    } else {
+        while (parser->cursor < parser->end && isdigit((unsigned char)*parser->cursor)) {
+            parser->cursor++;
+        }
+    }
+    if (parser->cursor < parser->end && *parser->cursor == '.') {
+        parser->cursor++;
+        if (parser->cursor >= parser->end || !isdigit((unsigned char)*parser->cursor)) {
+            parser->error = "Invalid JSON number";
+            return NULL;
+        }
+        while (parser->cursor < parser->end && isdigit((unsigned char)*parser->cursor)) {
+            parser->cursor++;
+        }
+    }
+    if (parser->cursor < parser->end && (*parser->cursor == 'e' || *parser->cursor == 'E')) {
+        parser->cursor++;
+        if (parser->cursor < parser->end && (*parser->cursor == '+' || *parser->cursor == '-')) {
+            parser->cursor++;
+        }
+        if (parser->cursor >= parser->end || !isdigit((unsigned char)*parser->cursor)) {
+            parser->error = "Invalid JSON exponent";
+            return NULL;
+        }
+        while (parser->cursor < parser->end && isdigit((unsigned char)*parser->cursor)) {
+            parser->cursor++;
+        }
+    }
+
+    size_t len = (size_t)(parser->cursor - start);
+    char *tmp = duumbi_json_strndup(start, len);
+    char *endptr = NULL;
+    double number = strtod(tmp, &endptr);
+    if (endptr != tmp + len) {
+        parser->error = "Invalid JSON number";
+        duumbi_dealloc(tmp);
+        return NULL;
+    }
+    duumbi_dealloc(tmp);
+
+    DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_NUMBER);
+    json->number_value = number;
+    return json;
+}
+
+static int duumbi_json_consume_literal(DuumbiJsonParser *parser, const char *literal) {
+    size_t len = strlen(literal);
+    if ((size_t)(parser->end - parser->cursor) < len ||
+        memcmp(parser->cursor, literal, len) != 0) {
+        return 0;
+    }
+    parser->cursor += len;
+    return 1;
+}
+
+static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser) {
+    duumbi_json_skip_ws(parser);
+    if (parser->cursor >= parser->end) {
+        parser->error = "Unexpected end of JSON input";
+        return NULL;
+    }
+
+    char ch = *parser->cursor;
+    if (ch == '{') return duumbi_json_parse_object(parser);
+    if (ch == '[') return duumbi_json_parse_array(parser);
+    if (ch == '"') {
+        char *s = duumbi_json_parse_string_raw(parser);
+        if (s == NULL) return NULL;
+        DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_STRING);
+        json->string_value = s;
+        return json;
+    }
+    if (ch == '-' || (ch >= '0' && ch <= '9')) {
+        return duumbi_json_parse_number(parser);
+    }
+    if (duumbi_json_consume_literal(parser, "true")) {
+        DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_BOOL);
+        json->bool_value = 1;
+        return json;
+    }
+    if (duumbi_json_consume_literal(parser, "false")) {
+        DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_BOOL);
+        json->bool_value = 0;
+        return json;
+    }
+    if (duumbi_json_consume_literal(parser, "null")) {
+        return duumbi_json_new(DUUMBI_JSON_NULL);
+    }
+
+    parser->error = "Invalid JSON value";
+    return NULL;
+}
+
+static int duumbi_json_stringify_value(const DuumbiJson *json, DuumbiJsonBuffer *buf);
+
+static int duumbi_json_stringify_string(const char *s, DuumbiJsonBuffer *buf) {
+    if (!duumbi_json_buffer_char(buf, '"')) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p != '\0'; p++) {
+        switch (*p) {
+            case '"': if (!duumbi_json_buffer_text(buf, "\\\"")) return 0; break;
+            case '\\': if (!duumbi_json_buffer_text(buf, "\\\\")) return 0; break;
+            case '\b': if (!duumbi_json_buffer_text(buf, "\\b")) return 0; break;
+            case '\f': if (!duumbi_json_buffer_text(buf, "\\f")) return 0; break;
+            case '\n': if (!duumbi_json_buffer_text(buf, "\\n")) return 0; break;
+            case '\r': if (!duumbi_json_buffer_text(buf, "\\r")) return 0; break;
+            case '\t': if (!duumbi_json_buffer_text(buf, "\\t")) return 0; break;
+            default:
+                if (*p < 0x20) {
+                    char esc[7];
+                    snprintf(esc, sizeof(esc), "\\u%04x", *p);
+                    if (!duumbi_json_buffer_text(buf, esc)) return 0;
+                } else if (!duumbi_json_buffer_char(buf, (char)*p)) {
+                    return 0;
+                }
+        }
+    }
+    return duumbi_json_buffer_char(buf, '"');
+}
+
+static int duumbi_json_stringify_value(const DuumbiJson *json, DuumbiJsonBuffer *buf) {
+    char number_buf[64];
+    switch (json->kind) {
+        case DUUMBI_JSON_NULL:
+            return duumbi_json_buffer_text(buf, "null");
+        case DUUMBI_JSON_BOOL:
+            return duumbi_json_buffer_text(buf, json->bool_value ? "true" : "false");
+        case DUUMBI_JSON_NUMBER:
+            snprintf(number_buf, sizeof(number_buf), "%.15g", json->number_value);
+            return duumbi_json_buffer_text(buf, number_buf);
+        case DUUMBI_JSON_STRING:
+            return duumbi_json_stringify_string(json->string_value, buf);
+        case DUUMBI_JSON_ARRAY:
+            if (!duumbi_json_buffer_char(buf, '[')) return 0;
+            for (uint64_t i = 0; i < json->array_len; i++) {
+                if (i > 0 && !duumbi_json_buffer_char(buf, ',')) return 0;
+                if (!duumbi_json_stringify_value(json->array_items[i], buf)) return 0;
+            }
+            return duumbi_json_buffer_char(buf, ']');
+        case DUUMBI_JSON_OBJECT:
+            if (!duumbi_json_buffer_char(buf, '{')) return 0;
+            for (uint64_t i = 0; i < json->object_len; i++) {
+                if (i > 0 && !duumbi_json_buffer_char(buf, ',')) return 0;
+                if (!duumbi_json_stringify_string(json->object_entries[i].key, buf)) return 0;
+                if (!duumbi_json_buffer_char(buf, ':')) return 0;
+                if (!duumbi_json_stringify_value(json->object_entries[i].value, buf)) return 0;
+            }
+            return duumbi_json_buffer_char(buf, '}');
+    }
+    return 0;
+}
+
+void *duumbi_json_parse(void *input) {
+    DuumbiString *s = (DuumbiString *)input;
+    if (s == NULL) {
+        return duumbi_json_err("JSON parse failed: input string is null");
+    }
+
+    DuumbiJsonParser parser = {s->data, s->data + s->len, NULL};
+    DuumbiJson *json = duumbi_json_parse_value(&parser);
+    if (json == NULL) {
+        return duumbi_json_err(parser.error != NULL ? parser.error : "JSON parse failed");
+    }
+    duumbi_json_skip_ws(&parser);
+    if (parser.cursor != parser.end) {
+        duumbi_json_free(json);
+        return duumbi_json_err("JSON parse failed: trailing input");
+    }
+    return duumbi_json_ok_ptr(json);
+}
+
+void *duumbi_json_stringify(void *value) {
+    DuumbiJson *json = (DuumbiJson *)value;
+    if (json == NULL) {
+        return duumbi_json_err("JSON stringify failed: value is null");
+    }
+    DuumbiJsonBuffer buf;
+    duumbi_json_buffer_init(&buf);
+    if (!duumbi_json_stringify_value(json, &buf)) {
+        duumbi_dealloc(buf.data);
+        return duumbi_json_err("JSON stringify failed");
+    }
+    void *out = duumbi_string_new(buf.data, (uint64_t)buf.len);
+    duumbi_dealloc(buf.data);
+    return duumbi_json_ok_ptr(out);
+}
+
+void *duumbi_json_get_field(void *value, void *key) {
+    DuumbiJson *json = (DuumbiJson *)value;
+    DuumbiString *field = (DuumbiString *)key;
+    if (json == NULL) {
+        return duumbi_json_err("JSON get_field failed: value is null");
+    }
+    if (field == NULL) {
+        return duumbi_json_err("JSON get_field failed: key is null");
+    }
+    if (json->kind != DUUMBI_JSON_OBJECT) {
+        return duumbi_json_err("JSON get_field failed: expected object");
+    }
+    for (uint64_t i = 0; i < json->object_len; i++) {
+        const char *entry_key = json->object_entries[i].key;
+        size_t entry_len = strlen(entry_key);
+        if (field->len == entry_len && memcmp(field->data, entry_key, entry_len) == 0) {
+            return duumbi_json_ok_ptr(duumbi_json_clone(json->object_entries[i].value));
+        }
+    }
+    return duumbi_json_err("JSON get_field failed: missing field");
+}
+
+void *duumbi_json_array_len(void *value) {
+    DuumbiJson *json = (DuumbiJson *)value;
+    if (json == NULL) {
+        return duumbi_json_err("JSON array_len failed: value is null");
+    }
+    if (json->kind != DUUMBI_JSON_ARRAY) {
+        return duumbi_json_err("JSON array_len failed: expected array");
+    }
+    if (json->array_len > (uint64_t)INT64_MAX) {
+        return duumbi_json_err("JSON array_len failed: array too large");
+    }
+    return duumbi_json_ok_i64((int64_t)json->array_len);
+}
+
+void *duumbi_json_array_get(void *value, int64_t index) {
+    DuumbiJson *json = (DuumbiJson *)value;
+    if (json == NULL) {
+        return duumbi_json_err("JSON array_get failed: value is null");
+    }
+    if (json->kind != DUUMBI_JSON_ARRAY) {
+        return duumbi_json_err("JSON array_get failed: expected array");
+    }
+    if (index < 0 || (uint64_t)index >= json->array_len) {
+        return duumbi_json_err("JSON array_get failed: index out of bounds");
+    }
+    return duumbi_json_ok_ptr(duumbi_json_clone(json->array_items[index]));
+}
+
+/* ── TCP (opaque socket and listener resources) ───────────────────── */
+
+#if defined(_WIN32)
+typedef SOCKET DuumbiSocketHandle;
+#define DUUMBI_INVALID_SOCKET INVALID_SOCKET
+#define DUUMBI_SOCKET_ERROR SOCKET_ERROR
+static int duumbi_socket_close_handle(DuumbiSocketHandle handle) {
+    return closesocket(handle);
+}
+static int duumbi_socket_last_error(void) {
+    return WSAGetLastError();
+}
+static int duumbi_socket_would_block(int err) {
+    return err == WSAEWOULDBLOCK || err == WSAEINPROGRESS || err == WSAEALREADY;
+}
+static int duumbi_socket_init(void) {
+    static int initialized = 0;
+    if (initialized) return 1;
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
+    initialized = 1;
+    return 1;
+}
+static int duumbi_socket_set_nonblocking(DuumbiSocketHandle handle) {
+    u_long mode = 1;
+    return ioctlsocket(handle, FIONBIO, &mode) == 0;
+}
+#else
+typedef int DuumbiSocketHandle;
+#define DUUMBI_INVALID_SOCKET (-1)
+#define DUUMBI_SOCKET_ERROR (-1)
+static int duumbi_socket_close_handle(DuumbiSocketHandle handle) {
+    return close(handle);
+}
+static int duumbi_socket_last_error(void) {
+    return errno;
+}
+static int duumbi_socket_would_block(int err) {
+    return err == EINPROGRESS || err == EWOULDBLOCK || err == EAGAIN;
+}
+static int duumbi_socket_init(void) {
+    return 1;
+}
+static int duumbi_socket_set_nonblocking(DuumbiSocketHandle handle) {
+    int flags = fcntl(handle, F_GETFL, 0);
+    if (flags < 0) return 0;
+    return fcntl(handle, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+#endif
+
+typedef struct {
+    DuumbiSocketHandle handle;
+    int closed;
+} DuumbiTcpSocket;
+
+typedef struct {
+    DuumbiSocketHandle handle;
+    int closed;
+} DuumbiTcpListener;
+
+static void *duumbi_tcp_err(const char *message) {
+    void *err = duumbi_string_new(message, (uint64_t)strlen(message));
+    return duumbi_result_new_err((int64_t)(intptr_t)err);
+}
+
+static void *duumbi_tcp_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static void *duumbi_tcp_ok_i64(int64_t value) {
+    return duumbi_result_new_ok(value);
+}
+
+static char *duumbi_tcp_string_to_c(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    if (s == NULL) {
+        return NULL;
+    }
+    return duumbi_json_strndup(s->data, (size_t)s->len);
+}
+
+static int duumbi_tcp_validate_common(int64_t timeout_ms) {
+    return timeout_ms > 0 && timeout_ms <= INT32_MAX;
+}
+
+static int duumbi_tcp_validate_port(int64_t port) {
+    return port > 0 && port <= 65535;
+}
+
+static int duumbi_tcp_wait(DuumbiSocketHandle handle, int for_write, int64_t timeout_ms) {
+#if defined(_WIN32)
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(handle, &fds);
+    struct timeval tv;
+    tv.tv_sec = (long)(timeout_ms / 1000);
+    tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
+    int ready = select(0, for_write ? NULL : &fds, for_write ? &fds : NULL, NULL, &tv);
+    return ready > 0 ? 1 : ready == 0 ? 0 : -1;
+#else
+    struct pollfd pfd;
+    pfd.fd = handle;
+    pfd.events = for_write ? POLLOUT : POLLIN;
+    pfd.revents = 0;
+    int ready = poll(&pfd, 1, (int)timeout_ms);
+    if (ready <= 0) return ready;
+    if (pfd.revents & (for_write ? POLLOUT : POLLIN)) return 1;
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
+    return 0;
+#endif
+}
+
+static int duumbi_tcp_check_connect(DuumbiSocketHandle handle) {
+    int err = 0;
+#if defined(_WIN32)
+    int len = sizeof(err);
+    if (getsockopt(handle, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0) return 0;
+#else
+    socklen_t len = sizeof(err);
+    if (getsockopt(handle, SOL_SOCKET, SO_ERROR, &err, &len) != 0) return 0;
+#endif
+    return err == 0;
+}
+
+static int duumbi_tcp_valid_utf8(const unsigned char *data, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = data[i];
+        if (c <= 0x7f) {
+            i++;
+        } else if ((c & 0xe0) == 0xc0) {
+            if (i + 1 >= len || (data[i + 1] & 0xc0) != 0x80 || c < 0xc2) return 0;
+            i += 2;
+        } else if ((c & 0xf0) == 0xe0) {
+            if (i + 2 >= len || (data[i + 1] & 0xc0) != 0x80 ||
+                (data[i + 2] & 0xc0) != 0x80) return 0;
+            i += 3;
+        } else if ((c & 0xf8) == 0xf0) {
+            if (i + 3 >= len || (data[i + 1] & 0xc0) != 0x80 ||
+                (data[i + 2] & 0xc0) != 0x80 || (data[i + 3] & 0xc0) != 0x80) return 0;
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+void duumbi_tcp_socket_free(void *socket) {
+    DuumbiTcpSocket *s = (DuumbiTcpSocket *)socket;
+    if (s == NULL) return;
+    if (!s->closed && s->handle != DUUMBI_INVALID_SOCKET) {
+        duumbi_socket_close_handle(s->handle);
+        s->closed = 1;
+    }
+    duumbi_dealloc(s);
+}
+
+void duumbi_tcp_listener_free(void *listener) {
+    DuumbiTcpListener *l = (DuumbiTcpListener *)listener;
+    if (l == NULL) return;
+    if (!l->closed && l->handle != DUUMBI_INVALID_SOCKET) {
+        duumbi_socket_close_handle(l->handle);
+        l->closed = 1;
+    }
+    duumbi_dealloc(l);
+}
+
+void *duumbi_tcp_connect(void *host_ptr, int64_t port, int64_t timeout_ms) {
+    if (!duumbi_socket_init()) return duumbi_tcp_err("TCP connect failed: socket init failed");
+    if (!duumbi_tcp_validate_port(port)) return duumbi_tcp_err("TCP connect failed: invalid port");
+    if (!duumbi_tcp_validate_common(timeout_ms)) {
+        return duumbi_tcp_err("TCP connect failed: invalid timeout_ms");
+    }
+    char *host = duumbi_tcp_string_to_c(host_ptr);
+    if (host == NULL) return duumbi_tcp_err("TCP connect failed: host is null");
+
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port_buf, &hints, &res) != 0) {
+        duumbi_dealloc(host);
+        return duumbi_tcp_err("TCP connect failed: address resolution failed");
+    }
+
+    DuumbiSocketHandle connected = DUUMBI_INVALID_SOCKET;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        DuumbiSocketHandle handle = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (handle == DUUMBI_INVALID_SOCKET) continue;
+        if (!duumbi_socket_set_nonblocking(handle)) {
+            duumbi_socket_close_handle(handle);
+            continue;
+        }
+        int rc = connect(handle, ai->ai_addr, (int)ai->ai_addrlen);
+        if (rc == 0) {
+            connected = handle;
+            break;
+        }
+        int err = duumbi_socket_last_error();
+        if (duumbi_socket_would_block(err)) {
+            int ready = duumbi_tcp_wait(handle, 1, timeout_ms);
+            if (ready > 0 && duumbi_tcp_check_connect(handle)) {
+                connected = handle;
+                break;
+            }
+        }
+        duumbi_socket_close_handle(handle);
+    }
+    freeaddrinfo(res);
+    duumbi_dealloc(host);
+
+    if (connected == DUUMBI_INVALID_SOCKET) {
+        return duumbi_tcp_err("TCP connect failed");
+    }
+    DuumbiTcpSocket *socket_resource = (DuumbiTcpSocket *)duumbi_alloc(sizeof(DuumbiTcpSocket));
+    socket_resource->handle = connected;
+    socket_resource->closed = 0;
+    return duumbi_tcp_ok_ptr(socket_resource);
+}
+
+void *duumbi_tcp_listen(void *host_ptr, int64_t port, int64_t timeout_ms) {
+    if (!duumbi_socket_init()) return duumbi_tcp_err("TCP listen failed: socket init failed");
+    if (!duumbi_tcp_validate_port(port)) return duumbi_tcp_err("TCP listen failed: invalid port");
+    if (!duumbi_tcp_validate_common(timeout_ms)) {
+        return duumbi_tcp_err("TCP listen failed: invalid timeout_ms");
+    }
+    char *host = duumbi_tcp_string_to_c(host_ptr);
+    if (host == NULL) return duumbi_tcp_err("TCP listen failed: host is null");
+
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_flags = AI_PASSIVE;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port_buf, &hints, &res) != 0) {
+        duumbi_dealloc(host);
+        return duumbi_tcp_err("TCP listen failed: address resolution failed");
+    }
+
+    DuumbiSocketHandle bound = DUUMBI_INVALID_SOCKET;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        DuumbiSocketHandle handle = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (handle == DUUMBI_INVALID_SOCKET) continue;
+        int yes = 1;
+        setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+        if (bind(handle, ai->ai_addr, (int)ai->ai_addrlen) == 0 &&
+            listen(handle, 16) == 0 &&
+            duumbi_socket_set_nonblocking(handle)) {
+            bound = handle;
+            break;
+        }
+        duumbi_socket_close_handle(handle);
+    }
+    freeaddrinfo(res);
+    duumbi_dealloc(host);
+
+    if (bound == DUUMBI_INVALID_SOCKET) return duumbi_tcp_err("TCP listen failed");
+    DuumbiTcpListener *listener = (DuumbiTcpListener *)duumbi_alloc(sizeof(DuumbiTcpListener));
+    listener->handle = bound;
+    listener->closed = 0;
+    return duumbi_tcp_ok_ptr(listener);
+}
+
+void *duumbi_tcp_accept(void *listener_ptr, int64_t timeout_ms) {
+    DuumbiTcpListener *listener = (DuumbiTcpListener *)listener_ptr;
+    if (listener == NULL || listener->closed) {
+        return duumbi_tcp_err("TCP accept failed: listener is closed");
+    }
+    if (!duumbi_tcp_validate_common(timeout_ms)) {
+        return duumbi_tcp_err("TCP accept failed: invalid timeout_ms");
+    }
+    int ready = duumbi_tcp_wait(listener->handle, 0, timeout_ms);
+    if (ready == 0) return duumbi_tcp_err("TCP accept failed: timeout");
+    if (ready < 0) return duumbi_tcp_err("TCP accept failed");
+    DuumbiSocketHandle accepted = accept(listener->handle, NULL, NULL);
+    if (accepted == DUUMBI_INVALID_SOCKET) return duumbi_tcp_err("TCP accept failed");
+    duumbi_socket_set_nonblocking(accepted);
+    DuumbiTcpSocket *socket_resource = (DuumbiTcpSocket *)duumbi_alloc(sizeof(DuumbiTcpSocket));
+    socket_resource->handle = accepted;
+    socket_resource->closed = 0;
+    return duumbi_tcp_ok_ptr(socket_resource);
+}
+
+void *duumbi_tcp_read(void *socket_ptr, int64_t max_bytes, int64_t timeout_ms) {
+    DuumbiTcpSocket *socket_resource = (DuumbiTcpSocket *)socket_ptr;
+    if (socket_resource == NULL || socket_resource->closed) {
+        return duumbi_tcp_err("TCP read failed: socket is closed");
+    }
+    if (max_bytes <= 0 || max_bytes > INT32_MAX) return duumbi_tcp_err("TCP read failed: invalid max_bytes");
+    if (!duumbi_tcp_validate_common(timeout_ms)) return duumbi_tcp_err("TCP read failed: invalid timeout_ms");
+    int ready = duumbi_tcp_wait(socket_resource->handle, 0, timeout_ms);
+    if (ready == 0) return duumbi_tcp_err("TCP read failed: timeout");
+    if (ready < 0) return duumbi_tcp_err("TCP read failed");
+    char *buf = (char *)duumbi_alloc((uint64_t)max_bytes);
+    int n = (int)recv(socket_resource->handle, buf, (int)max_bytes, 0);
+    if (n <= 0) {
+        duumbi_dealloc(buf);
+        return duumbi_tcp_err("TCP read failed: peer closed");
+    }
+    if (!duumbi_tcp_valid_utf8((const unsigned char *)buf, (size_t)n)) {
+        duumbi_dealloc(buf);
+        return duumbi_tcp_err("TCP read failed: bytes are not valid UTF-8");
+    }
+    void *out = duumbi_string_new(buf, (uint64_t)n);
+    duumbi_dealloc(buf);
+    return duumbi_tcp_ok_ptr(out);
+}
+
+void *duumbi_tcp_write(void *socket_ptr, void *data_ptr, int64_t timeout_ms) {
+    DuumbiTcpSocket *socket_resource = (DuumbiTcpSocket *)socket_ptr;
+    DuumbiString *data = (DuumbiString *)data_ptr;
+    if (socket_resource == NULL || socket_resource->closed) {
+        return duumbi_tcp_err("TCP write failed: socket is closed");
+    }
+    if (data == NULL) return duumbi_tcp_err("TCP write failed: data is null");
+    if (!duumbi_tcp_validate_common(timeout_ms)) return duumbi_tcp_err("TCP write failed: invalid timeout_ms");
+    if (data->len == 0) return duumbi_tcp_ok_i64(0);
+    int ready = duumbi_tcp_wait(socket_resource->handle, 1, timeout_ms);
+    if (ready == 0) return duumbi_tcp_err("TCP write failed: timeout");
+    if (ready < 0) return duumbi_tcp_err("TCP write failed");
+    int n = (int)send(socket_resource->handle, data->data, (int)data->len, 0);
+    if (n < 0) return duumbi_tcp_err("TCP write failed");
+    return duumbi_tcp_ok_i64((int64_t)n);
+}
+
+void *duumbi_tcp_close(void *socket_ptr) {
+    DuumbiTcpSocket *socket_resource = (DuumbiTcpSocket *)socket_ptr;
+    if (socket_resource == NULL || socket_resource->closed) {
+        return duumbi_tcp_err("TCP close failed: socket is already closed");
+    }
+    if (duumbi_socket_close_handle(socket_resource->handle) != 0) {
+        return duumbi_tcp_err("TCP close failed");
+    }
+    socket_resource->closed = 1;
+    return duumbi_tcp_ok_i64(0);
+}
+
+void *duumbi_tcp_listener_close(void *listener_ptr) {
+    DuumbiTcpListener *listener = (DuumbiTcpListener *)listener_ptr;
+    if (listener == NULL || listener->closed) {
+        return duumbi_tcp_err("TCP listener close failed: listener is already closed");
+    }
+    if (duumbi_socket_close_handle(listener->handle) != 0) {
+        return duumbi_tcp_err("TCP listener close failed");
+    }
+    listener->closed = 1;
+    return duumbi_tcp_ok_i64(0);
 }
 
 /* ── Option (tagged union: {i8 discriminant, i64 payload}) ────────── */

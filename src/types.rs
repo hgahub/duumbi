@@ -245,6 +245,34 @@ pub enum Op {
     /// Extract Some payload (panics on None): `duumbi:OptionUnwrap`
     OptionUnwrap,
 
+    // -- JSON operations (DUUMBI-379) --
+    /// Parse a string as JSON: `duumbi:JsonParse`
+    JsonParse,
+    /// Stringify a JSON value: `duumbi:JsonStringify`
+    JsonStringify,
+    /// Get an object field from a JSON value: `duumbi:JsonGetField`
+    JsonGetField,
+    /// Get the length of a JSON array: `duumbi:JsonArrayLen`
+    JsonArrayLen,
+    /// Get an item from a JSON array: `duumbi:JsonArrayGet`
+    JsonArrayGet,
+
+    // -- TCP operations (DUUMBI-379) --
+    /// Connect to a TCP endpoint: `duumbi:TcpConnect`
+    TcpConnect,
+    /// Create a TCP listener: `duumbi:TcpListen`
+    TcpListen,
+    /// Accept one TCP connection: `duumbi:TcpAccept`
+    TcpAccept,
+    /// Read text from a TCP socket: `duumbi:TcpRead`
+    TcpRead,
+    /// Write text to a TCP socket: `duumbi:TcpWrite`
+    TcpWrite,
+    /// Close a TCP socket: `duumbi:TcpClose`
+    TcpClose,
+    /// Close a TCP listener: `duumbi:TcpListenerClose`
+    TcpListenerClose,
+
     // -- Match operation (Phase 9a-3) --
     /// Pattern match on Result/Option — branches to Ok/Some or Err/None block: `duumbi:Match`
     Match {
@@ -349,6 +377,18 @@ impl fmt::Display for Op {
             Op::OptionNone => f.write_str("OptionNone"),
             Op::OptionIsSome => f.write_str("OptionIsSome"),
             Op::OptionUnwrap => f.write_str("OptionUnwrap"),
+            Op::JsonParse => f.write_str("JsonParse"),
+            Op::JsonStringify => f.write_str("JsonStringify"),
+            Op::JsonGetField => f.write_str("JsonGetField"),
+            Op::JsonArrayLen => f.write_str("JsonArrayLen"),
+            Op::JsonArrayGet => f.write_str("JsonArrayGet"),
+            Op::TcpConnect => f.write_str("TcpConnect"),
+            Op::TcpListen => f.write_str("TcpListen"),
+            Op::TcpAccept => f.write_str("TcpAccept"),
+            Op::TcpRead => f.write_str("TcpRead"),
+            Op::TcpWrite => f.write_str("TcpWrite"),
+            Op::TcpClose => f.write_str("TcpClose"),
+            Op::TcpListenerClose => f.write_str("TcpListenerClose"),
             Op::Match {
                 ok_block,
                 err_block,
@@ -398,6 +438,18 @@ impl Op {
             | Op::Alloc { .. }
             | Op::Move { .. }
             | Op::Borrow { .. } => result_type.clone(),
+            Op::JsonParse
+            | Op::JsonStringify
+            | Op::JsonGetField
+            | Op::JsonArrayLen
+            | Op::JsonArrayGet
+            | Op::TcpConnect
+            | Op::TcpListen
+            | Op::TcpAccept
+            | Op::TcpRead
+            | Op::TcpWrite
+            | Op::TcpClose
+            | Op::TcpListenerClose => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
             Op::StringConcat
@@ -458,6 +510,12 @@ pub enum DuumbiType {
     /// Heap-allocated UTF-8 string.
     #[allow(dead_code)] // Used starting from Phase 9a-1 string ops
     String,
+    /// Opaque runtime-owned JSON value.
+    Json,
+    /// Opaque runtime-owned TCP socket resource.
+    TcpSocket,
+    /// Opaque runtime-owned TCP listener resource.
+    TcpListener,
     /// Homogeneous dynamic array, generic over element type.
     #[allow(dead_code)] // Used starting from Phase 9a-1 array ops
     Array(Box<DuumbiType>),
@@ -487,6 +545,9 @@ impl DuumbiType {
         matches!(
             self,
             DuumbiType::String
+                | DuumbiType::Json
+                | DuumbiType::TcpSocket
+                | DuumbiType::TcpListener
                 | DuumbiType::Array(_)
                 | DuumbiType::Struct(_)
                 | DuumbiType::Result(_, _)
@@ -541,6 +602,9 @@ impl fmt::Display for DuumbiType {
             DuumbiType::Bool => f.write_str("bool"),
             DuumbiType::Void => f.write_str("void"),
             DuumbiType::String => f.write_str("string"),
+            DuumbiType::Json => f.write_str("json"),
+            DuumbiType::TcpSocket => f.write_str("tcp_socket"),
+            DuumbiType::TcpListener => f.write_str("tcp_listener"),
             DuumbiType::Array(elem) => write!(f, "array<{elem}>"),
             DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
             DuumbiType::Ref(inner) => write!(f, "&{inner}"),
@@ -624,6 +688,9 @@ mod tests {
             DuumbiType::Struct("Point".to_string()).to_string(),
             "struct<Point>"
         );
+        assert_eq!(DuumbiType::Json.to_string(), "json");
+        assert_eq!(DuumbiType::TcpSocket.to_string(), "tcp_socket");
+        assert_eq!(DuumbiType::TcpListener.to_string(), "tcp_listener");
     }
 
     #[test]
@@ -633,6 +700,9 @@ mod tests {
         assert!(!DuumbiType::Bool.is_heap_type());
         assert!(!DuumbiType::Void.is_heap_type());
         assert!(DuumbiType::String.is_heap_type());
+        assert!(DuumbiType::Json.is_heap_type());
+        assert!(DuumbiType::TcpSocket.is_heap_type());
+        assert!(DuumbiType::TcpListener.is_heap_type());
         assert!(DuumbiType::Array(Box::new(DuumbiType::I64)).is_heap_type());
         assert!(DuumbiType::Struct("Point".to_string()).is_heap_type());
     }
@@ -809,6 +879,44 @@ mod tests {
         assert!(!option_ty.is_result());
         assert!(option_ty.is_heap_type());
         assert!(!option_ty.is_reference());
+    }
+
+    #[test]
+    fn json_tcp_op_output_types() {
+        let json_result =
+            DuumbiType::Result(Box::new(DuumbiType::Json), Box::new(DuumbiType::String));
+        assert_eq!(
+            Op::JsonParse.output_type(&Some(json_result.clone())),
+            Some(json_result.clone())
+        );
+        assert_eq!(
+            Op::JsonGetField.output_type(&Some(json_result.clone())),
+            Some(json_result)
+        );
+
+        let socket_result = DuumbiType::Result(
+            Box::new(DuumbiType::TcpSocket),
+            Box::new(DuumbiType::String),
+        );
+        assert_eq!(
+            Op::TcpConnect.output_type(&Some(socket_result.clone())),
+            Some(socket_result.clone())
+        );
+        assert_eq!(
+            Op::TcpAccept.output_type(&Some(socket_result.clone())),
+            Some(socket_result)
+        );
+
+        let close_result =
+            DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::String));
+        assert_eq!(
+            Op::TcpClose.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+        assert_eq!(
+            Op::TcpListenerClose.output_type(&Some(close_result.clone())),
+            Some(close_result)
+        );
     }
 
     #[test]
