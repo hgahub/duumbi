@@ -1,4 +1,4 @@
-# DUUMBI-380: @duumbi/stdlib-http, @duumbi/stdlib-tls, And @duumbi/stdlib-db - Technical Specification
+# DUUMBI-380: HTTP/HTTPS and SQLite Stdlib Modules - Technical Specification
 
 ## Implementation Objective
 
@@ -353,7 +353,7 @@ HTTP public-result symbols:
 - `duumbi_http_status(i64 response) -> i64`
 - `duumbi_http_body(i64 response) -> i64`
 - `duumbi_http_headers(i64 response) -> i64`
-- `duumbi_http_response_release(i64 response) -> i64`
+- `duumbi_http_response_close(i64 response) -> i64`
 
 DB public-result symbols:
 
@@ -363,7 +363,7 @@ DB public-result symbols:
 - `duumbi_db_rows_len(i64 rows) -> i64`
 - `duumbi_db_row_get(i64 rows, i64 row_index, i64 column) -> i64`
 - `duumbi_db_close(i64 conn) -> i64`
-- `duumbi_db_rows_release(i64 rows) -> i64`
+- `duumbi_db_rows_close(i64 rows) -> i64`
 
 Automatic resource free symbols for `Drop`/scope-exit cleanup:
 
@@ -379,7 +379,10 @@ Lowering must:
 - add the new resource types to heap/resource auto-cleanup where the compiler
   tracks heap allocations;
 - keep explicit public cleanup operations (`HttpResponseFree`, `DbClose`,
-  `DbRowsFree`) separate from automatic resource wrapper free calls.
+  `DbRowsFree`) separate from automatic resource wrapper free calls. The
+  graph-level function names remain the approved `http_response_free` and
+  `db_rows_free`, but runtime symbols should use `*_close` for
+  result-returning public cleanup and reserve `*_free` for void Drop hooks.
 
 ### 4. HTTP/TLS Runtime Strategy
 
