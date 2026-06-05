@@ -411,6 +411,14 @@ Runtime behavior:
   access as `Err(string)`.
 - Materialize the full response body and headers before returning
   `Ok(http_response)`; no v1 streaming.
+- Bound materialization before allocation can grow unbounded. Initial internal
+  caps:
+  - response body: `8 MiB`;
+  - aggregate response header bytes: `64 KiB`;
+  - response header count: `256`.
+  If a response exceeds these caps, the request returns `Err(string)` with
+  `http_body_too_large` or `http_headers_too_large`. These are internal v1
+  safety limits, not public API parameters.
 - Accept UTF-8 response bodies only. Non-UTF-8 or otherwise
   nonrepresentable bodies return `Err(string)` from `http_body`.
 - Response headers returned by `http_headers` must be a new JSON object. Header
@@ -481,6 +489,14 @@ Runtime behavior:
 - `db_query` prepares and binds parameters, materializes the complete row set
   into a `db_rows` resource, finalizes the statement, and returns
   `Ok(db_rows)`.
+- Bound row materialization before allocation can grow unbounded. Initial
+  internal caps:
+  - rows: `10000`;
+  - aggregate copied cell bytes: `8 MiB`;
+  - columns per result set: `256`.
+  If a result exceeds these caps, `db_query` returns `Err(string)` with
+  `db_rows_limit`. These are internal v1 safety limits, not public API
+  parameters.
 - `db_rows` stores copied column names and values so row resources are
   independent of the connection after query materialization.
 - `db_row_get` accepts zero-based row indexes and exact column names.
@@ -617,6 +633,10 @@ Additional required coverage:
   `duumbi:args[0]` timeout.
 - Validator tests for exact operand/result type errors.
 - Result-safety tests proving ignored #380 direct result producers are rejected.
+- HTTP overflow tests proving body/header materialization caps return
+  recoverable `Err(string)` values instead of exhausting memory.
+- DB overflow tests proving row/byte materialization caps return recoverable
+  `Err(string)` values instead of exhausting memory.
 - Linker/runtime tests proving missing dependency errors are clear and supported
   CI targets link successfully.
 
@@ -812,13 +832,14 @@ Required automated verification:
 - HTTP integration tests for GET, POST, PUT, DELETE, status, body, headers,
   non-2xx, redirect, invalid header JSON, invalid timeout, timeout, malformed
   URL, unsupported scheme, cleanup, released-resource access, and
-  nonrepresentable body behavior where practical.
+  nonrepresentable body and body/header cap behavior where practical.
 - HTTPS integration tests for trusted local harness success and untrusted local
   certificate failure.
 - DB integration tests for `:memory:`, workspace file path success, path escape
   rejection, missing parent rejection, create/insert/query, changed-row count,
   parameter binding, empty results, missing column, invalid row index, SQL NULL,
-  SQL error, close, rows free, and released/closed-resource access.
+  SQL error, row/byte cap overflow, close, rows free, and
+  released/closed-resource access.
 - Composition integration test for loopback API fetch -> JSON parse -> DUUMBI
   transform -> SQLite write/query.
 - Init/cache tests proving `@duumbi/stdlib-http` and `@duumbi/stdlib-db` are
@@ -859,9 +880,13 @@ Implementation is complete only when:
 - HTTPS certificate verification is enabled by default and failure is visible.
 - HTTP header canonicalization and duplicate handling are deterministic and
   documented.
+- HTTP response body/header buffering is bounded and cap overflow returns
+  `Err(string)`.
 - SQLite paths are workspace-confined with `:memory:` accepted.
 - SQLite parameters are bound through prepared statements.
 - NULL and unsupported row values are visible errors.
+- SQLite query row materialization is bounded and cap overflow returns
+  `Err(string)`.
 - Explicit cleanup and later access behavior are safe and tested.
 - Default `duumbi init` dependencies do not include HTTP or DB.
 - All product BDD scenarios have automated tests or explicitly named review
