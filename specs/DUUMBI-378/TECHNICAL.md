@@ -42,7 +42,7 @@ Verified facts:
 - `src/types.rs` already models `string`, `array<T>`, `result<T,E>`, and the existing result/option ops.
 - `src/parser/mod.rs` parses `result<T,E>` and `array<T>` type strings and maps JSON-LD op fields onto reusable AST slots: `operand`, `left`, and `right`.
 - `src/graph/builder.rs` already converts `operand`, `left`, and `right` AST references into semantic graph edges; no new edge label is needed for this issue.
-- `src/graph/result_safety.rs` enforces handling for calls and ops that return `Result` or `Option`.
+- `src/graph/result_safety.rs` currently enforces handling for existing result/option constructor and handler ops, plus calls returning `Result` or `Option`; new direct runtime-backed `Result` producer ops must be added explicitly so ignored IO/file results are rejected.
 - `src/compiler/lowering.rs` lowers heap values, including strings, arrays, and results, as pointer-sized values and calls C runtime helpers for current heap/runtime ops.
 - `runtime/duumbi_runtime.c` already has heap string, array, result, and option helpers, but no stdin, file, directory, or workspace-root helpers.
 - `src/workspace.rs::run_workspace_binary` runs `.duumbi/build/output`, sets `current_dir(workspace_root)`, and captures stdout/stderr, but currently has no stdin helper and no explicit workspace-root environment contract.
@@ -61,6 +61,7 @@ Assumptions:
 ## Stage 8 Decisions
 
 - EOF before any stdin bytes is `Err(string)` with a stable error class such as `stdin_eof`.
+- EOF after reading one or more bytes without a trailing newline is a successful line read when the bytes are valid UTF-8.
 - `write_file_new` is not part of v1; fail-if-exists and append behavior are follow-ups.
 - `path_join("", "file.txt")`, `path_join("dir", "")`, and any empty normalized path component are rejected with `Err(string)`.
 - `@duumbi/stdlib-file` is not added to default `[dependencies]` by this issue.
@@ -84,6 +85,7 @@ Expected source changes:
 - `stdlib/file.manifest.toml`
   - Add source manifest metadata for registry-add use and #381 publishing.
   - Include exports matching the new file module.
+  - Treat this as a source-side metadata artifact only; cache seeding, vendoring, and packaging must copy or rename it to canonical module-root `manifest.toml`.
   - Do not make this a default workspace dependency.
 
 - `src/types.rs`
@@ -114,6 +116,10 @@ Expected source changes:
     - `FileExists` -> `result<bool,string>`
     - `ListDir` -> `result<array<string>,string>`
     - `PathJoin` -> `result<string,string>`
+
+- `src/graph/result_safety.rs`
+  - Treat `ReadLine`, `PrintLn`, `ReadFile`, `WriteFile`, `FileExists`, `ListDir`, and `PathJoin` as direct `Result` producers for unhandled-result detection.
+  - Add tests proving an ignored direct IO/file result is rejected and a checked or matched direct IO/file result is accepted.
 
 - `src/compiler/lowering.rs`
   - Declare C runtime functions:
@@ -277,6 +283,7 @@ Required behavior:
 - `read_line` strips one trailing `\n`; if the remaining line ends with `\r` from CRLF, strip that `\r` too.
 - `read_line` returns `Ok("")` for an empty line before a newline.
 - `read_line` returns `Err(stdin_eof...)` for EOF before any bytes.
+- `read_line` returns `Ok(string)` for valid UTF-8 bytes read before EOF even when there is no trailing newline.
 - `read_file` rejects invalid UTF-8 bytes.
 - `write_file` validates the DUUMBI string contents before writing.
 - Path strings must reject NUL bytes even if other DUUMBI strings can contain them.
@@ -334,6 +341,7 @@ Required checks:
 - Existing new workspaces do not include `@duumbi/stdlib-file`.
 - `stdlib/file.jsonld` parses as a module and exports the approved functions.
 - `stdlib/file.manifest.toml` parses and lists the same exports.
+- Any test cache, vendor, or package setup that uses `stdlib/file.manifest.toml` writes it as canonical `manifest.toml` in the module root next to `graph/`.
 
 Issue #381 owns broader Tier 1 publishing and any default dependency policy change.
 
@@ -344,7 +352,9 @@ Issue #381 owns broader Tier 1 publishing and any default dependency policy chan
 | Existing print wrappers stay compatible | Integration test importing `@duumbi/stdlib-io` calls `print_i64`, `print_f64`, `print_bool`, and `print_string`; stdout remains exact and wrappers return `0`. |
 | `read_line` reads a normal stdin line | Subprocess/workspace test feeds `hello\n`, handles `Result` with `ResultIsOk`/unwrap or `Match`, prints the value, and asserts `hello\n`. |
 | `read_line` reads an empty stdin line | Subprocess test feeds `\n`, handles `Ok("")`, and asserts the program reaches the success branch without hanging. |
+| `read_line` handles EOF after bytes | Subprocess test feeds `hello` without a trailing newline and asserts `Ok("hello")`. |
 | Invalid UTF-8 stdin returns error | Subprocess test writes invalid bytes to piped stdin and asserts `Err` class contains `stdin_invalid_utf8`. |
+| Ignored direct Result-producing IO/file ops are rejected | Validator/result-safety test builds a graph with an unhandled `duumbi:ReadLine` or `duumbi:ReadFile` op and asserts the existing result-safety diagnostic path rejects it; paired handled-result fixture passes. |
 | `print_ln("hello")` appends one newline | Runtime integration test calls the stdlib wrapper and asserts stdout is exactly `hello\n` and result is `Ok(0)`. |
 | Absolute paths are rejected | File API integration test passes `/tmp/duumbi.txt` or platform equivalent and asserts `Err(path_policy...)`. |
 | Parent-directory escapes are rejected | File API integration test passes `../outside.txt` and asserts `Err(path_policy...)`. |
@@ -375,7 +385,7 @@ Deterministic live E2E after implementation:
 1. Run `cargo build`.
 2. Create a temporary DUUMBI workspace.
 3. Run `target/debug/duumbi init` in that workspace.
-4. Seed only the test workspace cache with `@duumbi/stdlib-file@1.0.0` from the committed `stdlib/file.jsonld` and `stdlib/file.manifest.toml` sources, then add `"@duumbi/stdlib-file" = "1.0.0"` to that workspace config. This simulates registry-add/cache resolution without changing default init behavior.
+4. Seed only the test workspace cache with `@duumbi/stdlib-file@1.0.0` from the committed `stdlib/file.jsonld` and `stdlib/file.manifest.toml` sources, writing the manifest as `.duumbi/cache/@duumbi/stdlib-file@1.0.0/manifest.toml`, then add `"@duumbi/stdlib-file" = "1.0.0"` to that workspace config. This simulates registry-add/cache resolution without changing default init behavior.
 5. Add a workspace graph program that imports the updated IO module and the explicitly configured file module.
 6. Create workspace files:
    - `data/input.txt` with valid UTF-8 text.
@@ -425,6 +435,7 @@ Autonomous cycle budget:
 - Maximum external LLM cost per cycle: USD 2.
 - Maximum external LLM calls per cycle: 10.
 - Expected external LLM calls for this implementation: 0 unless the developer explicitly asks for live agent/provider validation.
+- Autonomous batch cap: 3 low-budget cycles; after the third autonomous cycle, stop and report remaining gaps before continuing.
 - No new third-party dependencies without human approval.
 - No implementation outside the approved product and technical specs.
 
@@ -438,6 +449,7 @@ Human authorization is required before continuing if any of these occur:
 
 - Estimated external LLM cost would exceed USD 2.
 - Expected external LLM calls would exceed 10.
+- The autonomous batch cap of 3 low-budget cycles would be exceeded.
 - Scope expands beyond DUUMBI-378.
 - A risky dependency, migration, security-sensitive behavior, irreversible operation, or broad refactor becomes necessary.
 - The implementation needs to change default `@duumbi/stdlib-file` distribution.
