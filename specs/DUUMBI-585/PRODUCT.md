@@ -309,6 +309,11 @@ Constraints:
 - `DUUMBI_TELEMETRY_DIR` may override the artifact directory for local tests or
   one-off runs.
 - Relative artifact paths resolve relative to the workspace root.
+- A configured `artifact-dir` must not silently split `trace_map.json` from
+  `traces.jsonl` or `crash_dump.jsonl`. If the traced runtime cannot honor the
+  configured directory without an environment override, the implementation must
+  expose that limitation as a Stage 8/Stage 10 gap before claiming #585 evidence
+  is complete.
 - Invalid path traversal, unsupported sampling, invalid sample rates, and
   unsupported value capture fail before traced build behavior proceeds.
 - Generated telemetry artifacts must not be committed to source control.
@@ -426,6 +431,24 @@ When telemetry artifacts are written
 Then the trace map, trace events, and crash dump are written under the override
 And the default source-controlled graph files are not mutated
 
+Scenario: Configured artifact directory keeps evidence together
+Given a workspace config sets a valid telemetry `artifact-dir`
+And no `DUUMBI_TELEMETRY_DIR` override is set
+When a traced build and runtime failure are executed from that workspace
+Then `trace_map.json`, `traces.jsonl`, and `crash_dump.jsonl` are all found in
+the same accepted telemetry directory
+And telemetry inspection can join crash evidence from that directory
+
+Scenario: Config-only runtime artifact routing gap is reported
+Given a traced build can write `trace_map.json` to a configured `artifact-dir`
+But the traced runtime cannot write `traces.jsonl` or `crash_dump.jsonl` to that
+configured directory without `DUUMBI_TELEMETRY_DIR`
+When Stage 10 audits the #585 artifact contract
+Then the implementation evidence reports a specific config-only artifact routing
+gap
+And the artifact contract is not claimed complete from split default/configured
+locations
+
 Scenario: Value capture remains absent in v1
 Given a developer configures telemetry value capture for a traced build
 When telemetry config is validated
@@ -516,6 +539,10 @@ Sequential work:
     fails closed.
   - Test or evidence proves local artifact path defaults and
     `DUUMBI_TELEMETRY_DIR` override behavior.
+  - Test or evidence proves configured `artifact-dir` behavior keeps
+    `trace_map.json`, `traces.jsonl`, and `crash_dump.jsonl` in the same
+    inspectable directory, or records a specific Stage 8/Stage 10 gap before the
+    artifact contract is claimed complete.
   - Test or evidence proves runtime argument/value capture remains absent.
   - Final evidence links the related merged issues/PRs and identifies whether
     no new code was needed or names the precise remaining gap.
