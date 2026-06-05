@@ -14,7 +14,7 @@ use crate::manifest::ModuleManifest;
 /// Embedded `stdlib/math.jsonld` — abs, max, min, sqrt, pow, mod, clamp, sign.
 const STDLIB_MATH: &str = include_str!("../../stdlib/math.jsonld");
 
-/// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool, string.
+/// Embedded `stdlib/io.jsonld` — print wrappers plus line-oriented Result I/O.
 const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
 
 /// Embedded `stdlib/lang.jsonld` — language utilities (assert_true).
@@ -296,12 +296,14 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
         ModuleManifest::new(
             "@duumbi/stdlib-io",
             STDLIB_VERSION,
-            "I/O utility functions (print wrappers for i64, f64, bool, string)",
+            "I/O utility functions (print wrappers, read_line, print_ln)",
             vec![
                 "print_i64".to_string(),
                 "print_f64".to_string(),
                 "print_bool".to_string(),
                 "print_string".to_string(),
+                "read_line".to_string(),
+                "print_ln".to_string(),
             ],
         ),
     )

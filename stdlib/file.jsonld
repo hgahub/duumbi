@@ -1,0 +1,142 @@
+{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:file",
+  "duumbi:name": "file",
+  "duumbi:exports": ["read_file", "write_file", "file_exists", "list_dir", "path_join"],
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:file/read_file",
+      "duumbi:name": "read_file",
+      "duumbi:returnType": "result<string,string>",
+      "duumbi:params": [
+        {"duumbi:name": "path", "duumbi:paramType": "string"},
+        {"duumbi:name": "max_bytes", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:file/read_file/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:file/read_file/entry/0",
+              "duumbi:variable": "path", "duumbi:resultType": "string"},
+            {"@type": "duumbi:Load", "@id": "duumbi:file/read_file/entry/1",
+              "duumbi:variable": "max_bytes", "duumbi:resultType": "i64"},
+            {"@type": "duumbi:ReadFile", "@id": "duumbi:file/read_file/entry/2",
+              "duumbi:path": {"@id": "duumbi:file/read_file/entry/0"},
+              "duumbi:maxBytes": {"@id": "duumbi:file/read_file/entry/1"},
+              "duumbi:resultType": "result<string,string>"},
+            {"@type": "duumbi:Return", "@id": "duumbi:file/read_file/entry/3",
+              "duumbi:operand": {"@id": "duumbi:file/read_file/entry/2"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:file/write_file",
+      "duumbi:name": "write_file",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [
+        {"duumbi:name": "path", "duumbi:paramType": "string"},
+        {"duumbi:name": "contents", "duumbi:paramType": "string"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:file/write_file/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:file/write_file/entry/0",
+              "duumbi:variable": "path", "duumbi:resultType": "string"},
+            {"@type": "duumbi:Load", "@id": "duumbi:file/write_file/entry/1",
+              "duumbi:variable": "contents", "duumbi:resultType": "string"},
+            {"@type": "duumbi:WriteFile", "@id": "duumbi:file/write_file/entry/2",
+              "duumbi:path": {"@id": "duumbi:file/write_file/entry/0"},
+              "duumbi:contents": {"@id": "duumbi:file/write_file/entry/1"},
+              "duumbi:resultType": "result<i64,string>"},
+            {"@type": "duumbi:Return", "@id": "duumbi:file/write_file/entry/3",
+              "duumbi:operand": {"@id": "duumbi:file/write_file/entry/2"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:file/file_exists",
+      "duumbi:name": "file_exists",
+      "duumbi:returnType": "result<bool,string>",
+      "duumbi:params": [{"duumbi:name": "path", "duumbi:paramType": "string"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:file/file_exists/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:file/file_exists/entry/0",
+              "duumbi:variable": "path", "duumbi:resultType": "string"},
+            {"@type": "duumbi:FileExists", "@id": "duumbi:file/file_exists/entry/1",
+              "duumbi:path": {"@id": "duumbi:file/file_exists/entry/0"},
+              "duumbi:resultType": "result<bool,string>"},
+            {"@type": "duumbi:Return", "@id": "duumbi:file/file_exists/entry/2",
+              "duumbi:operand": {"@id": "duumbi:file/file_exists/entry/1"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:file/list_dir",
+      "duumbi:name": "list_dir",
+      "duumbi:returnType": "result<array<string>,string>",
+      "duumbi:params": [{"duumbi:name": "path", "duumbi:paramType": "string"}],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:file/list_dir/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:file/list_dir/entry/0",
+              "duumbi:variable": "path", "duumbi:resultType": "string"},
+            {"@type": "duumbi:ListDir", "@id": "duumbi:file/list_dir/entry/1",
+              "duumbi:path": {"@id": "duumbi:file/list_dir/entry/0"},
+              "duumbi:resultType": "result<array<string>,string>"},
+            {"@type": "duumbi:Return", "@id": "duumbi:file/list_dir/entry/2",
+              "duumbi:operand": {"@id": "duumbi:file/list_dir/entry/1"}}
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:file/path_join",
+      "duumbi:name": "path_join",
+      "duumbi:returnType": "result<string,string>",
+      "duumbi:params": [
+        {"duumbi:name": "left", "duumbi:paramType": "string"},
+        {"duumbi:name": "right", "duumbi:paramType": "string"}
+      ],
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:file/path_join/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {"@type": "duumbi:Load", "@id": "duumbi:file/path_join/entry/0",
+              "duumbi:variable": "left", "duumbi:resultType": "string"},
+            {"@type": "duumbi:Load", "@id": "duumbi:file/path_join/entry/1",
+              "duumbi:variable": "right", "duumbi:resultType": "string"},
+            {"@type": "duumbi:PathJoin", "@id": "duumbi:file/path_join/entry/2",
+              "duumbi:left": {"@id": "duumbi:file/path_join/entry/0"},
+              "duumbi:right": {"@id": "duumbi:file/path_join/entry/1"},
+              "duumbi:resultType": "result<string,string>"},
+            {"@type": "duumbi:Return", "@id": "duumbi:file/path_join/entry/3",
+              "duumbi:operand": {"@id": "duumbi:file/path_join/entry/2"}}
+          ]
+        }
+      ]
+    }
+  ]
+}

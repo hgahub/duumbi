@@ -1123,6 +1123,17 @@ fn compile_function(
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     builder.ins().call(print_string_ref, &[operand_val]);
                 }
+                Op::ReadLine
+                | Op::PrintLn
+                | Op::ReadFile
+                | Op::WriteFile
+                | Op::FileExists
+                | Op::ListDir
+                | Op::PathJoin => {
+                    return Err(CompileError::Cranelift {
+                        message: format!("{} lowering is not implemented yet", node.op),
+                    });
+                }
                 Op::StringConcat => {
                     let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
                     let left_type = get_left_operand_type(graph, node_idx);
