@@ -1254,6 +1254,10 @@ void *duumbi_file_exists(void *path_ptr) {
     if (!duumbi_path_inside_root(root, resolved)) {
         return duumbi_err_cstr("path_policy: path is outside the workspace");
     }
+    struct stat st;
+    if (stat(resolved, &st) != 0) {
+        return duumbi_ok_bool(0);
+    }
     return duumbi_ok_bool(1);
 }
 
