@@ -10,16 +10,19 @@
 #if defined(_WIN32)
 #include <direct.h>
 #include <io.h>
+#include <process.h>
 #include <windows.h>
 #define DUUMBI_MKDIR(path) _mkdir(path)
 #define DUUMBI_PATH_SEP '\\'
 #define DUUMBI_REALPATH(path, resolved) _fullpath((resolved), (path), DUUMBI_PATH_BUFFER_LEN)
+#define DUUMBI_PROCESS_ID() _getpid()
 #else
 #include <dirent.h>
 #include <unistd.h>
 #define DUUMBI_MKDIR(path) mkdir(path, 0777)
 #define DUUMBI_PATH_SEP '/'
 #define DUUMBI_REALPATH(path, resolved) realpath((path), (resolved))
+#define DUUMBI_PROCESS_ID() getpid()
 #endif
 
 #ifndef S_IFMT
@@ -49,6 +52,7 @@
 #define DUUMBI_TRACE_SCHEMA_VERSION "duumbi.telemetry.trace.v1"
 #define DUUMBI_CRASH_SCHEMA_VERSION "duumbi.telemetry.crash.v1"
 #define DUUMBI_PATH_BUFFER_LEN 4096
+#define DUUMBI_STDIN_LINE_MAX 65536
 #define DUUMBI_TRACE_STACK_LIMIT 1024
 #define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
 
@@ -1003,26 +1007,45 @@ static int duumbi_resolve_write_workspace_path(void *path_ptr, char *out, size_t
         return -1;
     }
 
+    char *target_name = strrchr(joined, DUUMBI_PATH_SEP);
+    if (target_name == NULL || target_name[1] == '\0') {
+        return -1;
+    }
+    target_name++;
+
     char parent[DUUMBI_PATH_BUFFER_LEN];
-    size_t joined_len = strlen(joined);
-    if (joined_len >= sizeof(parent)) {
+    size_t parent_len = (size_t)((target_name - 1) - joined);
+    if (parent_len == 0 || parent_len >= sizeof(parent)) {
         return -1;
     }
-    memcpy(parent, joined, joined_len + 1);
-    char *slash = strrchr(parent, DUUMBI_PATH_SEP);
-    if (slash == NULL) {
-        return -1;
-    }
-    *slash = '\0';
+    memcpy(parent, joined, parent_len);
+    parent[parent_len] = '\0';
+
     if (DUUMBI_REALPATH(parent, resolved) == NULL || !duumbi_path_inside_root(root, resolved)) {
         return -1;
     }
 
-    if (joined_len >= out_len) {
+    int written = snprintf(out, out_len, "%s%c%s", resolved, DUUMBI_PATH_SEP, target_name);
+    if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
-    memcpy(out, joined, joined_len + 1);
     return 0;
+}
+
+static int duumbi_temp_write_path(const char *path, char *out, size_t out_len) {
+    int written = snprintf(out, out_len, "%s.tmp.%ld", path, (long)DUUMBI_PROCESS_ID());
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int duumbi_replace_file(const char *tmp_path, const char *target_path) {
+#if defined(_WIN32)
+    return MoveFileExA(tmp_path, target_path, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+#else
+    return rename(tmp_path, target_path) == 0 ? 0 : -1;
+#endif
 }
 
 void *duumbi_read_line(void) {
@@ -1035,13 +1058,26 @@ void *duumbi_read_line(void) {
 
     int ch;
     while ((ch = fgetc(stdin)) != EOF) {
+        if (len >= DUUMBI_STDIN_LINE_MAX) {
+            free(buffer);
+            return duumbi_err_cstr("stdin_line_too_long: stdin line exceeds 65536 bytes");
+        }
         if (len + 1 >= capacity) {
-            capacity *= 2;
-            char *grown = (char *)realloc(buffer, capacity);
+            size_t max_capacity = DUUMBI_STDIN_LINE_MAX + 1;
+            size_t next_capacity = capacity * 2;
+            if (next_capacity < capacity || next_capacity > max_capacity) {
+                next_capacity = max_capacity;
+            }
+            if (next_capacity <= capacity) {
+                free(buffer);
+                return duumbi_err_cstr("stdin_line_too_long: stdin line exceeds 65536 bytes");
+            }
+            char *grown = (char *)realloc(buffer, next_capacity);
             if (grown == NULL) {
                 free(buffer);
                 return duumbi_err_cstr("io_error: out of memory");
             }
+            capacity = next_capacity;
             buffer = grown;
         }
         buffer[len++] = (char)ch;
@@ -1164,14 +1200,31 @@ void *duumbi_file_write(void *path_ptr, void *contents_ptr) {
         return duumbi_err_cstr("path_policy: path is outside the workspace");
     }
 
-    FILE *file = fopen(path, "wb");
+    char tmp_path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_temp_write_path(path, tmp_path, sizeof(tmp_path)) != 0) {
+        return duumbi_err_cstr("path_policy: temporary file path is too long");
+    }
+
+    remove(tmp_path);
+    FILE *file = fopen(tmp_path, "wbx");
     if (file == NULL) {
         return duumbi_err_cstr("io_error: failed to open file for writing");
     }
+    if ((uint64_t)(size_t)contents->len != contents->len) {
+        fclose(file);
+        remove(tmp_path);
+        return duumbi_err_cstr("io_error: file contents are too large to write");
+    }
     size_t written = fwrite(contents->data, 1, (size_t)contents->len, file);
+    int write_error = ferror(file);
     int close_error = fclose(file);
-    if (written != contents->len || close_error != 0) {
+    if (written != (size_t)contents->len || write_error || close_error != 0) {
+        remove(tmp_path);
         return duumbi_err_cstr("io_error: failed to write file");
+    }
+    if (duumbi_replace_file(tmp_path, path) != 0) {
+        remove(tmp_path);
+        return duumbi_err_cstr("io_error: failed to replace file");
     }
     return duumbi_ok_i64(0);
 }
