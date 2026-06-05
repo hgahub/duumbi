@@ -101,7 +101,9 @@ When this is done:
   manipulate raw socket descriptors or integer handles as the API.
 - Require explicit `timeout_ms` parameters for all TCP operations that can block.
 - Require TCP behavior to be testable through loopback flows in CI or local
-  integration tests.
+  integration tests. Loopback listener tests should use a free port selected by
+  the test harness before the DUUMBI program runs, and port-collision failures
+  should be handled as retryable test setup rather than a new stdlib API.
 - Add source-level module artifacts and manifest export lists in the repository
   path accepted by the technical spec.
 - Update parser, type, lowering, runtime, cache/module, and linker surfaces only
@@ -334,8 +336,12 @@ Constraints:
   that need a specific kind reject other kinds with `Err(string)`.
 - A TCP socket is open, timed out, closed, or failed.
 - A TCP listener is open, timed out while accepting, closed, or failed.
-- A socket peer closes the connection before data is available; the read call
-  reports a visible result instead of hanging or panicking.
+- A socket peer closes the connection before any data is available; `tcp_read`
+  returns `Err(string)` that identifies peer close or EOF instead of returning an
+  ambiguous empty success, hanging, or panicking.
+- A socket peer closes the connection after some data has been read; `tcp_read`
+  may return `Ok(partial_string)` for the bytes already received when they are
+  safely representable, and a later read reports EOF/peer close as `Err(string)`.
 - A write succeeds fully or partially and reports the number of bytes accepted by
   the runtime/OS boundary.
 
@@ -363,9 +369,10 @@ Constraints:
 - JSON allocation/resource failures return `Err(string)` where recoverable; only
   unrecoverable process-level failures may use the existing panic path.
 - Invalid host strings return `Err(string)`.
-- Invalid port values outside the accepted TCP port range return `Err(string)`.
-- Invalid `timeout_ms` values return `Err(string)`.
-- Invalid `max_bytes` values return `Err(string)`.
+- Invalid port values outside the accepted TCP port range, including `port <= 0`,
+  return `Err(string)`.
+- Invalid `timeout_ms` values, including `timeout_ms <= 0`, return `Err(string)`.
+- Invalid `max_bytes` values, including `max_bytes <= 0`, return `Err(string)`.
 - DNS, connect, bind, listen, accept, read, write, and close failures return
   `Err(string)`.
 - If incoming TCP bytes cannot be safely represented as a DUUMBI string, the
@@ -485,7 +492,8 @@ Feature: Raw TCP operations are bounded and explicit
 
   Scenario: DUUMBI can create a loopback listener and accept a connection
     Given a DUUMBI program imports `@duumbi/stdlib-net`
-    When the program calls `tcp_listen` on a loopback host and available port
+    And the test harness selected a free loopback port before the program runs
+    When the program calls `tcp_listen` on the loopback host and selected port
     And a client connects before the accept timeout
     And the program calls `tcp_accept`
     Then `tcp_listen` returns `Ok(tcp_listener)`
@@ -520,8 +528,12 @@ Feature: Raw TCP operations are bounded and explicit
     Then the result is `Err(string)`
     When the program calls `tcp_read` with `max_bytes` equal to `0`
     Then the result is `Err(string)`
+    When the program calls `tcp_read` with negative `max_bytes`
+    Then the result is `Err(string)`
     When the program calls any blocking TCP operation with `timeout_ms` equal to
       `0`
+    Then the result is `Err(string)`
+    When the program calls any blocking TCP operation with negative `timeout_ms`
     Then the result is `Err(string)`
 
   Scenario: Nonrepresentable TCP bytes are not silently corrupted
