@@ -71,7 +71,7 @@ functions = ["print_i64", "print_f64", "print_bool", "print_string", "read_line"
 
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
-    assert_eq!(run.stdout, "hello duumbi\n1\nfalse\n");
+    assert_eq!(run.stdout.replace("\r\n", "\n"), "hello duumbi\n1\nfalse\n");
     assert_eq!(
         fs::read_to_string(tmp.path().join("data/out.txt")).expect("read output"),
         "hello duumbi"
