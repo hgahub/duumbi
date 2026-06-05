@@ -298,7 +298,7 @@ fn workspace_run_uses_configured_telemetry_artifact_dir() {
     let run = Command::new(duumbi)
         .arg("run")
         .current_dir(&workspace)
-        .env_remove("DUUMBI_TELEMETRY_DIR")
+        .env("DUUMBI_TELEMETRY_DIR", "")
         .output()
         .expect("invariant: duumbi run must run");
     assert!(

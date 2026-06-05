@@ -226,7 +226,7 @@ pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<Bi
 
     let mut command = std::process::Command::new(&output_path);
     command.args(args).current_dir(workspace_root);
-    if std::env::var_os(TELEMETRY_DIR_ENV).is_none()
+    if std::env::var_os(TELEMETRY_DIR_ENV).is_none_or(|value| value.is_empty())
         && let Some(telemetry_dir) = workspace_runtime_telemetry_dir(workspace_root)
     {
         command.env(TELEMETRY_DIR_ENV, telemetry_dir);
