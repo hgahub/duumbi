@@ -574,6 +574,12 @@ fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Resu
                 .with_context(|| {
                     format!("Failed to parse repair context '{}'", context.display())
                 })?;
+            if !telemetry::repair_context_includes_graph_source(&crash_context, &graph) {
+                anyhow::bail!(
+                    "repair validation graph '{}' is not present in repair context graph_sources",
+                    graph.display()
+                );
+            }
             let patch_json = fs::read_to_string(&patch)
                 .with_context(|| format!("Failed to read repair patch '{}'", patch.display()))?;
             let patch_value: serde_json::Value = serde_json::from_str(&patch_json)

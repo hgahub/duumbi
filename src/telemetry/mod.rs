@@ -672,6 +672,13 @@ impl RepairValidationSourceArtifact {
             paths: crash_context.evidence.graph_sources.clone(),
         }
     }
+
+    fn from_source(source: &RepairValidationSource) -> Self {
+        Self {
+            kind: "graph_sources".to_string(),
+            paths: vec![source.graph_path().display().to_string()],
+        }
+    }
 }
 
 /// Bounded summary of the proposed repair patch.
@@ -773,9 +780,9 @@ impl RepairTestSummary {
                 RepairValidationGate::RelevantTests,
             ),
             commands: gate
-                .and_then(|evidence| evidence.command.clone())
-                .into_iter()
-                .collect(),
+                .and_then(|evidence| evidence.command.as_deref())
+                .map(split_evidence_lines)
+                .unwrap_or_default(),
             output: gate.and_then(|evidence| evidence.output.clone()),
         }
     }
@@ -890,6 +897,16 @@ impl RepairValidationEvidence {
         proposed_patch: serde_json::Value,
         gates: Vec<RepairValidationGateEvidence>,
     ) -> Self {
+        let source_artifact = RepairValidationSourceArtifact::from_context(&crash_context);
+        Self::with_source_artifact(crash_context, proposed_patch, source_artifact, gates)
+    }
+
+    fn with_source_artifact(
+        crash_context: RepairCrashContext,
+        proposed_patch: serde_json::Value,
+        source_artifact: RepairValidationSourceArtifact,
+        gates: Vec<RepairValidationGateEvidence>,
+    ) -> Self {
         let local_validation_passed =
             required_repair_validation_gates()
                 .iter()
@@ -903,7 +920,6 @@ impl RepairValidationEvidence {
         } else {
             RepairHumanReviewState::NotReady
         };
-        let source_artifact = RepairValidationSourceArtifact::from_context(&crash_context);
         let patch_summary = RepairPatchSummary::from_patch_value(&proposed_patch);
         let rebuild_summary = RepairRebuildSummary::from_gates(&gates);
         let test_summary = RepairTestSummary::from_gates(&gates);
@@ -1189,6 +1205,19 @@ pub fn validate_repair_candidate(
     validate_repair_candidate_inner(request, None)
 }
 
+/// Returns true when a repair context includes the graph source selected for validation.
+#[must_use]
+pub fn repair_context_includes_graph_source(
+    crash_context: &RepairCrashContext,
+    graph_path: &Path,
+) -> bool {
+    crash_context
+        .evidence
+        .graph_sources
+        .iter()
+        .any(|source| graph_sources_match(source, graph_path))
+}
+
 /// Validates a proposed repair candidate and executes rebuild/test gates through a runner.
 ///
 /// The runner receives the temporary patched graph JSON and must remain
@@ -1209,6 +1238,7 @@ fn validate_repair_candidate_inner(
     request: RepairValidationRequest,
     runner: Option<&mut dyn RepairValidationRunner>,
 ) -> Result<RepairValidationEvidence, TelemetryError> {
+    let source_artifact = RepairValidationSourceArtifact::from_source(&request.source);
     let mut gates = Vec::new();
 
     let patch = match parse_repair_graph_patch(&request.patch_json) {
@@ -1228,9 +1258,10 @@ fn validate_repair_candidate_inner(
                 "proposed patch did not parse as GraphPatch",
                 Some(err.to_string()),
             ));
-            return Ok(RepairValidationEvidence::new(
+            return Ok(RepairValidationEvidence::with_source_artifact(
                 request.crash_context,
                 request.patch_json,
+                source_artifact,
                 gates,
             ));
         }
@@ -1272,9 +1303,10 @@ fn validate_repair_candidate_inner(
                 "patch application failed before graph parsing",
                 Some(err.to_string()),
             ));
-            return Ok(RepairValidationEvidence::new(
+            return Ok(RepairValidationEvidence::with_source_artifact(
                 request.crash_context,
                 request.patch_json,
+                source_artifact.clone(),
                 gates,
             ));
         }
@@ -1298,9 +1330,10 @@ fn validate_repair_candidate_inner(
                 "patched JSON-LD failed graph parsing",
                 Some(err.to_string()),
             ));
-            return Ok(RepairValidationEvidence::new(
+            return Ok(RepairValidationEvidence::with_source_artifact(
                 request.crash_context,
                 request.patch_json,
+                source_artifact.clone(),
                 gates,
             ));
         }
@@ -1323,9 +1356,10 @@ fn validate_repair_candidate_inner(
                 "patched AST failed graph build",
                 Some(join_graph_errors(&errors)),
             ));
-            return Ok(RepairValidationEvidence::new(
+            return Ok(RepairValidationEvidence::with_source_artifact(
                 request.crash_context,
                 request.patch_json,
+                source_artifact.clone(),
                 gates,
             ));
         }
@@ -1346,9 +1380,10 @@ fn validate_repair_candidate_inner(
             "patched graph failed semantic validation",
             Some(join_diagnostics(&diagnostics)),
         ));
-        return Ok(RepairValidationEvidence::new(
+        return Ok(RepairValidationEvidence::with_source_artifact(
             request.crash_context,
             request.patch_json,
+            source_artifact.clone(),
             gates,
         ));
     }
@@ -1363,9 +1398,10 @@ fn validate_repair_candidate_inner(
             rebuild.output.clone(),
         ));
         if !rebuild.passed {
-            return Ok(RepairValidationEvidence::new(
+            return Ok(RepairValidationEvidence::with_source_artifact(
                 request.crash_context,
                 request.patch_json,
+                source_artifact.clone(),
                 gates,
             ));
         }
@@ -1380,11 +1416,24 @@ fn validate_repair_candidate_inner(
         ));
     }
 
-    Ok(RepairValidationEvidence::new(
+    Ok(RepairValidationEvidence::with_source_artifact(
         request.crash_context,
         request.patch_json,
+        source_artifact,
         gates,
     ))
+}
+
+fn graph_sources_match(context_source: &str, graph_path: &Path) -> bool {
+    let context_path = Path::new(context_source);
+    if context_path == graph_path {
+        return true;
+    }
+
+    match (context_path.canonicalize(), graph_path.canonicalize()) {
+        (Ok(context_source), Ok(graph_path)) => context_source == graph_path,
+        _ => false,
+    }
 }
 
 fn join_graph_errors(errors: &[crate::graph::GraphError]) -> String {
@@ -1415,6 +1464,15 @@ fn is_candidate_aware_test_command(command: &str) -> bool {
     command.contains("{candidate_graph}")
         || command.contains("{candidate_binary}")
         || command.contains("{candidate_workspace}")
+}
+
+fn split_evidence_lines(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn bounded_lossy(bytes: &[u8], max_bytes: usize) -> String {
@@ -2987,6 +3045,73 @@ mod tests {
                 .gates
                 .iter()
                 .any(|gate| gate.gate == RepairValidationGate::AtomicPatchApplication)
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_reports_selected_source_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, context_graph_source) = test_repair_context_and_source(&dir);
+        let selected_graph_source =
+            write_test_graph_source(&dir, test_graph_source(), "selected.jsonld");
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({ "ops": [{ "kind": "unsupported" }] }),
+            selected_graph_source.clone(),
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("malformed patch should return evidence");
+
+        assert_eq!(
+            evidence.source_artifact.paths,
+            vec![selected_graph_source.display().to_string()]
+        );
+        assert_ne!(
+            evidence.source_artifact.paths,
+            vec![context_graph_source.display().to_string()]
+        );
+    }
+
+    #[test]
+    fn repair_context_graph_source_match_accepts_same_or_canonical_path() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let canonical_graph_source =
+            std::fs::canonicalize(&graph_source).expect("graph source should canonicalize");
+
+        assert!(repair_context_includes_graph_source(
+            &context,
+            &graph_source
+        ));
+        assert!(repair_context_includes_graph_source(
+            &context,
+            &canonical_graph_source
+        ));
+        assert!(!repair_context_includes_graph_source(
+            &context,
+            &dir.path().join("other.jsonld")
+        ));
+    }
+
+    #[test]
+    fn repair_test_summary_splits_multiple_commands() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, _) = test_repair_context_and_source(&dir);
+        let gates = vec![RepairValidationGateEvidence::with_command(
+            RepairValidationGate::RelevantTests,
+            true,
+            "candidate-aware tests passed",
+            Some("first command\n\n second command ".to_string()),
+            Some("test output".to_string()),
+        )];
+
+        let evidence =
+            RepairValidationEvidence::new(context, serde_json::json!({ "ops": [] }), gates);
+
+        assert_eq!(
+            evidence.test_summary.commands,
+            vec!["first command".to_string(), "second command".to_string()]
         );
     }
 
