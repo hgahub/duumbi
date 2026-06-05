@@ -142,8 +142,8 @@ Facts:
 - The Stage 5 decision records `Decision: Accept`, `Next state: Spec Needed`,
   and no remaining open questions.
 - Issue #585 is labeled `accepted` and `needs-spec` at Stage 6 intake.
-- Stage 4 routed #585 to `Needs Human Acceptance` as a Phase 13 telemetry
-  artifact contract and reconciliation issue.
+- Stage 4 routed #585 to `Needs Human Acceptance` as the next actionable Phase
+  13 telemetry pipeline item.
 - #585 is a child of #580.
 - The approved #580 product and technical specs define the first Phase 13
   runtime feedback slice as local developer/test telemetry, graph
@@ -238,7 +238,8 @@ Constraints:
   panic happened but cannot prove graph back-mapping. Crash function/block IDs
   must join to trace-map entries of the matching kind.
 
-- **Decision:** Keep default untraced behavior outside the evidence contract.
+- **Decision:** Do not treat default untraced behavior as valid telemetry
+  evidence for graph back-mapping.
   **Evidence:** #583 and #584 require traced behavior to be explicit. The
   controlled untraced failure test confirms that untraced panic output is not
   accepted as mapped telemetry evidence.
