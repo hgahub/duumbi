@@ -220,10 +220,15 @@ that remain `deferred-upstream`.
 
 Tighten `duumbi publish` validation so it matches package behavior:
 
+- Validate required manifest metadata before dry-run or production publish:
+  name, version, description, license, and complete export list.
 - Discover every `.duumbi/graph/*.jsonld` file.
 - Fail visibly if no `.jsonld` graph file exists.
 - Validate every discovered graph file before packaging.
 - Stop requiring `.duumbi/graph/main.jsonld` specifically for module publish.
+- Extend `src/registry/package.rs` manifest validation or add an equivalent
+  publish preflight so modules missing `description` or `license` cannot be
+  packaged as release-ready stdlib artifacts.
 - Preserve clear error context that names the failing graph file.
 - Preserve current manifest validation, archive creation, integrity display,
   credential checks, and dry-run behavior.
