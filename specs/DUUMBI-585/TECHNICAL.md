@@ -454,10 +454,11 @@ Recommended live traced-failure smoke:
 ```sh
 cargo build
 tmp="$(mktemp -d)"
-DUUMBI_TELEMETRY_DIR="$tmp/telemetry" target/debug/duumbi build --trace \
+export DUUMBI_TELEMETRY_DIR="$tmp/telemetry"
+target/debug/duumbi build --trace \
   tests/fixtures/telemetry/option_none_unwrap.jsonld \
   -o "$tmp/panic-fixture"
-DUUMBI_TELEMETRY_DIR="$tmp/telemetry" "$tmp/panic-fixture" || true
+"$tmp/panic-fixture" || true
 test -f "$tmp/telemetry/trace_map.json"
 test -f "$tmp/telemetry/traces.jsonl"
 test -f "$tmp/telemetry/crash_dump.jsonl"
@@ -704,8 +705,8 @@ Before #585 implementation work can be recommended for review or completion:
 
 - If baseline evidence already satisfies the contract, do not add duplicate
   code. Post evidence and route according to Stage 10/Stage 11 workflow.
-- If tests fail due product behavior, fix only the smallest relevant area.
-- If tests fail due local native-link/toolchain behavior, reproduce or check
+- If tests fail due to product behavior, fix only the smallest relevant area.
+- If tests fail due to local native-link/toolchain behavior, reproduce or check
   clean `main`, record exact failure, and use GitHub CI or a supported runner
   only when the blocker is demonstrably environmental.
 - If configured artifact-directory behavior splits artifacts, do not claim
