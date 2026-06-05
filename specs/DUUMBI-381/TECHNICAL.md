@@ -188,19 +188,24 @@ body, but it must be source-backed and reviewable.
 
 Initial matrix states:
 
-| Module | Required #381 state before production publish |
-|---|---|
-| `@duumbi/stdlib-math` | `publishable-after-verify` |
-| `@duumbi/stdlib-io` | `publishable-after-verify` |
-| `@duumbi/stdlib-lang` | `publishable-after-verify` |
-| `@duumbi/stdlib-string` | `publishable-after-verify` |
-| `@duumbi/stdlib-file` | `publishable-after-verify` when source manifest, graph, dry-run, and import/build/run evidence pass |
-| `@duumbi/stdlib-json` | `publishable-after-verify` when source manifest, graph, dry-run, and import/build/run evidence pass |
-| `@duumbi/stdlib-net` | `publishable-after-verify` when source manifest, graph, dry-run, and import/build/run evidence pass |
-| `@duumbi/stdlib-server` | `publishable-after-verify` only after #381 server implementation and review evidence pass |
-| `@duumbi/stdlib-http` | `deferred-upstream` until #380 technical spec, implementation, and review gates complete |
-| `@duumbi/stdlib-tls` if separate | `deferred-upstream` until #380 explicitly approves a separate module |
-| `@duumbi/stdlib-db` | `deferred-upstream` until #380 technical spec, implementation, and review gates complete |
+- `@duumbi/stdlib-math`: `publishable-after-verify`.
+- `@duumbi/stdlib-io`: `publishable-after-verify`.
+- `@duumbi/stdlib-lang`: `publishable-after-verify`.
+- `@duumbi/stdlib-string`: `publishable-after-verify`.
+- `@duumbi/stdlib-file`: `publishable-after-verify` when source manifest,
+  graph, dry-run, and import/build/run evidence pass.
+- `@duumbi/stdlib-json`: `publishable-after-verify` when source manifest,
+  graph, dry-run, and import/build/run evidence pass.
+- `@duumbi/stdlib-net`: `publishable-after-verify` when source manifest,
+  graph, dry-run, and import/build/run evidence pass.
+- `@duumbi/stdlib-server`: `publishable-after-verify` only after #381 server
+  implementation and review evidence pass.
+- `@duumbi/stdlib-http`: `deferred-upstream` until #380 technical spec,
+  implementation, and review gates complete.
+- `@duumbi/stdlib-tls` if separate: `deferred-upstream` until #380 explicitly
+  approves a separate module.
+- `@duumbi/stdlib-db`: `deferred-upstream` until #380 technical spec,
+  implementation, and review gates complete.
 
 Matrix evidence must include:
 
@@ -463,21 +468,52 @@ must not be added to default dependencies.
 
 ## BDD-To-Test Mapping
 
-| Product scenario | Required automated or reviewed evidence |
-|---|---|
-| Ready core module passes dry-run package verification | Test or release helper creates a publishable workspace for `@duumbi/stdlib-math`, runs the dry-run publish path, and asserts archive contents include `manifest.toml`, `graph/*.jsonld`, `CHECKSUM`, and integrity. |
-| Module with incomplete upstream gates is deferred | Publish-matrix evidence marks `@duumbi/stdlib-http`, optional `@duumbi/stdlib-tls`, and `@duumbi/stdlib-db` as `deferred-upstream` with #380 as the dependency. Review evidence is acceptable because this depends on GitHub workflow state. |
-| Production publish is blocked without credentials | CLI or integration test runs non-dry-run publish against a configured authenticated registry name with no credential and asserts an `E014`-style missing-authentication error before upload. |
-| Published module is discoverable | Embedded-registry integration test publishes `@duumbi/stdlib-string@1.0.0`, runs search through the registry client or CLI path, and asserts the module/version metadata is returned. |
-| Published module installs into a clean workspace | Embedded-registry integration test installs a published package with `duumbi deps add`, then asserts `.duumbi/cache`, `config.toml`, manifest, graph files, and integrity metadata. |
-| Installed module can be imported, built, and run | Clean-workspace integration test imports at least one installed module export, builds the program, runs it, and checks output or exit code. Cover at least one core module and one runtime-backed module when available. |
-| Static route server returns a configured response | Loopback integration test compiles/runs a DUUMBI fixture that creates a server, registers `GET /health`, starts with `max_requests = 1`, sends a local HTTP request, and asserts status, headers, body, and `Ok(1)`. |
-| Server start stops after the request limit | Same loopback fixture or a focused second fixture asserts the process exits after one handled request and leaves no long-running child. |
-| Server start times out without hanging | Loopback/no-client integration test starts the server with short timeout and asserts a documented timeout result and bounded process exit. |
-| Invalid route data is reported as an error | Runtime or compiled-fixture test calls `route_add_static` with invalid method or path and asserts `Err(string)` with no later exposed route. |
-| Closed server rejects later operations | Runtime or compiled-fixture test closes a server and then asserts `route_add_static` and `server_start` return `Err(string)` without crash or double free. |
-| New workspaces keep the core default dependency set | Init/config test asserts default dependencies include only math, io, lang, and string; server, JSON, TCP, HTTP, DB, and TLS are absent unless later product approval changes policy. |
-| Downstream smoke-test issue receives a concrete matrix | Stage 10 PR body or issue comment lists final module matrix, registry target, package integrity, publish status, minimal verification result, and #382 handoff. |
+- Ready core module passes dry-run package verification: a test or release
+  helper creates a publishable workspace for `@duumbi/stdlib-math`, runs the
+  dry-run publish path, and asserts archive contents include `manifest.toml`,
+  `graph/*.jsonld`, `CHECKSUM`, and integrity.
+- Module with incomplete upstream gates is deferred: publish-matrix evidence
+  marks `@duumbi/stdlib-http`, optional `@duumbi/stdlib-tls`, and
+  `@duumbi/stdlib-db` as `deferred-upstream` with #380 as the dependency.
+  Review evidence is acceptable because this depends on GitHub workflow state.
+- Production publish is blocked without credentials: a CLI or integration test
+  runs non-dry-run publish against a configured authenticated registry name with
+  no credential and asserts an `E014`-style missing-authentication error before
+  upload.
+- Published module is discoverable: an embedded-registry integration test
+  publishes `@duumbi/stdlib-string@1.0.0`, runs search through the registry
+  client or CLI path, and asserts the module/version metadata is returned.
+- Published module installs into a clean workspace: an embedded-registry
+  integration test installs a published package with `duumbi deps add`, then
+  asserts `.duumbi/cache`, `config.toml`, manifest, graph files, and integrity
+  metadata.
+- Installed module can be imported, built, and run: a clean-workspace
+  integration test imports at least one installed module export, builds the
+  program, runs it, and checks output or exit code. Cover at least one core
+  module and one runtime-backed module when available.
+- Static route server returns a configured response: a loopback integration
+  test compiles/runs a DUUMBI fixture that creates a server, registers
+  `GET /health`, starts with `max_requests = 1`, sends a local HTTP request,
+  and asserts status, headers, body, and `Ok(1)`.
+- Server start stops after the request limit: the same loopback fixture or a
+  focused second fixture asserts the process exits after one handled request
+  and leaves no long-running child.
+- Server start times out without hanging: a loopback/no-client integration test
+  starts the server with short timeout and asserts a documented timeout result
+  and bounded process exit.
+- Invalid route data is reported as an error: a runtime or compiled-fixture test
+  calls `route_add_static` with invalid method or path and asserts
+  `Err(string)` with no later exposed route.
+- Closed server rejects later operations: a runtime or compiled-fixture test
+  closes a server and then asserts `route_add_static` and `server_start` return
+  `Err(string)` without crash or double free.
+- New workspaces keep the core default dependency set: an init/config test
+  asserts default dependencies include only math, io, lang, and string; server,
+  JSON, TCP, HTTP, DB, and TLS are absent unless later product approval changes
+  policy.
+- Downstream smoke-test issue receives a concrete matrix: the Stage 10 PR body
+  or issue comment lists final module matrix, registry target, package
+  integrity, publish status, minimal verification result, and #382 handoff.
 
 Minimum new automated test coverage:
 
