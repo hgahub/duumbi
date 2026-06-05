@@ -9,11 +9,16 @@
 
 #if defined(_WIN32)
 #include <direct.h>
+#include <io.h>
 #define DUUMBI_MKDIR(path) _mkdir(path)
 #define DUUMBI_PATH_SEP '\\'
+#define DUUMBI_REALPATH(path, resolved) _fullpath((resolved), (path), DUUMBI_PATH_BUFFER_LEN)
 #else
+#include <dirent.h>
+#include <unistd.h>
 #define DUUMBI_MKDIR(path) mkdir(path, 0777)
 #define DUUMBI_PATH_SEP '/'
+#define DUUMBI_REALPATH(path, resolved) realpath((path), (resolved))
 #endif
 
 #if defined(_MSC_VER)
@@ -28,6 +33,7 @@
 #define DUUMBI_CRASH_SCHEMA_VERSION "duumbi.telemetry.crash.v1"
 #define DUUMBI_PATH_BUFFER_LEN 4096
 #define DUUMBI_TRACE_STACK_LIMIT 1024
+#define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -747,4 +753,464 @@ void *duumbi_string_replace(void *haystack, void *needle, void *replacement) {
            (size_t)(h->len - match_pos - n->len));
     result->data[new_len] = '\0';
     return result;
+}
+
+/* ── DUUMBI-378 text I/O and workspace-confined file APIs ─────────── */
+
+static int duumbi_utf8_valid(const char *data, uint64_t len) {
+    uint64_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)data[i];
+        if (c <= 0x7f) {
+            i++;
+        } else if ((c & 0xe0) == 0xc0) {
+            if (i + 1 >= len) return 0;
+            unsigned char c1 = (unsigned char)data[i + 1];
+            if ((c1 & 0xc0) != 0x80 || c < 0xc2) return 0;
+            i += 2;
+        } else if ((c & 0xf0) == 0xe0) {
+            if (i + 2 >= len) return 0;
+            unsigned char c1 = (unsigned char)data[i + 1];
+            unsigned char c2 = (unsigned char)data[i + 2];
+            if ((c1 & 0xc0) != 0x80 || (c2 & 0xc0) != 0x80) return 0;
+            if (c == 0xe0 && c1 < 0xa0) return 0;
+            if (c == 0xed && c1 >= 0xa0) return 0;
+            i += 3;
+        } else if ((c & 0xf8) == 0xf0) {
+            if (i + 3 >= len) return 0;
+            unsigned char c1 = (unsigned char)data[i + 1];
+            unsigned char c2 = (unsigned char)data[i + 2];
+            unsigned char c3 = (unsigned char)data[i + 3];
+            if ((c1 & 0xc0) != 0x80 || (c2 & 0xc0) != 0x80 || (c3 & 0xc0) != 0x80) return 0;
+            if (c == 0xf0 && c1 < 0x90) return 0;
+            if (c > 0xf4 || (c == 0xf4 && c1 > 0x8f)) return 0;
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void *duumbi_ok_i64(int64_t value) {
+    return duumbi_result_new_ok(value);
+}
+
+static void *duumbi_ok_string(const char *data, uint64_t len) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)duumbi_string_new(data, len));
+}
+
+static void *duumbi_ok_bool(int8_t value) {
+    return duumbi_result_new_ok((int64_t)value);
+}
+
+static void *duumbi_err_cstr(const char *message) {
+    return duumbi_result_new_err((int64_t)(intptr_t)duumbi_string_new(message, strlen(message)));
+}
+
+static int duumbi_string_to_cstr(void *ptr, char *out, size_t out_len) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    if (s == NULL || s->len == 0 || s->len >= out_len) {
+        return -1;
+    }
+    memcpy(out, s->data, (size_t)s->len);
+    out[s->len] = '\0';
+    return 0;
+}
+
+static int duumbi_has_url_prefix(const char *path) {
+    return strstr(path, "://") != NULL;
+}
+
+static int duumbi_normalize_relative_path(const char *input, char *out, size_t out_len) {
+    if (input == NULL || input[0] == '\0') {
+        return -1;
+    }
+    if (input[0] == '/' || input[0] == '\\' || input[0] == '~' || input[0] == '$' ||
+        strchr(input, ':') != NULL || duumbi_has_url_prefix(input)) {
+        return -1;
+    }
+    if (strchr(input, '\\') != NULL) {
+        return -1;
+    }
+
+    out[0] = '\0';
+    size_t out_used = 0;
+    const char *cursor = input;
+    while (*cursor != '\0') {
+        while (*cursor == '/') {
+            cursor++;
+        }
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != '/') {
+            cursor++;
+        }
+        size_t len = (size_t)(cursor - start);
+        if (len == 0) {
+            continue;
+        }
+        if (len == 1 && start[0] == '.') {
+            continue;
+        }
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            return -1;
+        }
+        if (out_used != 0) {
+            if (out_used + 1 >= out_len) return -1;
+            out[out_used++] = '/';
+        }
+        if (out_used + len >= out_len) return -1;
+        memcpy(out + out_used, start, len);
+        out_used += len;
+        out[out_used] = '\0';
+    }
+
+    return out_used == 0 ? -1 : 0;
+}
+
+static int duumbi_join_workspace_path(const char *normalized, char *out, size_t out_len) {
+    const char *root = getenv(DUUMBI_WORKSPACE_ROOT_ENV);
+    if (root == NULL || root[0] == '\0') {
+        return -1;
+    }
+    int written = snprintf(out, out_len, "%s%c%s", root, DUUMBI_PATH_SEP, normalized);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int duumbi_canonical_workspace_root(char *out, size_t out_len) {
+    const char *root = getenv(DUUMBI_WORKSPACE_ROOT_ENV);
+    if (root == NULL || root[0] == '\0') {
+        return -1;
+    }
+    char resolved[DUUMBI_PATH_BUFFER_LEN];
+    if (DUUMBI_REALPATH(root, resolved) == NULL) {
+        return -1;
+    }
+    size_t len = strlen(resolved);
+    if (len == 0 || len >= out_len) {
+        return -1;
+    }
+    memcpy(out, resolved, len + 1);
+    return 0;
+}
+
+static int duumbi_path_inside_root(const char *root, const char *path) {
+    size_t root_len = strlen(root);
+    if (strncmp(root, path, root_len) != 0) {
+        return 0;
+    }
+    return path[root_len] == '\0' || path[root_len] == '/' || path[root_len] == '\\';
+}
+
+static int duumbi_resolve_existing_workspace_path(void *path_ptr, char *out, size_t out_len) {
+    char raw[DUUMBI_PATH_BUFFER_LEN];
+    char normalized[DUUMBI_PATH_BUFFER_LEN];
+    char joined[DUUMBI_PATH_BUFFER_LEN];
+    char root[DUUMBI_PATH_BUFFER_LEN];
+    char resolved[DUUMBI_PATH_BUFFER_LEN];
+
+    if (duumbi_string_to_cstr(path_ptr, raw, sizeof(raw)) != 0 ||
+        duumbi_normalize_relative_path(raw, normalized, sizeof(normalized)) != 0 ||
+        duumbi_join_workspace_path(normalized, joined, sizeof(joined)) != 0 ||
+        duumbi_canonical_workspace_root(root, sizeof(root)) != 0 ||
+        DUUMBI_REALPATH(joined, resolved) == NULL ||
+        !duumbi_path_inside_root(root, resolved)) {
+        return -1;
+    }
+
+    size_t len = strlen(resolved);
+    if (len >= out_len) {
+        return -1;
+    }
+    memcpy(out, resolved, len + 1);
+    return 0;
+}
+
+static int duumbi_resolve_write_workspace_path(void *path_ptr, char *out, size_t out_len) {
+    char raw[DUUMBI_PATH_BUFFER_LEN];
+    char normalized[DUUMBI_PATH_BUFFER_LEN];
+    char joined[DUUMBI_PATH_BUFFER_LEN];
+    char root[DUUMBI_PATH_BUFFER_LEN];
+    char resolved[DUUMBI_PATH_BUFFER_LEN];
+
+    if (duumbi_string_to_cstr(path_ptr, raw, sizeof(raw)) != 0 ||
+        duumbi_normalize_relative_path(raw, normalized, sizeof(normalized)) != 0 ||
+        duumbi_join_workspace_path(normalized, joined, sizeof(joined)) != 0 ||
+        duumbi_canonical_workspace_root(root, sizeof(root)) != 0) {
+        return -1;
+    }
+
+    if (DUUMBI_REALPATH(joined, resolved) != NULL && !duumbi_path_inside_root(root, resolved)) {
+        return -1;
+    }
+
+    char parent[DUUMBI_PATH_BUFFER_LEN];
+    size_t joined_len = strlen(joined);
+    if (joined_len >= sizeof(parent)) {
+        return -1;
+    }
+    memcpy(parent, joined, joined_len + 1);
+    char *slash = strrchr(parent, DUUMBI_PATH_SEP);
+    if (slash == NULL) {
+        return -1;
+    }
+    *slash = '\0';
+    if (DUUMBI_REALPATH(parent, resolved) == NULL || !duumbi_path_inside_root(root, resolved)) {
+        return -1;
+    }
+
+    if (joined_len >= out_len) {
+        return -1;
+    }
+    memcpy(out, joined, joined_len + 1);
+    return 0;
+}
+
+void *duumbi_read_line(void) {
+    size_t capacity = 128;
+    size_t len = 0;
+    char *buffer = (char *)malloc(capacity);
+    if (buffer == NULL) {
+        return duumbi_err_cstr("out of memory");
+    }
+
+    int ch;
+    while ((ch = fgetc(stdin)) != EOF) {
+        if (len + 1 >= capacity) {
+            capacity *= 2;
+            char *grown = (char *)realloc(buffer, capacity);
+            if (grown == NULL) {
+                free(buffer);
+                return duumbi_err_cstr("out of memory");
+            }
+            buffer = grown;
+        }
+        buffer[len++] = (char)ch;
+        if (ch == '\n') {
+            break;
+        }
+    }
+
+    if (ferror(stdin)) {
+        free(buffer);
+        return duumbi_err_cstr("failed to read stdin");
+    }
+    if (len == 0 && ch == EOF) {
+        free(buffer);
+        return duumbi_err_cstr("end of input");
+    }
+    if (len > 0 && buffer[len - 1] == '\n') {
+        len--;
+        if (len > 0 && buffer[len - 1] == '\r') {
+            len--;
+        }
+    }
+    if (!duumbi_utf8_valid(buffer, (uint64_t)len)) {
+        free(buffer);
+        return duumbi_err_cstr("stdin line is not valid UTF-8");
+    }
+
+    void *result = duumbi_ok_string(buffer, (uint64_t)len);
+    free(buffer);
+    return result;
+}
+
+void *duumbi_print_ln(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    if (s == NULL) {
+        return duumbi_err_cstr("print_ln received null string");
+    }
+    if ((s->len > 0 && fwrite(s->data, 1, (size_t)s->len, stdout) != s->len) ||
+        fputc('\n', stdout) == EOF || fflush(stdout) != 0) {
+        return duumbi_err_cstr("failed to write stdout");
+    }
+    return duumbi_ok_i64(0);
+}
+
+void *duumbi_file_read(void *path_ptr, int64_t max_bytes) {
+    if (max_bytes < 0) {
+        return duumbi_err_cstr("max_bytes must be non-negative");
+    }
+
+    char path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_resolve_existing_workspace_path(path_ptr, path, sizeof(path)) != 0) {
+        return duumbi_err_cstr("path is outside the workspace or does not exist");
+    }
+
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        return duumbi_err_cstr("failed to open file");
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return duumbi_err_cstr("failed to inspect file");
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fclose(file);
+        return duumbi_err_cstr("failed to inspect file");
+    }
+    if ((int64_t)size > max_bytes) {
+        fclose(file);
+        return duumbi_err_cstr("file exceeds max_bytes");
+    }
+    rewind(file);
+
+    char *buffer = (char *)malloc((size_t)size + 1);
+    if (buffer == NULL) {
+        fclose(file);
+        return duumbi_err_cstr("out of memory");
+    }
+    size_t read = fread(buffer, 1, (size_t)size, file);
+    int read_error = ferror(file);
+    fclose(file);
+    if (read_error || read != (size_t)size) {
+        free(buffer);
+        return duumbi_err_cstr("failed to read file");
+    }
+    if (!duumbi_utf8_valid(buffer, (uint64_t)size)) {
+        free(buffer);
+        return duumbi_err_cstr("file is not valid UTF-8");
+    }
+
+    void *result = duumbi_ok_string(buffer, (uint64_t)size);
+    free(buffer);
+    return result;
+}
+
+void *duumbi_file_write(void *path_ptr, void *contents_ptr) {
+    DuumbiString *contents = (DuumbiString *)contents_ptr;
+    if (contents == NULL) {
+        return duumbi_err_cstr("write_file received null contents");
+    }
+
+    char path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_resolve_write_workspace_path(path_ptr, path, sizeof(path)) != 0) {
+        return duumbi_err_cstr("path is outside the workspace");
+    }
+
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) {
+        return duumbi_err_cstr("failed to open file for writing");
+    }
+    size_t written = fwrite(contents->data, 1, (size_t)contents->len, file);
+    int close_error = fclose(file);
+    if (written != contents->len || close_error != 0) {
+        return duumbi_err_cstr("failed to write file");
+    }
+    return duumbi_ok_i64(0);
+}
+
+void *duumbi_file_exists(void *path_ptr) {
+    char raw[DUUMBI_PATH_BUFFER_LEN];
+    char normalized[DUUMBI_PATH_BUFFER_LEN];
+    char joined[DUUMBI_PATH_BUFFER_LEN];
+    char root[DUUMBI_PATH_BUFFER_LEN];
+    char resolved[DUUMBI_PATH_BUFFER_LEN];
+
+    if (duumbi_string_to_cstr(path_ptr, raw, sizeof(raw)) != 0 ||
+        duumbi_normalize_relative_path(raw, normalized, sizeof(normalized)) != 0 ||
+        duumbi_join_workspace_path(normalized, joined, sizeof(joined)) != 0 ||
+        duumbi_canonical_workspace_root(root, sizeof(root)) != 0) {
+        return duumbi_err_cstr("path is outside the workspace");
+    }
+    if (DUUMBI_REALPATH(joined, resolved) == NULL) {
+        return duumbi_ok_bool(0);
+    }
+    if (!duumbi_path_inside_root(root, resolved)) {
+        return duumbi_err_cstr("path is outside the workspace");
+    }
+    return duumbi_ok_bool(1);
+}
+
+static int duumbi_compare_names(const void *a, const void *b) {
+    const char *const *sa = (const char *const *)a;
+    const char *const *sb = (const char *const *)b;
+    return strcmp(*sa, *sb);
+}
+
+void *duumbi_list_dir(void *path_ptr) {
+    char path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_resolve_existing_workspace_path(path_ptr, path, sizeof(path)) != 0) {
+        return duumbi_err_cstr("path is outside the workspace or does not exist");
+    }
+
+    DIR *dir = opendir(path);
+    if (dir == NULL) {
+        return duumbi_err_cstr("failed to open directory");
+    }
+
+    size_t count = 0;
+    size_t capacity = 8;
+    char **names = (char **)calloc(capacity, sizeof(char *));
+    if (names == NULL) {
+        closedir(dir);
+        return duumbi_err_cstr("out of memory");
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        size_t len = strlen(entry->d_name);
+        if (!duumbi_utf8_valid(entry->d_name, (uint64_t)len)) {
+            closedir(dir);
+            for (size_t i = 0; i < count; i++) free(names[i]);
+            free(names);
+            return duumbi_err_cstr("directory entry is not valid UTF-8");
+        }
+        if (count == capacity) {
+            capacity *= 2;
+            char **grown = (char **)realloc(names, capacity * sizeof(char *));
+            if (grown == NULL) {
+                closedir(dir);
+                for (size_t i = 0; i < count; i++) free(names[i]);
+                free(names);
+                return duumbi_err_cstr("out of memory");
+            }
+            names = grown;
+        }
+        names[count] = (char *)malloc(len + 1);
+        if (names[count] == NULL) {
+            closedir(dir);
+            for (size_t i = 0; i < count; i++) free(names[i]);
+            free(names);
+            return duumbi_err_cstr("out of memory");
+        }
+        memcpy(names[count], entry->d_name, len + 1);
+        count++;
+    }
+    closedir(dir);
+    qsort(names, count, sizeof(char *), duumbi_compare_names);
+
+    void *array = duumbi_array_new(8);
+    for (size_t i = 0; i < count; i++) {
+        void *name = duumbi_string_new(names[i], (uint64_t)strlen(names[i]));
+        array = duumbi_array_push(array, (int64_t)(intptr_t)name);
+        free(names[i]);
+    }
+    free(names);
+    return duumbi_result_new_ok((int64_t)(intptr_t)array);
+}
+
+void *duumbi_path_join(void *left_ptr, void *right_ptr) {
+    char left[DUUMBI_PATH_BUFFER_LEN];
+    char right[DUUMBI_PATH_BUFFER_LEN];
+    char joined[DUUMBI_PATH_BUFFER_LEN];
+    char normalized[DUUMBI_PATH_BUFFER_LEN];
+
+    if (duumbi_string_to_cstr(left_ptr, left, sizeof(left)) != 0 ||
+        duumbi_string_to_cstr(right_ptr, right, sizeof(right)) != 0) {
+        return duumbi_err_cstr("path_join components must be non-empty");
+    }
+    int written = snprintf(joined, sizeof(joined), "%s/%s", left, right);
+    if (written < 0 || (size_t)written >= sizeof(joined) ||
+        duumbi_normalize_relative_path(joined, normalized, sizeof(normalized)) != 0) {
+        return duumbi_err_cstr("path_join produced an invalid path");
+    }
+    return duumbi_ok_string(normalized, (uint64_t)strlen(normalized));
 }

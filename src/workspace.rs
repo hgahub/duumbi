@@ -4,6 +4,7 @@
 //! browser-facing surfaces do not need to shell out through `cargo run`.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -216,6 +217,16 @@ fn validate_trace_config(
 /// Runs a compiled workspace binary, capturing stdout and stderr.
 #[must_use = "the captured process output should be inspected"]
 pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<BinaryRunOutput> {
+    run_workspace_binary_with_stdin(workspace_root, args, "")
+}
+
+/// Runs a compiled workspace binary with supplied stdin, capturing stdout and stderr.
+#[must_use = "the captured process output should be inspected"]
+pub fn run_workspace_binary_with_stdin(
+    workspace_root: &Path,
+    args: &[String],
+    stdin: &str,
+) -> Result<BinaryRunOutput> {
     let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
         anyhow::bail!(
@@ -224,11 +235,27 @@ pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<Bi
         );
     }
 
-    let output = std::process::Command::new(&output_path)
+    let mut child = std::process::Command::new(&output_path)
         .args(args)
         .current_dir(workspace_root)
-        .output()
+        .env("DUUMBI_WORKSPACE_ROOT", workspace_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .with_context(|| format!("Failed to execute '{}'", output_path.display()))?;
+
+    if !stdin.is_empty() {
+        let child_stdin = child.stdin.as_mut().context("Failed to open child stdin")?;
+        child_stdin
+            .write_all(stdin.as_bytes())
+            .context("Failed to write child stdin")?;
+    }
+    drop(child.stdin.take());
+
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("Failed to wait for '{}'", output_path.display()))?;
 
     Ok(BinaryRunOutput {
         exit_code: output.status.code().unwrap_or(-1),
@@ -257,4 +284,38 @@ fn find_runtime_c() -> Result<PathBuf> {
     let runtime_path = tmp_dir.join("duumbi_runtime.c");
     fs::write(&runtime_path, RUNTIME_C_SOURCE).context("Failed to write embedded runtime")?;
     Ok(runtime_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn run_workspace_binary_sets_workspace_root_and_writes_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let output_path = workspace_output_path(tmp.path());
+        fs::create_dir_all(output_path.parent().expect("output parent")).expect("build dir");
+        fs::write(
+            &output_path,
+            b"#!/bin/sh\nread line\nprintf '%s|%s' \"$DUUMBI_WORKSPACE_ROOT\" \"$line\"\n",
+        )
+        .expect("write script");
+        let mut permissions = fs::metadata(&output_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&output_path, permissions).expect("chmod");
+
+        let output =
+            run_workspace_binary_with_stdin(tmp.path(), &[], "hello\n").expect("run binary");
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(
+            output.stdout,
+            format!("{}|hello", tmp.path().display()),
+            "runner must set DUUMBI_WORKSPACE_ROOT and pass stdin"
+        );
+    }
 }

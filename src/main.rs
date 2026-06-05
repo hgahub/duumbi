@@ -370,25 +370,13 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Commands::Run { args } => {
             let workspace = PathBuf::from(".");
-            if workspace.join(".duumbi").exists() {
-                let output = workspace::run_workspace_binary(&workspace, &args)?;
-                print!("{}", output.stdout);
-                eprint!("{}", output.stderr);
-                Ok(output.exit_code)
-            } else {
-                let binary = resolve_output(None)?;
-                if !binary.exists() {
-                    anyhow::bail!(
-                        "Binary not found at '{}'. Run `duumbi build` first.",
-                        binary.display()
-                    );
-                }
-                let status = process::Command::new(&binary)
-                    .args(&args)
-                    .status()
-                    .with_context(|| format!("Failed to execute '{}'", binary.display()))?;
-                Ok(status.code().unwrap_or(EXIT_FAILURE))
+            if !workspace.join(".duumbi").exists() {
+                anyhow::bail!("`duumbi run` requires an initialized workspace");
             }
+            let output = workspace::run_workspace_binary(&workspace, &args)?;
+            print!("{}", output.stdout);
+            eprint!("{}", output.stderr);
+            Ok(output.exit_code)
         }
         Commands::Check { input } => {
             let input_path = resolve_input(input.as_deref())?;
