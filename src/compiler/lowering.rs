@@ -334,7 +334,7 @@ fn compare_op_to_floatcc(op: &CompareOp) -> FloatCC {
 
 /// Creates the ISA and ObjectModule shared setup.
 fn create_object_module() -> Result<ObjectModule, CompileError> {
-    let triple = Triple::host();
+    let triple = object_target_triple();
 
     let mut settings_builder = settings::builder();
     settings_builder
@@ -369,6 +369,61 @@ fn create_object_module() -> Result<ObjectModule, CompileError> {
     })?;
 
     Ok(ObjectModule::new(obj_builder))
+}
+
+fn object_target_triple() -> Triple {
+    object_target_triple_for_host(Triple::host())
+}
+
+fn object_target_triple_for_host(mut triple: Triple) -> Triple {
+    #[cfg(target_os = "macos")]
+    if matches!(
+        triple.operating_system,
+        target_lexicon::OperatingSystem::Darwin(_)
+    ) {
+        triple.operating_system =
+            target_lexicon::OperatingSystem::MacOSX(Some(macos_deployment_target(&triple)));
+    }
+
+    triple
+}
+
+#[cfg(target_os = "macos")]
+fn macos_deployment_target(triple: &Triple) -> target_lexicon::DeploymentTarget {
+    std::env::var("MACOSX_DEPLOYMENT_TARGET")
+        .ok()
+        .and_then(|value| parse_macos_deployment_target(&value))
+        .unwrap_or_else(|| default_macos_deployment_target(triple))
+}
+
+#[cfg(target_os = "macos")]
+fn default_macos_deployment_target(triple: &Triple) -> target_lexicon::DeploymentTarget {
+    let major = match triple.architecture {
+        target_lexicon::Architecture::Aarch64(_) => 11,
+        _ => 10,
+    };
+    let minor = if major == 10 { 12 } else { 0 };
+    target_lexicon::DeploymentTarget {
+        major,
+        minor,
+        patch: 0,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_deployment_target(value: &str) -> Option<target_lexicon::DeploymentTarget> {
+    let mut parts = value.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().map_or(Some(0), |part| part.parse().ok())?;
+    let patch = parts.next().map_or(Some(0), |part| part.parse().ok())?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(target_lexicon::DeploymentTarget {
+        major,
+        minor,
+        patch,
+    })
 }
 
 /// Declares a function signature in the Cranelift module.
@@ -2122,6 +2177,55 @@ mod tests {
         obj_bytes
             .windows(needle.len())
             .any(|window| window == needle.as_bytes())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macho_build_version_platform(obj_bytes: &[u8]) -> Option<u32> {
+        const LC_BUILD_VERSION: u32 = 0x32;
+        let magic = u32::from_le_bytes(obj_bytes.get(0..4)?.try_into().ok()?);
+        if magic != 0xfeedfacf {
+            return None;
+        }
+        let ncmds = u32::from_le_bytes(obj_bytes.get(16..20)?.try_into().ok()?);
+        let mut offset = 32usize;
+        for _ in 0..ncmds {
+            let cmd = u32::from_le_bytes(obj_bytes.get(offset..offset + 4)?.try_into().ok()?);
+            let cmdsize =
+                u32::from_le_bytes(obj_bytes.get(offset + 4..offset + 8)?.try_into().ok()?)
+                    as usize;
+            if cmd == LC_BUILD_VERSION {
+                return Some(u32::from_le_bytes(
+                    obj_bytes.get(offset + 8..offset + 12)?.try_into().ok()?,
+                ));
+            }
+            offset = offset.checked_add(cmdsize)?;
+        }
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_object_triple_uses_macosx_platform() {
+        let triple = object_target_triple_for_host(
+            "aarch64-apple-darwin"
+                .parse()
+                .expect("test triple should parse"),
+        );
+
+        assert!(matches!(
+            triple.operating_system,
+            target_lexicon::OperatingSystem::MacOSX(_)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_objects_emit_platform_macos() {
+        let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
+        let sg = build_graph(&module).expect("invariant: valid fixture must build");
+        let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
+
+        assert_eq!(macho_build_version_platform(&obj_bytes), Some(1));
     }
 
     #[test]

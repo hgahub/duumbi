@@ -375,6 +375,36 @@ pub enum TelemetrySubcommand {
         #[arg(long = "crash-entry", value_parser = clap::value_parser!(u32).range(1..))]
         crash_entry: Option<u32>,
     },
+    /// Validate a proposed repair patch and emit human-reviewable evidence.
+    RepairValidate {
+        /// Serialized mapped repair crash context JSON.
+        #[arg(long)]
+        context: PathBuf,
+
+        /// Proposed GraphPatch JSON. Must use the canonical `{ "ops": [...] }` shape.
+        #[arg(long)]
+        patch: PathBuf,
+
+        /// Original JSON-LD source graph.
+        #[arg(long)]
+        graph: PathBuf,
+
+        /// Optional workspace root for future temp-workspace validation.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+
+        /// Optional workspace module path for future temp-workspace validation.
+        #[arg(long)]
+        module: Option<PathBuf>,
+
+        /// Candidate-aware relevant test command. Repeatable.
+        #[arg(long = "test")]
+        tests: Vec<String>,
+
+        /// Optional path for writing the repair validation evidence JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Subcommands for `duumbi deps`.
@@ -696,6 +726,33 @@ mod tests {
                     crash_entry: Some(1),
                     ..
                 }
+            }
+        ));
+    }
+
+    #[test]
+    fn telemetry_repair_validate_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "telemetry",
+            "repair-validate",
+            "--context",
+            "tmp/repair-context.json",
+            "--patch",
+            "tmp/repair-patch.json",
+            "--graph",
+            "graph.jsonld",
+            "--test",
+            "{candidate_binary}",
+            "--output",
+            "tmp/repair-validation.json",
+        ])
+        .expect("CLI must parse telemetry repair-validate");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Telemetry {
+                subcommand: TelemetrySubcommand::RepairValidate { .. }
             }
         ));
     }

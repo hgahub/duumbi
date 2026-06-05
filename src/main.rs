@@ -552,6 +552,54 @@ fn run_telemetry(subcommand: cli::TelemetrySubcommand, workspace: &Path) -> Resu
             println!("{}", serde_json::to_string_pretty(&context)?);
             Ok(())
         }
+        cli::TelemetrySubcommand::RepairValidate {
+            context,
+            patch,
+            graph,
+            workspace,
+            module,
+            tests,
+            output,
+        } => {
+            if workspace.is_some() || module.is_some() {
+                anyhow::bail!(
+                    "workspace repair validation is not implemented yet; use --graph single-file validation"
+                );
+            }
+
+            let context_json = fs::read_to_string(&context).with_context(|| {
+                format!("Failed to read repair context '{}'", context.display())
+            })?;
+            let crash_context: telemetry::RepairCrashContext = serde_json::from_str(&context_json)
+                .with_context(|| {
+                    format!("Failed to parse repair context '{}'", context.display())
+                })?;
+            let patch_json = fs::read_to_string(&patch)
+                .with_context(|| format!("Failed to read repair patch '{}'", patch.display()))?;
+            let patch_value: serde_json::Value = serde_json::from_str(&patch_json)
+                .with_context(|| format!("Failed to parse repair patch '{}'", patch.display()))?;
+
+            let request = telemetry::RepairValidationRequest::single_graph(
+                crash_context,
+                patch_value,
+                graph.clone(),
+            );
+            let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+            let mut runner =
+                telemetry::RepairValidationCommandRunner::single_graph(exe, graph, tests)?;
+            let evidence = telemetry::validate_repair_candidate_with_runner(request, &mut runner)?;
+            let evidence_json = serde_json::to_string_pretty(&evidence)?;
+            if let Some(output) = output {
+                fs::write(&output, &evidence_json).with_context(|| {
+                    format!(
+                        "Failed to write repair validation evidence '{}'",
+                        output.display()
+                    )
+                })?;
+            }
+            println!("{evidence_json}");
+            Ok(())
+        }
     }
 }
 
