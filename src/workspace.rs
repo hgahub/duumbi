@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::compiler::{linker, lowering};
 use crate::deps;
-use crate::telemetry::BuildOptions;
+use crate::telemetry::{BuildOptions, TELEMETRY_DIR_ENV};
 
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/duumbi_runtime.c");
 
@@ -257,6 +257,11 @@ fn run_workspace_binary_inner(
         .env("DUUMBI_WORKSPACE_ROOT", workspace_root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if std::env::var_os(TELEMETRY_DIR_ENV).is_none_or(|value| value.is_empty())
+        && let Some(telemetry_dir) = workspace_runtime_telemetry_dir(workspace_root)
+    {
+        command.env(TELEMETRY_DIR_ENV, telemetry_dir);
+    }
 
     match stdin {
         BinaryStdin::Inherit => {
@@ -290,6 +295,15 @@ fn run_workspace_binary_inner(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn workspace_runtime_telemetry_dir(workspace_root: &Path) -> Option<PathBuf> {
+    let section = crate::config::load_effective_config(workspace_root)
+        .ok()?
+        .config
+        .telemetry
+        .unwrap_or_default();
+    Some(section.resolve_for_trace(workspace_root).ok()?.artifact_dir)
 }
 
 fn find_runtime_c() -> Result<PathBuf> {
