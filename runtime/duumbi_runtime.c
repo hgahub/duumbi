@@ -5,6 +5,7 @@
 #include <math.h>
 #include <errno.h>
 #include <ctype.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -62,6 +63,7 @@
 #define DUUMBI_STDIN_LINE_MAX 65536
 #define DUUMBI_TRACE_STACK_LIMIT 1024
 #define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
+#define DUUMBI_JSON_MAX_PARSE_DEPTH 512
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -966,7 +968,7 @@ static char *duumbi_json_parse_string_raw(DuumbiJsonParser *parser, size_t *out_
     return NULL;
 }
 
-static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser);
+static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser, uint32_t depth);
 
 static int duumbi_json_array_push_item(DuumbiJson *array, DuumbiJson *item) {
     if (array->array_len == array->array_cap) {
@@ -1006,7 +1008,7 @@ static int duumbi_json_object_add(
     return 1;
 }
 
-static DuumbiJson *duumbi_json_parse_array(DuumbiJsonParser *parser) {
+static DuumbiJson *duumbi_json_parse_array(DuumbiJsonParser *parser, uint32_t depth) {
     parser->cursor++;
     DuumbiJson *array = duumbi_json_new(DUUMBI_JSON_ARRAY);
     duumbi_json_skip_ws(parser);
@@ -1016,7 +1018,7 @@ static DuumbiJson *duumbi_json_parse_array(DuumbiJsonParser *parser) {
     }
 
     while (parser->cursor < parser->end) {
-        DuumbiJson *item = duumbi_json_parse_value(parser);
+        DuumbiJson *item = duumbi_json_parse_value(parser, depth + 1);
         if (item == NULL) {
             duumbi_json_free(array);
             return NULL;
@@ -1047,7 +1049,7 @@ static DuumbiJson *duumbi_json_parse_array(DuumbiJsonParser *parser) {
     return NULL;
 }
 
-static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser) {
+static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser, uint32_t depth) {
     parser->cursor++;
     DuumbiJson *object = duumbi_json_new(DUUMBI_JSON_OBJECT);
     duumbi_json_skip_ws(parser);
@@ -1071,7 +1073,7 @@ static DuumbiJson *duumbi_json_parse_object(DuumbiJsonParser *parser) {
             return NULL;
         }
         parser->cursor++;
-        DuumbiJson *value = duumbi_json_parse_value(parser);
+        DuumbiJson *value = duumbi_json_parse_value(parser, depth + 1);
         if (value == NULL) {
             duumbi_dealloc(key);
             duumbi_json_free(object);
@@ -1170,16 +1172,20 @@ static int duumbi_json_consume_literal(DuumbiJsonParser *parser, const char *lit
     return 1;
 }
 
-static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser) {
+static DuumbiJson *duumbi_json_parse_value(DuumbiJsonParser *parser, uint32_t depth) {
     duumbi_json_skip_ws(parser);
     if (parser->cursor >= parser->end) {
         parser->error = "Unexpected end of JSON input";
         return NULL;
     }
+    if (depth > DUUMBI_JSON_MAX_PARSE_DEPTH) {
+        parser->error = "JSON parse failed: maximum nesting depth exceeded";
+        return NULL;
+    }
 
     char ch = *parser->cursor;
-    if (ch == '{') return duumbi_json_parse_object(parser);
-    if (ch == '[') return duumbi_json_parse_array(parser);
+    if (ch == '{') return duumbi_json_parse_object(parser, depth);
+    if (ch == '[') return duumbi_json_parse_array(parser, depth);
     if (ch == '"') {
         size_t string_len = 0;
         char *s = duumbi_json_parse_string_raw(parser, &string_len);
@@ -1280,7 +1286,7 @@ void *duumbi_json_parse(void *input) {
     }
 
     DuumbiJsonParser parser = {s->data, s->data + s->len, NULL};
-    DuumbiJson *json = duumbi_json_parse_value(&parser);
+    DuumbiJson *json = duumbi_json_parse_value(&parser, 0);
     if (json == NULL) {
         return duumbi_json_err(parser.error != NULL ? parser.error : "JSON parse failed");
     }
@@ -1373,13 +1379,20 @@ static int duumbi_socket_last_error(void) {
 static int duumbi_socket_would_block(int err) {
     return err == WSAEWOULDBLOCK || err == WSAEINPROGRESS || err == WSAEALREADY;
 }
-static int duumbi_socket_init(void) {
-    static int initialized = 0;
-    if (initialized) return 1;
+static BOOL CALLBACK duumbi_socket_init_once(
+    PINIT_ONCE init_once,
+    PVOID parameter,
+    PVOID *context
+) {
+    (void)init_once;
+    (void)parameter;
+    (void)context;
     WSADATA data;
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
-    initialized = 1;
-    return 1;
+    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+}
+static int duumbi_socket_init(void) {
+    static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+    return InitOnceExecuteOnce(&init_once, duumbi_socket_init_once, NULL, NULL) != 0;
 }
 static int duumbi_socket_set_nonblocking(DuumbiSocketHandle handle) {
     u_long mode = 1;
@@ -1445,6 +1458,25 @@ static int duumbi_tcp_validate_common(int64_t timeout_ms) {
 
 static int duumbi_tcp_validate_port(int64_t port) {
     return port > 0 && port <= 65535;
+}
+
+static uint64_t duumbi_tcp_now_ms(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return ((uint64_t)ts.tv_sec * 1000) + ((uint64_t)ts.tv_nsec / 1000000);
+#endif
+}
+
+static int64_t duumbi_tcp_remaining_timeout(uint64_t start_ms, int64_t timeout_ms) {
+    uint64_t now_ms = duumbi_tcp_now_ms();
+    uint64_t elapsed_ms = now_ms >= start_ms ? now_ms - start_ms : 0;
+    if (elapsed_ms >= (uint64_t)timeout_ms) return 0;
+    return timeout_ms - (int64_t)elapsed_ms;
 }
 
 static int duumbi_tcp_wait(DuumbiSocketHandle handle, int for_write, int64_t timeout_ms) {
@@ -1546,6 +1578,7 @@ void *duumbi_tcp_connect(void *host_ptr, int64_t port, int64_t timeout_ms) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_family = AF_UNSPEC;
+    hints.ai_flags = AI_NUMERICHOST;
     struct addrinfo *res = NULL;
     if (getaddrinfo(host, port_buf, &hints, &res) != 0) {
         duumbi_dealloc(host);
@@ -1595,6 +1628,7 @@ void *duumbi_tcp_listen(void *host_ptr, int64_t port, int64_t timeout_ms) {
     }
     char *host = duumbi_tcp_string_to_c(host_ptr);
     if (host == NULL) return duumbi_tcp_err("TCP listen failed: host is null");
+    uint64_t start_ms = duumbi_tcp_now_ms();
 
     char port_buf[16];
     snprintf(port_buf, sizeof(port_buf), "%lld", (long long)port);
@@ -1602,7 +1636,7 @@ void *duumbi_tcp_listen(void *host_ptr, int64_t port, int64_t timeout_ms) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_family = AF_UNSPEC;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
     struct addrinfo *res = NULL;
     if (getaddrinfo(host, port_buf, &hints, &res) != 0) {
         duumbi_dealloc(host);
@@ -1610,7 +1644,12 @@ void *duumbi_tcp_listen(void *host_ptr, int64_t port, int64_t timeout_ms) {
     }
 
     DuumbiSocketHandle bound = DUUMBI_INVALID_SOCKET;
+    int timed_out = 0;
     for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (duumbi_tcp_remaining_timeout(start_ms, timeout_ms) <= 0) {
+            timed_out = 1;
+            break;
+        }
         DuumbiSocketHandle handle = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (handle == DUUMBI_INVALID_SOCKET) continue;
         int yes = 1;
@@ -1626,7 +1665,9 @@ void *duumbi_tcp_listen(void *host_ptr, int64_t port, int64_t timeout_ms) {
     freeaddrinfo(res);
     duumbi_dealloc(host);
 
-    if (bound == DUUMBI_INVALID_SOCKET) return duumbi_tcp_err("TCP listen failed");
+    if (bound == DUUMBI_INVALID_SOCKET) {
+        return duumbi_tcp_err(timed_out ? "TCP listen failed: timeout" : "TCP listen failed");
+    }
     DuumbiTcpListener *listener = (DuumbiTcpListener *)duumbi_alloc(sizeof(DuumbiTcpListener));
     listener->handle = bound;
     listener->closed = 0;
@@ -1691,12 +1732,41 @@ void *duumbi_tcp_write(void *socket_ptr, void *data_ptr, int64_t timeout_ms) {
     if (data == NULL) return duumbi_tcp_err("TCP write failed: data is null");
     if (!duumbi_tcp_validate_common(timeout_ms)) return duumbi_tcp_err("TCP write failed: invalid timeout_ms");
     if (data->len == 0) return duumbi_tcp_ok_i64(0);
-    int ready = duumbi_tcp_wait(socket_resource->handle, 1, timeout_ms);
-    if (ready == 0) return duumbi_tcp_err("TCP write failed: timeout");
-    if (ready < 0) return duumbi_tcp_err("TCP write failed");
-    int n = (int)send(socket_resource->handle, data->data, (int)data->len, 0);
-    if (n < 0) return duumbi_tcp_err("TCP write failed");
-    return duumbi_tcp_ok_i64((int64_t)n);
+    if (data->len > (uint64_t)INT64_MAX) {
+        return duumbi_tcp_err("TCP write failed: data is too large");
+    }
+
+    uint64_t start_ms = duumbi_tcp_now_ms();
+    uint64_t sent = 0;
+    while (sent < data->len) {
+        int64_t remaining_ms = duumbi_tcp_remaining_timeout(start_ms, timeout_ms);
+        if (remaining_ms <= 0) return duumbi_tcp_err("TCP write failed: timeout");
+
+        int ready = duumbi_tcp_wait(socket_resource->handle, 1, remaining_ms);
+        if (ready == 0) return duumbi_tcp_err("TCP write failed: timeout");
+        if (ready < 0) return duumbi_tcp_err("TCP write failed");
+
+        uint64_t remaining_bytes = data->len - sent;
+        int chunk = remaining_bytes > (uint64_t)INT32_MAX
+            ? INT32_MAX
+            : (int)remaining_bytes;
+#if defined(_WIN32)
+        int n = send(socket_resource->handle, data->data + sent, chunk, 0);
+#else
+        ssize_t n = send(socket_resource->handle, data->data + sent, (size_t)chunk, 0);
+#endif
+        if (n > 0) {
+            sent += (uint64_t)n;
+            continue;
+        }
+        if (n == 0) return duumbi_tcp_err("TCP write failed: socket accepted zero bytes");
+
+        int err = duumbi_socket_last_error();
+        if (duumbi_socket_would_block(err)) continue;
+        return duumbi_tcp_err("TCP write failed");
+    }
+
+    return duumbi_tcp_ok_i64((int64_t)sent);
 }
 
 void *duumbi_tcp_close(void *socket_ptr) {

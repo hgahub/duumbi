@@ -99,6 +99,25 @@ fn tcp_invalid_utf8_fixture(port: u16) -> String {
     TCP_INVALID_UTF8_FIXTURE.replace("__PORT__", &port.to_string())
 }
 
+fn json_parse_only_fixture(encoded_json_literal: &str) -> String {
+    JSON_PARSE_ONLY_FIXTURE.replace("__JSON_LITERAL__", encoded_json_literal)
+}
+
+const JSON_PARSE_ONLY_FIXTURE: &str = r#"{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:functions": [{"@type": "duumbi:Function", "@id": "duumbi:main/main", "duumbi:name": "main", "duumbi:returnType": "i64", "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:main/main/entry", "duumbi:label": "entry", "duumbi:ops": [
+    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0", "duumbi:value": __JSON_LITERAL__, "duumbi:resultType": "string"},
+    {"@type": "duumbi:JsonParse", "@id": "duumbi:main/main/entry/1", "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}, "duumbi:resultType": "result<json,string>"},
+    {"@type": "duumbi:ResultIsOk", "@id": "duumbi:main/main/entry/2", "duumbi:operand": {"@id": "duumbi:main/main/entry/1"}},
+    {"@type": "duumbi:Print", "@id": "duumbi:main/main/entry/3", "duumbi:operand": {"@id": "duumbi:main/main/entry/2"}},
+    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/4", "duumbi:value": 0, "duumbi:resultType": "i64"},
+    {"@type": "duumbi:Return", "@id": "duumbi:main/main/entry/5", "duumbi:operand": {"@id": "duumbi:main/main/entry/4"}}
+  ]}]}]
+}"#;
+
 const TCP_CLIENT_ECHO_FIXTURE: &str = r#"{
   "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
   "@type": "duumbi:Module",
@@ -200,6 +219,20 @@ const TCP_LISTENER_FIXTURE: &str = r#"{
 
 #[test]
 fn tcp_listen_accept_read_write_loopback() {
+    let mut last_error = String::new();
+    for _ in 0..5 {
+        match try_tcp_listen_accept_read_write_loopback() {
+            Ok(()) => return,
+            Err(err) => {
+                last_error = err;
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    panic!("tcp listener fixture failed after bind-collision retries: {last_error}");
+}
+
+fn try_tcp_listen_accept_read_write_loopback() -> Result<(), String> {
     let probe = TcpListener::bind("127.0.0.1:0").expect("free loopback port");
     let port = probe.local_addr().expect("local addr").port();
     drop(probe);
@@ -229,31 +262,41 @@ fn tcp_listen_accept_read_write_loopback() {
             None => {
                 let _ = child.kill();
                 let output = child.wait_with_output().expect("wait after failed connect");
-                panic!(
+                return Err(format!(
                     "connect to DUUMBI listener failed\nstdout:\n{}\nstderr:\n{}",
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
-                );
+                ));
             }
         }
     };
-    stream.write_all(b"ping").expect("write ping");
+    stream
+        .write_all(b"ping")
+        .map_err(|err| format!("write ping failed: {err}"))?;
     let mut response = [0_u8; 4];
-    stream.read_exact(&mut response).expect("read pong");
-    assert_eq!(&response, b"pong");
+    stream
+        .read_exact(&mut response)
+        .map_err(|err| format!("read pong failed: {err}"))?;
+    if &response != b"pong" {
+        return Err(format!("unexpected listener response: {response:?}"));
+    }
 
     let output = child.wait_with_output().expect("wait for listener fixture");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    assert_eq!(lines, vec!["ping", "4", "true", "true"]);
-    assert!(
-        output.status.success(),
-        "tcp listener fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if lines != vec!["ping", "4", "true", "true"] {
+        return Err(format!("unexpected listener stdout: {stdout}"));
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "tcp listener fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
 
     let _ = std::fs::remove_file(&binary);
     let _ = std::fs::remove_file(&fixture);
+    Ok(())
 }
 
 const TCP_REFUSED_FIXTURE: &str = r#"{
@@ -464,4 +507,32 @@ fn json_errors_are_recoverable_results() {
     );
 
     let _ = std::fs::remove_file(&binary);
+}
+
+#[test]
+fn deeply_nested_json_is_recoverable_error() {
+    let deep_json = format!("{}0{}", "[".repeat(600), "]".repeat(600));
+    let encoded_json_literal =
+        serde_json::to_string(&deep_json).expect("invariant: generated JSON must encode");
+    let fixture = write_dynamic_fixture(
+        "duumbi379_json_deep.jsonld",
+        &json_parse_only_fixture(&encoded_json_literal),
+    );
+    let binary = compile_fixture(&fixture.to_string_lossy(), "duumbi379_json_deep");
+
+    let output = Command::new(&binary)
+        .output()
+        .expect("invariant: compiled binary must be runnable");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["false"]);
+    assert!(
+        output.status.success(),
+        "deep JSON fixture exited unsuccessfully: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+    let _ = std::fs::remove_file(&fixture);
 }
