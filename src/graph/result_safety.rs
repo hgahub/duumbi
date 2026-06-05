@@ -31,6 +31,13 @@ pub fn has_result_option_ops(graph: &SemanticGraph) -> bool {
                 | Op::OptionIsSome
                 | Op::OptionUnwrap
                 | Op::Match { .. }
+                | Op::ReadLine
+                | Op::PrintLn
+                | Op::ReadFile
+                | Op::WriteFile
+                | Op::FileExists
+                | Op::ListDir
+                | Op::PathJoin
         )
     })
 }
@@ -64,10 +71,7 @@ fn check_unhandled_result_option(
 
     for &node_idx in &block_info.nodes {
         let node = &graph.graph[node_idx];
-        if !matches!(&node.op, Op::Call { .. }) {
-            continue;
-        }
-        let Some(ref result_ty) = node.result_type else {
+        let Some(ref result_ty) = direct_result_or_option_type(node) else {
             continue;
         };
 
@@ -76,7 +80,7 @@ fn check_unhandled_result_option(
                 Diagnostic::error(
                     codes::E030_UNHANDLED_RESULT,
                     format!(
-                        "Unhandled Result: Call '{}' returns '{}' but no Match, \
+                        "Unhandled Result: '{}' returns '{}' but no Match, \
                          ResultIsOk, or ResultUnwrap follows in the same block",
                         node.id, result_ty
                     ),
@@ -88,7 +92,7 @@ fn check_unhandled_result_option(
                 Diagnostic::error(
                     codes::E031_UNHANDLED_OPTION,
                     format!(
-                        "Unhandled Option: Call '{}' returns '{}' but no Match, \
+                        "Unhandled Option: '{}' returns '{}' but no Match, \
                          OptionIsSome, or OptionUnwrap follows in the same block",
                         node.id, result_ty
                     ),
@@ -97,6 +101,26 @@ fn check_unhandled_result_option(
             );
         }
     }
+}
+
+fn direct_result_or_option_type(node: &GraphNode) -> Option<&DuumbiType> {
+    if !matches!(
+        &node.op,
+        Op::Call { .. }
+            | Op::ReadLine
+            | Op::PrintLn
+            | Op::ReadFile
+            | Op::WriteFile
+            | Op::FileExists
+            | Op::ListDir
+            | Op::PathJoin
+    ) {
+        return None;
+    }
+
+    node.result_type
+        .as_ref()
+        .filter(|ty| ty.is_result() || ty.is_option())
 }
 
 /// E034 (WARNING) — Checks that ResultUnwrap/OptionUnwrap are preceded by a guard check.
@@ -346,7 +370,7 @@ fn check_payload_matches(
 /// Collects node IDs that are referenced as operands by handler ops in the block.
 ///
 /// Handler ops are: `ResultIsOk`, `OptionIsSome`, `Match`, `ResultUnwrap`,
-/// `ResultUnwrapErr`, `OptionUnwrap`.
+/// `ResultUnwrapErr`, `OptionUnwrap`, and `Return` for explicit propagation.
 fn collect_handled_ids(
     graph: &SemanticGraph,
     block_info: &BlockInfo,
@@ -363,6 +387,7 @@ fn collect_handled_ids(
                 | Op::ResultUnwrap
                 | Op::ResultUnwrapErr
                 | Op::OptionUnwrap
+                | Op::Return
         );
         if !is_handler {
             continue;

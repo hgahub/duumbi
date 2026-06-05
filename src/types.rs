@@ -89,6 +89,8 @@ impl fmt::Display for CompareOp {
 /// Phase 0 ops: Const, Add, Sub, Mul, Div, Print, Return.
 /// Phase 1 ops: ConstF64, ConstBool, Compare, Branch, Call, Load, Store.
 /// Phase 9a-1 ops: ConstString, String*, Array*, Struct*, PrintString.
+/// DUUMBI-378 ops: ReadLine, PrintLn, ReadFile, WriteFile, FileExists,
+/// ListDir, PathJoin.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)] // Variants used as parser/compiler are extended
 pub enum Op {
@@ -133,6 +135,20 @@ pub enum Op {
     Print,
     /// Print string to stdout: `duumbi:PrintString`
     PrintString,
+    /// Read one UTF-8 line from stdin: `duumbi:ReadLine`
+    ReadLine,
+    /// Print a string plus exactly one newline: `duumbi:PrintLn`
+    PrintLn,
+    /// Read a UTF-8 file with an explicit byte bound: `duumbi:ReadFile`
+    ReadFile,
+    /// Overwrite a UTF-8 file: `duumbi:WriteFile`
+    WriteFile,
+    /// Check whether a workspace-confined path exists: `duumbi:FileExists`
+    FileExists,
+    /// List directory entry names deterministically: `duumbi:ListDir`
+    ListDir,
+    /// Join two DUUMBI-relative path components: `duumbi:PathJoin`
+    PathJoin,
     /// Return value from function: `duumbi:Return`
     Return,
 
@@ -333,6 +349,13 @@ impl fmt::Display for Op {
             Op::Store { variable } => write!(f, "Store({variable})"),
             Op::Print => f.write_str("Print"),
             Op::PrintString => f.write_str("PrintString"),
+            Op::ReadLine => f.write_str("ReadLine"),
+            Op::PrintLn => f.write_str("PrintLn"),
+            Op::ReadFile => f.write_str("ReadFile"),
+            Op::WriteFile => f.write_str("WriteFile"),
+            Op::FileExists => f.write_str("FileExists"),
+            Op::ListDir => f.write_str("ListDir"),
+            Op::PathJoin => f.write_str("PathJoin"),
             Op::Return => f.write_str("Return"),
             Op::StringConcat => f.write_str("StringConcat"),
             Op::StringEquals => f.write_str("StringEquals"),
@@ -437,8 +460,15 @@ impl Op {
             | Op::FieldGet { .. }
             | Op::Alloc { .. }
             | Op::Move { .. }
-            | Op::Borrow { .. } => result_type.clone(),
-            Op::JsonParse
+            | Op::Borrow { .. }
+            | Op::ReadLine
+            | Op::PrintLn
+            | Op::ReadFile
+            | Op::WriteFile
+            | Op::FileExists
+            | Op::ListDir
+            | Op::PathJoin
+            | Op::JsonParse
             | Op::JsonStringify
             | Op::JsonGetField
             | Op::JsonArrayLen

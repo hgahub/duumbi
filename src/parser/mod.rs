@@ -572,6 +572,52 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
             ast.operand = Some(operand);
             Ok(ast)
         }
+        "duumbi:ReadLine" => Ok(make_op_ast(
+            NodeId(node_id_str.to_string()),
+            Op::ReadLine,
+            result_type,
+        )),
+        "duumbi:PrintLn" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::PrintLn, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ReadFile" => {
+            let left = parse_node_ref(value, "duumbi:path", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:maxBytes", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::ReadFile, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:WriteFile" => {
+            let left = parse_node_ref(value, "duumbi:path", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:contents", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::WriteFile, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:FileExists" | "duumbi:ListDir" => {
+            let operand = parse_node_ref(value, "duumbi:path", node_id_str)?;
+            let op = match at_type {
+                "duumbi:FileExists" => Op::FileExists,
+                "duumbi:ListDir" => Op::ListDir,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:PathJoin" => {
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::PathJoin, result_type);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
         // -- String ops --
         "duumbi:StringConcat"
         | "duumbi:StringEquals"

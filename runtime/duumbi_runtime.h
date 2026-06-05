@@ -23,6 +23,13 @@ void duumbi_print_i64(int64_t val);
 void duumbi_print_f64(double val);
 void duumbi_print_bool(int8_t val);
 void duumbi_print_string(void *ptr);
+void *duumbi_read_line(void);
+void *duumbi_print_ln(void *ptr);
+void *duumbi_file_read(void *path_ptr, int64_t max_bytes);
+void *duumbi_file_write(void *path_ptr, void *contents_ptr);
+void *duumbi_file_exists(void *path_ptr);
+void *duumbi_list_dir(void *path_ptr);
+void *duumbi_path_join(void *left_ptr, void *right_ptr);
 
 /* ── Heap allocation ───────────────────────────────────────────────── */
 

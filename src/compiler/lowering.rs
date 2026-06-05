@@ -38,6 +38,13 @@ struct RuntimeFuncs {
     print_f64: FuncId,
     print_bool: FuncId,
     print_string: FuncId,
+    read_line: FuncId,
+    print_ln: FuncId,
+    file_read: FuncId,
+    file_write: FuncId,
+    file_exists: FuncId,
+    list_dir: FuncId,
+    path_join: FuncId,
     string_new: FuncId,
     string_free: FuncId,
     string_len: FuncId,
@@ -216,6 +223,13 @@ fn declare_all_runtime_fns(
         print_f64: declare_runtime_fn(module, "duumbi_print_f64", &[f64t], &[])?,
         print_bool: declare_runtime_fn(module, "duumbi_print_bool", &[i8t], &[])?,
         print_string: declare_runtime_fn(module, "duumbi_print_string", &[i64t], &[])?,
+        read_line: declare_runtime_fn(module, "duumbi_read_line", &[], &[i64t])?,
+        print_ln: declare_runtime_fn(module, "duumbi_print_ln", &[i64t], &[i64t])?,
+        file_read: declare_runtime_fn(module, "duumbi_file_read", &[i64t, i64t], &[i64t])?,
+        file_write: declare_runtime_fn(module, "duumbi_file_write", &[i64t, i64t], &[i64t])?,
+        file_exists: declare_runtime_fn(module, "duumbi_file_exists", &[i64t], &[i64t])?,
+        list_dir: declare_runtime_fn(module, "duumbi_list_dir", &[i64t], &[i64t])?,
+        path_join: declare_runtime_fn(module, "duumbi_path_join", &[i64t, i64t], &[i64t])?,
 
         // String functions (ptr = i64)
         string_new: declare_runtime_fn(module, "duumbi_string_new", &[i64t, i64t], &[i64t])?,
@@ -808,6 +822,13 @@ fn compile_function(
     let print_f64_ref = obj_module.declare_func_in_func(runtime.print_f64, builder.func);
     let print_bool_ref = obj_module.declare_func_in_func(runtime.print_bool, builder.func);
     let print_string_ref = obj_module.declare_func_in_func(runtime.print_string, builder.func);
+    let read_line_ref = obj_module.declare_func_in_func(runtime.read_line, builder.func);
+    let print_ln_ref = obj_module.declare_func_in_func(runtime.print_ln, builder.func);
+    let file_read_ref = obj_module.declare_func_in_func(runtime.file_read, builder.func);
+    let file_write_ref = obj_module.declare_func_in_func(runtime.file_write, builder.func);
+    let file_exists_ref = obj_module.declare_func_in_func(runtime.file_exists, builder.func);
+    let list_dir_ref = obj_module.declare_func_in_func(runtime.list_dir, builder.func);
+    let path_join_ref = obj_module.declare_func_in_func(runtime.path_join, builder.func);
     let string_new_ref = obj_module.declare_func_in_func(runtime.string_new, builder.func);
     let string_free_ref = obj_module.declare_func_in_func(runtime.string_free, builder.func);
     let string_len_ref = obj_module.declare_func_in_func(runtime.string_len, builder.func);
@@ -1210,6 +1231,53 @@ fn compile_function(
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     builder.ins().call(print_string_ref, &[operand_val]);
                 }
+                Op::ReadLine => {
+                    let call = builder.ins().call(read_line_ref, &[]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::PrintLn => {
+                    let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(print_ln_ref, &[operand_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ReadFile => {
+                    let (path_val, max_bytes_val) =
+                        get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(file_read_ref, &[path_val, max_bytes_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::WriteFile => {
+                    let (path_val, contents_val) =
+                        get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(file_write_ref, &[path_val, contents_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::FileExists => {
+                    let path_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(file_exists_ref, &[path_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ListDir => {
+                    let path_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(list_dir_ref, &[path_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::PathJoin => {
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(path_join_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
                 Op::StringConcat => {
                     let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
                     let left_type = get_left_operand_type(graph, node_idx);
@@ -1564,13 +1632,23 @@ fn compile_function(
                 Op::ResultUnwrap => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(result_unwrap_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::ResultUnwrapErr => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(result_unwrap_err_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
 
@@ -1596,7 +1674,12 @@ fn compile_function(
                 Op::OptionUnwrap => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(option_unwrap_ref, &[operand_val]);
-                    let result = builder.inst_results(call)[0];
+                    let payload = builder.inst_results(call)[0];
+                    let result = if node.result_type == Some(DuumbiType::Bool) {
+                        builder.ins().ireduce(types::I8, payload)
+                    } else {
+                        payload
+                    };
                     value_map.insert(node.id.clone(), result);
                 }
 
