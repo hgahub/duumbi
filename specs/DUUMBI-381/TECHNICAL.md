@@ -583,6 +583,7 @@ Agents must stop and request human approval before:
 
 - non-dry-run production publishing;
 - using or changing credentials;
+- making more than 10 external service calls in one implementation cycle;
 - introducing public-internet-dependent tests;
 - changing registry server behavior;
 - changing default workspace dependency policy;
@@ -591,6 +592,12 @@ Agents must stop and request human approval before:
 - adding dynamic server callbacks, middleware, async event loops, TLS,
   WebSockets, or daemon supervision;
 - adding a new third-party C dependency or system package requirement;
+- adding migrations, persistent schema changes, or release storage changes;
+- making security-sensitive changes to authentication, credentials, token
+  handling, public network exposure, or sandbox boundaries;
+- continuing past a blocking verifier, CI, reviewer, or runtime-safety finding;
+- making product, architecture, or API-boundary decisions not already settled
+  by the product spec or this technical spec;
 - exceeding USD 2 estimated external API spend;
 - exceeding the autonomous cycle count;
 - requiring destructive git or filesystem operations.
