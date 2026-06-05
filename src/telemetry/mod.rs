@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -299,6 +300,312 @@ impl RepairContextOptions {
     }
 }
 
+/// Request for deterministic repair candidate validation.
+#[derive(Debug, Clone)]
+pub struct RepairValidationRequest {
+    /// Mapped repair crash context assembled from local telemetry artifacts.
+    pub crash_context: RepairCrashContext,
+    /// Proposed repair patch JSON. This must deserialize as [`crate::patch::GraphPatch`].
+    pub patch_json: serde_json::Value,
+    /// Source artifact used as the original graph candidate input.
+    pub source: RepairValidationSource,
+}
+
+impl RepairValidationRequest {
+    /// Creates a single-graph repair validation request.
+    #[must_use]
+    pub fn single_graph(
+        crash_context: RepairCrashContext,
+        patch_json: serde_json::Value,
+        graph_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            crash_context,
+            patch_json,
+            source: RepairValidationSource::SingleGraphFile(graph_path.into()),
+        }
+    }
+}
+
+/// Source artifact selected for repair validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepairValidationSource {
+    /// Validate a single JSON-LD graph source file.
+    SingleGraphFile(PathBuf),
+}
+
+impl RepairValidationSource {
+    fn graph_path(&self) -> &Path {
+        match self {
+            Self::SingleGraphFile(path) => path,
+        }
+    }
+}
+
+/// Result from an externalized repair validation execution step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairValidationStepOutcome {
+    /// Whether the execution step passed.
+    pub passed: bool,
+    /// Bounded human-readable step summary.
+    pub summary: String,
+    /// Optional command or candidate artifact backing this step.
+    pub command: Option<String>,
+    /// Optional bounded output summary.
+    pub output: Option<String>,
+}
+
+impl RepairValidationStepOutcome {
+    /// Creates one repair validation execution step result.
+    #[must_use]
+    pub fn new(passed: bool, summary: impl Into<String>, output: Option<String>) -> Self {
+        Self {
+            passed,
+            summary: summary.into(),
+            command: None,
+            output,
+        }
+    }
+
+    /// Creates one repair validation execution step result with command evidence.
+    #[must_use]
+    pub fn with_command(
+        passed: bool,
+        summary: impl Into<String>,
+        command: impl Into<String>,
+        output: Option<String>,
+    ) -> Self {
+        Self {
+            passed,
+            summary: summary.into(),
+            command: Some(command.into()),
+            output,
+        }
+    }
+}
+
+/// Execution seam for native rebuild and relevant-test repair validation gates.
+pub trait RepairValidationRunner {
+    /// Rebuilds the temporary patched candidate graph.
+    fn rebuild_candidate(&mut self, candidate_graph_json: &str) -> RepairValidationStepOutcome;
+
+    /// Runs candidate-aware relevant tests after a successful rebuild.
+    fn run_relevant_tests(
+        &mut self,
+        candidate_graph_json: &str,
+        rebuild: &RepairValidationStepOutcome,
+    ) -> RepairValidationStepOutcome;
+}
+
+/// Command-backed runner for native repair validation rebuild and test gates.
+pub struct RepairValidationCommandRunner {
+    temp_dir: tempfile::TempDir,
+    original_graph_path: PathBuf,
+    candidate_graph_path: PathBuf,
+    candidate_binary_path: PathBuf,
+    build_command: Vec<String>,
+    test_commands: Vec<String>,
+    max_output_bytes: usize,
+}
+
+impl RepairValidationCommandRunner {
+    /// Creates a command runner for single-graph repair validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError`] if the temporary candidate directory cannot be created.
+    pub fn single_graph(
+        duumbi_exe: impl Into<PathBuf>,
+        original_graph_path: impl Into<PathBuf>,
+        test_commands: Vec<String>,
+    ) -> Result<Self, TelemetryError> {
+        let original_graph_path = original_graph_path.into();
+        let build_command = vec![
+            duumbi_exe.into().display().to_string(),
+            "build".to_string(),
+            "{candidate_graph}".to_string(),
+            "-o".to_string(),
+            "{candidate_binary}".to_string(),
+        ];
+        Self::with_commands(original_graph_path, build_command, test_commands)
+    }
+
+    /// Creates a command runner with explicit rebuild and test command templates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError`] if the temporary candidate directory cannot be created.
+    pub fn with_commands(
+        original_graph_path: impl Into<PathBuf>,
+        build_command: Vec<String>,
+        test_commands: Vec<String>,
+    ) -> Result<Self, TelemetryError> {
+        let temp_dir = tempfile::TempDir::new().map_err(|source| TelemetryError::Io {
+            context: "Failed to create repair validation temp directory".to_string(),
+            source,
+        })?;
+        let candidate_graph_path = temp_dir.path().join("candidate.jsonld");
+        let candidate_binary_path = temp_dir.path().join(candidate_binary_file_name());
+
+        Ok(Self {
+            temp_dir,
+            original_graph_path: original_graph_path.into(),
+            candidate_graph_path,
+            candidate_binary_path,
+            build_command,
+            test_commands,
+            max_output_bytes: 4096,
+        })
+    }
+
+    fn substitute_placeholders(&self, value: &str) -> String {
+        value
+            .replace(
+                "{candidate_graph}",
+                &self.candidate_graph_path.display().to_string(),
+            )
+            .replace(
+                "{candidate_binary}",
+                &self.candidate_binary_path.display().to_string(),
+            )
+            .replace(
+                "{candidate_workspace}",
+                &self.temp_dir.path().display().to_string(),
+            )
+            .replace(
+                "{original_graph}",
+                &self.original_graph_path.display().to_string(),
+            )
+    }
+
+    fn run_command_template(&self, template: &[String]) -> RepairValidationStepOutcome {
+        if template.is_empty() {
+            return RepairValidationStepOutcome::new(
+                false,
+                "command template is empty",
+                Some("no command configured".to_string()),
+            );
+        }
+
+        let command_parts = template
+            .iter()
+            .map(|part| self.substitute_placeholders(part))
+            .collect::<Vec<_>>();
+        let output = Command::new(&command_parts[0])
+            .args(&command_parts[1..])
+            .env("DUUMBI_REPAIR_CANDIDATE_GRAPH", &self.candidate_graph_path)
+            .env(
+                "DUUMBI_REPAIR_CANDIDATE_BINARY",
+                &self.candidate_binary_path,
+            )
+            .env("DUUMBI_REPAIR_CANDIDATE_WORKSPACE", self.temp_dir.path())
+            .env("DUUMBI_REPAIR_ORIGINAL_GRAPH", &self.original_graph_path)
+            .output();
+
+        match output {
+            Ok(output) => {
+                let summary = if output.status.success() {
+                    "command exited successfully"
+                } else {
+                    "command exited unsuccessfully"
+                };
+                RepairValidationStepOutcome::with_command(
+                    output.status.success(),
+                    summary,
+                    command_parts.join(" "),
+                    Some(self.command_output_summary(&output)),
+                )
+            }
+            Err(err) => RepairValidationStepOutcome::with_command(
+                false,
+                "command failed to start",
+                command_parts.join(" "),
+                Some(err.to_string()),
+            ),
+        }
+    }
+
+    fn command_output_summary(&self, output: &std::process::Output) -> String {
+        let stdout = bounded_lossy(&output.stdout, self.max_output_bytes);
+        let stderr = bounded_lossy(&output.stderr, self.max_output_bytes);
+        format!(
+            "status: {}; stdout: {}; stderr: {}",
+            output.status, stdout, stderr
+        )
+    }
+}
+
+impl RepairValidationRunner for RepairValidationCommandRunner {
+    fn rebuild_candidate(&mut self, candidate_graph_json: &str) -> RepairValidationStepOutcome {
+        if let Err(err) = fs::write(&self.candidate_graph_path, candidate_graph_json) {
+            return RepairValidationStepOutcome::new(
+                false,
+                "failed to write temporary candidate graph",
+                Some(err.to_string()),
+            );
+        }
+
+        self.run_command_template(&self.build_command)
+    }
+
+    fn run_relevant_tests(
+        &mut self,
+        _candidate_graph_json: &str,
+        _rebuild: &RepairValidationStepOutcome,
+    ) -> RepairValidationStepOutcome {
+        let commands = if self.test_commands.is_empty() {
+            vec!["{candidate_binary}".to_string()]
+        } else {
+            self.test_commands.clone()
+        };
+
+        for command in &commands {
+            if !is_candidate_aware_test_command(command) {
+                return RepairValidationStepOutcome::new(
+                    false,
+                    "relevant test command is not candidate-aware",
+                    Some(command.clone()),
+                );
+            }
+        }
+
+        let mut command_summaries = Vec::new();
+        let mut summaries = Vec::new();
+        for command in commands {
+            let Some(parts) = shlex::split(&command) else {
+                return RepairValidationStepOutcome::new(
+                    false,
+                    "failed to parse relevant test command",
+                    Some(command),
+                );
+            };
+            let result = self.run_command_template(&parts);
+            command_summaries.push(
+                result
+                    .command
+                    .clone()
+                    .unwrap_or_else(|| self.substitute_placeholders(&command)),
+            );
+            summaries.push(result.output.unwrap_or_else(|| result.summary.clone()));
+            if !result.passed {
+                return RepairValidationStepOutcome::with_command(
+                    false,
+                    "candidate-aware relevant test failed",
+                    command_summaries.join("\n"),
+                    Some(summaries.join("\n")),
+                );
+            }
+        }
+
+        RepairValidationStepOutcome::with_command(
+            true,
+            "candidate-aware relevant tests passed",
+            command_summaries.join("\n"),
+            Some(summaries.join("\n")),
+        )
+    }
+}
+
 /// Agent-facing crash context for proposing a graph repair.
 ///
 /// This context is derived from mapped telemetry artifacts only. It does not
@@ -339,12 +646,160 @@ pub enum RepairValidationGate {
     AtomicPatchApplication,
     /// Patched JSON-LD parses into the Duumbi AST.
     GraphParse,
-    /// Patched graph builds and passes graph validation.
+    /// Patched JSON-LD builds into the Duumbi graph IR.
+    GraphBuild,
+    /// Patched graph passes semantic validation.
     GraphValidation,
     /// Native rebuild succeeds after the candidate patch.
     NativeRebuild,
     /// Relevant targeted and regression tests pass.
     RelevantTests,
+}
+
+/// Source graph or workspace artifact considered during repair validation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairValidationSourceArtifact {
+    /// Source artifact kind, such as `graph_sources`.
+    pub kind: String,
+    /// Local graph or workspace paths linked to the repair validation context.
+    pub paths: Vec<String>,
+}
+
+impl RepairValidationSourceArtifact {
+    fn from_context(crash_context: &RepairCrashContext) -> Self {
+        Self {
+            kind: "graph_sources".to_string(),
+            paths: crash_context.evidence.graph_sources.clone(),
+        }
+    }
+
+    fn from_source(source: &RepairValidationSource) -> Self {
+        Self {
+            kind: "graph_sources".to_string(),
+            paths: vec![source.graph_path().display().to_string()],
+        }
+    }
+}
+
+/// Bounded summary of the proposed repair patch.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairPatchSummary {
+    /// Number of patch operations in the proposed `GraphPatch`.
+    pub operation_count: usize,
+}
+
+impl RepairPatchSummary {
+    fn from_patch_value(proposed_patch: &serde_json::Value) -> Self {
+        let operation_count = proposed_patch
+            .get("ops")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+
+        Self { operation_count }
+    }
+}
+
+/// Coarse status for rebuild and test evidence summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairValidationStepStatus {
+    /// The step has not run yet.
+    NotAttempted,
+    /// The step passed.
+    Passed,
+    /// The step failed.
+    Failed,
+}
+
+impl RepairValidationStepStatus {
+    fn from_gate(gates: &[RepairValidationGateEvidence], gate: RepairValidationGate) -> Self {
+        gates
+            .iter()
+            .find(|evidence| evidence.gate == gate)
+            .map_or(Self::NotAttempted, |evidence| {
+                if evidence.passed {
+                    Self::Passed
+                } else {
+                    Self::Failed
+                }
+            })
+    }
+}
+
+/// Bounded native rebuild evidence summary.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairRebuildSummary {
+    /// Native rebuild status derived from the rebuild gate evidence.
+    pub status: RepairValidationStepStatus,
+    /// Optional rebuild command or API summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Optional bounded rebuild output summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl RepairRebuildSummary {
+    fn from_gates(gates: &[RepairValidationGateEvidence]) -> Self {
+        let gate = gates
+            .iter()
+            .find(|evidence| evidence.gate == RepairValidationGate::NativeRebuild);
+
+        Self {
+            status: RepairValidationStepStatus::from_gate(
+                gates,
+                RepairValidationGate::NativeRebuild,
+            ),
+            command: gate.and_then(|evidence| evidence.command.clone()),
+            output: gate.and_then(|evidence| evidence.output.clone()),
+        }
+    }
+}
+
+/// Bounded relevant-test evidence summary.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RepairTestSummary {
+    /// Relevant-test status derived from the test gate evidence.
+    pub status: RepairValidationStepStatus,
+    /// Candidate-aware test command summaries.
+    pub commands: Vec<String>,
+    /// Optional bounded test output summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl RepairTestSummary {
+    fn from_gates(gates: &[RepairValidationGateEvidence]) -> Self {
+        let gate = gates
+            .iter()
+            .find(|evidence| evidence.gate == RepairValidationGate::RelevantTests);
+
+        Self {
+            status: RepairValidationStepStatus::from_gate(
+                gates,
+                RepairValidationGate::RelevantTests,
+            ),
+            commands: gate
+                .and_then(|evidence| evidence.command.as_deref())
+                .map(split_evidence_lines)
+                .unwrap_or_default(),
+            output: gate.and_then(|evidence| evidence.output.clone()),
+        }
+    }
+}
+
+/// Human review state represented by repair validation evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairHumanReviewState {
+    /// Local validation has not produced a human-review-ready candidate.
+    NotReady,
+    /// Local validation passed and the candidate awaits human review.
+    Pending,
+    /// A human reviewer requested revision after local validation.
+    RevisionRequested,
+    /// A human reviewer rejected the candidate after local validation.
+    Rejected,
 }
 
 /// Evidence captured for one repair validation gate.
@@ -356,7 +811,10 @@ pub struct RepairValidationGateEvidence {
     pub passed: bool,
     /// Human-readable summary of the gate result.
     pub summary: String,
-    /// Optional local artifact path or command summary backing the gate.
+    /// Optional command or candidate artifact backing the gate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Optional bounded output or diagnostic summary backing the gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
 }
@@ -374,6 +832,25 @@ impl RepairValidationGateEvidence {
             gate,
             passed,
             summary: summary.into(),
+            command: None,
+            output,
+        }
+    }
+
+    /// Creates one repair validation gate evidence item with command evidence.
+    #[must_use]
+    pub fn with_command(
+        gate: RepairValidationGate,
+        passed: bool,
+        summary: impl Into<String>,
+        command: Option<String>,
+        output: Option<String>,
+    ) -> Self {
+        Self {
+            gate,
+            passed,
+            summary: summary.into(),
+            command,
             output,
         }
     }
@@ -392,14 +869,24 @@ pub struct RepairValidationEvidence {
     pub crash_context: RepairCrashContext,
     /// Proposed graph patch serialized for review.
     pub proposed_patch: serde_json::Value,
+    /// Source artifact considered during validation.
+    pub source_artifact: RepairValidationSourceArtifact,
+    /// Bounded proposed patch summary.
+    pub patch_summary: RepairPatchSummary,
     /// Validation gate results.
     pub gates: Vec<RepairValidationGateEvidence>,
+    /// Bounded native rebuild summary.
+    pub rebuild_summary: RepairRebuildSummary,
+    /// Bounded relevant-test summary.
+    pub test_summary: RepairTestSummary,
     /// Whether all required local validation gates passed.
     pub local_validation_passed: bool,
     /// Repairs must remain human-reviewable and are not silently accepted.
     pub requires_human_review: bool,
     /// Repair acceptance state. This remains false in telemetry evidence.
     pub accepted_for_application: bool,
+    /// Human review state. Local validation can only move this to `pending`.
+    pub human_review_state: RepairHumanReviewState,
 }
 
 impl RepairValidationEvidence {
@@ -410,6 +897,16 @@ impl RepairValidationEvidence {
         proposed_patch: serde_json::Value,
         gates: Vec<RepairValidationGateEvidence>,
     ) -> Self {
+        let source_artifact = RepairValidationSourceArtifact::from_context(&crash_context);
+        Self::with_source_artifact(crash_context, proposed_patch, source_artifact, gates)
+    }
+
+    fn with_source_artifact(
+        crash_context: RepairCrashContext,
+        proposed_patch: serde_json::Value,
+        source_artifact: RepairValidationSourceArtifact,
+        gates: Vec<RepairValidationGateEvidence>,
+    ) -> Self {
         let local_validation_passed =
             required_repair_validation_gates()
                 .iter()
@@ -418,15 +915,28 @@ impl RepairValidationEvidence {
                         .iter()
                         .any(|evidence| evidence.gate == *required_gate && evidence.passed)
                 });
+        let human_review_state = if local_validation_passed {
+            RepairHumanReviewState::Pending
+        } else {
+            RepairHumanReviewState::NotReady
+        };
+        let patch_summary = RepairPatchSummary::from_patch_value(&proposed_patch);
+        let rebuild_summary = RepairRebuildSummary::from_gates(&gates);
+        let test_summary = RepairTestSummary::from_gates(&gates);
 
         Self {
             schema_version: REPAIR_VALIDATION_SCHEMA_VERSION.to_string(),
             crash_context,
             proposed_patch,
+            source_artifact,
+            patch_summary,
             gates,
+            rebuild_summary,
+            test_summary,
             local_validation_passed,
             requires_human_review: true,
             accepted_for_application: false,
+            human_review_state,
         }
     }
 
@@ -450,6 +960,7 @@ pub fn required_repair_validation_gates() -> Vec<RepairValidationGate> {
         RepairValidationGate::GraphPatchParse,
         RepairValidationGate::AtomicPatchApplication,
         RepairValidationGate::GraphParse,
+        RepairValidationGate::GraphBuild,
         RepairValidationGate::GraphValidation,
         RepairValidationGate::NativeRebuild,
         RepairValidationGate::RelevantTests,
@@ -676,6 +1187,301 @@ pub fn repair_validation_evidence_from_graph_patch(
         proposed_patch,
         gates,
     ))
+}
+
+/// Validates a proposed repair candidate through the local graph gates.
+///
+/// The original graph source is read but never written. Patch application uses
+/// [`crate::patch::apply_patch()`], which clones the JSON-LD value before
+/// applying operations.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when the source graph cannot be read or parsed as
+/// JSON before the graph-gate evidence can be constructed.
+pub fn validate_repair_candidate(
+    request: RepairValidationRequest,
+) -> Result<RepairValidationEvidence, TelemetryError> {
+    validate_repair_candidate_inner(request, None)
+}
+
+/// Returns true when a repair context includes the graph source selected for validation.
+#[must_use]
+pub fn repair_context_includes_graph_source(
+    crash_context: &RepairCrashContext,
+    graph_path: &Path,
+) -> bool {
+    crash_context
+        .evidence
+        .graph_sources
+        .iter()
+        .any(|source| graph_sources_match(source, graph_path))
+}
+
+/// Validates a proposed repair candidate and executes rebuild/test gates through a runner.
+///
+/// The runner receives the temporary patched graph JSON and must remain
+/// candidate-aware. It must not write the original source graph.
+///
+/// # Errors
+///
+/// Returns [`TelemetryError`] when the source graph cannot be read or parsed as
+/// JSON before the graph-gate evidence can be constructed.
+pub fn validate_repair_candidate_with_runner(
+    request: RepairValidationRequest,
+    runner: &mut dyn RepairValidationRunner,
+) -> Result<RepairValidationEvidence, TelemetryError> {
+    validate_repair_candidate_inner(request, Some(runner))
+}
+
+fn validate_repair_candidate_inner(
+    request: RepairValidationRequest,
+    runner: Option<&mut dyn RepairValidationRunner>,
+) -> Result<RepairValidationEvidence, TelemetryError> {
+    let source_artifact = RepairValidationSourceArtifact::from_source(&request.source);
+    let mut gates = Vec::new();
+
+    let patch = match parse_repair_graph_patch(&request.patch_json) {
+        Ok(patch) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphPatchParse,
+                true,
+                "proposed patch parsed as GraphPatch",
+                None,
+            ));
+            patch
+        }
+        Err(err) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphPatchParse,
+                false,
+                "proposed patch did not parse as GraphPatch",
+                Some(err.to_string()),
+            ));
+            return Ok(RepairValidationEvidence::with_source_artifact(
+                request.crash_context,
+                request.patch_json,
+                source_artifact,
+                gates,
+            ));
+        }
+    };
+
+    let source_path = request.source.graph_path();
+    let source_text = fs::read_to_string(source_path).map_err(|source| TelemetryError::Io {
+        context: format!(
+            "Failed to read repair validation source '{}'",
+            source_path.display()
+        ),
+        source,
+    })?;
+    let source_value =
+        serde_json::from_str::<serde_json::Value>(&source_text).map_err(|source| {
+            TelemetryError::Parse {
+                path: source_path.display().to_string(),
+                source,
+            }
+        })?;
+
+    let patched_value = match crate::patch::apply_patch(&source_value, &patch) {
+        Ok(patched_value) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::AtomicPatchApplication,
+                true,
+                format!(
+                    "applied {} patch operation(s) to a cloned source",
+                    patch.ops.len()
+                ),
+                None,
+            ));
+            patched_value
+        }
+        Err(err) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::AtomicPatchApplication,
+                false,
+                "patch application failed before graph parsing",
+                Some(err.to_string()),
+            ));
+            return Ok(RepairValidationEvidence::with_source_artifact(
+                request.crash_context,
+                request.patch_json,
+                source_artifact.clone(),
+                gates,
+            ));
+        }
+    };
+
+    let patched_text = serde_json::to_string(&patched_value).map_err(TelemetryError::Serialize)?;
+    let module_ast = match crate::parser::parse_jsonld(&patched_text) {
+        Ok(module_ast) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphParse,
+                true,
+                "patched JSON-LD parsed into the Duumbi AST",
+                None,
+            ));
+            module_ast
+        }
+        Err(err) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphParse,
+                false,
+                "patched JSON-LD failed graph parsing",
+                Some(err.to_string()),
+            ));
+            return Ok(RepairValidationEvidence::with_source_artifact(
+                request.crash_context,
+                request.patch_json,
+                source_artifact.clone(),
+                gates,
+            ));
+        }
+    };
+
+    let semantic_graph = match crate::graph::builder::build_graph(&module_ast) {
+        Ok(semantic_graph) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphBuild,
+                true,
+                "patched AST built into graph IR",
+                None,
+            ));
+            semantic_graph
+        }
+        Err(errors) => {
+            gates.push(RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphBuild,
+                false,
+                "patched AST failed graph build",
+                Some(join_graph_errors(&errors)),
+            ));
+            return Ok(RepairValidationEvidence::with_source_artifact(
+                request.crash_context,
+                request.patch_json,
+                source_artifact.clone(),
+                gates,
+            ));
+        }
+    };
+
+    let diagnostics = crate::graph::validator::validate(&semantic_graph);
+    if diagnostics.is_empty() {
+        gates.push(RepairValidationGateEvidence::new(
+            RepairValidationGate::GraphValidation,
+            true,
+            "patched graph passed semantic validation",
+            None,
+        ));
+    } else {
+        gates.push(RepairValidationGateEvidence::new(
+            RepairValidationGate::GraphValidation,
+            false,
+            "patched graph failed semantic validation",
+            Some(join_diagnostics(&diagnostics)),
+        ));
+        return Ok(RepairValidationEvidence::with_source_artifact(
+            request.crash_context,
+            request.patch_json,
+            source_artifact.clone(),
+            gates,
+        ));
+    }
+
+    if let Some(runner) = runner {
+        let rebuild = runner.rebuild_candidate(&patched_text);
+        gates.push(RepairValidationGateEvidence::with_command(
+            RepairValidationGate::NativeRebuild,
+            rebuild.passed,
+            rebuild.summary.clone(),
+            rebuild.command.clone(),
+            rebuild.output.clone(),
+        ));
+        if !rebuild.passed {
+            return Ok(RepairValidationEvidence::with_source_artifact(
+                request.crash_context,
+                request.patch_json,
+                source_artifact.clone(),
+                gates,
+            ));
+        }
+
+        let tests = runner.run_relevant_tests(&patched_text, &rebuild);
+        gates.push(RepairValidationGateEvidence::with_command(
+            RepairValidationGate::RelevantTests,
+            tests.passed,
+            tests.summary,
+            tests.command,
+            tests.output,
+        ));
+    }
+
+    Ok(RepairValidationEvidence::with_source_artifact(
+        request.crash_context,
+        request.patch_json,
+        source_artifact,
+        gates,
+    ))
+}
+
+fn graph_sources_match(context_source: &str, graph_path: &Path) -> bool {
+    let context_path = Path::new(context_source);
+    if context_path == graph_path {
+        return true;
+    }
+
+    match (context_path.canonicalize(), graph_path.canonicalize()) {
+        (Ok(context_source), Ok(graph_path)) => context_source == graph_path,
+        _ => false,
+    }
+}
+
+fn join_graph_errors(errors: &[crate::graph::GraphError]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn join_diagnostics(diagnostics: &[crate::errors::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn candidate_binary_file_name() -> String {
+    if cfg!(windows) {
+        "repair-candidate.exe".to_string()
+    } else {
+        "repair-candidate".to_string()
+    }
+}
+
+fn is_candidate_aware_test_command(command: &str) -> bool {
+    command.contains("{candidate_graph}")
+        || command.contains("{candidate_binary}")
+        || command.contains("{candidate_workspace}")
+}
+
+fn split_evidence_lines(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn bounded_lossy(bytes: &[u8], max_bytes: usize) -> String {
+    let len = bytes.len().min(max_bytes);
+    let mut text = String::from_utf8_lossy(&bytes[..len]).replace('\n', "\\n");
+    if bytes.len() > max_bytes {
+        text.push_str("...[truncated]");
+    }
+    text
 }
 
 #[derive(Debug, Clone)]
@@ -2034,6 +2840,7 @@ mod tests {
         assert!(evidence.local_validation_passed);
         assert!(evidence.requires_human_review);
         assert!(!evidence.accepted_for_application);
+        assert_eq!(evidence.human_review_state, RepairHumanReviewState::Pending);
         parse_repair_graph_patch(&evidence.proposed_patch)
             .expect("evidence patch should parse through GraphPatch");
     }
@@ -2062,6 +2869,597 @@ mod tests {
         assert!(!evidence.local_validation_passed);
         assert!(evidence.requires_human_review);
         assert!(!evidence.accepted_for_application);
+        assert_eq!(
+            evidence.human_review_state,
+            RepairHumanReviewState::NotReady
+        );
+    }
+
+    #[test]
+    fn repair_validation_required_gates_expose_graph_build_separately() {
+        let gates = required_repair_validation_gates();
+
+        assert_eq!(
+            gates,
+            vec![
+                RepairValidationGate::GraphPatchParse,
+                RepairValidationGate::AtomicPatchApplication,
+                RepairValidationGate::GraphParse,
+                RepairValidationGate::GraphBuild,
+                RepairValidationGate::GraphValidation,
+                RepairValidationGate::NativeRebuild,
+                RepairValidationGate::RelevantTests,
+            ]
+        );
+    }
+
+    #[test]
+    fn repair_validation_evidence_serializes_reviewable_schema_fields() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        write_test_crash(&dir, &map, "candidate repair");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source.clone());
+        let context = repair_crash_context(&options).expect("repair context should be built");
+        let patch = serde_json::json!({
+            "ops": [{
+                "kind": "modify_op",
+                "node_id": "duumbi:t/main/entry/0",
+                "field": "duumbi:value",
+                "value": 1
+            }]
+        });
+        let gates = required_repair_validation_gates()
+            .into_iter()
+            .map(|gate| match gate {
+                RepairValidationGate::NativeRebuild => RepairValidationGateEvidence::with_command(
+                    gate,
+                    true,
+                    "passed",
+                    Some("duumbi build candidate".to_string()),
+                    Some("build output".to_string()),
+                ),
+                RepairValidationGate::RelevantTests => RepairValidationGateEvidence::with_command(
+                    gate,
+                    true,
+                    "passed",
+                    Some("{candidate_binary}".to_string()),
+                    Some("test output".to_string()),
+                ),
+                _ => RepairValidationGateEvidence::new(gate, true, "passed", None),
+            })
+            .collect();
+
+        let evidence = RepairValidationEvidence::new(context, patch, gates);
+        let serialized =
+            serde_json::to_value(&evidence).expect("repair validation evidence should serialize");
+
+        assert_eq!(
+            serialized["schema_version"],
+            REPAIR_VALIDATION_SCHEMA_VERSION
+        );
+        assert_eq!(serialized["source_artifact"]["kind"], "graph_sources");
+        assert_eq!(
+            serialized["source_artifact"]["paths"][0],
+            graph_source.display().to_string()
+        );
+        assert_eq!(serialized["patch_summary"]["operation_count"], 1);
+        assert_eq!(serialized["rebuild_summary"]["status"], "passed");
+        assert_eq!(
+            serialized["rebuild_summary"]["command"],
+            "duumbi build candidate"
+        );
+        assert_eq!(serialized["rebuild_summary"]["output"], "build output");
+        assert_eq!(serialized["test_summary"]["status"], "passed");
+        assert_eq!(
+            serialized["test_summary"]["commands"][0],
+            "{candidate_binary}"
+        );
+        assert_eq!(serialized["test_summary"]["output"], "test output");
+        assert_eq!(serialized["human_review_state"], "pending");
+        assert_eq!(serialized["requires_human_review"], true);
+        assert_eq!(serialized["accepted_for_application"], false);
+    }
+
+    #[test]
+    fn repair_validation_graph_build_failure_is_reviewable_not_ready() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        write_test_crash(&dir, &map, "candidate repair");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source);
+        let context = repair_crash_context(&options).expect("repair context should be built");
+        let patch = serde_json::json!({ "ops": [] });
+        let gates = vec![
+            RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphPatchParse,
+                true,
+                "parsed",
+                None,
+            ),
+            RepairValidationGateEvidence::new(
+                RepairValidationGate::AtomicPatchApplication,
+                true,
+                "applied to clone",
+                None,
+            ),
+            RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphParse,
+                true,
+                "parsed",
+                None,
+            ),
+            RepairValidationGateEvidence::new(
+                RepairValidationGate::GraphBuild,
+                false,
+                "builder rejected patched graph",
+                Some("missing entry block".to_string()),
+            ),
+        ];
+
+        let evidence = RepairValidationEvidence::new(context, patch, gates);
+
+        assert!(!evidence.has_required_gates());
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence.human_review_state,
+            RepairHumanReviewState::NotReady
+        );
+        assert_eq!(
+            evidence
+                .gates
+                .iter()
+                .find(|gate| gate.gate == RepairValidationGate::GraphBuild)
+                .expect("graph build gate should be present")
+                .summary,
+            "builder rejected patched graph"
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_reports_malformed_patch_before_application() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({ "ops": [{ "kind": "unsupported" }] }),
+            graph_source,
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("malformed patch should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(evidence.gates.len(), 1);
+        assert_eq!(
+            evidence.gates[0].gate,
+            RepairValidationGate::GraphPatchParse
+        );
+        assert!(!evidence.gates[0].passed);
+        assert!(
+            !evidence
+                .gates
+                .iter()
+                .any(|gate| gate.gate == RepairValidationGate::AtomicPatchApplication)
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_reports_selected_source_artifact() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, context_graph_source) = test_repair_context_and_source(&dir);
+        let selected_graph_source =
+            write_test_graph_source(&dir, test_graph_source(), "selected.jsonld");
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({ "ops": [{ "kind": "unsupported" }] }),
+            selected_graph_source.clone(),
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("malformed patch should return evidence");
+
+        assert_eq!(
+            evidence.source_artifact.paths,
+            vec![selected_graph_source.display().to_string()]
+        );
+        assert_ne!(
+            evidence.source_artifact.paths,
+            vec![context_graph_source.display().to_string()]
+        );
+    }
+
+    #[test]
+    fn repair_context_graph_source_match_accepts_same_or_canonical_path() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let canonical_graph_source =
+            std::fs::canonicalize(&graph_source).expect("graph source should canonicalize");
+
+        assert!(repair_context_includes_graph_source(
+            &context,
+            &graph_source
+        ));
+        assert!(repair_context_includes_graph_source(
+            &context,
+            &canonical_graph_source
+        ));
+        assert!(!repair_context_includes_graph_source(
+            &context,
+            &dir.path().join("other.jsonld")
+        ));
+    }
+
+    #[test]
+    fn repair_test_summary_splits_multiple_commands() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, _) = test_repair_context_and_source(&dir);
+        let gates = vec![RepairValidationGateEvidence::with_command(
+            RepairValidationGate::RelevantTests,
+            true,
+            "candidate-aware tests passed",
+            Some("first command\n\n second command ".to_string()),
+            Some("test output".to_string()),
+        )];
+
+        let evidence =
+            RepairValidationEvidence::new(context, serde_json::json!({ "ops": [] }), gates);
+
+        assert_eq!(
+            evidence.test_summary.commands,
+            vec!["first command".to_string(), "second command".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_preserves_source_on_patch_application_failure() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let original_bytes = std::fs::read(&graph_source).expect("source should be readable");
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({
+                "ops": [{
+                    "kind": "modify_op",
+                    "node_id": "duumbi:t/main/entry/missing",
+                    "field": "duumbi:value",
+                    "value": 1
+                }]
+            }),
+            graph_source.clone(),
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("patch failure should return evidence");
+        let after_bytes = std::fs::read(&graph_source).expect("source should remain readable");
+
+        assert_eq!(after_bytes, original_bytes);
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::AtomicPatchApplication
+        );
+        assert!(
+            !evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .passed
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_reports_graph_build_failure_distinctly() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({
+                "ops": [{
+                    "kind": "remove_node",
+                    "node_id": "duumbi:t/main"
+                }]
+            }),
+            graph_source,
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("graph build failure should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::GraphBuild
+        );
+        assert!(
+            !evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .passed
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_reports_graph_validation_failure() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({
+                "ops": [{
+                    "kind": "add_op",
+                    "block_id": "duumbi:t/main/entry",
+                    "op": {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:t/main/entry/2",
+                        "duumbi:value": 2,
+                        "duumbi:resultType": "i64"
+                    }
+                }]
+            }),
+            graph_source,
+        );
+
+        let evidence = validate_repair_candidate(request)
+            .expect("graph validation failure should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::GraphValidation
+        );
+        assert!(
+            !evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .passed
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_passes_parse_build_validate_but_awaits_later_gates() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({
+                "ops": [{
+                    "kind": "modify_op",
+                    "node_id": "duumbi:t/main/entry/0",
+                    "field": "duumbi:value",
+                    "value": 1
+                }]
+            }),
+            graph_source,
+        );
+
+        let evidence =
+            validate_repair_candidate(request).expect("valid early gates should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert!(!evidence.has_required_gates());
+        assert!(
+            evidence
+                .gates
+                .iter()
+                .any(|gate| gate.gate == RepairValidationGate::GraphValidation && gate.passed)
+        );
+        assert!(
+            !evidence
+                .gates
+                .iter()
+                .any(|gate| gate.gate == RepairValidationGate::NativeRebuild)
+        );
+        assert_eq!(
+            evidence.human_review_state,
+            RepairHumanReviewState::NotReady
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_runner_reports_native_rebuild_failure() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request =
+            RepairValidationRequest::single_graph(context, valid_modify_patch(), graph_source);
+        let mut runner = TestRepairValidationRunner {
+            rebuild_passes: false,
+            tests_pass: true,
+        };
+
+        let evidence = validate_repair_candidate_with_runner(request, &mut runner)
+            .expect("rebuild failure should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence.rebuild_summary.status,
+            RepairValidationStepStatus::Failed
+        );
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::NativeRebuild
+        );
+        assert!(
+            !evidence
+                .gates
+                .iter()
+                .any(|gate| gate.gate == RepairValidationGate::RelevantTests)
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_runner_does_not_rebuild_after_validation_failure() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request = RepairValidationRequest::single_graph(
+            context,
+            serde_json::json!({
+                "ops": [{
+                    "kind": "add_op",
+                    "block_id": "duumbi:t/main/entry",
+                    "op": {
+                        "@type": "duumbi:Const",
+                        "@id": "duumbi:t/main/entry/2",
+                        "duumbi:value": 2,
+                        "duumbi:resultType": "i64"
+                    }
+                }]
+            }),
+            graph_source,
+        );
+        let mut runner = TestRepairValidationRunner {
+            rebuild_passes: true,
+            tests_pass: true,
+        };
+
+        let evidence = validate_repair_candidate_with_runner(request, &mut runner)
+            .expect("graph validation failure should return evidence");
+
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::GraphValidation
+        );
+        assert!(
+            !evidence
+                .gates
+                .iter()
+                .any(|gate| gate.gate == RepairValidationGate::NativeRebuild)
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_runner_reports_relevant_test_failure() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request =
+            RepairValidationRequest::single_graph(context, valid_modify_patch(), graph_source);
+        let mut runner = TestRepairValidationRunner {
+            rebuild_passes: true,
+            tests_pass: false,
+        };
+
+        let evidence = validate_repair_candidate_with_runner(request, &mut runner)
+            .expect("test failure should return evidence");
+
+        assert!(!evidence.local_validation_passed);
+        assert_eq!(
+            evidence.rebuild_summary.status,
+            RepairValidationStepStatus::Passed
+        );
+        assert_eq!(
+            evidence.test_summary.status,
+            RepairValidationStepStatus::Failed
+        );
+        assert_eq!(
+            evidence
+                .gates
+                .last()
+                .expect("failed gate should be present")
+                .gate,
+            RepairValidationGate::RelevantTests
+        );
+    }
+
+    #[test]
+    fn validate_repair_candidate_runner_allows_local_pass_but_not_acceptance() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let (context, graph_source) = test_repair_context_and_source(&dir);
+        let request =
+            RepairValidationRequest::single_graph(context, valid_modify_patch(), graph_source);
+        let mut runner = TestRepairValidationRunner {
+            rebuild_passes: true,
+            tests_pass: true,
+        };
+
+        let evidence = validate_repair_candidate_with_runner(request, &mut runner)
+            .expect("all local gates should return evidence");
+
+        assert!(evidence.has_required_gates());
+        assert!(evidence.local_validation_passed);
+        assert_eq!(
+            evidence.rebuild_summary.status,
+            RepairValidationStepStatus::Passed
+        );
+        assert_eq!(
+            evidence.test_summary.status,
+            RepairValidationStepStatus::Passed
+        );
+        assert_eq!(evidence.test_summary.commands, vec!["{candidate_binary}"]);
+        assert!(evidence.requires_human_review);
+        assert!(!evidence.accepted_for_application);
+        assert_eq!(evidence.human_review_state, RepairHumanReviewState::Pending);
+    }
+
+    #[test]
+    fn command_runner_rejects_generic_relevant_test_command() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut runner = RepairValidationCommandRunner::with_commands(
+            graph_source,
+            vec![test_success_command(), "{candidate_graph}".to_string()],
+            vec![test_success_command()],
+        )
+        .expect("command runner should be created");
+        let rebuild = runner.rebuild_candidate(test_graph_source());
+        assert!(rebuild.passed);
+
+        let tests = runner.run_relevant_tests(test_graph_source(), &rebuild);
+
+        assert!(!tests.passed);
+        assert_eq!(
+            tests.summary,
+            "relevant test command is not candidate-aware"
+        );
+    }
+
+    #[test]
+    fn command_runner_runs_candidate_aware_test_command() {
+        let dir = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let graph_source = write_test_graph_source(&dir, test_graph_source(), "graph.jsonld");
+        let mut runner = RepairValidationCommandRunner::with_commands(
+            graph_source,
+            vec![test_success_command(), "{candidate_graph}".to_string()],
+            vec![test_success_command_template()],
+        )
+        .expect("command runner should be created");
+
+        let rebuild = runner.rebuild_candidate(test_graph_source());
+        let tests = runner.run_relevant_tests(test_graph_source(), &rebuild);
+
+        assert!(rebuild.passed);
+        assert!(tests.passed);
+        assert!(
+            tests
+                .command
+                .expect("test summary should include candidate-aware command")
+                .contains("candidate.jsonld")
+        );
     }
 
     #[test]
@@ -2300,6 +3698,81 @@ mod tests {
     fn test_graph() -> crate::graph::SemanticGraph {
         let ast = crate::parser::parse_jsonld(test_graph_source()).expect("fixture should parse");
         crate::graph::builder::build_graph(&ast).expect("fixture should build")
+    }
+
+    fn test_repair_context_and_source(dir: &TempDir) -> (RepairCrashContext, PathBuf) {
+        let map = TraceMap::from_graph(&test_graph()).expect("trace map should be generated");
+        write_trace_map(&map, dir.path()).expect("trace map should be written");
+        let graph_source = write_test_graph_source(dir, test_graph_source(), "graph.jsonld");
+        write_test_crash(dir, &map, "candidate repair");
+        let mut options = RepairContextOptions::new(dir.path());
+        options.graph_sources.push(graph_source.clone());
+        let context = repair_crash_context(&options).expect("repair context should be built");
+        (context, graph_source)
+    }
+
+    fn valid_modify_patch() -> serde_json::Value {
+        serde_json::json!({
+            "ops": [{
+                "kind": "modify_op",
+                "node_id": "duumbi:t/main/entry/0",
+                "field": "duumbi:value",
+                "value": 1
+            }]
+        })
+    }
+
+    fn test_success_command() -> String {
+        std::env::current_exe()
+            .expect("test executable path should be available")
+            .display()
+            .to_string()
+    }
+
+    fn test_success_command_template() -> String {
+        let command = test_success_command();
+        let quoted = shlex::try_quote(&command).expect("test executable path should be quotable");
+        format!("{quoted} {{candidate_graph}}")
+    }
+
+    struct TestRepairValidationRunner {
+        rebuild_passes: bool,
+        tests_pass: bool,
+    }
+
+    impl RepairValidationRunner for TestRepairValidationRunner {
+        fn rebuild_candidate(&mut self, candidate_graph_json: &str) -> RepairValidationStepOutcome {
+            assert!(candidate_graph_json.contains("duumbi:t/main/entry/0"));
+            RepairValidationStepOutcome::with_command(
+                self.rebuild_passes,
+                if self.rebuild_passes {
+                    "candidate rebuilt"
+                } else {
+                    "candidate rebuild failed"
+                },
+                "duumbi build {candidate_graph}",
+                Some("rebuild output".to_string()),
+            )
+        }
+
+        fn run_relevant_tests(
+            &mut self,
+            candidate_graph_json: &str,
+            rebuild: &RepairValidationStepOutcome,
+        ) -> RepairValidationStepOutcome {
+            assert!(candidate_graph_json.contains("duumbi:t/main/entry/0"));
+            assert!(rebuild.passed);
+            RepairValidationStepOutcome::with_command(
+                self.tests_pass,
+                if self.tests_pass {
+                    "candidate-aware tests passed"
+                } else {
+                    "candidate-aware tests failed"
+                },
+                "{candidate_binary}",
+                Some("test output".to_string()),
+            )
+        }
     }
 
     fn test_graph_source() -> &'static str {

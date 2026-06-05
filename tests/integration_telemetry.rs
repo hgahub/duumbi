@@ -97,6 +97,94 @@ fn traced_option_none_unwrap_emits_repair_context() {
 }
 
 #[test]
+fn traced_option_none_unwrap_repair_validate_emits_reviewable_evidence() {
+    let fixture = "tests/fixtures/telemetry/option_none_unwrap.jsonld";
+    let evidence = traced_fixture_evidence(fixture, "panic_repair_validate");
+    let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
+    let context_path = tmp.path().join("repair-context.json");
+    let patch_path = tmp.path().join("repair-patch.json");
+    let output_path = tmp.path().join("repair-validation.json");
+    fs::write(&context_path, repair_context_stdout(&evidence, fixture))
+        .expect("invariant: repair context must be written");
+    fs::write(&patch_path, repair_patch_json()).expect("invariant: repair patch must be written");
+    let original_bytes = fs::read(fixture).expect("invariant: fixture must be readable");
+    let duumbi = env!("CARGO_BIN_EXE_duumbi");
+
+    let repair_validate = Command::new(duumbi)
+        .args(["telemetry", "repair-validate", "--context"])
+        .arg(&context_path)
+        .arg("--patch")
+        .arg(&patch_path)
+        .arg("--graph")
+        .arg(fixture)
+        .arg("--test")
+        .arg("{candidate_binary}")
+        .arg("--output")
+        .arg(&output_path)
+        .output()
+        .expect("invariant: telemetry repair-validate must run");
+
+    assert!(
+        repair_validate.status.success(),
+        "telemetry repair-validate failed: {}",
+        String::from_utf8_lossy(&repair_validate.stderr)
+    );
+    assert_eq!(
+        fs::read(fixture).expect("invariant: fixture must remain readable"),
+        original_bytes,
+        "repair validation must not modify the original graph source"
+    );
+
+    let stdout = String::from_utf8(repair_validate.stdout)
+        .expect("invariant: repair-validate stdout must be UTF-8");
+    let written = fs::read_to_string(&output_path)
+        .expect("invariant: repair validation output must be written");
+    let stdout_evidence: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout evidence must be JSON");
+    let file_evidence: serde_json::Value =
+        serde_json::from_str(&written).expect("file evidence must be JSON");
+
+    assert_eq!(stdout_evidence, file_evidence);
+    assert_eq!(
+        stdout_evidence["schema_version"],
+        serde_json::json!("duumbi.telemetry.repair_validation.v1")
+    );
+    assert_eq!(
+        stdout_evidence["source_artifact"]["paths"][0],
+        serde_json::json!(fixture)
+    );
+    assert_eq!(
+        stdout_evidence["patch_summary"]["operation_count"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        stdout_evidence["local_validation_passed"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        stdout_evidence["requires_human_review"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        stdout_evidence["accepted_for_application"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        stdout_evidence["human_review_state"],
+        serde_json::json!("pending")
+    );
+    assert_eq!(
+        stdout_evidence["rebuild_summary"]["status"],
+        serde_json::json!("passed")
+    );
+    assert_eq!(
+        stdout_evidence["test_summary"]["status"],
+        serde_json::json!("passed")
+    );
+    assert_required_gates_passed(&stdout_evidence);
+}
+
+#[test]
 fn traced_call_then_panic_preserves_caller_context() {
     let evidence = traced_fixture_evidence(
         "tests/fixtures/telemetry/call_then_panic.jsonld",
@@ -369,6 +457,50 @@ fn repair_context_stdout(evidence: &TraceFixtureEvidence, fixture: &str) -> Stri
 
     String::from_utf8(repair_context.stdout)
         .expect("invariant: repair-context stdout must be UTF-8")
+}
+
+fn repair_patch_json() -> &'static str {
+    r#"{
+        "ops": [{
+            "kind": "replace_block",
+            "block_id": "duumbi:telemetry/main/entry",
+            "ops": [
+                {
+                    "@type": "duumbi:Const",
+                    "@id": "duumbi:telemetry/main/entry/0",
+                    "duumbi:value": 0,
+                    "duumbi:resultType": "i64"
+                },
+                {
+                    "@type": "duumbi:Return",
+                    "@id": "duumbi:telemetry/main/entry/1",
+                    "duumbi:operand": {"@id": "duumbi:telemetry/main/entry/0"}
+                }
+            ]
+        }]
+    }"#
+}
+
+fn assert_required_gates_passed(evidence: &serde_json::Value) {
+    let gates = evidence["gates"]
+        .as_array()
+        .expect("repair validation gates must be an array");
+    for required in [
+        "graph_patch_parse",
+        "atomic_patch_application",
+        "graph_parse",
+        "graph_build",
+        "graph_validation",
+        "native_rebuild",
+        "relevant_tests",
+    ] {
+        assert!(
+            gates
+                .iter()
+                .any(|gate| gate["gate"] == required && gate["passed"] == true),
+            "required gate should pass: {required}"
+        );
+    }
 }
 
 fn read_trace_map(telemetry_dir: &std::path::Path) -> TraceMap {
