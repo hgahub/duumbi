@@ -10,6 +10,7 @@
 #if defined(_WIN32)
 #include <direct.h>
 #include <io.h>
+#include <windows.h>
 #define DUUMBI_MKDIR(path) _mkdir(path)
 #define DUUMBI_PATH_SEP '\\'
 #define DUUMBI_REALPATH(path, resolved) _fullpath((resolved), (path), DUUMBI_PATH_BUFFER_LEN)
@@ -1132,68 +1133,101 @@ static int duumbi_compare_names(const void *a, const void *b) {
     return strcmp(*sa, *sb);
 }
 
+static int duumbi_collect_dir_name(char ***names,
+                                   size_t *count,
+                                   size_t *capacity,
+                                   const char *name) {
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 0;
+    }
+    size_t len = strlen(name);
+    if (!duumbi_utf8_valid(name, (uint64_t)len)) {
+        return -1;
+    }
+    if (*count == *capacity) {
+        *capacity *= 2;
+        char **grown = (char **)realloc(*names, *capacity * sizeof(char *));
+        if (grown == NULL) {
+            return -1;
+        }
+        *names = grown;
+    }
+    (*names)[*count] = (char *)malloc(len + 1);
+    if ((*names)[*count] == NULL) {
+        return -1;
+    }
+    memcpy((*names)[*count], name, len + 1);
+    (*count)++;
+    return 0;
+}
+
+static void duumbi_free_dir_names(char **names, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        free(names[i]);
+    }
+    free(names);
+}
+
 void *duumbi_list_dir(void *path_ptr) {
     char path[DUUMBI_PATH_BUFFER_LEN];
     if (duumbi_resolve_existing_workspace_path(path_ptr, path, sizeof(path)) != 0) {
         return duumbi_err_cstr("path is outside the workspace or does not exist");
     }
 
-    DIR *dir = opendir(path);
-    if (dir == NULL) {
-        return duumbi_err_cstr("failed to open directory");
-    }
-
     size_t count = 0;
     size_t capacity = 8;
     char **names = (char **)calloc(capacity, sizeof(char *));
     if (names == NULL) {
-        closedir(dir);
         return duumbi_err_cstr("out of memory");
+    }
+
+#if defined(_WIN32)
+    char pattern[DUUMBI_PATH_BUFFER_LEN];
+    int written = snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    if (written < 0 || (size_t)written >= sizeof(pattern)) {
+        free(names);
+        return duumbi_err_cstr("directory path is too long");
+    }
+
+    WIN32_FIND_DATAA data;
+    HANDLE handle = FindFirstFileA(pattern, &data);
+    if (handle == INVALID_HANDLE_VALUE) {
+        free(names);
+        return duumbi_err_cstr("failed to open directory");
+    }
+    do {
+        if (duumbi_collect_dir_name(&names, &count, &capacity, data.cFileName) != 0) {
+            FindClose(handle);
+            duumbi_free_dir_names(names, count);
+            return duumbi_err_cstr("failed to read directory entry");
+        }
+    } while (FindNextFileA(handle, &data) != 0);
+    FindClose(handle);
+#else
+    DIR *dir = opendir(path);
+    if (dir == NULL) {
+        free(names);
+        return duumbi_err_cstr("failed to open directory");
     }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        size_t len = strlen(entry->d_name);
-        if (!duumbi_utf8_valid(entry->d_name, (uint64_t)len)) {
+        if (duumbi_collect_dir_name(&names, &count, &capacity, entry->d_name) != 0) {
             closedir(dir);
-            for (size_t i = 0; i < count; i++) free(names[i]);
-            free(names);
-            return duumbi_err_cstr("directory entry is not valid UTF-8");
+            duumbi_free_dir_names(names, count);
+            return duumbi_err_cstr("failed to read directory entry");
         }
-        if (count == capacity) {
-            capacity *= 2;
-            char **grown = (char **)realloc(names, capacity * sizeof(char *));
-            if (grown == NULL) {
-                closedir(dir);
-                for (size_t i = 0; i < count; i++) free(names[i]);
-                free(names);
-                return duumbi_err_cstr("out of memory");
-            }
-            names = grown;
-        }
-        names[count] = (char *)malloc(len + 1);
-        if (names[count] == NULL) {
-            closedir(dir);
-            for (size_t i = 0; i < count; i++) free(names[i]);
-            free(names);
-            return duumbi_err_cstr("out of memory");
-        }
-        memcpy(names[count], entry->d_name, len + 1);
-        count++;
     }
     closedir(dir);
+#endif
     qsort(names, count, sizeof(char *), duumbi_compare_names);
 
     void *array = duumbi_array_new(8);
     for (size_t i = 0; i < count; i++) {
         void *name = duumbi_string_new(names[i], (uint64_t)strlen(names[i]));
         array = duumbi_array_push(array, (int64_t)(intptr_t)name);
-        free(names[i]);
     }
-    free(names);
+    duumbi_free_dir_names(names, count);
     return duumbi_result_new_ok((int64_t)(intptr_t)array);
 }
 
