@@ -283,8 +283,10 @@ fn workspace_run_uses_configured_telemetry_artifact_dir() {
     )
     .expect("invariant: workspace config must be written");
 
+    let output_path = format!(".duumbi/build/output{}", std::env::consts::EXE_SUFFIX);
     let build = Command::new(duumbi)
-        .args(["build", "--trace", "-o", ".duumbi/build/output"])
+        .args(["build", "--trace", "-o"])
+        .arg(&output_path)
         .current_dir(&workspace)
         .env_remove("DUUMBI_TELEMETRY_DIR")
         .output()
