@@ -1450,10 +1450,15 @@ static int duumbi_tcp_valid_utf8(const unsigned char *data, size_t len) {
         } else if ((c & 0xf0) == 0xe0) {
             if (i + 2 >= len || (data[i + 1] & 0xc0) != 0x80 ||
                 (data[i + 2] & 0xc0) != 0x80) return 0;
+            if (c == 0xe0 && data[i + 1] < 0xa0) return 0;
+            if (c == 0xed && data[i + 1] >= 0xa0) return 0;
             i += 3;
         } else if ((c & 0xf8) == 0xf0) {
             if (i + 3 >= len || (data[i + 1] & 0xc0) != 0x80 ||
                 (data[i + 2] & 0xc0) != 0x80 || (data[i + 3] & 0xc0) != 0x80) return 0;
+            if (c < 0xf0 || c > 0xf4) return 0;
+            if (c == 0xf0 && data[i + 1] < 0x90) return 0;
+            if (c == 0xf4 && data[i + 1] > 0x8f) return 0;
             i += 4;
         } else {
             return 0;

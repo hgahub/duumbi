@@ -373,7 +373,7 @@ const TCP_INVALID_UTF8_FIXTURE: &str = r#"{
     {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/0", "duumbi:value": "127.0.0.1", "duumbi:resultType": "string"},
     {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/1", "duumbi:value": __PORT__, "duumbi:resultType": "i64"},
     {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/2", "duumbi:value": 1000, "duumbi:resultType": "i64"},
-    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/3", "duumbi:value": 1, "duumbi:resultType": "i64"},
+    {"@type": "duumbi:Const", "@id": "duumbi:main/main/entry/3", "duumbi:value": 3, "duumbi:resultType": "i64"},
     {"@type": "duumbi:TcpConnect", "@id": "duumbi:main/main/entry/4", "duumbi:operand": {"@id": "duumbi:main/main/entry/0"}, "duumbi:left": {"@id": "duumbi:main/main/entry/1"}, "duumbi:right": {"@id": "duumbi:main/main/entry/2"}, "duumbi:resultType": "result<tcp_socket,string>"},
     {"@type": "duumbi:ResultIsOk", "@id": "duumbi:main/main/entry/4_check", "duumbi:operand": {"@id": "duumbi:main/main/entry/4"}},
     {"@type": "duumbi:ResultUnwrap", "@id": "duumbi:main/main/entry/5", "duumbi:operand": {"@id": "duumbi:main/main/entry/4"}, "duumbi:resultType": "tcp_socket"},
@@ -390,24 +390,36 @@ const TCP_INVALID_UTF8_FIXTURE: &str = r#"{
 
 #[test]
 fn tcp_invalid_utf8_read_is_recoverable_error() {
+    run_invalid_utf8_read_case(
+        "duumbi379_tcp_invalid_utf8_byte",
+        &[0xff],
+        vec!["false", "true"],
+    );
+    run_invalid_utf8_read_case(
+        "duumbi379_tcp_invalid_utf8_surrogate",
+        &[0xed, 0xa0, 0x80],
+        vec!["false", "true"],
+    );
+}
+
+fn run_invalid_utf8_read_case(name: &str, payload: &'static [u8], expected: Vec<&str>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
     let port = listener.local_addr().expect("local addr").port();
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept client");
-        stream.write_all(&[0xff]).expect("write invalid utf-8 byte");
+        stream
+            .write_all(payload)
+            .expect("write invalid utf-8 bytes");
     });
 
-    let fixture = write_dynamic_fixture(
-        "duumbi379_tcp_invalid_utf8.jsonld",
-        &tcp_invalid_utf8_fixture(port),
-    );
-    let binary = compile_fixture(&fixture.to_string_lossy(), "duumbi379_tcp_invalid_utf8");
+    let fixture = write_dynamic_fixture(&format!("{name}.jsonld"), &tcp_invalid_utf8_fixture(port));
+    let binary = compile_fixture(&fixture.to_string_lossy(), name);
     let output = Command::new(&binary).output().expect("binary runs");
     server.join().expect("server thread joins");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    assert_eq!(lines, vec!["false", "true"]);
+    assert_eq!(lines, expected);
     assert!(
         output.status.success(),
         "tcp invalid utf8 fixture failed: {}",
