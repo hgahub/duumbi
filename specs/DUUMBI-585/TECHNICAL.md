@@ -454,7 +454,7 @@ Recommended live traced-failure smoke:
 ```sh
 cargo build
 tmp="$(mktemp -d)"
-target/debug/duumbi build --trace \
+DUUMBI_TELEMETRY_DIR="$tmp/telemetry" target/debug/duumbi build --trace \
   tests/fixtures/telemetry/option_none_unwrap.jsonld \
   -o "$tmp/panic-fixture"
 DUUMBI_TELEMETRY_DIR="$tmp/telemetry" "$tmp/panic-fixture" || true
