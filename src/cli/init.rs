@@ -509,6 +509,23 @@ mod tests {
     }
 
     #[test]
+    fn init_does_not_install_stdlib_file_by_default() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let d = tmp.path().join(".duumbi");
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        assert!(
+            !config.dependencies.contains_key("@duumbi/stdlib-file"),
+            "stdlib-file must be added explicitly, not by init"
+        );
+        assert!(
+            !d.join("cache/@duumbi/stdlib-file@1.0.0").exists(),
+            "init must not seed stdlib-file cache by default"
+        );
+    }
+
+    #[test]
     fn workspace_name_validation_trims_and_limits_length() {
         assert_eq!(
             validate_workspace_name("  My App  ").expect("valid"),
