@@ -14,7 +14,7 @@ use crate::manifest::ModuleManifest;
 /// Embedded `stdlib/math.jsonld` — abs, max, min, sqrt, pow, mod, clamp, sign.
 const STDLIB_MATH: &str = include_str!("../../stdlib/math.jsonld");
 
-/// Embedded `stdlib/io.jsonld` — print wrappers for i64, f64, bool, string.
+/// Embedded `stdlib/io.jsonld` — print wrappers plus line-oriented Result I/O.
 const STDLIB_IO: &str = include_str!("../../stdlib/io.jsonld");
 
 /// Embedded `stdlib/lang.jsonld` — language utilities (assert_true).
@@ -296,12 +296,14 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
         ModuleManifest::new(
             "@duumbi/stdlib-io",
             STDLIB_VERSION,
-            "I/O utility functions (print wrappers for i64, f64, bool, string)",
+            "I/O utility functions (print wrappers, read_line, print_ln)",
             vec![
                 "print_i64".to_string(),
                 "print_f64".to_string(),
                 "print_bool".to_string(),
                 "print_string".to_string(),
+                "read_line".to_string(),
+                "print_ln".to_string(),
             ],
         ),
     )
@@ -504,6 +506,23 @@ mod tests {
         assert_eq!(math_manifest.module.name, "@duumbi/stdlib-math");
         assert_eq!(math_manifest.module.version, "1.0.0");
         assert!(math_manifest.exports.functions.contains(&"abs".to_string()));
+    }
+
+    #[test]
+    fn init_does_not_install_stdlib_file_by_default() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_init(tmp.path()).expect("init must succeed");
+
+        let d = tmp.path().join(".duumbi");
+        let config = crate::config::load_config(tmp.path()).expect("config must parse");
+        assert!(
+            !config.dependencies.contains_key("@duumbi/stdlib-file"),
+            "stdlib-file must be added explicitly, not by init"
+        );
+        assert!(
+            !d.join("cache/@duumbi/stdlib-file@1.0.0").exists(),
+            "init must not seed stdlib-file cache by default"
+        );
     }
 
     #[test]

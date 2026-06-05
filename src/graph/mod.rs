@@ -84,7 +84,7 @@ pub struct GraphNode {
 }
 
 /// Edge label in the semantic graph.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // Phase 1 variants used once compiler handles them
 pub enum GraphEdge {
     /// Left operand of a binary operation.

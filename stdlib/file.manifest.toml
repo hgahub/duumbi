@@ -1,0 +1,8 @@
+[module]
+name = "@duumbi/stdlib-file"
+version = "1.0.0"
+description = "Workspace-confined UTF-8 file and path utility functions"
+license = "MPL-2.0"
+
+[exports]
+functions = ["read_file", "write_file", "file_exists", "list_dir", "path_join"]

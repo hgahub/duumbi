@@ -193,8 +193,227 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
                     );
                 }
             }
+            Op::ReadLine => {
+                check_exact_result_type(
+                    node,
+                    &result_string_string(),
+                    "ReadLine must return result<string,string>",
+                    diagnostics,
+                );
+            }
+            Op::PrintLn => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    "PrintLn operand must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "PrintLn must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::ReadFile => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::String,
+                    "ReadFile path must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::I64,
+                    "ReadFile maxBytes must be i64",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_string_string(),
+                    "ReadFile must return result<string,string>",
+                    diagnostics,
+                );
+            }
+            Op::WriteFile => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::String,
+                    "WriteFile path must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::String,
+                    "WriteFile contents must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "WriteFile must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::FileExists => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    "FileExists path must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &DuumbiType::Result(Box::new(DuumbiType::Bool), Box::new(DuumbiType::String)),
+                    "FileExists must return result<bool,string>",
+                    diagnostics,
+                );
+            }
+            Op::ListDir => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    "ListDir path must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &DuumbiType::Result(
+                        Box::new(DuumbiType::Array(Box::new(DuumbiType::String))),
+                        Box::new(DuumbiType::String),
+                    ),
+                    "ListDir must return result<array<string>,string>",
+                    diagnostics,
+                );
+            }
+            Op::PathJoin => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::String,
+                    "PathJoin left must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::String,
+                    "PathJoin right must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_string_string(),
+                    "PathJoin must return result<string,string>",
+                    diagnostics,
+                );
+            }
             _ => {}
         }
+    }
+}
+
+fn result_string_string() -> DuumbiType {
+    DuumbiType::Result(Box::new(DuumbiType::String), Box::new(DuumbiType::String))
+}
+
+fn result_i64_string() -> DuumbiType {
+    DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::String))
+}
+
+fn check_exact_result_type(
+    node: &super::GraphNode,
+    expected: &DuumbiType,
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if node.result_type.as_ref() == Some(expected) {
+        return;
+    }
+
+    let mut details = HashMap::new();
+    details.insert("expected".to_string(), expected.to_string());
+    details.insert(
+        "found".to_string(),
+        node.result_type
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<missing>".to_string()),
+    );
+    diagnostics.push(
+        Diagnostic::error(codes::E001_TYPE_MISMATCH, message)
+            .with_node(&node.id)
+            .with_details(details),
+    );
+}
+
+fn check_operand_type(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    node: &super::GraphNode,
+    edge: GraphEdge,
+    expected: &DuumbiType,
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut found_edge = false;
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if edge_ref.weight() != &edge {
+            continue;
+        }
+        found_edge = true;
+        let source_node = &graph.graph[edge_ref.source()];
+        if let Some(actual_type) = resolve_output_type(source_node)
+            && &actual_type != expected
+        {
+            let mut details = HashMap::new();
+            details.insert("expected".to_string(), expected.to_string());
+            details.insert("found".to_string(), actual_type.to_string());
+            diagnostics.push(
+                Diagnostic::error(codes::E001_TYPE_MISMATCH, message)
+                    .with_node(&node.id)
+                    .with_details(details),
+            );
+        }
+    }
+
+    if !found_edge {
+        let mut details = HashMap::new();
+        details.insert("expected".to_string(), expected.to_string());
+        details.insert("found".to_string(), "<missing>".to_string());
+        diagnostics.push(
+            Diagnostic::error(codes::E009_SCHEMA_INVALID, message)
+                .with_node(&node.id)
+                .with_details(details),
+        );
     }
 }
 
