@@ -57,7 +57,11 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          # Codecov-side GPG key import intermittently returns "no valid OpenPGP
+          # data found", which breaks uploader signature verification. Skip the
+          # binary validation and don't gate the PR on Codecov outages.
+          skip_validation: true
+          fail_ci_if_error: false
       - name: Generate HTML report
         run: cargo llvm-cov report --html --output-dir coverage-html
       - name: Upload HTML artifact
