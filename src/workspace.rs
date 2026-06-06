@@ -325,7 +325,34 @@ fn find_runtime_c() -> Result<PathBuf> {
     fs::create_dir_all(&tmp_dir).context("Failed to create temp build directory")?;
     let runtime_path = tmp_dir.join("duumbi_runtime.c");
     fs::write(&runtime_path, RUNTIME_C_SOURCE).context("Failed to write embedded runtime")?;
+    copy_runtime_sqlite_deps(&runtime_path)?;
     Ok(runtime_path)
+}
+
+fn copy_runtime_sqlite_deps(runtime_c: &Path) -> Result<()> {
+    let runtime_dir = runtime_c
+        .parent()
+        .with_context(|| format!("Runtime path '{}' has no parent", runtime_c.display()))?;
+    let sqlite_dir = runtime_dir.join("third_party").join("sqlite");
+    fs::create_dir_all(&sqlite_dir).context("Failed to create temp SQLite runtime directory")?;
+
+    for file_name in ["sqlite3.c", "sqlite3.h"] {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("runtime")
+            .join("third_party")
+            .join("sqlite")
+            .join(file_name);
+        let destination = sqlite_dir.join(file_name);
+        fs::copy(&source, &destination).with_context(|| {
+            format!(
+                "Failed to copy SQLite runtime dependency '{}' to '{}'",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
