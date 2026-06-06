@@ -74,6 +74,12 @@
 #define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
 #define DUUMBI_JSON_MAX_PARSE_DEPTH 512
 
+#if defined(_WIN32)
+#define DUUMBI_TEMP_WRITE_MODE "wb"
+#else
+#define DUUMBI_TEMP_WRITE_MODE "wbx"
+#endif
+
 /* ── Internal types ────────────────────────────────────────────────── */
 
 /* Keep approved DUUMBI-380 runtime dependencies link-visible before public
@@ -2390,7 +2396,7 @@ void *duumbi_file_write(void *path_ptr, void *contents_ptr) {
     }
 
     remove(tmp_path);
-    FILE *file = fopen(tmp_path, "wbx");
+    FILE *file = fopen(tmp_path, DUUMBI_TEMP_WRITE_MODE);
     if (file == NULL) {
         return duumbi_err_cstr("io_error: failed to open file for writing");
     }
