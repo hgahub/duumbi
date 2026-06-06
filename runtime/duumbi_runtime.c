@@ -2583,3 +2583,122 @@ void *duumbi_path_join(void *left_ptr, void *right_ptr) {
     }
     return duumbi_ok_string(normalized, (uint64_t)strlen(normalized));
 }
+
+/* ── HTTP/SQLite dispatch stubs (DUUMBI-380 lowering cycle) ───────── */
+
+static void *duumbi_stdlib_pending(const char *operation) {
+    char message[160];
+    int written = snprintf(
+        message,
+        sizeof(message),
+        "%s failed: DUUMBI-380 runtime behavior is not implemented yet",
+        operation
+    );
+    if (written < 0 || (size_t)written >= sizeof(message)) {
+        return duumbi_err_cstr("stdlib failed: DUUMBI-380 runtime behavior is not implemented yet");
+    }
+    return duumbi_err_cstr(message);
+}
+
+void *duumbi_http_get(void *url, void *headers, int64_t timeout_ms) {
+    (void)url;
+    (void)headers;
+    (void)timeout_ms;
+    return duumbi_stdlib_pending("http_get");
+}
+
+void *duumbi_http_post(void *url, void *headers, void *body, int64_t timeout_ms) {
+    (void)url;
+    (void)headers;
+    (void)body;
+    (void)timeout_ms;
+    return duumbi_stdlib_pending("http_post");
+}
+
+void *duumbi_http_put(void *url, void *headers, void *body, int64_t timeout_ms) {
+    (void)url;
+    (void)headers;
+    (void)body;
+    (void)timeout_ms;
+    return duumbi_stdlib_pending("http_put");
+}
+
+void *duumbi_http_delete(void *url, void *headers, int64_t timeout_ms) {
+    (void)url;
+    (void)headers;
+    (void)timeout_ms;
+    return duumbi_stdlib_pending("http_delete");
+}
+
+void *duumbi_http_status(void *response) {
+    (void)response;
+    return duumbi_stdlib_pending("http_status");
+}
+
+void *duumbi_http_body(void *response) {
+    (void)response;
+    return duumbi_stdlib_pending("http_body");
+}
+
+void *duumbi_http_headers(void *response) {
+    (void)response;
+    return duumbi_stdlib_pending("http_headers");
+}
+
+void *duumbi_http_response_close(void *response) {
+    (void)response;
+    return duumbi_stdlib_pending("http_response_close");
+}
+
+void duumbi_http_response_free(void *response) {
+    (void)response;
+}
+
+void *duumbi_db_open(void *path) {
+    (void)path;
+    return duumbi_stdlib_pending("db_open");
+}
+
+void *duumbi_db_execute(void *conn, void *sql, void *params) {
+    (void)conn;
+    (void)sql;
+    (void)params;
+    return duumbi_stdlib_pending("db_execute");
+}
+
+void *duumbi_db_query(void *conn, void *sql, void *params) {
+    (void)conn;
+    (void)sql;
+    (void)params;
+    return duumbi_stdlib_pending("db_query");
+}
+
+void *duumbi_db_rows_len(void *rows) {
+    (void)rows;
+    return duumbi_stdlib_pending("db_rows_len");
+}
+
+void *duumbi_db_row_get(void *rows, int64_t row_index, void *column) {
+    (void)rows;
+    (void)row_index;
+    (void)column;
+    return duumbi_stdlib_pending("db_row_get");
+}
+
+void *duumbi_db_close(void *conn) {
+    (void)conn;
+    return duumbi_stdlib_pending("db_close");
+}
+
+void *duumbi_db_rows_close(void *rows) {
+    (void)rows;
+    return duumbi_stdlib_pending("db_rows_close");
+}
+
+void duumbi_db_connection_free(void *conn) {
+    (void)conn;
+}
+
+void duumbi_db_rows_free(void *rows) {
+    (void)rows;
+}
