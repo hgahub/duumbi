@@ -36,7 +36,7 @@ fn platform_link_args() -> Vec<&'static str> {
     } else if cfg!(target_os = "macos") {
         vec!["-Wl,-w", "-lm", "-lcurl"]
     } else {
-        vec!["-lm", "-lcurl"]
+        vec!["-lm", "-lcurl", "-ldl", "-lpthread"]
     }
 }
 

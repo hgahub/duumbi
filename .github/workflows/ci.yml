@@ -48,6 +48,21 @@ jobs:
         if: steps.scope.outputs.run_rust_checks == 'true'
         with:
           components: rustfmt, clippy
+      - name: Install native runtime dependencies (Ubuntu)
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Install native runtime dependencies (Windows)
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-curl
+          path-type: prepend
+      - name: Select MSYS2 C compiler
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
+        shell: bash
+        run: echo "CC=gcc" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check

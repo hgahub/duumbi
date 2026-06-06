@@ -45,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install gcc (required for Cranelift linker tests)
-        run: sudo apt-get install -y gcc
+        run: sudo apt-get update && sudo apt-get install -y gcc libcurl4-openssl-dev
       - name: Collect coverage
         run: >
           cargo llvm-cov
