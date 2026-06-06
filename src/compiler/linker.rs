@@ -5,11 +5,14 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::errors::codes;
 
 use super::CompileError;
+
+#[cfg(test)]
+static RUNTIME_COMPILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Finds the C compiler to use for linking.
 ///
@@ -41,6 +44,29 @@ fn runtime_ldflags() -> Vec<String> {
         .or_else(|_| std::env::var("LDFLAGS"))
         .map(|flags| split_env_flags(&flags))
         .unwrap_or_default()
+}
+
+fn command_failure_details(output: &Output) -> String {
+    let mut details = String::new();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        details.push_str("; stderr: ");
+        details.push_str(stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        details.push_str("; stdout: ");
+        details.push_str(stdout.trim());
+    }
+
+    const MAX_DETAILS_LEN: usize = 4000;
+    if details.len() > MAX_DETAILS_LEN {
+        details.truncate(MAX_DETAILS_LEN);
+        details.push_str("...");
+    }
+
+    details
 }
 
 /// Returns extra linker flags needed for the current platform.
@@ -109,6 +135,11 @@ fn ensure_runtime_deps_present(runtime_c: &Path) -> Result<(), CompileError> {
 /// Runs `cc -c runtime_c_path -o output_o_path`.
 #[must_use = "compilation errors should be handled"]
 pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileError> {
+    #[cfg(test)]
+    let _compile_guard = RUNTIME_COMPILE_LOCK
+        .lock()
+        .expect("invariant: runtime compile lock must not be poisoned");
+
     let cc = find_cc();
     ensure_runtime_deps_present(runtime_c)?;
 
@@ -120,23 +151,25 @@ pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileE
         output_o.to_string_lossy().into_owned(),
     ]);
 
-    let status =
+    let output =
         Command::new(&cc)
             .args(&args)
-            .status()
+            .output()
             .map_err(|e| CompileError::CompilerNotFound {
                 code: codes::E008_LINK_FAILED,
                 message: format!("Failed to run C compiler '{cc}': {e}"),
             })?;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(CompileError::LinkFailed {
             code: codes::E008_LINK_FAILED,
             message: format!(
-                "C compiler failed to compile runtime (exit code: {})",
-                status
+                "C compiler failed to compile runtime (exit code: {}){}",
+                output
+                    .status
                     .code()
-                    .map_or("signal".to_string(), |c| c.to_string())
+                    .map_or("signal".to_string(), |c| c.to_string()),
+                command_failure_details(&output)
             ),
         });
     }
@@ -167,21 +200,23 @@ pub fn link_multi(
     args.extend(runtime_ldflags());
     args.extend(platform_link_args().iter().map(|s| (*s).to_string()));
 
-    let status =
+    let output =
         Command::new(&cc)
             .args(&args)
-            .status()
+            .output()
             .map_err(|e| CompileError::CompilerNotFound {
                 code: codes::E008_LINK_FAILED,
                 message: format!("Failed to run linker '{cc}': {e}"),
             })?;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(CompileError::link_failed(format!(
-            "Linker failed (exit code: {})",
-            status
+            "Linker failed (exit code: {}){}",
+            output
+                .status
                 .code()
-                .map_or("signal".to_string(), |c| c.to_string())
+                .map_or("signal".to_string(), |c| c.to_string()),
+            command_failure_details(&output)
         )));
     }
 
@@ -204,21 +239,23 @@ pub fn link(output_o: &Path, runtime_o: &Path, binary_path: &Path) -> Result<(),
     args.extend(runtime_ldflags());
     args.extend(platform_link_args().iter().map(|s| (*s).to_string()));
 
-    let status =
+    let output =
         Command::new(&cc)
             .args(&args)
-            .status()
+            .output()
             .map_err(|e| CompileError::CompilerNotFound {
                 code: codes::E008_LINK_FAILED,
                 message: format!("Failed to run linker '{cc}': {e}"),
             })?;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(CompileError::link_failed(format!(
-            "Linker failed (exit code: {})",
-            status
+            "Linker failed (exit code: {}){}",
+            output
+                .status
                 .code()
-                .map_or("signal".to_string(), |c| c.to_string())
+                .map_or("signal".to_string(), |c| c.to_string()),
+            command_failure_details(&output)
         )));
     }
 
@@ -239,18 +276,14 @@ mod tests {
 
     #[test]
     fn compile_runtime_succeeds() {
-        let tmp_dir = std::env::temp_dir().join("duumbi_test_runtime");
-        fs::create_dir_all(&tmp_dir).expect("invariant: temp dir must be creatable");
+        let tmp_dir = TempDir::new().expect("invariant: temp dir must be creatable");
 
         let runtime_c = Path::new("runtime/duumbi_runtime.c");
-        let runtime_o = tmp_dir.join("duumbi_runtime.o");
+        let runtime_o = tmp_dir.path().join("duumbi_runtime.o");
 
         let result = compile_runtime(runtime_c, &runtime_o);
         assert!(result.is_ok(), "compile_runtime failed: {result:?}");
         assert!(runtime_o.exists(), "runtime .o file should exist");
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
