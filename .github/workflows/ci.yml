@@ -59,10 +59,10 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-curl
           path-type: prepend
-      - name: Select MSYS2 C compiler
+      - name: Select DUUMBI runtime C compiler
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
         shell: bash
-        run: echo "CC=gcc" >> "$GITHUB_ENV"
+        run: echo "DUUMBI_CC=gcc" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check

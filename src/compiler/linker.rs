@@ -16,10 +16,12 @@ const SQLITE3_H_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sq
 
 /// Finds the C compiler to use for linking.
 ///
-/// Checks `$CC` environment variable first, falls back to `cc`.
+/// Checks `$DUUMBI_CC`, then `$CC`, and falls back to `cc`.
 #[must_use]
 pub fn find_cc() -> String {
-    std::env::var("CC").unwrap_or_else(|_| "cc".to_string())
+    std::env::var("DUUMBI_CC")
+        .or_else(|_| std::env::var("CC"))
+        .unwrap_or_else(|_| "cc".to_string())
 }
 
 /// Returns extra linker flags needed for the current platform.
