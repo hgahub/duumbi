@@ -306,7 +306,12 @@ mod tests {
 
         let binary = tmp_dir.path().join("duumbi_dependency_link_probe");
         link(&main_o, &runtime_o, &binary).expect("runtime dependency link must succeed");
-        assert!(binary.exists(), "linked probe binary should exist");
+        #[cfg(target_os = "windows")]
+        let binary_exists = binary.exists() || binary.with_extension("exe").exists();
+        #[cfg(not(target_os = "windows"))]
+        let binary_exists = binary.exists();
+
+        assert!(binary_exists, "linked probe binary should exist");
     }
 
     #[test]
