@@ -1,16 +1,294 @@
 //! DUUMBI-380 local HTTP runtime integration tests.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use duumbi::compiler::{linker, lowering};
 use duumbi::errors::DiagnosticLevel;
 use duumbi::graph::builder::build_graph;
 use duumbi::graph::validator::validate;
 use duumbi::parser::parse_jsonld;
+use serde_json::{Value, json};
+
+#[derive(Debug)]
+struct CapturedRequest {
+    request_line: String,
+    headers: String,
+    body: String,
+}
+
+fn node_ref(id: &str) -> Value {
+    json!({ "@id": id })
+}
+
+fn module_fixture(ops: Vec<Value>) -> String {
+    json!({
+        "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+        "@type": "duumbi:Module",
+        "@id": "duumbi:main",
+        "duumbi:name": "main",
+        "duumbi:functions": [{
+            "@type": "duumbi:Function",
+            "@id": "duumbi:main/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:main/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": ops
+            }]
+        }]
+    })
+    .to_string()
+}
+
+fn id(name: &str) -> String {
+    format!("duumbi:main/main/entry/{name}")
+}
+
+fn const_string(name: &str, value: &str) -> Value {
+    json!({
+        "@type": "duumbi:Const",
+        "@id": id(name),
+        "duumbi:value": value,
+        "duumbi:resultType": "string"
+    })
+}
+
+fn const_i64(name: &str, value: i64) -> Value {
+    json!({
+        "@type": "duumbi:Const",
+        "@id": id(name),
+        "duumbi:value": value,
+        "duumbi:resultType": "i64"
+    })
+}
+
+fn parse_headers_ops(prefix: &str, headers_json: &str) -> Vec<Value> {
+    vec![
+        const_string(&format!("{prefix}_header_text"), headers_json),
+        json!({
+            "@type": "duumbi:JsonParse",
+            "@id": id(&format!("{prefix}_header_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_text"))),
+            "duumbi:resultType": "result<json,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_headers")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_result"))),
+            "duumbi:resultType": "json"
+        }),
+    ]
+}
+
+fn print_response_ops(prefix: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "@type": "duumbi:ResultIsOk",
+            "@id": id(&format!("{prefix}_ok")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_result")))
+        }),
+        json!({
+            "@type": "duumbi:Print",
+            "@id": id(&format!("{prefix}_print_ok")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_ok")))
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_response")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_result"))),
+            "duumbi:resultType": "http_response"
+        }),
+        json!({
+            "@type": "duumbi:HttpStatus",
+            "@id": id(&format!("{prefix}_status_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_response"))),
+            "duumbi:resultType": "result<i64,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_status")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_status_result"))),
+            "duumbi:resultType": "i64"
+        }),
+        json!({
+            "@type": "duumbi:Print",
+            "@id": id(&format!("{prefix}_print_status")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_status")))
+        }),
+        json!({
+            "@type": "duumbi:HttpBody",
+            "@id": id(&format!("{prefix}_body_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_response"))),
+            "duumbi:resultType": "result<string,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_body")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_body_result"))),
+            "duumbi:resultType": "string"
+        }),
+        json!({
+            "@type": "duumbi:PrintString",
+            "@id": id(&format!("{prefix}_print_body")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_body")))
+        }),
+    ]
+}
+
+fn print_header_field_ops(prefix: &str, key: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "@type": "duumbi:HttpHeaders",
+            "@id": id(&format!("{prefix}_headers_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_response"))),
+            "duumbi:resultType": "result<json,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_headers_json")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_headers_result"))),
+            "duumbi:resultType": "json"
+        }),
+        const_string(&format!("{prefix}_header_key"), key),
+        json!({
+            "@type": "duumbi:JsonGetField",
+            "@id": id(&format!("{prefix}_header_value_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_headers_json"))),
+            "duumbi:left": node_ref(&id(&format!("{prefix}_header_key"))),
+            "duumbi:resultType": "result<json,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_header_value")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_value_result"))),
+            "duumbi:resultType": "json"
+        }),
+        json!({
+            "@type": "duumbi:JsonStringify",
+            "@id": id(&format!("{prefix}_header_string_result")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_value"))),
+            "duumbi:resultType": "result<string,string>"
+        }),
+        json!({
+            "@type": "duumbi:ResultUnwrap",
+            "@id": id(&format!("{prefix}_header_string")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_string_result"))),
+            "duumbi:resultType": "string"
+        }),
+        json!({
+            "@type": "duumbi:PrintString",
+            "@id": id(&format!("{prefix}_print_header")),
+            "duumbi:operand": node_ref(&id(&format!("{prefix}_header_string")))
+        }),
+    ]
+}
+
+fn http_call_core_ops(
+    prefix: &str,
+    op_type: &str,
+    url: &str,
+    headers_json: &str,
+    body: Option<&str>,
+    timeout_ms: i64,
+) -> Vec<Value> {
+    let mut ops = vec![const_string(&format!("{prefix}_url"), url)];
+    ops.extend(parse_headers_ops(prefix, headers_json));
+    ops.push(const_i64(&format!("{prefix}_timeout"), timeout_ms));
+    if let Some(body_text) = body {
+        ops.push(const_string(&format!("{prefix}_request_body"), body_text));
+    }
+
+    let mut call = json!({
+        "@type": op_type,
+        "@id": id(&format!("{prefix}_result")),
+        "duumbi:operand": node_ref(&id(&format!("{prefix}_url"))),
+        "duumbi:left": node_ref(&id(&format!("{prefix}_headers"))),
+        "duumbi:resultType": "result<http_response,string>"
+    });
+    if body.is_some() {
+        call["duumbi:right"] = node_ref(&id(&format!("{prefix}_request_body")));
+        call["duumbi:args"] = json!([node_ref(&id(&format!("{prefix}_timeout")))]);
+    } else {
+        call["duumbi:right"] = node_ref(&id(&format!("{prefix}_timeout")));
+    }
+    ops.push(call);
+    ops
+}
+
+fn http_call_ops(
+    prefix: &str,
+    op_type: &str,
+    url: &str,
+    headers_json: &str,
+    body: Option<&str>,
+    timeout_ms: i64,
+) -> Vec<Value> {
+    let mut ops = http_call_core_ops(prefix, op_type, url, headers_json, body, timeout_ms);
+    ops.extend(print_response_ops(prefix));
+    ops
+}
+
+fn return_zero_op() -> Value {
+    json!({
+        "@type": "duumbi:Return",
+        "@id": id("return"),
+        "duumbi:operand": node_ref(&id("return_zero"))
+    })
+}
+
+fn append_return_zero(ops: &mut Vec<Value>) {
+    ops.push(const_i64("return_zero", 0));
+    ops.push(return_zero_op());
+}
+
+fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
+    let mut data = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let mut header_end = None;
+    while header_end.is_none() {
+        let bytes = stream.read(&mut buffer).expect("read HTTP request");
+        assert!(bytes > 0, "client closed before sending headers");
+        data.extend_from_slice(&buffer[..bytes]);
+        header_end = data.windows(4).position(|window| window == b"\r\n\r\n");
+    }
+
+    let header_end = header_end.expect("headers must have terminated") + 4;
+    let header_text = String::from_utf8_lossy(&data[..header_end]).to_string();
+    let content_len = header_text
+        .lines()
+        .find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .and_then(|_| line.split_once(':'))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+    while data.len() < header_end + content_len {
+        let bytes = stream.read(&mut buffer).expect("read HTTP body");
+        assert!(bytes > 0, "client closed before sending full body");
+        data.extend_from_slice(&buffer[..bytes]);
+    }
+
+    let body = String::from_utf8_lossy(&data[header_end..header_end + content_len]).to_string();
+    let request_line = header_text
+        .lines()
+        .next()
+        .expect("request line")
+        .to_string();
+    CapturedRequest {
+        request_line,
+        headers: header_text,
+        body,
+    }
+}
 
 fn native_output_path(path: &Path) -> std::path::PathBuf {
     if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
@@ -127,6 +405,284 @@ fn http_get_status_body_headers_and_release_loopback() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, ["200", "duumbi-ok", "\"works\"", "true", "false"]);
+    assert!(
+        output.status.success(),
+        "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+fn http_methods_fixture(port: u16) -> String {
+    let base = format!("http://127.0.0.1:{port}");
+    let mut ops = Vec::new();
+    ops.extend(http_call_ops(
+        "post",
+        "duumbi:HttpPost",
+        &format!("{base}/post"),
+        r#"{"Content-Type":"application/json","X-Duumbi-Method":"post"}"#,
+        Some(r#"{"name":"Ada"}"#),
+        2000,
+    ));
+    ops.extend(http_call_ops(
+        "put",
+        "duumbi:HttpPut",
+        &format!("{base}/put"),
+        r#"{"Content-Type":"text/plain","X-Duumbi-Method":"put"}"#,
+        Some("updated"),
+        2000,
+    ));
+    ops.extend(http_call_ops(
+        "delete",
+        "duumbi:HttpDelete",
+        &format!("{base}/delete"),
+        r#"{"X-Duumbi-Method":"delete"}"#,
+        None,
+        2000,
+    ));
+    ops.extend(http_call_ops(
+        "missing",
+        "duumbi:HttpGet",
+        &format!("{base}/missing"),
+        "{}",
+        None,
+        2000,
+    ));
+    ops.extend(http_call_ops(
+        "redirect",
+        "duumbi:HttpGet",
+        &format!("{base}/redirect"),
+        "{}",
+        None,
+        2000,
+    ));
+    ops.extend(print_header_field_ops("redirect", "location"));
+    append_return_zero(&mut ops);
+    module_fixture(ops)
+}
+
+#[test]
+fn http_methods_non_2xx_and_redirect_are_inspectable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = thread::spawn(move || {
+        let responses = [
+            (
+                "HTTP/1.1 201 Created\r\nContent-Length: 7\r\nConnection: close\r\n\r\npost-ok",
+                "POST /post HTTP/1.1",
+            ),
+            (
+                "HTTP/1.1 202 Accepted\r\nContent-Length: 6\r\nConnection: close\r\n\r\nput-ok",
+                "PUT /put HTTP/1.1",
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\ndelete-ok",
+                "DELETE /delete HTTP/1.1",
+            ),
+            (
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\nConnection: close\r\n\r\nmissing",
+                "GET /missing HTTP/1.1",
+            ),
+            (
+                "HTTP/1.1 302 Found\r\nContent-Length: 8\r\nLocation: /final\r\nConnection: close\r\n\r\nredirect",
+                "GET /redirect HTTP/1.1",
+            ),
+        ];
+        let mut captured = Vec::new();
+        for (response, expected_line) in responses {
+            let (mut stream, _) = listener.accept().expect("accept HTTP client");
+            let request = read_http_request(&mut stream);
+            assert_eq!(request.request_line, expected_line);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write HTTP response");
+            captured.push(request);
+        }
+        captured
+    });
+
+    let binary = compile_fixture(&http_methods_fixture(port), "duumbi380_http_methods");
+    let output = Command::new(&binary)
+        .output()
+        .expect("compiled binary must run");
+
+    let captured = server.join().expect("server must finish");
+    assert_eq!(captured[0].body, r#"{"name":"Ada"}"#);
+    assert!(
+        captured[0]
+            .headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert_eq!(captured[1].body, "updated");
+    assert!(
+        captured[1]
+            .headers
+            .to_ascii_lowercase()
+            .contains("content-type: text/plain")
+    );
+    assert!(captured[2].body.is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "true",
+            "201",
+            "post-ok",
+            "true",
+            "202",
+            "put-ok",
+            "true",
+            "200",
+            "delete-ok",
+            "true",
+            "404",
+            "missing",
+            "true",
+            "302",
+            "redirect",
+            "\"/final\"",
+        ]
+    );
+    assert!(
+        output.status.success(),
+        "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+fn http_invalid_headers_fixture() -> String {
+    let mut ops = vec![const_string("url", "http://127.0.0.1:9/invalid")];
+    ops.extend(parse_headers_ops("bad", "[]"));
+    ops.push(const_i64("timeout", 2000));
+    ops.push(json!({
+        "@type": "duumbi:HttpGet",
+        "@id": id("bad_result"),
+        "duumbi:operand": node_ref(&id("url")),
+        "duumbi:left": node_ref(&id("bad_headers")),
+        "duumbi:right": node_ref(&id("timeout")),
+        "duumbi:resultType": "result<http_response,string>"
+    }));
+    ops.push(json!({
+        "@type": "duumbi:ResultIsOk",
+        "@id": id("bad_ok"),
+        "duumbi:operand": node_ref(&id("bad_result"))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:Print",
+        "@id": id("print_bad_ok"),
+        "duumbi:operand": node_ref(&id("bad_ok"))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:ResultUnwrapErr",
+        "@id": id("bad_err"),
+        "duumbi:operand": node_ref(&id("bad_result")),
+        "duumbi:resultType": "string"
+    }));
+    ops.push(json!({
+        "@type": "duumbi:PrintString",
+        "@id": id("print_bad_err"),
+        "duumbi:operand": node_ref(&id("bad_err"))
+    }));
+    append_return_zero(&mut ops);
+    module_fixture(ops)
+}
+
+#[test]
+fn http_invalid_header_json_is_recoverable_error() {
+    let binary = compile_fixture(
+        &http_invalid_headers_fixture(),
+        "duumbi380_http_bad_headers",
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("compiled binary must run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "false");
+    assert!(lines[1].contains("http_headers"), "{stdout}");
+    assert!(
+        output.status.success(),
+        "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+fn http_timeout_fixture(port: u16) -> String {
+    let mut ops = http_call_core_ops(
+        "slow",
+        "duumbi:HttpGet",
+        &format!("http://127.0.0.1:{port}/slow"),
+        "{}",
+        None,
+        100,
+    );
+    ops.push(json!({
+        "@type": "duumbi:ResultIsOk",
+        "@id": id("slow_ok"),
+        "duumbi:operand": node_ref(&id("slow_result"))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:Print",
+        "@id": id("print_slow_ok"),
+        "duumbi:operand": node_ref(&id("slow_ok"))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:ResultUnwrapErr",
+        "@id": id("slow_err"),
+        "duumbi:operand": node_ref(&id("slow_result")),
+        "duumbi:resultType": "string"
+    }));
+    ops.push(json!({
+        "@type": "duumbi:PrintString",
+        "@id": id("print_slow_err"),
+        "duumbi:operand": node_ref(&id("slow_err"))
+    }));
+    append_return_zero(&mut ops);
+    module_fixture(ops)
+}
+
+#[test]
+fn http_timeout_returns_error_without_hanging() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept HTTP client");
+        let request = read_http_request(&mut stream);
+        assert_eq!(request.request_line, "GET /slow HTTP/1.1");
+        thread::sleep(Duration::from_millis(500));
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\ntoo-late",
+        );
+    });
+
+    let binary = compile_fixture(&http_timeout_fixture(port), "duumbi380_http_timeout");
+    let started = Instant::now();
+    let output = Command::new(&binary)
+        .output()
+        .expect("compiled binary must run");
+    let elapsed = started.elapsed();
+
+    server.join().expect("server must finish");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "timeout fixture took too long: {elapsed:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "false");
+    assert!(lines[1].contains("http_timeout"), "{stdout}");
     assert!(
         output.status.success(),
         "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
