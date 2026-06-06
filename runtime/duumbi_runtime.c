@@ -2636,8 +2636,33 @@ static void *duumbi_http_ok_i64(int64_t value) {
     return duumbi_result_new_ok(value);
 }
 
+static const char *duumbi_http_curl_error_class(CURLcode rc) {
+    switch (rc) {
+        case CURLE_OPERATION_TIMEDOUT:
+            return "http_timeout";
+        case CURLE_PEER_FAILED_VERIFICATION:
+        case CURLE_SSL_CACERT_BADFILE:
+        case CURLE_SSL_CONNECT_ERROR:
+            return "http_tls";
+        default:
+            return "http_transport";
+    }
+}
+
 static int duumbi_http_validate_timeout(int64_t timeout_ms) {
     return timeout_ms > 0 && timeout_ms <= INT32_MAX;
+}
+
+static const char *duumbi_http_ca_bundle_path(void) {
+    const char *path = getenv("CURL_CA_BUNDLE");
+    if (path != NULL && path[0] != '\0') {
+        return path;
+    }
+    path = getenv("SSL_CERT_FILE");
+    if (path != NULL && path[0] != '\0') {
+        return path;
+    }
+    return NULL;
 }
 
 static int duumbi_http_has_scheme(const char *url) {
@@ -2938,6 +2963,10 @@ static void *duumbi_http_request(
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    const char *ca_bundle = duumbi_http_ca_bundle_path();
+    if (ca_bundle != NULL) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
     if (body != NULL) {
         const char *body_data = (const char *)body->data;
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_data);
@@ -2960,14 +2989,15 @@ static void *duumbi_http_request(
         if (capture.header_error) {
             return duumbi_http_err("http_header: failed to materialize response headers");
         }
-        if (rc == CURLE_OPERATION_TIMEDOUT) {
-            return duumbi_http_err("http_timeout: request timed out");
-        }
         const char *msg = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(rc);
+        const char *error_class = duumbi_http_curl_error_class(rc);
         char full[256];
-        int written = snprintf(full, sizeof(full), "http_transport: %s", msg);
+        int written = snprintf(full, sizeof(full), "%s: %s", error_class, msg);
         if (written < 0 || (size_t)written >= sizeof(full)) {
-            return duumbi_http_err("http_transport: request failed");
+            int fallback_written = snprintf(full, sizeof(full), "%s: request failed", error_class);
+            if (fallback_written < 0 || (size_t)fallback_written >= sizeof(full)) {
+                return duumbi_http_err("http_transport: request failed");
+            }
         }
         return duumbi_http_err(full);
     }

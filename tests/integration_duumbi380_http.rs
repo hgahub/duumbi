@@ -1,9 +1,10 @@
 //! DUUMBI-380 local HTTP runtime integration tests.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,9 @@ use duumbi::errors::DiagnosticLevel;
 use duumbi::graph::builder::build_graph;
 use duumbi::graph::validator::validate;
 use duumbi::parser::parse_jsonld;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde_json::{Value, json};
 
 #[derive(Debug)]
@@ -248,13 +252,18 @@ fn append_return_zero(ops: &mut Vec<Value>) {
     ops.push(return_zero_op());
 }
 
-fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
+fn try_read_http_request(stream: &mut impl Read) -> std::io::Result<CapturedRequest> {
     let mut data = Vec::new();
     let mut buffer = [0_u8; 1024];
     let mut header_end = None;
     while header_end.is_none() {
-        let bytes = stream.read(&mut buffer).expect("read HTTP request");
-        assert!(bytes > 0, "client closed before sending headers");
+        let bytes = stream.read(&mut buffer)?;
+        if bytes == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "client closed before sending headers",
+            ));
+        }
         data.extend_from_slice(&buffer[..bytes]);
         header_end = data.windows(4).position(|window| window == b"\r\n\r\n");
     }
@@ -272,8 +281,13 @@ fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
         })
         .unwrap_or(0);
     while data.len() < header_end + content_len {
-        let bytes = stream.read(&mut buffer).expect("read HTTP body");
-        assert!(bytes > 0, "client closed before sending full body");
+        let bytes = stream.read(&mut buffer)?;
+        if bytes == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "client closed before sending full body",
+            ));
+        }
         data.extend_from_slice(&buffer[..bytes]);
     }
 
@@ -283,12 +297,162 @@ fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
         .next()
         .expect("request line")
         .to_string();
-    CapturedRequest {
+    Ok(CapturedRequest {
         request_line,
         headers: header_text,
         body,
-    }
+    })
 }
+
+fn read_http_request(stream: &mut impl Read) -> CapturedRequest {
+    try_read_http_request(stream).expect("read HTTP request")
+}
+
+fn tls_config() -> Arc<ServerConfig> {
+    let cert = CertificateDer::from_pem_slice(LOCALHOST_CERT_PEM.as_bytes())
+        .expect("embedded localhost certificate must parse");
+    let key = PrivateKeyDer::from_pem_slice(LOCALHOST_KEY_PEM.as_bytes())
+        .expect("embedded localhost key must parse");
+    Arc::new(
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .expect("embedded localhost TLS identity must be valid"),
+    )
+}
+
+fn https_server(
+    response: &'static str,
+    expected_request_line: &'static str,
+) -> (u16, thread::JoinHandle<CapturedRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback HTTPS listener");
+    let port = listener.local_addr().expect("local HTTPS addr").port();
+    let config = tls_config();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept HTTPS client");
+        let connection = ServerConnection::new(config).expect("create TLS server connection");
+        let mut stream = StreamOwned::new(connection, stream);
+        let request = read_http_request(&mut stream);
+        assert_eq!(request.request_line, expected_request_line);
+        stream
+            .write_all(response.as_bytes())
+            .expect("write HTTPS response");
+        request
+    });
+    (port, server)
+}
+
+fn https_server_allowing_rejected_client() -> (u16, thread::JoinHandle<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback HTTPS listener");
+    let port = listener.local_addr().expect("local HTTPS addr").port();
+    let config = tls_config();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept HTTPS client");
+        let connection = ServerConnection::new(config).expect("create TLS server connection");
+        let mut stream = StreamOwned::new(connection, stream);
+        if try_read_http_request(&mut stream).is_ok() {
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunexpected",
+            );
+            return true;
+        }
+        false
+    });
+    (port, server)
+}
+
+fn http_error_fixture(url: &str, output_name: &str) -> String {
+    let mut ops = http_call_core_ops(output_name, "duumbi:HttpGet", url, "{}", None, 2000);
+    ops.push(json!({
+        "@type": "duumbi:ResultIsOk",
+        "@id": id(&format!("{output_name}_ok")),
+        "duumbi:operand": node_ref(&id(&format!("{output_name}_result")))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:Print",
+        "@id": id(&format!("print_{output_name}_ok")),
+        "duumbi:operand": node_ref(&id(&format!("{output_name}_ok")))
+    }));
+    ops.push(json!({
+        "@type": "duumbi:ResultUnwrapErr",
+        "@id": id(&format!("{output_name}_err")),
+        "duumbi:operand": node_ref(&id(&format!("{output_name}_result"))),
+        "duumbi:resultType": "string"
+    }));
+    ops.push(json!({
+        "@type": "duumbi:PrintString",
+        "@id": id(&format!("print_{output_name}_err")),
+        "duumbi:operand": node_ref(&id(&format!("{output_name}_err")))
+    }));
+    append_return_zero(&mut ops);
+    module_fixture(ops)
+}
+
+fn https_get_fixture(port: u16) -> String {
+    let mut ops = http_call_ops(
+        "https",
+        "duumbi:HttpGet",
+        &format!("https://127.0.0.1:{port}/secure"),
+        "{}",
+        None,
+        2000,
+    );
+    append_return_zero(&mut ops);
+    module_fixture(ops)
+}
+
+const LOCALHOST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDJTCCAg2gAwIBAgIUP3HoO5IJ4KLq462gEZS/J+Lc8DkwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDYwNjIyMjAxN1oXDTM2MDYw
+MzIyMjAxN1owFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAp3yCNnwZYpwUVxgKVwXlTDtkEIUvx/kBRyihB8PoBPXG
+2d3RNfEwobNk7ud0ai7dZ59KhJdkRj9wSSDcn4GaN2aPUrIoI1F1obma8IGCsdUn
+UKnuwu0mxjGWbM6+8b1RG9Fr/sfZ09rO7N5Mt/AELz80PCB/Nmbr5oU9vtB8mVF6
+/CYW8ujozejF5nijVAYcv9wAN9LofROs5j5rHsiokEnx7LoRjHvYkK/4LqKDAkjg
+5cQ/9A5c14aQTGv9luTAMS3IwuPLoTBh/m1GATR2ekd8HsYD0X7W35CqRhZAXDvs
+NiP4mrFZFIYk0Z2Vx5n5b8ntDODUO/HMvdn1nPQKYwIDAQABo28wbTAdBgNVHQ4E
+FgQULQRYnKo7RpIvJe2kIbaG2DfPQyEwHwYDVR0jBBgwFoAULQRYnKo7RpIvJe2k
+IbaG2DfPQyEwDwYDVR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SH
+BH8AAAEwDQYJKoZIhvcNAQELBQADggEBABF0yfAwZQyoZ2pELyJA+EgdlEpxSNNG
+1R4L2x9JEKWfxqlJbiVd9YV/OdFWAcTOztUupUPKG9Os1S4rvfbYBjoBRS8UNXdU
+ccIV3cqQHRouaEsySsVV0QNWCo4tUK30u+G7mz4tt4mgP+FaKHBKdbo+ca6MTngr
+W1sIwkJ8TK2kkUJyNXXveoVdCYe2idVh36gqAPzUXBgP6HuABHU2H4p9GqMYjoMJ
+2QsMnGsoc+WMXdAhhHIKcQvOV8oCwDc5+Vs23rUrhRYoPTh0w4M2DX1d8S8xeQa6
+cb2oQnrzplTrHBoHQY7CkBfTg0G5VYSaEaPHdNE0pkKVDnlPQ4WgXEg=
+-----END CERTIFICATE-----"#;
+
+const LOCALHOST_KEY_PEM: &str = concat!(
+    "-----BEGIN ",
+    "PRIVATE KEY-----\n",
+    "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCnfII2fBlinBRX\n",
+    "GApXBeVMO2QQhS/H+QFHKKEHw+gE9cbZ3dE18TChs2Tu53RqLt1nn0qEl2RGP3BJ\n",
+    "INyfgZo3Zo9SsigjUXWhuZrwgYKx1SdQqe7C7SbGMZZszr7xvVEb0Wv+x9nT2s7s\n",
+    "3ky38AQvPzQ8IH82ZuvmhT2+0HyZUXr8Jhby6OjN6MXmeKNUBhy/3AA30uh9E6zm\n",
+    "PmseyKiQSfHsuhGMe9iQr/guooMCSODlxD/0DlzXhpBMa/2W5MAxLcjC48uhMGH+\n",
+    "bUYBNHZ6R3wexgPRftbfkKpGFkBcO+w2I/iasVkUhiTRnZXHmflvye0M4NQ78cy9\n",
+    "2fWc9ApjAgMBAAECggEAB9bck2dImuR6UT9HUJ5uhpxrCRjqzR3bEPUWYHIrfHvy\n",
+    "hEUNI0y4PYFTkpkTylqKM2zxxHX/lAgpHcsjeHXM/ZXX1IORPGH2Mw0ocuRk9STo\n",
+    "c66YhdgqzfEJPOuKZW86iiZJu0GocPGXaN/Y0G00DPAU5lGREr9LgF0xMCq7AkQK\n",
+    "LrapzOObD/z0vFmIdIsosIzQhXMdzQwSio+/1Ey2xrM3amwHwMyr6RNrrsPj2A55\n",
+    "2hRKkLOLk/mfpzfdLmgH0C1j9TNxO70xvfd1gCJJnraypFhfuj8R+u9uEpN6Ntzg\n",
+    "obgWX5KEUUSoJfiVVVv3pHyU/UynFCQk+H0srT7ogQKBgQDQUHAz+m3mx0vFuFVX\n",
+    "29g8tKEY3AFbmm8JCM8ff8vcMNHboCrDJJgi9L4Aw9UoIfzB1RmuK1HjTOct/DWZ\n",
+    "yrWHxQBf01HHR/yz4l2QVibNFAI5GhfH0SsDFmyYbuSrRqziy1BAZgW3j2VEDpm0\n",
+    "MjTqIvCwY1qfPNMZKMSk5CFzgQKBgQDN031tgKVoSvY83l+mQ0JCtnBZ4SCahEPz\n",
+    "DZspEPv1Gz6o9e/5lmFq7//BvWAaPoiiYLrfe10ae+A3461SipzHfWTa2FYZ8sQk\n",
+    "r8LO3S+mD6irYDrkh6A2Q0kfkYu7XKe9dvOXhQFutqlVts+yL4Mah1+6RdMfG08u\n",
+    "CtO0lU4f4wKBgAwgUpfEATfI7DFDTLyDkK/f9+zBidayQ7pr59q2jsBvmxfE2Bhp\n",
+    "/e0zAAh9XeArMlJ6PDd2UBsCNAbqQpiEQ1L29dGeNIl8OEqkZ7vqN/ICMyrtyOqZ\n",
+    "034nhQTOl8Mcpx3AphhJmBWaZFO04d+qeIgUppwt/G1+le9F/0R1/ziBAoGAOvCY\n",
+    "F1Zih2YH81A+la7m95GkxKgqHPVJO/2mc/EQJZVCsUGUEaXVibjmRUWEkp9boxwO\n",
+    "B1cdRys3/uksxdk5ogqvadfPeCjDsDnAkFpYfbY4N7MbyjtoToGgG/Ei0WlsA15f\n",
+    "zQDicyDNhuUNvtnKMjuX1xCNr3ezidzB2RF0SL8CgYB5ERPRn8flEE+XCAV7IE2/\n",
+    "gMENNnxAWvSj2OcK72MvJzYSgKXzYUcgOAWcoZCnvQg8fOVLoftJlPaN1wcEmzSx\n",
+    "9DvpUjavjN5/aeY2FT8eAWovK/UeDXr/U7sJWoinWEpHckhVRpA6MN2bvrGHPHVB\n",
+    "o+d+u+0IL7fa5LmY788KBA==\n",
+    "-----END ",
+    "PRIVATE KEY-----",
+);
 
 fn native_output_path(path: &Path) -> std::path::PathBuf {
     if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
@@ -405,6 +569,71 @@ fn http_get_status_body_headers_and_release_loopback() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, ["200", "duumbi-ok", "\"works\"", "true", "false"]);
+    assert!(
+        output.status.success(),
+        "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+}
+
+#[test]
+fn https_get_succeeds_with_trusted_local_certificate() {
+    let (port, server) = https_server(
+        "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsecure-ok",
+        "GET /secure HTTP/1.1",
+    );
+    let ca_path = std::env::temp_dir().join("duumbi380_localhost_ca.pem");
+    std::fs::write(&ca_path, LOCALHOST_CERT_PEM).expect("write localhost CA fixture");
+
+    let binary = compile_fixture(&https_get_fixture(port), "duumbi380_https_get");
+    let output = Command::new(&binary)
+        .env("CURL_CA_BUNDLE", &ca_path)
+        .env("SSL_CERT_FILE", &ca_path)
+        .output()
+        .expect("compiled binary must run");
+
+    let captured = server.join().expect("server must finish");
+    assert!(captured.headers.to_ascii_lowercase().contains("host:"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, ["true", "200", "secure-ok"]);
+    assert!(
+        output.status.success(),
+        "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = std::fs::remove_file(&binary);
+    let _ = std::fs::remove_file(ca_path);
+}
+
+#[test]
+fn https_get_untrusted_local_certificate_returns_tls_error() {
+    let (port, server) = https_server_allowing_rejected_client();
+    let fixture = http_error_fixture(
+        &format!("https://127.0.0.1:{port}/secure"),
+        "https_untrusted",
+    );
+    let binary = compile_fixture(&fixture, "duumbi380_https_untrusted");
+    let output = Command::new(&binary)
+        .env_remove("CURL_CA_BUNDLE")
+        .env_remove("SSL_CERT_FILE")
+        .output()
+        .expect("compiled binary must run");
+
+    let client_sent_request = server.join().expect("server must finish");
+    assert!(
+        !client_sent_request,
+        "untrusted HTTPS client should reject the certificate before sending HTTP"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines[0], "false");
+    assert!(lines[1].contains("http_tls"), "{stdout}");
     assert!(
         output.status.success(),
         "fixture exited unsuccessfully\nstdout:\n{}\nstderr:\n{}",
