@@ -2939,7 +2939,8 @@ static void *duumbi_http_request(
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     if (body != NULL) {
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body->data);
+        const char *body_data = (const char *)body->data;
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_data);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body->len);
     }
 
