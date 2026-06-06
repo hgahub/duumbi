@@ -269,7 +269,6 @@ fn compile_and_run(tmp_workspace: &Path, function: &str) -> Result<i64, String> 
     let runtime_c_src = include_str!("../../runtime/duumbi_runtime.c");
     let runtime_c = tmp_workspace.join("duumbi_runtime.c");
     std::fs::write(&runtime_c, runtime_c_src).map_err(|e| format!("write runtime: {e}"))?;
-    copy_runtime_sqlite_deps(&runtime_c)?;
     let runtime_o = tmp_workspace.join("duumbi_runtime.o");
     linker::compile_runtime(&runtime_c, &runtime_o).map_err(|e| format!("compile runtime: {e}"))?;
 
@@ -316,31 +315,6 @@ fn compile_and_run(tmp_workspace: &Path, function: &str) -> Result<i64, String> 
             .parse::<i64>()
             .map_err(|e| format!("failed to parse stdout '{last_line}' as i64: {e}"))
     }
-}
-
-fn copy_runtime_sqlite_deps(runtime_c: &Path) -> Result<(), String> {
-    let runtime_dir = runtime_c
-        .parent()
-        .ok_or_else(|| format!("runtime path '{}' has no parent", runtime_c.display()))?;
-    let sqlite_dir = runtime_dir.join("third_party").join("sqlite");
-    std::fs::create_dir_all(&sqlite_dir).map_err(|e| format!("create sqlite runtime dir: {e}"))?;
-
-    for file_name in ["sqlite3.c", "sqlite3.h"] {
-        let source = Path::new("runtime")
-            .join("third_party")
-            .join("sqlite")
-            .join(file_name);
-        let destination = sqlite_dir.join(file_name);
-        std::fs::copy(&source, &destination).map_err(|e| {
-            format!(
-                "copy sqlite runtime dependency '{}' to '{}': {e}",
-                source.display(),
-                destination.display()
-            )
-        })?;
-    }
-
-    Ok(())
 }
 
 /// Generates a wrapper `main.jsonld` that calls `tc.function(tc.args...)` and

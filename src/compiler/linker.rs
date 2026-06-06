@@ -3,6 +3,7 @@
 //! Compiles `duumbi_runtime.c` to an object file and links it with
 //! the Cranelift output to produce a native binary.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -67,6 +68,28 @@ fn ensure_runtime_deps_present(runtime_c: &Path) -> Result<(), CompileError> {
     let sqlite_h = sqlite_dir.join("sqlite3.h");
 
     if sqlite_c.exists() && sqlite_h.exists() {
+        return Ok(());
+    }
+
+    let source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("runtime")
+        .join("third_party")
+        .join("sqlite");
+    let source_c = source_dir.join("sqlite3.c");
+    let source_h = source_dir.join("sqlite3.h");
+    if source_dir != sqlite_dir && source_c.exists() && source_h.exists() {
+        fs::create_dir_all(&sqlite_dir).map_err(|e| CompileError::LinkFailed {
+            code: codes::E008_LINK_FAILED,
+            message: format!("Failed to create temp SQLite runtime directory: {e}"),
+        })?;
+        fs::copy(&source_c, &sqlite_c).map_err(|e| CompileError::LinkFailed {
+            code: codes::E008_LINK_FAILED,
+            message: format!("Failed to copy vendored SQLite source: {e}"),
+        })?;
+        fs::copy(&source_h, &sqlite_h).map_err(|e| CompileError::LinkFailed {
+            code: codes::E008_LINK_FAILED,
+            message: format!("Failed to copy vendored SQLite header: {e}"),
+        })?;
         return Ok(());
     }
 
@@ -304,24 +327,28 @@ mod tests {
     }
 
     #[test]
-    fn compile_runtime_missing_vendored_sqlite_fails_without_writing_runtime_tree() {
+    fn compile_runtime_copies_vendored_sqlite_to_temp_runtime_tree() {
         let tmp_dir = TempDir::new().expect("invariant: temp dir must be creatable");
         let runtime_c = tmp_dir.path().join("duumbi_runtime.c");
         fs::write(
             &runtime_c,
-            "int64_t duumbi_dependency_probe(void) { return 0; }\n",
+            "int duumbi_dependency_probe(void) { return 0; }\n",
         )
         .expect("invariant: must be able to write temp runtime source");
 
         let runtime_o = tmp_dir.path().join("duumbi_runtime.o");
         let result = compile_runtime(&runtime_c, &runtime_o);
         assert!(
-            matches!(result, Err(CompileError::LinkFailed { .. })),
-            "missing vendored SQLite should be a link failure, got: {result:?}"
+            result.is_ok(),
+            "temp runtime should compile after copying vendored SQLite deps, got: {result:?}"
         );
         assert!(
-            !tmp_dir.path().join("third_party").exists(),
-            "compile_runtime must not materialize dependencies into the runtime source tree"
+            tmp_dir.path().join("third_party/sqlite/sqlite3.c").exists(),
+            "compile_runtime should materialize SQLite source into temp runtime tree"
+        );
+        assert!(
+            tmp_dir.path().join("third_party/sqlite/sqlite3.h").exists(),
+            "compile_runtime should materialize SQLite header into temp runtime tree"
         );
     }
 
