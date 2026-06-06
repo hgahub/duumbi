@@ -213,7 +213,17 @@ fn parse_node_ref_array(
     field: &str,
     node_id: &str,
 ) -> Result<Vec<NodeRef>, ParseError> {
-    let args_arr = get_array(obj, field, node_id)?;
+    let args_val = obj.get(field).ok_or_else(|| ParseError::MissingField {
+        code: codes::E003_MISSING_FIELD,
+        field: field.to_string(),
+        node_id: node_id.to_string(),
+    })?;
+    let args_arr = args_val
+        .as_array()
+        .ok_or_else(|| ParseError::SchemaInvalid {
+            code: codes::E009_SCHEMA_INVALID,
+            message: format!("Field '{field}' on node {node_id} must be an array of node refs"),
+        })?;
     let mut refs = Vec::with_capacity(args_arr.len());
     for arg_val in args_arr {
         let id = arg_val.get("@id").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -1989,6 +1999,41 @@ mod tests {
         assert!(matches!(ops[12].op, Op::DbRowGet));
         assert!(matches!(ops[13].op, Op::DbClose));
         assert!(matches!(ops[14].op, Op::DbRowsFree));
+    }
+
+    #[test]
+    fn parse_node_ref_array_wrong_type_reports_schema_invalid() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:HttpPost", "@id": "duumbi:t/main/e/0",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/body"},
+                         "duumbi:args": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<http_response,string>"}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let err = parse_jsonld(json).expect_err("non-array args should fail schema validation");
+        assert!(
+            matches!(
+                err,
+                ParseError::SchemaInvalid {
+                    code: codes::E009_SCHEMA_INVALID,
+                    ..
+                }
+            ),
+            "expected E009 schema error, got: {err:?}"
+        );
     }
 
     #[test]

@@ -3,16 +3,12 @@
 //! Compiles `duumbi_runtime.c` to an object file and links it with
 //! the Cranelift output to produce a native binary.
 
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use crate::errors::codes;
 
 use super::CompileError;
-
-const SQLITE3_C_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.c");
-const SQLITE3_H_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.h");
 
 /// Finds the C compiler to use for linking.
 ///
@@ -64,10 +60,8 @@ fn platform_link_args() -> Vec<&'static str> {
     }
 }
 
-fn ensure_embedded_runtime_deps(runtime_c: &Path) -> Result<(), CompileError> {
-    let Some(runtime_dir) = runtime_c.parent() else {
-        return Ok(());
-    };
+fn ensure_runtime_deps_present(runtime_c: &Path) -> Result<(), CompileError> {
+    let runtime_dir = runtime_c.parent().unwrap_or_else(|| Path::new("."));
     let sqlite_dir = runtime_dir.join("third_party").join("sqlite");
     let sqlite_c = sqlite_dir.join("sqlite3.c");
     let sqlite_h = sqlite_dir.join("sqlite3.h");
@@ -76,20 +70,15 @@ fn ensure_embedded_runtime_deps(runtime_c: &Path) -> Result<(), CompileError> {
         return Ok(());
     }
 
-    fs::create_dir_all(&sqlite_dir).map_err(|e| CompileError::LinkFailed {
+    Err(CompileError::LinkFailed {
         code: codes::E008_LINK_FAILED,
-        message: format!("Failed to create embedded SQLite runtime directory: {e}"),
-    })?;
-    fs::write(&sqlite_c, SQLITE3_C_SOURCE).map_err(|e| CompileError::LinkFailed {
-        code: codes::E008_LINK_FAILED,
-        message: format!("Failed to write embedded SQLite source: {e}"),
-    })?;
-    fs::write(&sqlite_h, SQLITE3_H_SOURCE).map_err(|e| CompileError::LinkFailed {
-        code: codes::E008_LINK_FAILED,
-        message: format!("Failed to write embedded SQLite header: {e}"),
-    })?;
-
-    Ok(())
+        message: format!(
+            "Vendored SQLite runtime sources are missing beside '{}'; expected '{}' and '{}'",
+            runtime_c.display(),
+            sqlite_c.display(),
+            sqlite_h.display()
+        ),
+    })
 }
 
 /// Compiles the C runtime shim to an object file.
@@ -98,7 +87,7 @@ fn ensure_embedded_runtime_deps(runtime_c: &Path) -> Result<(), CompileError> {
 #[must_use = "compilation errors should be handled"]
 pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileError> {
     let cc = find_cc();
-    ensure_embedded_runtime_deps(runtime_c)?;
+    ensure_runtime_deps_present(runtime_c)?;
 
     let mut args = runtime_cflags();
     args.extend([
@@ -312,6 +301,28 @@ mod tests {
         let binary_exists = binary.exists();
 
         assert!(binary_exists, "linked probe binary should exist");
+    }
+
+    #[test]
+    fn compile_runtime_missing_vendored_sqlite_fails_without_writing_runtime_tree() {
+        let tmp_dir = TempDir::new().expect("invariant: temp dir must be creatable");
+        let runtime_c = tmp_dir.path().join("duumbi_runtime.c");
+        fs::write(
+            &runtime_c,
+            "int64_t duumbi_dependency_probe(void) { return 0; }\n",
+        )
+        .expect("invariant: must be able to write temp runtime source");
+
+        let runtime_o = tmp_dir.path().join("duumbi_runtime.o");
+        let result = compile_runtime(&runtime_c, &runtime_o);
+        assert!(
+            matches!(result, Err(CompileError::LinkFailed { .. })),
+            "missing vendored SQLite should be a link failure, got: {result:?}"
+        );
+        assert!(
+            !tmp_dir.path().join("third_party").exists(),
+            "compile_runtime must not materialize dependencies into the runtime source tree"
+        );
     }
 
     #[test]
