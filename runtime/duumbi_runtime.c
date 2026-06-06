@@ -2584,7 +2584,31 @@ void *duumbi_path_join(void *left_ptr, void *right_ptr) {
     return duumbi_ok_string(normalized, (uint64_t)strlen(normalized));
 }
 
-/* ── HTTP/SQLite dispatch stubs (DUUMBI-380 lowering cycle) ───────── */
+/* ── HTTP (libcurl-backed response resources) ─────────────────────── */
+
+#define DUUMBI_HTTP_MAX_BODY_BYTES (1024 * 1024)
+#define DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES 65536
+
+typedef struct {
+    int64_t     status;
+    char       *body;
+    size_t      body_len;
+    DuumbiJson *headers;
+    int         closed;
+} DuumbiHttpResponse;
+
+typedef struct {
+    char  *data;
+    size_t len;
+    size_t cap;
+    int    overflow;
+} DuumbiHttpBuffer;
+
+typedef struct {
+    DuumbiHttpBuffer body;
+    DuumbiJson      *headers;
+    int              header_error;
+} DuumbiHttpCapture;
 
 static void *duumbi_stdlib_pending(const char *operation) {
     char message[160];
@@ -2600,11 +2624,362 @@ static void *duumbi_stdlib_pending(const char *operation) {
     return duumbi_err_cstr(message);
 }
 
+static void *duumbi_http_err(const char *message) {
+    return duumbi_result_new_err((int64_t)(intptr_t)duumbi_string_new(message, strlen(message)));
+}
+
+static void *duumbi_http_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static void *duumbi_http_ok_i64(int64_t value) {
+    return duumbi_result_new_ok(value);
+}
+
+static int duumbi_http_validate_timeout(int64_t timeout_ms) {
+    return timeout_ms > 0 && timeout_ms <= INT32_MAX;
+}
+
+static int duumbi_http_has_scheme(const char *url) {
+    return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
+}
+
+static void duumbi_http_buffer_free(DuumbiHttpBuffer *buffer) {
+    if (buffer == NULL) return;
+    duumbi_dealloc(buffer->data);
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+}
+
+static int duumbi_http_buffer_append(DuumbiHttpBuffer *buffer, const char *data, size_t len) {
+    if (len == 0) return 1;
+    if (buffer->len > DUUMBI_HTTP_MAX_BODY_BYTES ||
+        len > DUUMBI_HTTP_MAX_BODY_BYTES - buffer->len) {
+        buffer->overflow = 1;
+        return 0;
+    }
+    size_t needed = buffer->len + len + 1;
+    if (needed > buffer->cap) {
+        size_t new_cap = buffer->cap == 0 ? 4096 : buffer->cap;
+        while (new_cap < needed) {
+            if (new_cap > DUUMBI_HTTP_MAX_BODY_BYTES / 2) {
+                new_cap = DUUMBI_HTTP_MAX_BODY_BYTES + 1;
+                break;
+            }
+            new_cap *= 2;
+        }
+        char *new_data = (char *)realloc(buffer->data, new_cap);
+        if (new_data == NULL) {
+            buffer->overflow = 1;
+            return 0;
+        }
+        buffer->data = new_data;
+        buffer->cap = new_cap;
+    }
+    memcpy(buffer->data + buffer->len, data, len);
+    buffer->len += len;
+    buffer->data[buffer->len] = '\0';
+    return 1;
+}
+
+static size_t duumbi_http_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t len = size * nmemb;
+    DuumbiHttpCapture *capture = (DuumbiHttpCapture *)userdata;
+    if (!duumbi_http_buffer_append(&capture->body, ptr, len)) {
+        return 0;
+    }
+    return len;
+}
+
+static char duumbi_http_lower_ascii(char ch) {
+    return (char)tolower((unsigned char)ch);
+}
+
+static int duumbi_http_header_name_valid(const char *name, size_t len) {
+    if (len == 0) return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)name[i];
+        if (ch <= 32 || ch >= 127) return 0;
+        switch (ch) {
+            case '(':
+            case ')':
+            case '<':
+            case '>':
+            case '@':
+            case ',':
+            case ';':
+            case ':':
+            case '\\':
+            case '"':
+            case '/':
+            case '[':
+            case ']':
+            case '?':
+            case '=':
+            case '{':
+            case '}':
+                return 0;
+            default:
+                break;
+        }
+    }
+    return 1;
+}
+
+static char *duumbi_http_lower_header_name(const char *name, size_t len) {
+    char *out = (char *)duumbi_alloc((uint64_t)len + 1);
+    for (size_t i = 0; i < len; i++) {
+        out[i] = duumbi_http_lower_ascii(name[i]);
+    }
+    out[len] = '\0';
+    return out;
+}
+
+static DuumbiJson *duumbi_http_json_string(const char *value, size_t len) {
+    DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_STRING);
+    json->string_value = duumbi_json_strndup(value, len);
+    json->string_len = len;
+    return json;
+}
+
+static int duumbi_http_object_set_string(
+    DuumbiJson *object,
+    char *key,
+    size_t key_len,
+    const char *value,
+    size_t value_len
+) {
+    for (uint64_t i = 0; i < object->object_len; i++) {
+        DuumbiJsonObjectEntry *entry = &object->object_entries[i];
+        if (entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0) {
+            DuumbiJson *existing = entry->value;
+            if (existing == NULL || existing->kind != DUUMBI_JSON_STRING) {
+                duumbi_dealloc(key);
+                return 0;
+            }
+            if (existing->string_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES ||
+                value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES ||
+                existing->string_len + value_len + 2 > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+                duumbi_dealloc(key);
+                return 0;
+            }
+            size_t joined_len = existing->string_len + 2 + value_len;
+            char *joined = (char *)duumbi_alloc((uint64_t)joined_len + 1);
+            memcpy(joined, existing->string_value, existing->string_len);
+            memcpy(joined + existing->string_len, ", ", 2);
+            memcpy(joined + existing->string_len + 2, value, value_len);
+            joined[joined_len] = '\0';
+            duumbi_dealloc(existing->string_value);
+            existing->string_value = joined;
+            existing->string_len = joined_len;
+            duumbi_dealloc(key);
+            return 1;
+        }
+    }
+
+    DuumbiJson *json_value = duumbi_http_json_string(value, value_len);
+    if (!duumbi_json_object_add(object, key, key_len, json_value)) {
+        duumbi_json_free(json_value);
+        duumbi_dealloc(key);
+        return 0;
+    }
+    return 1;
+}
+
+static size_t duumbi_http_header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t len = size * nmemb;
+    DuumbiHttpCapture *capture = (DuumbiHttpCapture *)userdata;
+    char *colon = memchr(ptr, ':', len);
+    if (colon == NULL) {
+        return len;
+    }
+
+    char *name_start = ptr;
+    char *name_end = colon;
+    while (name_end > name_start && isspace((unsigned char)name_end[-1])) name_end--;
+    char *value_start = colon + 1;
+    char *value_end = ptr + len;
+    while (value_start < value_end && isspace((unsigned char)*value_start)) value_start++;
+    while (value_end > value_start && isspace((unsigned char)value_end[-1])) value_end--;
+
+    size_t name_len = (size_t)(name_end - name_start);
+    size_t value_len = (size_t)(value_end - value_start);
+    if (!duumbi_http_header_name_valid(name_start, name_len) ||
+        value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+        capture->header_error = 1;
+        return 0;
+    }
+
+    char *lower_name = duumbi_http_lower_header_name(name_start, name_len);
+    if (!duumbi_http_object_set_string(
+            capture->headers,
+            lower_name,
+            name_len,
+            value_start,
+            value_len
+        )) {
+        capture->header_error = 1;
+        return 0;
+    }
+    return len;
+}
+
+static struct curl_slist *duumbi_http_build_request_headers(void *headers_ptr, char **error) {
+    DuumbiJson *headers = (DuumbiJson *)headers_ptr;
+    if (headers == NULL || headers->kind != DUUMBI_JSON_OBJECT) {
+        *error = "http_request failed: headers must be a json object";
+        return NULL;
+    }
+
+    struct curl_slist *list = NULL;
+    for (uint64_t i = 0; i < headers->object_len; i++) {
+        DuumbiJsonObjectEntry *entry = &headers->object_entries[i];
+        if (!duumbi_http_header_name_valid(entry->key, entry->key_len)) {
+            curl_slist_free_all(list);
+            *error = "http_request failed: header name is invalid";
+            return NULL;
+        }
+        if (entry->value == NULL || entry->value->kind != DUUMBI_JSON_STRING) {
+            curl_slist_free_all(list);
+            *error = "http_request failed: header values must be strings";
+            return NULL;
+        }
+        size_t value_len = entry->value->string_len;
+        if (value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+            curl_slist_free_all(list);
+            *error = "http_request failed: header value is too large";
+            return NULL;
+        }
+        size_t line_len = entry->key_len + 2 + value_len;
+        char *line = (char *)duumbi_alloc((uint64_t)line_len + 1);
+        memcpy(line, entry->key, entry->key_len);
+        memcpy(line + entry->key_len, ": ", 2);
+        memcpy(line + entry->key_len + 2, entry->value->string_value, value_len);
+        line[line_len] = '\0';
+        struct curl_slist *updated = curl_slist_append(list, line);
+        duumbi_dealloc(line);
+        if (updated == NULL) {
+            curl_slist_free_all(list);
+            *error = "http_request failed: failed to build headers";
+            return NULL;
+        }
+        list = updated;
+    }
+    return list;
+}
+
+static void duumbi_http_response_release_contents(DuumbiHttpResponse *response) {
+    if (response == NULL) return;
+    duumbi_dealloc(response->body);
+    response->body = NULL;
+    response->body_len = 0;
+    duumbi_json_free(response->headers);
+    response->headers = NULL;
+}
+
+static void *duumbi_http_request(
+    const char *method,
+    void *url_ptr,
+    void *headers_ptr,
+    void *body_ptr,
+    int64_t timeout_ms
+) {
+    DuumbiString *url = (DuumbiString *)url_ptr;
+    DuumbiString *body = (DuumbiString *)body_ptr;
+    if (url == NULL) return duumbi_http_err("http_request failed: url is null");
+    if (!duumbi_http_validate_timeout(timeout_ms)) {
+        return duumbi_http_err("http_request failed: invalid timeout_ms");
+    }
+
+    char *url_c = duumbi_json_strndup(url->data, (size_t)url->len);
+    if (!duumbi_http_has_scheme(url_c)) {
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_request failed: unsupported URL scheme");
+    }
+
+    char *header_error = NULL;
+    struct curl_slist *request_headers =
+        duumbi_http_build_request_headers(headers_ptr, &header_error);
+    if (header_error != NULL) {
+        duumbi_dealloc(url_c);
+        return duumbi_http_err(header_error);
+    }
+
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+        curl_slist_free_all(request_headers);
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_request failed: curl global init failed");
+    }
+
+    CURL *curl = curl_easy_init();
+    if (curl == NULL) {
+        curl_slist_free_all(request_headers);
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_request failed: curl init failed");
+    }
+
+    DuumbiHttpCapture capture;
+    memset(&capture, 0, sizeof(capture));
+    capture.headers = duumbi_json_new(DUUMBI_JSON_OBJECT);
+
+    char error_buffer[CURL_ERROR_SIZE];
+    error_buffer[0] = '\0';
+    curl_easy_setopt(curl, CURLOPT_URL, url_c);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, request_headers);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, duumbi_http_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &capture);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, duumbi_http_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &capture);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    if (body != NULL) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body->data);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body->len);
+    }
+
+    CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(request_headers);
+    duumbi_dealloc(url_c);
+
+    if (rc != CURLE_OK) {
+        duumbi_json_free(capture.headers);
+        duumbi_http_buffer_free(&capture.body);
+        if (capture.body.overflow) {
+            return duumbi_http_err("http_body_limit: response body exceeds limit");
+        }
+        if (capture.header_error) {
+            return duumbi_http_err("http_header: failed to materialize response headers");
+        }
+        const char *msg = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(rc);
+        char full[256];
+        int written = snprintf(full, sizeof(full), "http_transport: %s", msg);
+        if (written < 0 || (size_t)written >= sizeof(full)) {
+            return duumbi_http_err("http_transport: request failed");
+        }
+        return duumbi_http_err(full);
+    }
+
+    DuumbiHttpResponse *response =
+        (DuumbiHttpResponse *)duumbi_alloc(sizeof(DuumbiHttpResponse));
+    response->status = (int64_t)status;
+    response->body = capture.body.data;
+    response->body_len = capture.body.len;
+    response->headers = capture.headers;
+    response->closed = 0;
+    return duumbi_http_ok_ptr(response);
+}
+
 void *duumbi_http_get(void *url, void *headers, int64_t timeout_ms) {
-    (void)url;
-    (void)headers;
-    (void)timeout_ms;
-    return duumbi_stdlib_pending("http_get");
+    return duumbi_http_request("GET", url, headers, NULL, timeout_ms);
 }
 
 void *duumbi_http_post(void *url, void *headers, void *body, int64_t timeout_ms) {
@@ -2631,28 +3006,49 @@ void *duumbi_http_delete(void *url, void *headers, int64_t timeout_ms) {
 }
 
 void *duumbi_http_status(void *response) {
-    (void)response;
-    return duumbi_stdlib_pending("http_status");
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_status failed: response is closed");
+    }
+    return duumbi_http_ok_i64(http_response->status);
 }
 
 void *duumbi_http_body(void *response) {
-    (void)response;
-    return duumbi_stdlib_pending("http_body");
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_body failed: response is closed");
+    }
+    const char *body = http_response->body != NULL ? http_response->body : "";
+    return duumbi_http_ok_ptr(duumbi_string_new(body, http_response->body_len));
 }
 
 void *duumbi_http_headers(void *response) {
-    (void)response;
-    return duumbi_stdlib_pending("http_headers");
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_headers failed: response is closed");
+    }
+    return duumbi_http_ok_ptr(duumbi_json_clone(http_response->headers));
 }
 
 void *duumbi_http_response_close(void *response) {
-    (void)response;
-    return duumbi_stdlib_pending("http_response_close");
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_response_close failed: response is already closed");
+    }
+    duumbi_http_response_release_contents(http_response);
+    http_response->closed = 1;
+    return duumbi_http_ok_i64(0);
 }
 
 void duumbi_http_response_free(void *response) {
-    (void)response;
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL) return;
+    duumbi_http_response_release_contents(http_response);
+    http_response->closed = 1;
+    duumbi_dealloc(http_response);
 }
+
+/* ── SQLite dispatch stubs (DUUMBI-380 DB runtime cycle pending) ───── */
 
 void *duumbi_db_open(void *path) {
     (void)path;
