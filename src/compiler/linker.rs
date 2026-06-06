@@ -3,12 +3,16 @@
 //! Compiles `duumbi_runtime.c` to an object file and links it with
 //! the Cranelift output to produce a native binary.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use crate::errors::codes;
 
 use super::CompileError;
+
+const SQLITE3_C_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.c");
+const SQLITE3_H_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.h");
 
 /// Finds the C compiler to use for linking.
 ///
@@ -24,15 +28,44 @@ pub fn find_cc() -> String {
 /// command, causing `ld` to emit "no platform load command found" warnings.
 /// This is a known Cranelift limitation — the generated binaries work correctly.
 /// On macOS we suppress linker warnings with `-Wl,-w` to avoid confusing users.
-/// On Windows, TCP runtime support requires Winsock linkage.
+/// HTTP/HTTPS runtime support requires libcurl linkage. On Windows, TCP
+/// runtime support requires Winsock linkage.
 fn platform_link_args() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
-        vec!["-lm", "-lws2_32"]
+        vec!["-lm", "-lws2_32", "-lcurl"]
     } else if cfg!(target_os = "macos") {
-        vec!["-Wl,-w", "-lm"]
+        vec!["-Wl,-w", "-lm", "-lcurl"]
     } else {
-        vec!["-lm"]
+        vec!["-lm", "-lcurl"]
     }
+}
+
+fn ensure_embedded_runtime_deps(runtime_c: &Path) -> Result<(), CompileError> {
+    let Some(runtime_dir) = runtime_c.parent() else {
+        return Ok(());
+    };
+    let sqlite_dir = runtime_dir.join("third_party").join("sqlite");
+    let sqlite_c = sqlite_dir.join("sqlite3.c");
+    let sqlite_h = sqlite_dir.join("sqlite3.h");
+
+    if sqlite_c.exists() && sqlite_h.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&sqlite_dir).map_err(|e| CompileError::LinkFailed {
+        code: codes::E008_LINK_FAILED,
+        message: format!("Failed to create embedded SQLite runtime directory: {e}"),
+    })?;
+    fs::write(&sqlite_c, SQLITE3_C_SOURCE).map_err(|e| CompileError::LinkFailed {
+        code: codes::E008_LINK_FAILED,
+        message: format!("Failed to write embedded SQLite source: {e}"),
+    })?;
+    fs::write(&sqlite_h, SQLITE3_H_SOURCE).map_err(|e| CompileError::LinkFailed {
+        code: codes::E008_LINK_FAILED,
+        message: format!("Failed to write embedded SQLite header: {e}"),
+    })?;
+
+    Ok(())
 }
 
 /// Compiles the C runtime shim to an object file.
@@ -41,6 +74,7 @@ fn platform_link_args() -> Vec<&'static str> {
 #[must_use = "compilation errors should be handled"]
 pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileError> {
     let cc = find_cc();
+    ensure_embedded_runtime_deps(runtime_c)?;
 
     let status = Command::new(&cc)
         .args([
@@ -208,6 +242,7 @@ mod tests {
     fn platform_link_args_match_current_target() {
         let args = platform_link_args();
         assert!(args.contains(&"-lm"));
+        assert!(args.contains(&"-lcurl"));
 
         #[cfg(target_os = "macos")]
         assert!(args.contains(&"-Wl,-w"));
@@ -217,6 +252,36 @@ mod tests {
 
         #[cfg(target_os = "windows")]
         assert!(args.contains(&"-lws2_32"));
+    }
+
+    #[test]
+    fn runtime_dependency_link_probe_succeeds() {
+        let tmp_dir = TempDir::new().expect("invariant: temp dir must be creatable");
+        let cc = find_cc();
+
+        let main_c = tmp_dir.path().join("main.c");
+        fs::write(&main_c, "int main(void) { return 0; }\n")
+            .expect("invariant: must be able to write temp source");
+
+        let main_o = tmp_dir.path().join("main.o");
+        let compile_main = Command::new(&cc)
+            .args([
+                "-c",
+                &main_c.to_string_lossy(),
+                "-o",
+                &main_o.to_string_lossy(),
+            ])
+            .status()
+            .expect("invariant: C compiler must run");
+        assert!(compile_main.success(), "test main object must compile");
+
+        let runtime_c = Path::new("runtime/duumbi_runtime.c");
+        let runtime_o = tmp_dir.path().join("duumbi_runtime.o");
+        compile_runtime(runtime_c, &runtime_o).expect("runtime must compile");
+
+        let binary = tmp_dir.path().join("duumbi_dependency_link_probe");
+        link(&main_o, &runtime_o, &binary).expect("runtime dependency link must succeed");
+        assert!(binary.exists(), "linked probe binary should exist");
     }
 
     #[test]

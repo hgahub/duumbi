@@ -33,6 +33,11 @@
 #define DUUMBI_PROCESS_ID() getpid()
 #endif
 
+#include <curl/curl.h>
+
+#define SQLITE_OMIT_LOAD_EXTENSION 1
+#include "third_party/sqlite/sqlite3.c"
+
 #ifndef S_IFMT
 #define S_IFMT _S_IFMT
 #endif
@@ -66,6 +71,14 @@
 #define DUUMBI_JSON_MAX_PARSE_DEPTH 512
 
 /* ── Internal types ────────────────────────────────────────────────── */
+
+/* Keep approved DUUMBI-380 runtime dependencies link-visible before public
+ * HTTP/DB APIs are added. Cycle 1 uses this as a narrow feasibility proof. */
+int64_t duumbi_dependency_probe(void) {
+    curl_version_info_data *curl_info = curl_version_info(CURLVERSION_NOW);
+    int64_t curl_version = curl_info != NULL ? (int64_t)curl_info->version_num : 0;
+    return curl_version + (int64_t)sqlite3_libversion_number();
+}
 
 typedef struct {
     uint64_t len;
