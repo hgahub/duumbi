@@ -61,7 +61,7 @@ jobs:
           path-type: prepend
       - name: Select DUUMBI runtime C compiler
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
-        shell: bash
+        shell: msys2 {0}
         run: |
           mingw_prefix="$(cygpath -m /mingw64)"
           gcc_path="$(cygpath -m "$(which gcc)")"
