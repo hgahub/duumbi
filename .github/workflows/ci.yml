@@ -62,7 +62,10 @@ jobs:
       - name: Select DUUMBI runtime C compiler
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
         shell: bash
-        run: echo "DUUMBI_CC=gcc" >> "$GITHUB_ENV"
+        run: |
+          echo "DUUMBI_CC=C:/msys64/mingw64/bin/gcc.exe" >> "$GITHUB_ENV"
+          echo "DUUMBI_CFLAGS=-IC:/msys64/mingw64/include" >> "$GITHUB_ENV"
+          echo "DUUMBI_LDFLAGS=-LC:/msys64/mingw64/lib" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check

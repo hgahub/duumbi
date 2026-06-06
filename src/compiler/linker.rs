@@ -24,6 +24,28 @@ pub fn find_cc() -> String {
         .unwrap_or_else(|_| "cc".to_string())
 }
 
+fn split_env_flags(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .filter(|flag| !flag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn runtime_cflags() -> Vec<String> {
+    std::env::var("DUUMBI_CFLAGS")
+        .or_else(|_| std::env::var("CFLAGS"))
+        .map(|flags| split_env_flags(&flags))
+        .unwrap_or_default()
+}
+
+fn runtime_ldflags() -> Vec<String> {
+    std::env::var("DUUMBI_LDFLAGS")
+        .or_else(|_| std::env::var("LDFLAGS"))
+        .map(|flags| split_env_flags(&flags))
+        .unwrap_or_default()
+}
+
 /// Returns extra linker flags needed for the current platform.
 ///
 /// On macOS, Cranelift object files lack the `LC_BUILD_VERSION` Mach-O load
@@ -78,18 +100,22 @@ pub fn compile_runtime(runtime_c: &Path, output_o: &Path) -> Result<(), CompileE
     let cc = find_cc();
     ensure_embedded_runtime_deps(runtime_c)?;
 
-    let status = Command::new(&cc)
-        .args([
-            "-c",
-            &runtime_c.to_string_lossy(),
-            "-o",
-            &output_o.to_string_lossy(),
-        ])
-        .status()
-        .map_err(|e| CompileError::CompilerNotFound {
-            code: codes::E008_LINK_FAILED,
-            message: format!("Failed to run C compiler '{cc}': {e}"),
-        })?;
+    let mut args = runtime_cflags();
+    args.extend([
+        "-c".to_string(),
+        runtime_c.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        output_o.to_string_lossy().into_owned(),
+    ]);
+
+    let status =
+        Command::new(&cc)
+            .args(&args)
+            .status()
+            .map_err(|e| CompileError::CompilerNotFound {
+                code: codes::E008_LINK_FAILED,
+                message: format!("Failed to run C compiler '{cc}': {e}"),
+            })?;
 
     if !status.success() {
         return Err(CompileError::LinkFailed {
@@ -126,6 +152,7 @@ pub fn link_multi(
     args.push(runtime_o.to_string_lossy().into_owned());
     args.push("-o".to_string());
     args.push(binary_path.to_string_lossy().into_owned());
+    args.extend(runtime_ldflags());
     args.extend(platform_link_args().iter().map(|s| (*s).to_string()));
 
     let status =
@@ -156,18 +183,14 @@ pub fn link_multi(
 pub fn link(output_o: &Path, runtime_o: &Path, binary_path: &Path) -> Result<(), CompileError> {
     let cc = find_cc();
 
-    let output_o_str = output_o.to_string_lossy().into_owned();
-    let runtime_o_str = runtime_o.to_string_lossy().into_owned();
-    let binary_str = binary_path.to_string_lossy().into_owned();
-
     let mut args = vec![
-        output_o_str.as_str(),
-        runtime_o_str.as_str(),
-        "-o",
-        binary_str.as_str(),
+        output_o.to_string_lossy().into_owned(),
+        runtime_o.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        binary_path.to_string_lossy().into_owned(),
     ];
-    let platform_args = platform_link_args();
-    args.extend(&platform_args);
+    args.extend(runtime_ldflags());
+    args.extend(platform_link_args().iter().map(|s| (*s).to_string()));
 
     let status =
         Command::new(&cc)
