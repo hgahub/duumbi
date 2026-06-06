@@ -114,6 +114,55 @@ static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_len = 0;
 static DUUMBI_THREAD_LOCAL size_t duumbi_function_id_stack_overflow = 0;
 static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_overflow = 0;
 
+#define DUUMBI_CURL_INIT_UNINITIALIZED 0
+#define DUUMBI_CURL_INIT_INITIALIZING 1
+#define DUUMBI_CURL_INIT_READY 2
+#define DUUMBI_CURL_INIT_FAILED 3
+
+static volatile int duumbi_curl_init_state = DUUMBI_CURL_INIT_UNINITIALIZED;
+
+static int duumbi_atomic_load_int(volatile int *value) {
+#if defined(_WIN32)
+    return (int)InterlockedCompareExchange((volatile LONG *)value, 0, 0);
+#else
+    __sync_synchronize();
+    return *value;
+#endif
+}
+
+static void duumbi_atomic_store_int(volatile int *value, int new_value) {
+#if defined(_WIN32)
+    InterlockedExchange((volatile LONG *)value, (LONG)new_value);
+#else
+    __sync_lock_test_and_set(value, new_value);
+    __sync_synchronize();
+#endif
+}
+
+static int duumbi_atomic_compare_exchange_int(
+    volatile int *value,
+    int expected,
+    int desired
+) {
+#if defined(_WIN32)
+    return InterlockedCompareExchange((volatile LONG *)value, (LONG)desired, (LONG)expected) ==
+           (LONG)expected;
+#else
+    return __sync_bool_compare_and_swap(value, expected, desired);
+#endif
+}
+
+static void duumbi_yield_while_initializing(void) {
+#if defined(_WIN32)
+    Sleep(0);
+#else
+    struct timespec delay;
+    delay.tv_sec = 0;
+    delay.tv_nsec = 1000000L;
+    nanosleep(&delay, NULL);
+#endif
+}
+
 static void duumbi_push_trace_id(int64_t *stack,
                                  size_t *len,
                                  size_t *overflow,
@@ -2665,6 +2714,52 @@ static const char *duumbi_http_ca_bundle_path(void) {
     return NULL;
 }
 
+static long duumbi_http_connect_timeout_ms(int64_t timeout_ms) {
+    int64_t connect_timeout = timeout_ms / 3;
+    if (connect_timeout < 1) {
+        connect_timeout = 1;
+    }
+    return (long)connect_timeout;
+}
+
+static void duumbi_http_global_cleanup(void) {
+    if (duumbi_atomic_load_int(&duumbi_curl_init_state) == DUUMBI_CURL_INIT_READY) {
+        curl_global_cleanup();
+    }
+}
+
+static int duumbi_http_global_init(void) {
+    for (;;) {
+        int state = duumbi_atomic_load_int(&duumbi_curl_init_state);
+        if (state == DUUMBI_CURL_INIT_READY) {
+            return 1;
+        }
+        if (state == DUUMBI_CURL_INIT_FAILED) {
+            return 0;
+        }
+        if (state == DUUMBI_CURL_INIT_UNINITIALIZED &&
+            duumbi_atomic_compare_exchange_int(
+                &duumbi_curl_init_state,
+                DUUMBI_CURL_INIT_UNINITIALIZED,
+                DUUMBI_CURL_INIT_INITIALIZING
+            )) {
+            CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+            if (rc != CURLE_OK) {
+                duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_FAILED);
+                return 0;
+            }
+            if (atexit(duumbi_http_global_cleanup) != 0) {
+                curl_global_cleanup();
+                duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_FAILED);
+                return 0;
+            }
+            duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_READY);
+            return 1;
+        }
+        duumbi_yield_while_initializing();
+    }
+}
+
 static int duumbi_http_has_scheme(const char *url) {
     return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
 }
@@ -2931,7 +3026,7 @@ static void *duumbi_http_request(
         return duumbi_http_err(header_error);
     }
 
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+    if (!duumbi_http_global_init()) {
         curl_slist_free_all(request_headers);
         duumbi_dealloc(url_c);
         return duumbi_http_err("http_transport: curl global init failed");
@@ -2954,7 +3049,7 @@ static void *duumbi_http_request(
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, request_headers);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, duumbi_http_connect_timeout_ms(timeout_ms));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, duumbi_http_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &capture);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, duumbi_http_header_cb);
