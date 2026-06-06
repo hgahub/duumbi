@@ -373,6 +373,9 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpResponse
+        | DuumbiType::DbConnection
+        | DuumbiType::DbRows
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => types::I64,
         // References are pointer-sized (Phase 9a-2)
@@ -1915,6 +1918,25 @@ fn compile_function(
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
+                Op::HttpGet
+                | Op::HttpPost
+                | Op::HttpPut
+                | Op::HttpDelete
+                | Op::HttpStatus
+                | Op::HttpBody
+                | Op::HttpHeaders
+                | Op::HttpResponseFree
+                | Op::DbOpen
+                | Op::DbExecute
+                | Op::DbQuery
+                | Op::DbRowsLen
+                | Op::DbRowGet
+                | Op::DbClose
+                | Op::DbRowsFree => {
+                    return Err(CompileError::Cranelift {
+                        message: format!("{} lowering is not implemented yet", node.op),
+                    });
+                }
             }
 
             // Track heap-producing non-ownership ops for auto-drop.
@@ -2257,6 +2279,9 @@ fn type_size(ty: &DuumbiType) -> i64 {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpResponse
+        | DuumbiType::DbConnection
+        | DuumbiType::DbRows
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => 8,
         // References are pointer-sized (Phase 9a-2)
