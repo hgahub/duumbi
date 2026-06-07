@@ -104,9 +104,9 @@ When this issue is implemented:
   outcomes.
 - Define catalog publication URLs under `docs.duumbi.dev`.
 - Require a deterministic catalog artifact and SHA-256 hash artifact.
-- Require generated timestamp, source workflow or commit evidence, schema
-  version, provider identity, model lifecycle state, routing metadata, and
-  user-facing changelog summary in the catalog artifact.
+- Require catalog content timestamp, source provenance, schema version, provider
+  identity, model lifecycle state, routing metadata, and user-facing changelog
+  summary in the catalog artifact.
 - Require provider discovery and DUUMBI routing scores to stay separate inputs.
 - Require client-side hash-first checking, approval before adoption, schema and
   hash validation, provider/model validation, and atomic local cache updates.
@@ -324,8 +324,9 @@ The matching hash artifact is named `model-catalog.v1.sha256`.
 The catalog must include, at minimum:
 
 - catalog schema version
-- generated timestamp
-- source commit, workflow run ID, or equivalent generation evidence
+- catalog content timestamp, updated only when semantic catalog content changes
+- source provenance for the catalog content, such as source input commit or
+  equivalent curated metadata revision
 - generator status summary
 - provider display name
 - canonical provider config key
@@ -344,6 +345,12 @@ Catalog behavior:
 
 - JSON output is deterministic for the same inputs.
 - The SHA-256 hash is computed over the exact published JSON bytes.
+- The user-facing adoption hash must represent semantic catalog content, not
+  per-run workflow noise. Weekly or manual publisher runs must not create a new
+  user-notification hash solely because run timestamp, workflow run ID, or other
+  operational evidence changed.
+- Per-run publisher evidence can live in workflow summaries, artifacts, or
+  publication logs outside the adopted catalog hash.
 - Downloading a changed catalog for review is not adoption. The catalog becomes
   active only after user approval and successful adoption validation.
 - Provider-reported model discovery and DUUMBI-curated routing metadata are
@@ -370,8 +377,9 @@ The v1 publisher behavior is:
 - schema validation before publication
 - SHA-256 generation from the final JSON artifact
 - publication to the accepted static docs paths
-- workflow evidence for generation time, source commit or workflow run,
-  provider fetch status, validation status, and warnings
+- workflow evidence for generation time, source provenance, provider fetch
+  status, validation status, and warnings, without forcing a new user-facing
+  catalog hash when semantic catalog content is unchanged
 
 The publisher should make provider metadata freshness visible without creating
 notification churn for users.
@@ -403,13 +411,13 @@ Required client behavior:
   implemented.
 - Fetch only the remote hash before downloading the catalog.
 - Use short, bounded timeouts so startup remains usable.
-- If the hash is unchanged, continue startup quietly.
+- If the remote hash matches the installed hash, continue startup quietly.
 - If a skipped hash is still current, do not repeat the same notification until
   the user changes the decision or a later hash appears.
 - If a remind-later decision is still active, defer notification until the
   remind-later time expires.
 - If the hash changed and notification is allowed, show a concise update summary
-  with version, generated timestamp, and user-facing change summary.
+  with version, catalog content timestamp, and user-facing change summary.
 - Let the user approve, skip this version, remind later, disable checks, or
   adjust check frequency according to the implemented settings surface.
 - Canceling or dismissing the review surface does not adopt a catalog and must
@@ -439,7 +447,8 @@ Recommended local storage shape:
 such as:
 
 - last check timestamp
-- last seen hash
+- last observed hash for diagnostics; this alone must not suppress future
+  update notifications
 - installed hash
 - last offered hash
 - skipped hash
@@ -591,9 +600,9 @@ And any `grok` support is labeled as legacy compatibility rather than the new ca
 
 Rule: Remote checks are bounded and low-noise
 
-Scenario: Startup continues quietly when the remote hash is unchanged
+Scenario: Startup continues quietly when the installed hash is current
 Given DUUMBI checked the model catalog hash within the allowed schedule
-And the remote hash matches the last seen or installed hash
+And the remote hash matches the installed hash
 When DUUMBI starts
 Then startup continues without a catalog notification
 And no catalog JSON is downloaded
@@ -605,7 +614,7 @@ And the remote hash differs from the installed hash
 And the hash is not currently skipped or deferred
 When DUUMBI starts or the provider-management surface opens
 Then the user sees a concise catalog update notification
-And the notification includes catalog version, generated timestamp, and change summary
+And the notification includes catalog version, catalog content timestamp, and change summary
 And the user can approve, skip this version, remind later, disable checks, or adjust check frequency according to the implemented surface
 
 Scenario: Skipped catalog hash does not keep notifying the user
@@ -698,7 +707,7 @@ Given the publisher has the same discovery and curated metadata inputs
 When it generates `model-catalog.v1.json`
 Then repeated generation produces the same JSON bytes
 And the SHA-256 artifact matches those bytes
-And workflow evidence records generation time, source commit or workflow run, provider fetch status, validation status, and warnings
+And per-run workflow evidence records generation time, source provenance, provider fetch status, validation status, and warnings without changing the adoption hash when semantic catalog content is unchanged
 
 Scenario: Provider discovery outage uses accepted fallback metadata when valid
 Given one provider discovery call is unavailable
@@ -823,6 +832,8 @@ Required proof:
 
 - Publisher checks:
   - Weekly/manual generation path validates before publication.
+  - Re-running the publisher with no semantic catalog input changes does not
+    change the adopted catalog hash only because per-run evidence changed.
   - Provider discovery partial failure with valid fallback emits warnings and
     still validates.
   - Missing discovery and missing fallback for a required provider blocks
@@ -835,6 +846,7 @@ Required proof:
   - Disabled-check behavior.
   - Changed hash behavior.
   - Unchanged hash behavior.
+  - Last-observed-only hash state does not suppress a later update notification.
   - Skipped hash behavior.
   - Remind-later behavior.
   - Cancel/dismiss behavior.
@@ -904,17 +916,17 @@ Follow-up candidates that should not block v1:
   https://github.com/hgahub/duumbi/issues/484
 - Related workflow metrics issue: https://github.com/hgahub/duumbi/issues/610
 - Active PRD:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
 - Active agentic development runbook:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Agentic Development Runbook.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Agentic Development Runbook.md`
 - Agentic development map:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
 - AI review policy:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/AI Code Review Service Policy.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/AI Code Review Service Policy.md`
 - Spec-first agentic development note:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Spec-First Agentic Development.md`
+  `Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Spec-First Agentic Development.md`
 - MCP model telemetry analytics follow-up note:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/00 Inbox (ToProcess)/2026-06-06 - MCP Model Telemetry Analytics.md`
+  `Duumbi/00 Inbox (ToProcess)/2026-06-06 - MCP Model Telemetry Analytics.md`
 - Architecture reference: `docs/architecture.md`
 - Coding conventions: `docs/coding-conventions.md`
 - Repository review policy: `docs/automation/code-review-policy.md`
