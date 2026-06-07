@@ -508,7 +508,16 @@ jobs:
                 checkRuns.push(...pageRuns);
                 if (pageRuns.length < 100) break;
               }
-              const badChecks = checkRuns.filter((check) =>
+              const ignoredSpecGateCheckNames = new Set([
+                // These checks are created by the approval/closure automation itself
+                // after a spec PR is merged. They are not pre-merge artifact evidence.
+                'Execute approval',
+                'Dispatch Stage 12 closure prompt',
+              ]);
+              const relevantCheckRuns = checkRuns.filter((check) =>
+                !ignoredSpecGateCheckNames.has(String(check.name || ''))
+              );
+              const badChecks = relevantCheckRuns.filter((check) =>
                 check.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(check.conclusion)
               );
               const { data: combinedStatus } = await github.rest.repos.getCombinedStatusForRef({
@@ -516,7 +525,7 @@ jobs:
               });
               const statuses = combinedStatus.statuses || [];
               const badStatuses = statuses.filter((status) => status.state !== 'success');
-              if (checkRuns.length + statuses.length === 0) {
+              if (relevantCheckRuns.length + statuses.length === 0) {
                 throw new Error(`${policy.kind} PR #${prNumber} has no check runs or status contexts; approval requires verifiable green checks.`);
               }
               if (badChecks.length > 0) {
@@ -550,7 +559,7 @@ jobs:
                   prUrl,
                   mergeSha: pr.merge_commit_sha || '',
                   expectedPath: policy.expectedPath,
-                  checkCount: checkRuns.length + statuses.length,
+                  checkCount: relevantCheckRuns.length + statuses.length,
                   reviewCount: latestReviews.length,
                   requiredReviewers: requiredAutomatedReviewers(),
                   alreadyMerged: true,
@@ -571,7 +580,7 @@ jobs:
                 prUrl,
                 mergeSha: merge.data.sha || '',
                 expectedPath: policy.expectedPath,
-                checkCount: checkRuns.length + statuses.length,
+                checkCount: relevantCheckRuns.length + statuses.length,
                 reviewCount: latestReviews.length,
                 requiredReviewers: requiredAutomatedReviewers(),
               };
