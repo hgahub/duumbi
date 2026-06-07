@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fsModule from "node:fs";
 import pathModule from "node:path";
 
@@ -34,6 +35,14 @@ const DEEPSEEK_PRICING_USD_PER_1M = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function defaultGit(args, { cwd }) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 export function normalizeText(value) {
@@ -511,6 +520,141 @@ export function buildExistingIssueComment(decision) {
     "",
     "**Next stage:** Needs Human Acceptance",
   ].join("\n");
+}
+
+function isPathInside(path, root, target) {
+  const relative = path.relative(root, target);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function sourceLinkToInboxPath({ fs, path, vaultRoot, inboxRoot, sourceLink, warnings }) {
+  const source = normalizeText(sourceLink);
+  if (!source || /^https?:\/\//i.test(source)) return null;
+
+  const normalized = source
+    .replace(/^file:\/\//i, "")
+    .replace(/^\.\//, "")
+    .replace(/^duumbi-vault\//, "");
+  const absolutePath = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(vaultRoot, normalized);
+
+  if (!isPathInside(path, inboxRoot, absolutePath)) return null;
+  if (!fs.existsSync(absolutePath)) {
+    warnings?.push?.(`Inbox source link no longer exists: ${source}`);
+    return null;
+  }
+  if (!fs.statSync(absolutePath).isFile()) {
+    warnings?.push?.(`Inbox source link is not a file: ${source}`);
+    return null;
+  }
+  return absolutePath;
+}
+
+function uniqueArchivePath(fs, path, processedInboxRoot, filename) {
+  const parsed = path.parse(filename);
+  let candidate = path.join(processedInboxRoot, filename);
+  let suffix = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(processedInboxRoot, `${parsed.name} - ${suffix}${parsed.ext}`);
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function buildInboxTriageResult({ generatedAt, issueNumber, issueUrl, decision }) {
+  const routing = decision.action === "create_issue"
+    ? `Created GitHub issue #${issueNumber} and routed it to ${HUMAN_ACCEPTANCE_STATUS}.`
+    : `Routed existing GitHub issue #${issueNumber} to ${HUMAN_ACCEPTANCE_STATUS}.`;
+
+  return [
+    "## Triage result",
+    `- Date: ${generatedAt}`,
+    "- Classification: execution work",
+    `- Routing: ${routing}`,
+    "- GitHub artifacts:",
+    `  - ${issueUrl || `#${issueNumber}`}`,
+    "- Obsidian artifacts:",
+    "  - none",
+    "- Canonical duplicate:",
+    "  - none",
+    "- Open questions:",
+    "  - See GitHub issue.",
+    "- Assumptions:",
+    `  - Automated triage refill selected this source as actionable. Rationale: ${decision.rationale || "not provided"}`,
+    `- Next stage: ${HUMAN_ACCEPTANCE_STATUS}`,
+  ].join("\n");
+}
+
+export function archiveProcessedInboxNotes({
+  fs = fsModule,
+  path = pathModule,
+  workspace = process.cwd(),
+  vaultPath = "duumbi-vault",
+  sourceLinks = [],
+  generatedAt = nowIso(),
+  issueNumber,
+  issueUrl,
+  decision,
+  warnings = [],
+}) {
+  if (!issueNumber || !Array.isArray(sourceLinks) || sourceLinks.length === 0) {
+    return [];
+  }
+
+  const vaultRoot = path.resolve(workspace, vaultPath);
+  const inboxRoot = path.join(vaultRoot, "Duumbi", "00 Inbox (ToProcess)");
+  const processedInboxRoot = path.join(vaultRoot, "Duumbi", "05 Archive", "Processed Inbox");
+  const inboxPaths = new Set(
+    sourceLinks
+      .map((sourceLink) => sourceLinkToInboxPath({ fs, path, vaultRoot, inboxRoot, sourceLink, warnings }))
+      .filter(Boolean),
+  );
+
+  if (inboxPaths.size === 0) return [];
+
+  fs.mkdirSync(processedInboxRoot, { recursive: true });
+  const archived = [];
+  for (const inboxPath of inboxPaths) {
+    const original = fs.readFileSync(inboxPath, "utf8");
+    const triageResult = buildInboxTriageResult({ generatedAt, issueNumber, issueUrl, decision });
+    const nextText = /^## Triage result$/m.test(original)
+      ? original
+      : `${original.trimEnd()}\n\n${triageResult}\n`;
+    fs.writeFileSync(inboxPath, nextText);
+
+    const archivePath = uniqueArchivePath(fs, path, processedInboxRoot, path.basename(inboxPath));
+    fs.renameSync(inboxPath, archivePath);
+    archived.push({
+      source: path.relative(vaultRoot, inboxPath).split(path.sep).join("/"),
+      archived: path.relative(vaultRoot, archivePath).split(path.sep).join("/"),
+    });
+  }
+  return archived;
+}
+
+export function commitVaultChanges({
+  vaultRoot,
+  archivedInboxNotes = [],
+  git = defaultGit,
+}) {
+  if (!Array.isArray(archivedInboxNotes) || archivedInboxNotes.length === 0) {
+    return { committed: false, commitSha: null };
+  }
+
+  const relativePaths = archivedInboxNotes.flatMap((note) => [note.source, note.archived]).filter(Boolean);
+  git(["config", "user.name", "duumbi-triage-refill[bot]"], { cwd: vaultRoot });
+  git(["config", "user.email", "duumbi-triage-refill[bot]@users.noreply.github.com"], { cwd: vaultRoot });
+  git(["add", "-A", "--", ...relativePaths], { cwd: vaultRoot });
+  const status = git(["status", "--porcelain", "--", ...relativePaths], { cwd: vaultRoot });
+  if (!normalizeText(status)) {
+    return { committed: false, commitSha: null };
+  }
+
+  git(["commit", "-m", "chore: archive processed DUUMBI inbox notes"], { cwd: vaultRoot });
+  const commitSha = normalizeText(git(["rev-parse", "HEAD"], { cwd: vaultRoot }));
+  git(["push", "origin", "HEAD:main"], { cwd: vaultRoot });
+  return { committed: true, commitSha };
 }
 
 export function estimateDeepSeekCostUsd(model, usage = {}) {
@@ -1034,6 +1178,8 @@ async function writeSummary(summary, result) {
     ["Refill needed", String(result.refillNeeded)],
     ["Decision", result.decision || "none"],
     ["Issue", result.issueNumber ? `#${result.issueNumber}` : "none"],
+    ["Inbox notes archived", String(result.inboxNotesArchived ?? 0)],
+    ["Vault commit", result.commitSha || "none"],
     ["Direct Slack notification", "not_sent"],
     ["Model", result.model || "not_called"],
   ];
@@ -1052,6 +1198,7 @@ export async function runTriageQueueRefill({
   fs = fsModule,
   path = pathModule,
   workspace = process.cwd(),
+  git = defaultGit,
 } = {}) {
   const warnings = [];
   const metricsPath = env.DUUMBI_METRICS_PATH || "duumbi-workflow-metrics.json";
@@ -1073,6 +1220,8 @@ export async function runTriageQueueRefill({
     issueNumber: null,
     model: null,
     inspectedIssueCount: null,
+    inboxNotesArchived: 0,
+    commitSha: null,
   };
 
   const writeMetrics = (metrics) => {
@@ -1159,6 +1308,29 @@ export async function runTriageQueueRefill({
     });
     const decision = validateTriageDecision(parsedDecision, triageContext);
     const applied = await applyTriageDecision({ api, project, decision });
+    result = {
+      ...result,
+      ok: true,
+      decision: decision.action,
+      issueNumber: applied.issueNumber,
+      issueUrl: applied.issueUrl,
+    };
+    const archivedInboxNotes = archiveProcessedInboxNotes({
+      fs,
+      path,
+      workspace,
+      sourceLinks: decision.source_links,
+      generatedAt: triageContext.generated_at,
+      issueNumber: applied.issueNumber,
+      issueUrl: applied.issueUrl,
+      decision,
+      warnings,
+    });
+    const vaultCommit = commitVaultChanges({
+      vaultRoot: path.resolve(workspace, "duumbi-vault"),
+      archivedInboxNotes,
+      git,
+    });
     const queued = applied.issueNumber ? 1 : 0;
     const lastDeepSeekResponse = deepSeekResponses.at(-1);
     const combinedDeepSeekUsage = combineDeepSeekUsage(deepSeekResponses);
@@ -1170,6 +1342,9 @@ export async function runTriageQueueRefill({
       issueNumber: applied.issueNumber,
       issueUrl: applied.issueUrl,
       model: lastDeepSeekResponse.model,
+      inboxNotesArchived: archivedInboxNotes.length,
+      archivedInboxNotes,
+      commitSha: vaultCommit.commitSha,
     };
 
     const metrics = buildWorkflowMetrics({
@@ -1205,7 +1380,7 @@ export async function runTriageQueueRefill({
       issueNumber: result.issueNumber,
       counts: {
         issues_considered: result.inspectedIssueCount,
-        issues_queued: 0,
+        issues_queued: result.issueNumber ? 1 : 0,
         slack_notifications_attempted: 0,
         artifact_links_found: null,
         artifact_links_missing: null,
