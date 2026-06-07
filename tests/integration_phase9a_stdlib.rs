@@ -757,3 +757,68 @@ fn stdlib_string_jsonld_parses() {
         assert!(export_names.contains(name), "string must export {name}");
     }
 }
+
+#[test]
+fn stdlib_http_jsonld_exports_accepted_http_v1_only() {
+    let json = include_str!("../stdlib/http.jsonld");
+    let module = parse_jsonld(json).expect("stdlib http must parse");
+    assert_eq!(module.name.0, "http");
+    assert_eq!(
+        module.exports,
+        vec![
+            "http_get",
+            "http_post",
+            "http_put",
+            "http_delete",
+            "http_status",
+            "http_body",
+            "http_headers",
+            "http_response_free",
+        ]
+    );
+    let export_names: Vec<_> = module.functions.iter().map(|f| f.name.0.as_str()).collect();
+    for name in &module.exports {
+        assert!(
+            export_names.contains(&name.as_str()),
+            "http function list must contain export {name}"
+        );
+    }
+    for forbidden in &[
+        "tls_connect",
+        "tls_wrap",
+        "tls_read",
+        "tls_write",
+        "tls_close",
+    ] {
+        assert!(
+            !module.exports.iter().any(|name| name == forbidden),
+            "raw TLS export {forbidden} must not be present"
+        );
+    }
+}
+
+#[test]
+fn stdlib_db_jsonld_exports_accepted_db_v1_only() {
+    let json = include_str!("../stdlib/db.jsonld");
+    let module = parse_jsonld(json).expect("stdlib db must parse");
+    assert_eq!(module.name.0, "db");
+    assert_eq!(
+        module.exports,
+        vec![
+            "db_open",
+            "db_execute",
+            "db_query",
+            "db_rows_len",
+            "db_row_get",
+            "db_close",
+            "db_rows_free",
+        ]
+    );
+    let export_names: Vec<_> = module.functions.iter().map(|f| f.name.0.as_str()).collect();
+    for name in &module.exports {
+        assert!(
+            export_names.contains(&name.as_str()),
+            "db function list must contain export {name}"
+        );
+    }
+}
