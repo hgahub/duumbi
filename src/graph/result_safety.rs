@@ -38,6 +38,33 @@ pub fn has_result_option_ops(graph: &SemanticGraph) -> bool {
                 | Op::FileExists
                 | Op::ListDir
                 | Op::PathJoin
+                | Op::JsonParse
+                | Op::JsonStringify
+                | Op::JsonGetField
+                | Op::JsonArrayLen
+                | Op::JsonArrayGet
+                | Op::TcpConnect
+                | Op::TcpListen
+                | Op::TcpAccept
+                | Op::TcpRead
+                | Op::TcpWrite
+                | Op::TcpClose
+                | Op::TcpListenerClose
+                | Op::HttpGet
+                | Op::HttpPost
+                | Op::HttpPut
+                | Op::HttpDelete
+                | Op::HttpStatus
+                | Op::HttpBody
+                | Op::HttpHeaders
+                | Op::HttpResponseFree
+                | Op::DbOpen
+                | Op::DbExecute
+                | Op::DbQuery
+                | Op::DbRowsLen
+                | Op::DbRowGet
+                | Op::DbClose
+                | Op::DbRowsFree
         )
     })
 }
@@ -114,6 +141,33 @@ fn direct_result_or_option_type(node: &GraphNode) -> Option<&DuumbiType> {
             | Op::FileExists
             | Op::ListDir
             | Op::PathJoin
+            | Op::JsonParse
+            | Op::JsonStringify
+            | Op::JsonGetField
+            | Op::JsonArrayLen
+            | Op::JsonArrayGet
+            | Op::TcpConnect
+            | Op::TcpListen
+            | Op::TcpAccept
+            | Op::TcpRead
+            | Op::TcpWrite
+            | Op::TcpClose
+            | Op::TcpListenerClose
+            | Op::HttpGet
+            | Op::HttpPost
+            | Op::HttpPut
+            | Op::HttpDelete
+            | Op::HttpStatus
+            | Op::HttpBody
+            | Op::HttpHeaders
+            | Op::HttpResponseFree
+            | Op::DbOpen
+            | Op::DbExecute
+            | Op::DbQuery
+            | Op::DbRowsLen
+            | Op::DbRowGet
+            | Op::DbClose
+            | Op::DbRowsFree
     ) {
         return None;
     }
@@ -535,6 +589,46 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d.code == codes::E030_UNHANDLED_RESULT),
             "Expected no E030 when ResultIsOk present, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e030_json_direct_result_without_handler() {
+        let result_ty =
+            DuumbiType::Result(Box::new(DuumbiType::Json), Box::new(DuumbiType::String));
+        let sg = make_graph(
+            vec![
+                (nid("json0"), Op::JsonParse, Some(result_ty)),
+                (nid("ret0"), Op::Return, None),
+            ],
+            vec![],
+        );
+        let mut diags = Vec::new();
+        check_result_option_safety(&sg, &mut diags);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E030_UNHANDLED_RESULT),
+            "Expected E030 for ignored JsonParse result, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e030_http_direct_result_without_handler() {
+        let result_ty = DuumbiType::Result(
+            Box::new(DuumbiType::HttpResponse),
+            Box::new(DuumbiType::String),
+        );
+        let sg = make_graph(
+            vec![
+                (nid("http0"), Op::HttpGet, Some(result_ty)),
+                (nid("ret0"), Op::Return, None),
+            ],
+            vec![],
+        );
+        let mut diags = Vec::new();
+        check_result_option_safety(&sg, &mut diags);
+        assert!(
+            diags.iter().any(|d| d.code == codes::E030_UNHANDLED_RESULT),
+            "Expected E030 for ignored HttpGet result, got: {diags:?}"
         );
     }
 

@@ -47,4 +47,5 @@ shlex = "2.0.1"
 [dev-dependencies]
 axum = "0.8.9"
 duumbi-registry = { git = "https://github.com/hgahub/duumbi-registry.git", rev = "a3adef41242229feaf00f5352fee7d7a7c5891ce" }
+rustls = { version = "0.23.37", default-features = false }
 wiremock = "0.6.5"
