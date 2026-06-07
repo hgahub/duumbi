@@ -112,6 +112,28 @@ struct RuntimeFuncs {
     tcp_socket_free: FuncId,
     tcp_listener_free: FuncId,
 
+    // HTTP functions (DUUMBI-380)
+    http_get: FuncId,
+    http_post: FuncId,
+    http_put: FuncId,
+    http_delete: FuncId,
+    http_status: FuncId,
+    http_body: FuncId,
+    http_headers: FuncId,
+    http_response_close: FuncId,
+    http_response_free: FuncId,
+
+    // DB functions (DUUMBI-380)
+    db_open: FuncId,
+    db_execute: FuncId,
+    db_query: FuncId,
+    db_rows_len: FuncId,
+    db_row_get: FuncId,
+    db_close: FuncId,
+    db_rows_close: FuncId,
+    db_connection_free: FuncId,
+    db_rows_free: FuncId,
+
     trace: Option<RuntimeTraceFuncs>,
 }
 
@@ -353,6 +375,44 @@ fn declare_all_runtime_fns(
         )?,
         tcp_socket_free: declare_runtime_fn(module, "duumbi_tcp_socket_free", &[i64t], &[])?,
         tcp_listener_free: declare_runtime_fn(module, "duumbi_tcp_listener_free", &[i64t], &[])?,
+        http_get: declare_runtime_fn(module, "duumbi_http_get", &[i64t, i64t, i64t], &[i64t])?,
+        http_post: declare_runtime_fn(
+            module,
+            "duumbi_http_post",
+            &[i64t, i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        http_put: declare_runtime_fn(
+            module,
+            "duumbi_http_put",
+            &[i64t, i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        http_delete: declare_runtime_fn(
+            module,
+            "duumbi_http_delete",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        http_status: declare_runtime_fn(module, "duumbi_http_status", &[i64t], &[i64t])?,
+        http_body: declare_runtime_fn(module, "duumbi_http_body", &[i64t], &[i64t])?,
+        http_headers: declare_runtime_fn(module, "duumbi_http_headers", &[i64t], &[i64t])?,
+        http_response_close: declare_runtime_fn(
+            module,
+            "duumbi_http_response_close",
+            &[i64t],
+            &[i64t],
+        )?,
+        http_response_free: declare_runtime_fn(module, "duumbi_http_response_free", &[i64t], &[])?,
+        db_open: declare_runtime_fn(module, "duumbi_db_open", &[i64t], &[i64t])?,
+        db_execute: declare_runtime_fn(module, "duumbi_db_execute", &[i64t, i64t, i64t], &[i64t])?,
+        db_query: declare_runtime_fn(module, "duumbi_db_query", &[i64t, i64t, i64t], &[i64t])?,
+        db_rows_len: declare_runtime_fn(module, "duumbi_db_rows_len", &[i64t], &[i64t])?,
+        db_row_get: declare_runtime_fn(module, "duumbi_db_row_get", &[i64t, i64t, i64t], &[i64t])?,
+        db_close: declare_runtime_fn(module, "duumbi_db_close", &[i64t], &[i64t])?,
+        db_rows_close: declare_runtime_fn(module, "duumbi_db_rows_close", &[i64t], &[i64t])?,
+        db_connection_free: declare_runtime_fn(module, "duumbi_db_connection_free", &[i64t], &[])?,
+        db_rows_free: declare_runtime_fn(module, "duumbi_db_rows_free", &[i64t], &[])?,
         trace,
     })
 }
@@ -373,6 +433,9 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpResponse
+        | DuumbiType::DbConnection
+        | DuumbiType::DbRows
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => types::I64,
         // References are pointer-sized (Phase 9a-2)
@@ -901,6 +964,27 @@ fn compile_function(
         obj_module.declare_func_in_func(runtime.tcp_socket_free, builder.func);
     let tcp_listener_free_ref =
         obj_module.declare_func_in_func(runtime.tcp_listener_free, builder.func);
+    let http_get_ref = obj_module.declare_func_in_func(runtime.http_get, builder.func);
+    let http_post_ref = obj_module.declare_func_in_func(runtime.http_post, builder.func);
+    let http_put_ref = obj_module.declare_func_in_func(runtime.http_put, builder.func);
+    let http_delete_ref = obj_module.declare_func_in_func(runtime.http_delete, builder.func);
+    let http_status_ref = obj_module.declare_func_in_func(runtime.http_status, builder.func);
+    let http_body_ref = obj_module.declare_func_in_func(runtime.http_body, builder.func);
+    let http_headers_ref = obj_module.declare_func_in_func(runtime.http_headers, builder.func);
+    let http_response_close_ref =
+        obj_module.declare_func_in_func(runtime.http_response_close, builder.func);
+    let http_response_free_ref =
+        obj_module.declare_func_in_func(runtime.http_response_free, builder.func);
+    let db_open_ref = obj_module.declare_func_in_func(runtime.db_open, builder.func);
+    let db_execute_ref = obj_module.declare_func_in_func(runtime.db_execute, builder.func);
+    let db_query_ref = obj_module.declare_func_in_func(runtime.db_query, builder.func);
+    let db_rows_len_ref = obj_module.declare_func_in_func(runtime.db_rows_len, builder.func);
+    let db_row_get_ref = obj_module.declare_func_in_func(runtime.db_row_get, builder.func);
+    let db_close_ref = obj_module.declare_func_in_func(runtime.db_close, builder.func);
+    let db_rows_close_ref = obj_module.declare_func_in_func(runtime.db_rows_close, builder.func);
+    let db_connection_free_ref =
+        obj_module.declare_func_in_func(runtime.db_connection_free, builder.func);
+    let db_rows_free_ref = obj_module.declare_func_in_func(runtime.db_rows_free, builder.func);
     let trace_refs = runtime.trace.as_ref().map(|trace| RuntimeTraceRefs {
         init: obj_module.declare_func_in_func(trace.init, builder.func),
         function_enter: obj_module.declare_func_in_func(trace.function_enter, builder.func),
@@ -1166,6 +1250,15 @@ fn compile_function(
                             }
                             DuumbiType::TcpListener => {
                                 builder.ins().call(tcp_listener_free_ref, &[*val]);
+                            }
+                            DuumbiType::HttpResponse => {
+                                builder.ins().call(http_response_free_ref, &[*val]);
+                            }
+                            DuumbiType::DbConnection => {
+                                builder.ins().call(db_connection_free_ref, &[*val]);
+                            }
+                            DuumbiType::DbRows => {
+                                builder.ins().call(db_rows_free_ref, &[*val]);
                             }
                             DuumbiType::Array(_) => {
                                 builder.ins().call(array_free_ref, &[*val]);
@@ -1589,6 +1682,15 @@ fn compile_function(
                         Some(DuumbiType::TcpListener) => {
                             builder.ins().call(tcp_listener_free_ref, &[operand_val]);
                         }
+                        Some(DuumbiType::HttpResponse) => {
+                            builder.ins().call(http_response_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::DbConnection) => {
+                            builder.ins().call(db_connection_free_ref, &[operand_val]);
+                        }
+                        Some(DuumbiType::DbRows) => {
+                            builder.ins().call(db_rows_free_ref, &[operand_val]);
+                        }
                         Some(DuumbiType::Array(_)) => {
                             builder.ins().call(array_free_ref, &[operand_val]);
                         }
@@ -1912,6 +2014,127 @@ fn compile_function(
                 Op::TcpListenerClose => {
                     let listener_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(tcp_listener_close_ref, &[listener_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpGet => {
+                    let url_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let headers_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(http_get_ref, &[url_val, headers_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpPost => {
+                    let url_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let headers_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let body_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_arg_operand(graph, node_idx, 0, &value_map)?;
+                    let call = builder.ins().call(
+                        http_post_ref,
+                        &[url_val, headers_val, body_val, timeout_val],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpPut => {
+                    let url_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let headers_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let body_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_arg_operand(graph, node_idx, 0, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(http_put_ref, &[url_val, headers_val, body_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpDelete => {
+                    let url_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let headers_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(http_delete_ref, &[url_val, headers_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpStatus => {
+                    let response_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(http_status_ref, &[response_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpBody => {
+                    let response_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(http_body_ref, &[response_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpHeaders => {
+                    let response_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(http_headers_ref, &[response_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::HttpResponseFree => {
+                    let response_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(http_response_close_ref, &[response_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbOpen => {
+                    let path_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(db_open_ref, &[path_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbExecute => {
+                    let conn_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let sql_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let params_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(db_execute_ref, &[conn_val, sql_val, params_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbQuery => {
+                    let conn_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let sql_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let params_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(db_query_ref, &[conn_val, sql_val, params_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbRowsLen => {
+                    let rows_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(db_rows_len_ref, &[rows_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbRowGet => {
+                    let rows_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let row_index_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let column_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(db_row_get_ref, &[rows_val, row_index_val, column_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbClose => {
+                    let conn_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(db_close_ref, &[conn_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::DbRowsFree => {
+                    let rows_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(db_rows_close_ref, &[rows_val]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
@@ -2257,6 +2480,9 @@ fn type_size(ty: &DuumbiType) -> i64 {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpResponse
+        | DuumbiType::DbConnection
+        | DuumbiType::DbRows
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => 8,
         // References are pointer-sized (Phase 9a-2)
@@ -2321,6 +2547,37 @@ fn get_right_operand(
     Err(CompileError::Cranelift {
         message: format!(
             "Missing right operand for node '{}'",
+            graph.graph[node_idx].id
+        ),
+    })
+}
+
+/// Resolves an ordered `Arg(index)` SSA value for ops that need a fourth input.
+fn get_arg_operand(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    index: usize,
+    value_map: &HashMap<NodeId, Value>,
+) -> Result<Value, CompileError> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Arg(idx) if *idx == index) {
+            let source_node = &graph.graph[edge_ref.source()];
+            return value_map.get(&source_node.id).copied().ok_or_else(|| {
+                CompileError::Cranelift {
+                    message: format!(
+                        "SSA value not found for arg {index} '{}' of node '{}'",
+                        source_node.id, graph.graph[node_idx].id
+                    ),
+                }
+            });
+        }
+    }
+    Err(CompileError::Cranelift {
+        message: format!(
+            "Missing arg {index} for node '{}'",
             graph.graph[node_idx].id
         ),
     })
@@ -2671,6 +2928,247 @@ mod tests {
 
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
         assert!(!obj_bytes.is_empty());
+    }
+
+    #[test]
+    fn duumbi380_ops_lower_to_runtime_symbols() {
+        use crate::compiler::linker;
+        use crate::graph::*;
+        use crate::types::*;
+        use petgraph::stable_graph::StableGraph;
+        use std::path::Path;
+
+        fn node(id: &str, op: Op, result_type: Option<DuumbiType>) -> GraphNode {
+            GraphNode {
+                id: NodeId(id.to_string()),
+                op,
+                result_type,
+                function: FunctionName("main".to_string()),
+                block: BlockLabel("entry".to_string()),
+                owner: None,
+                lifetime: None,
+                lifetime_param: None,
+            }
+        }
+
+        fn result(ok: DuumbiType) -> DuumbiType {
+            DuumbiType::Result(Box::new(ok), Box::new(DuumbiType::String))
+        }
+
+        let mut g = StableGraph::new();
+        let url = g.add_node(node(
+            "url",
+            Op::ConstString("http://127.0.0.1/".to_string()),
+            Some(DuumbiType::String),
+        ));
+        let headers = g.add_node(node("headers", Op::Const(0), Some(DuumbiType::Json)));
+        let body = g.add_node(node(
+            "body",
+            Op::ConstString("{}".to_string()),
+            Some(DuumbiType::String),
+        ));
+        let timeout = g.add_node(node("timeout", Op::Const(1000), Some(DuumbiType::I64)));
+        let response = g.add_node(node(
+            "response",
+            Op::Const(0),
+            Some(DuumbiType::HttpResponse),
+        ));
+        let path = g.add_node(node(
+            "path",
+            Op::ConstString(":memory:".to_string()),
+            Some(DuumbiType::String),
+        ));
+        let conn = g.add_node(node("conn", Op::Const(0), Some(DuumbiType::DbConnection)));
+        let sql = g.add_node(node(
+            "sql",
+            Op::ConstString("select 1".to_string()),
+            Some(DuumbiType::String),
+        ));
+        let params = g.add_node(node(
+            "params",
+            Op::Const(0),
+            Some(DuumbiType::Array(Box::new(DuumbiType::String))),
+        ));
+        let rows = g.add_node(node("rows", Op::Const(0), Some(DuumbiType::DbRows)));
+        let column = g.add_node(node(
+            "column",
+            Op::ConstString("value".to_string()),
+            Some(DuumbiType::String),
+        ));
+
+        let http_result = result(DuumbiType::HttpResponse);
+        let i64_result = result(DuumbiType::I64);
+        let string_result = result(DuumbiType::String);
+        let json_result = result(DuumbiType::Json);
+        let db_result = result(DuumbiType::DbConnection);
+        let rows_result = result(DuumbiType::DbRows);
+
+        let http_get = g.add_node(node("http_get", Op::HttpGet, Some(http_result.clone())));
+        g.add_edge(url, http_get, GraphEdge::Operand);
+        g.add_edge(headers, http_get, GraphEdge::Left);
+        g.add_edge(timeout, http_get, GraphEdge::Right);
+
+        let http_post = g.add_node(node("http_post", Op::HttpPost, Some(http_result.clone())));
+        g.add_edge(url, http_post, GraphEdge::Operand);
+        g.add_edge(headers, http_post, GraphEdge::Left);
+        g.add_edge(body, http_post, GraphEdge::Right);
+        g.add_edge(timeout, http_post, GraphEdge::Arg(0));
+
+        let http_put = g.add_node(node("http_put", Op::HttpPut, Some(http_result.clone())));
+        g.add_edge(url, http_put, GraphEdge::Operand);
+        g.add_edge(headers, http_put, GraphEdge::Left);
+        g.add_edge(body, http_put, GraphEdge::Right);
+        g.add_edge(timeout, http_put, GraphEdge::Arg(0));
+
+        let http_delete = g.add_node(node(
+            "http_delete",
+            Op::HttpDelete,
+            Some(http_result.clone()),
+        ));
+        g.add_edge(url, http_delete, GraphEdge::Operand);
+        g.add_edge(headers, http_delete, GraphEdge::Left);
+        g.add_edge(timeout, http_delete, GraphEdge::Right);
+
+        let http_status = g.add_node(node(
+            "http_status",
+            Op::HttpStatus,
+            Some(i64_result.clone()),
+        ));
+        g.add_edge(response, http_status, GraphEdge::Operand);
+
+        let http_body = g.add_node(node("http_body", Op::HttpBody, Some(string_result.clone())));
+        g.add_edge(response, http_body, GraphEdge::Operand);
+
+        let http_headers = g.add_node(node(
+            "http_headers",
+            Op::HttpHeaders,
+            Some(json_result.clone()),
+        ));
+        g.add_edge(response, http_headers, GraphEdge::Operand);
+
+        let http_response_free = g.add_node(node(
+            "http_response_free",
+            Op::HttpResponseFree,
+            Some(i64_result.clone()),
+        ));
+        g.add_edge(response, http_response_free, GraphEdge::Operand);
+
+        let db_open = g.add_node(node("db_open", Op::DbOpen, Some(db_result)));
+        g.add_edge(path, db_open, GraphEdge::Operand);
+
+        let db_execute = g.add_node(node("db_execute", Op::DbExecute, Some(i64_result.clone())));
+        g.add_edge(conn, db_execute, GraphEdge::Operand);
+        g.add_edge(sql, db_execute, GraphEdge::Left);
+        g.add_edge(params, db_execute, GraphEdge::Right);
+
+        let db_query = g.add_node(node("db_query", Op::DbQuery, Some(rows_result)));
+        g.add_edge(conn, db_query, GraphEdge::Operand);
+        g.add_edge(sql, db_query, GraphEdge::Left);
+        g.add_edge(params, db_query, GraphEdge::Right);
+
+        let db_rows_len = g.add_node(node("db_rows_len", Op::DbRowsLen, Some(i64_result.clone())));
+        g.add_edge(rows, db_rows_len, GraphEdge::Operand);
+
+        let db_row_get = g.add_node(node("db_row_get", Op::DbRowGet, Some(string_result)));
+        g.add_edge(rows, db_row_get, GraphEdge::Operand);
+        g.add_edge(timeout, db_row_get, GraphEdge::Left);
+        g.add_edge(column, db_row_get, GraphEdge::Right);
+
+        let db_close = g.add_node(node("db_close", Op::DbClose, Some(i64_result.clone())));
+        g.add_edge(conn, db_close, GraphEdge::Operand);
+
+        let db_rows_free = g.add_node(node("db_rows_free", Op::DbRowsFree, Some(i64_result)));
+        g.add_edge(rows, db_rows_free, GraphEdge::Operand);
+
+        let zero = g.add_node(node("zero", Op::Const(0), Some(DuumbiType::I64)));
+        let ret = g.add_node(node("return", Op::Return, None));
+        g.add_edge(zero, ret, GraphEdge::Operand);
+
+        let nodes = vec![
+            url,
+            headers,
+            body,
+            timeout,
+            response,
+            path,
+            conn,
+            sql,
+            params,
+            rows,
+            column,
+            http_get,
+            http_post,
+            http_put,
+            http_delete,
+            http_status,
+            http_body,
+            http_headers,
+            http_response_free,
+            db_open,
+            db_execute,
+            db_query,
+            db_rows_len,
+            db_row_get,
+            db_close,
+            db_rows_free,
+            zero,
+            ret,
+        ];
+
+        let sg = SemanticGraph {
+            graph: g,
+            node_map: HashMap::new(),
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::I64,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes,
+                }],
+            }],
+            branch_targets: HashMap::new(),
+            module_name: ModuleName("test".to_string()),
+        };
+
+        let obj_bytes = compile_to_object(&sg).expect("DUUMBI-380 ops must lower");
+
+        for symbol in [
+            "duumbi_http_get",
+            "duumbi_http_post",
+            "duumbi_http_put",
+            "duumbi_http_delete",
+            "duumbi_http_status",
+            "duumbi_http_body",
+            "duumbi_http_headers",
+            "duumbi_http_response_close",
+            "duumbi_http_response_free",
+            "duumbi_db_open",
+            "duumbi_db_execute",
+            "duumbi_db_query",
+            "duumbi_db_rows_len",
+            "duumbi_db_row_get",
+            "duumbi_db_close",
+            "duumbi_db_rows_close",
+            "duumbi_db_connection_free",
+            "duumbi_db_rows_free",
+        ] {
+            assert!(
+                object_contains(&obj_bytes, symbol),
+                "object should reference runtime symbol {symbol}"
+            );
+        }
+
+        let tmp = tempfile::TempDir::new().expect("invariant: tempdir must be creatable");
+        let obj_path = tmp.path().join("duumbi380.o");
+        let runtime_o = tmp.path().join("duumbi_runtime.o");
+        let binary = tmp.path().join("duumbi380_bin");
+        std::fs::write(&obj_path, obj_bytes).expect("invariant: object must be writable");
+        linker::compile_runtime(Path::new("runtime/duumbi_runtime.c"), &runtime_o)
+            .expect("runtime with DUUMBI-380 symbols must compile");
+        linker::link(&obj_path, &runtime_o, &binary)
+            .expect("DUUMBI-380 lowered object must link with runtime symbols");
     }
 
     #[test]

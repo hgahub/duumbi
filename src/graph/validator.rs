@@ -333,9 +333,333 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics,
                 );
             }
+            Op::HttpGet | Op::HttpDelete => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    &format!("{} url must be string", node.op),
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::Json,
+                    &format!("{} headers must be json", node.op),
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::I64,
+                    &format!("{} timeout_ms must be i64", node.op),
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_http_response_string(),
+                    &format!("{} must return result<http_response,string>", node.op),
+                    diagnostics,
+                );
+            }
+            Op::HttpPost | Op::HttpPut => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    &format!("{} url must be string", node.op),
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::Json,
+                    &format!("{} headers must be json", node.op),
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::String,
+                    &format!("{} body must be string", node.op),
+                    diagnostics,
+                );
+                check_arg_type(
+                    graph,
+                    node_idx,
+                    node,
+                    0,
+                    &DuumbiType::I64,
+                    &format!("{} timeout_ms arg must be i64", node.op),
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_http_response_string(),
+                    &format!("{} must return result<http_response,string>", node.op),
+                    diagnostics,
+                );
+            }
+            Op::HttpStatus => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpResponse,
+                    "HttpStatus response must be http_response",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "HttpStatus must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::HttpBody => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpResponse,
+                    "HttpBody response must be http_response",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_string_string(),
+                    "HttpBody must return result<string,string>",
+                    diagnostics,
+                );
+            }
+            Op::HttpHeaders => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpResponse,
+                    "HttpHeaders response must be http_response",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_json_string(),
+                    "HttpHeaders must return result<json,string>",
+                    diagnostics,
+                );
+            }
+            Op::HttpResponseFree => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpResponse,
+                    "HttpResponseFree response must be http_response",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "HttpResponseFree must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbOpen => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    "DbOpen path must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_db_connection_string(),
+                    "DbOpen must return result<db_connection,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbExecute => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbConnection,
+                    "DbExecute connection must be db_connection",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::String,
+                    "DbExecute sql must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &array_string(),
+                    "DbExecute params must be array<string>",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "DbExecute must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbQuery => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbConnection,
+                    "DbQuery connection must be db_connection",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::String,
+                    "DbQuery sql must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &array_string(),
+                    "DbQuery params must be array<string>",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_db_rows_string(),
+                    "DbQuery must return result<db_rows,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbRowsLen => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbRows,
+                    "DbRowsLen rows must be db_rows",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "DbRowsLen must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbRowGet => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbRows,
+                    "DbRowGet rows must be db_rows",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::I64,
+                    "DbRowGet row_index must be i64",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::String,
+                    "DbRowGet column must be string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_string_string(),
+                    "DbRowGet must return result<string,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbClose => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbConnection,
+                    "DbClose connection must be db_connection",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "DbClose must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::DbRowsFree => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::DbRows,
+                    "DbRowsFree rows must be db_rows",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "DbRowsFree must return result<i64,string>",
+                    diagnostics,
+                );
+            }
             _ => {}
         }
     }
+}
+
+fn array_string() -> DuumbiType {
+    DuumbiType::Array(Box::new(DuumbiType::String))
 }
 
 fn result_string_string() -> DuumbiType {
@@ -344,6 +668,28 @@ fn result_string_string() -> DuumbiType {
 
 fn result_i64_string() -> DuumbiType {
     DuumbiType::Result(Box::new(DuumbiType::I64), Box::new(DuumbiType::String))
+}
+
+fn result_json_string() -> DuumbiType {
+    DuumbiType::Result(Box::new(DuumbiType::Json), Box::new(DuumbiType::String))
+}
+
+fn result_http_response_string() -> DuumbiType {
+    DuumbiType::Result(
+        Box::new(DuumbiType::HttpResponse),
+        Box::new(DuumbiType::String),
+    )
+}
+
+fn result_db_connection_string() -> DuumbiType {
+    DuumbiType::Result(
+        Box::new(DuumbiType::DbConnection),
+        Box::new(DuumbiType::String),
+    )
+}
+
+fn result_db_rows_string() -> DuumbiType {
+    DuumbiType::Result(Box::new(DuumbiType::DbRows), Box::new(DuumbiType::String))
 }
 
 fn check_exact_result_type(
@@ -415,6 +761,19 @@ fn check_operand_type(
                 .with_details(details),
         );
     }
+}
+
+fn check_arg_type(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    node: &super::GraphNode,
+    index: usize,
+    expected: &DuumbiType,
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let edge = GraphEdge::Arg(index);
+    check_operand_type(graph, node_idx, node, edge, expected, message, diagnostics);
 }
 
 /// Checks that Return operations match the declared function return type.
@@ -657,6 +1016,53 @@ mod tests {
             .expect("invariant: add.jsonld fixture must exist")
     }
 
+    fn test_node(id: &str, op: Op, result_type: Option<DuumbiType>) -> GraphNode {
+        GraphNode {
+            id: NodeId(id.to_string()),
+            op,
+            result_type,
+            function: FunctionName("main".to_string()),
+            block: BlockLabel("entry".to_string()),
+            owner: None,
+            lifetime: None,
+            lifetime_param: None,
+        }
+    }
+
+    fn graph_for_contract(
+        nodes: Vec<GraphNode>,
+        edges: Vec<(usize, usize, GraphEdge)>,
+    ) -> SemanticGraph {
+        let mut graph = StableGraph::new();
+        let mut node_map = std::collections::HashMap::new();
+        let mut node_indices = Vec::new();
+        for node in nodes {
+            let id = node.id.clone();
+            let idx = graph.add_node(node);
+            node_map.insert(id, idx);
+            node_indices.push(idx);
+        }
+        for (from, to, edge) in edges {
+            graph.add_edge(node_indices[from], node_indices[to], edge);
+        }
+        SemanticGraph {
+            graph,
+            node_map,
+            functions: vec![FunctionInfo {
+                name: FunctionName("main".to_string()),
+                return_type: DuumbiType::Void,
+                params: vec![],
+                lifetime_params: Vec::new(),
+                blocks: vec![BlockInfo {
+                    label: BlockLabel("entry".to_string()),
+                    nodes: node_indices,
+                }],
+            }],
+            branch_targets: std::collections::HashMap::new(),
+            module_name: ModuleName("test".to_string()),
+        }
+    }
+
     #[test]
     fn valid_add_graph_no_errors() {
         let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
@@ -713,6 +1119,76 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == codes::E001_TYPE_MISMATCH),
             "Expected E001 type mismatch"
+        );
+    }
+
+    #[test]
+    fn http_post_timeout_arg_must_be_i64() {
+        let sg = graph_for_contract(
+            vec![
+                test_node(
+                    "url",
+                    Op::ConstString("u".to_string()),
+                    Some(DuumbiType::String),
+                ),
+                test_node("headers", Op::Const(0), Some(DuumbiType::Json)),
+                test_node(
+                    "body",
+                    Op::ConstString("b".to_string()),
+                    Some(DuumbiType::String),
+                ),
+                test_node(
+                    "timeout",
+                    Op::ConstString("bad".to_string()),
+                    Some(DuumbiType::String),
+                ),
+                test_node("post", Op::HttpPost, Some(result_http_response_string())),
+            ],
+            vec![
+                (0, 4, GraphEdge::Operand),
+                (1, 4, GraphEdge::Left),
+                (2, 4, GraphEdge::Right),
+                (3, 4, GraphEdge::Arg(0)),
+            ],
+        );
+        let mut diags = Vec::new();
+        check_types(&sg, &mut diags);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == codes::E001_TYPE_MISMATCH && d.message.contains("timeout_ms")),
+            "Expected timeout_ms type mismatch, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn db_query_accepts_array_string_params() {
+        let sg = graph_for_contract(
+            vec![
+                test_node("conn", Op::Const(0), Some(DuumbiType::DbConnection)),
+                test_node(
+                    "sql",
+                    Op::ConstString("select 1".to_string()),
+                    Some(DuumbiType::String),
+                ),
+                test_node(
+                    "params",
+                    Op::ArrayNew,
+                    Some(DuumbiType::Array(Box::new(DuumbiType::String))),
+                ),
+                test_node("query", Op::DbQuery, Some(result_db_rows_string())),
+            ],
+            vec![
+                (0, 3, GraphEdge::Operand),
+                (1, 3, GraphEdge::Left),
+                (2, 3, GraphEdge::Right),
+            ],
+        );
+        let mut diags = Vec::new();
+        check_types(&sg, &mut diags);
+        assert!(
+            diags.is_empty(),
+            "Expected DB query contract to pass, got: {diags:?}"
         );
     }
 

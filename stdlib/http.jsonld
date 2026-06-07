@@ -1,0 +1,168 @@
+{
+  "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+  "@type": "duumbi:Module",
+  "@id": "duumbi:http",
+  "duumbi:name": "http",
+  "duumbi:exports": [
+    "http_get",
+    "http_post",
+    "http_put",
+    "http_delete",
+    "http_status",
+    "http_body",
+    "http_headers",
+    "http_response_free"
+  ],
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_get",
+      "duumbi:name": "http_get",
+      "duumbi:returnType": "result<http_response,string>",
+      "duumbi:params": [
+        {"duumbi:name": "url", "duumbi:paramType": "string"},
+        {"duumbi:name": "headers", "duumbi:paramType": "json"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_get/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_get/entry/0", "duumbi:variable": "url", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_get/entry/1", "duumbi:variable": "headers", "duumbi:resultType": "json"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_get/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:HttpGet", "@id": "duumbi:http/http_get/entry/3",
+          "duumbi:operand": {"@id": "duumbi:http/http_get/entry/0"},
+          "duumbi:left": {"@id": "duumbi:http/http_get/entry/1"},
+          "duumbi:right": {"@id": "duumbi:http/http_get/entry/2"},
+          "duumbi:resultType": "result<http_response,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_get/entry/4", "duumbi:operand": {"@id": "duumbi:http/http_get/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_post",
+      "duumbi:name": "http_post",
+      "duumbi:returnType": "result<http_response,string>",
+      "duumbi:params": [
+        {"duumbi:name": "url", "duumbi:paramType": "string"},
+        {"duumbi:name": "headers", "duumbi:paramType": "json"},
+        {"duumbi:name": "body", "duumbi:paramType": "string"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_post/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_post/entry/0", "duumbi:variable": "url", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_post/entry/1", "duumbi:variable": "headers", "duumbi:resultType": "json"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_post/entry/2", "duumbi:variable": "body", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_post/entry/3", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:HttpPost", "@id": "duumbi:http/http_post/entry/4",
+          "duumbi:operand": {"@id": "duumbi:http/http_post/entry/0"},
+          "duumbi:left": {"@id": "duumbi:http/http_post/entry/1"},
+          "duumbi:right": {"@id": "duumbi:http/http_post/entry/2"},
+          "duumbi:args": [{"@id": "duumbi:http/http_post/entry/3"}],
+          "duumbi:resultType": "result<http_response,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_post/entry/5", "duumbi:operand": {"@id": "duumbi:http/http_post/entry/4"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_put",
+      "duumbi:name": "http_put",
+      "duumbi:returnType": "result<http_response,string>",
+      "duumbi:params": [
+        {"duumbi:name": "url", "duumbi:paramType": "string"},
+        {"duumbi:name": "headers", "duumbi:paramType": "json"},
+        {"duumbi:name": "body", "duumbi:paramType": "string"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_put/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_put/entry/0", "duumbi:variable": "url", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_put/entry/1", "duumbi:variable": "headers", "duumbi:resultType": "json"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_put/entry/2", "duumbi:variable": "body", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_put/entry/3", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:HttpPut", "@id": "duumbi:http/http_put/entry/4",
+          "duumbi:operand": {"@id": "duumbi:http/http_put/entry/0"},
+          "duumbi:left": {"@id": "duumbi:http/http_put/entry/1"},
+          "duumbi:right": {"@id": "duumbi:http/http_put/entry/2"},
+          "duumbi:args": [{"@id": "duumbi:http/http_put/entry/3"}],
+          "duumbi:resultType": "result<http_response,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_put/entry/5", "duumbi:operand": {"@id": "duumbi:http/http_put/entry/4"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_delete",
+      "duumbi:name": "http_delete",
+      "duumbi:returnType": "result<http_response,string>",
+      "duumbi:params": [
+        {"duumbi:name": "url", "duumbi:paramType": "string"},
+        {"duumbi:name": "headers", "duumbi:paramType": "json"},
+        {"duumbi:name": "timeout_ms", "duumbi:paramType": "i64"}
+      ],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_delete/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_delete/entry/0", "duumbi:variable": "url", "duumbi:resultType": "string"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_delete/entry/1", "duumbi:variable": "headers", "duumbi:resultType": "json"},
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_delete/entry/2", "duumbi:variable": "timeout_ms", "duumbi:resultType": "i64"},
+        {"@type": "duumbi:HttpDelete", "@id": "duumbi:http/http_delete/entry/3",
+          "duumbi:operand": {"@id": "duumbi:http/http_delete/entry/0"},
+          "duumbi:left": {"@id": "duumbi:http/http_delete/entry/1"},
+          "duumbi:right": {"@id": "duumbi:http/http_delete/entry/2"},
+          "duumbi:resultType": "result<http_response,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_delete/entry/4", "duumbi:operand": {"@id": "duumbi:http/http_delete/entry/3"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_status",
+      "duumbi:name": "http_status",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [{"duumbi:name": "response", "duumbi:paramType": "http_response"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_status/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_status/entry/0", "duumbi:variable": "response", "duumbi:resultType": "http_response"},
+        {"@type": "duumbi:HttpStatus", "@id": "duumbi:http/http_status/entry/1",
+          "duumbi:operand": {"@id": "duumbi:http/http_status/entry/0"},
+          "duumbi:resultType": "result<i64,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_status/entry/2", "duumbi:operand": {"@id": "duumbi:http/http_status/entry/1"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_body",
+      "duumbi:name": "http_body",
+      "duumbi:returnType": "result<string,string>",
+      "duumbi:params": [{"duumbi:name": "response", "duumbi:paramType": "http_response"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_body/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_body/entry/0", "duumbi:variable": "response", "duumbi:resultType": "http_response"},
+        {"@type": "duumbi:HttpBody", "@id": "duumbi:http/http_body/entry/1",
+          "duumbi:operand": {"@id": "duumbi:http/http_body/entry/0"},
+          "duumbi:resultType": "result<string,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_body/entry/2", "duumbi:operand": {"@id": "duumbi:http/http_body/entry/1"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_headers",
+      "duumbi:name": "http_headers",
+      "duumbi:returnType": "result<json,string>",
+      "duumbi:params": [{"duumbi:name": "response", "duumbi:paramType": "http_response"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_headers/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_headers/entry/0", "duumbi:variable": "response", "duumbi:resultType": "http_response"},
+        {"@type": "duumbi:HttpHeaders", "@id": "duumbi:http/http_headers/entry/1",
+          "duumbi:operand": {"@id": "duumbi:http/http_headers/entry/0"},
+          "duumbi:resultType": "result<json,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_headers/entry/2", "duumbi:operand": {"@id": "duumbi:http/http_headers/entry/1"}}
+      ]}]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:http/http_response_free",
+      "duumbi:name": "http_response_free",
+      "duumbi:returnType": "result<i64,string>",
+      "duumbi:params": [{"duumbi:name": "response", "duumbi:paramType": "http_response"}],
+      "duumbi:blocks": [{"@type": "duumbi:Block", "@id": "duumbi:http/http_response_free/entry", "duumbi:label": "entry", "duumbi:ops": [
+        {"@type": "duumbi:Load", "@id": "duumbi:http/http_response_free/entry/0", "duumbi:variable": "response", "duumbi:resultType": "http_response"},
+        {"@type": "duumbi:HttpResponseFree", "@id": "duumbi:http/http_response_free/entry/1",
+          "duumbi:operand": {"@id": "duumbi:http/http_response_free/entry/0"},
+          "duumbi:resultType": "result<i64,string>"},
+        {"@type": "duumbi:Return", "@id": "duumbi:http/http_response_free/entry/2", "duumbi:operand": {"@id": "duumbi:http/http_response_free/entry/1"}}
+      ]}]
+    }
+  ]
+}
