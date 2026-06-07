@@ -637,13 +637,9 @@ export function commitVaultChanges({
   vaultRoot,
   archivedInboxNotes = [],
   git = defaultGit,
-  env = process.env,
 }) {
   if (!Array.isArray(archivedInboxNotes) || archivedInboxNotes.length === 0) {
     return { committed: false, commitSha: null };
-  }
-  if (!normalizeText(env.GH_PROJECT_PAT)) {
-    throw new Error("GH_PROJECT_PAT is required to commit processed Inbox disposition to duumbi-vault/main.");
   }
 
   const relativePaths = archivedInboxNotes.flatMap((note) => [note.source, note.archived]).filter(Boolean);
@@ -1334,7 +1330,6 @@ export async function runTriageQueueRefill({
       vaultRoot: path.resolve(workspace, "duumbi-vault"),
       archivedInboxNotes,
       git,
-      env,
     });
     const queued = applied.issueNumber ? 1 : 0;
     const lastDeepSeekResponse = deepSeekResponses.at(-1);

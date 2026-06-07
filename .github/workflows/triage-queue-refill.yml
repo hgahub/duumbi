@@ -32,7 +32,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/duumbi-vault
           path: duumbi-vault
-          token: ${{ secrets.GH_PROJECT_PAT || github.token }}
+          token: ${{ secrets.GH_PROJECT_PAT }}
           persist-credentials: true
 
       - name: Inspect Project V2 and refill queue
