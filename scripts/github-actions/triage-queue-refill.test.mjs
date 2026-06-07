@@ -120,6 +120,17 @@ function makeSummary() {
   };
 }
 
+function makeGit() {
+  const calls = [];
+  const git = (args, options = {}) => {
+    calls.push({ args, cwd: options.cwd });
+    if (args[0] === "status") return "R  Duumbi/00 Inbox (ToProcess)/candidate.md -> Duumbi/05 Archive/Processed Inbox/candidate.md\n";
+    if (args[0] === "rev-parse") return "vault-commit-sha\n";
+    return "";
+  };
+  return { git, calls };
+}
+
 function makeWorkspace() {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "duumbi-triage-refill-"));
   const inbox = path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)");
@@ -488,6 +499,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   const workspace = makeWorkspace();
   const { fetchImpl, calls } = makeFetch({ project, decision });
   const core = makeCore();
+  const { git, calls: gitCalls } = makeGit();
 
   const result = await runTriageQueueRefill({
     env: {
@@ -501,6 +513,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
     summary: makeSummary(),
     fetchImpl,
     workspace,
+    git,
   });
 
   assert.equal(core.failed, null);
@@ -522,6 +535,22 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   assert.equal(metrics.counts.issues_queued, 1);
   assert.equal(metrics.counts.slack_notifications_attempted, 0);
   assert.equal(metrics.provider_usage.provider, "deepseek");
+
+  const inboxPath = path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "candidate.md");
+  const archivedPath = path.join(workspace, "duumbi-vault", "Duumbi", "05 Archive", "Processed Inbox", "candidate.md");
+  assert.equal(fs.existsSync(inboxPath), false);
+  assert.equal(fs.existsSync(archivedPath), true);
+  const archivedText = fs.readFileSync(archivedPath, "utf8");
+  assert.match(archivedText, /## Triage result/);
+  assert.match(archivedText, /Routed existing GitHub issue #10 to Needs Human Acceptance/);
+  assert.equal(result.inboxNotesArchived, 1);
+  assert.equal(result.commitSha, "vault-commit-sha");
+  assert.equal(gitCalls.some((call) => call.args[0] === "commit"), true);
+  assert.equal(gitCalls.some((call) => call.args[0] === "push"), true);
+  assert.deepEqual(result.archivedInboxNotes, [{
+    source: "Duumbi/00 Inbox (ToProcess)/candidate.md",
+    archived: "Duumbi/05 Archive/Processed Inbox/candidate.md",
+  }]);
 });
 
 test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", async () => {
@@ -562,6 +591,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
     ],
   });
   const core = makeCore();
+  const { git } = makeGit();
 
   const result = await runTriageQueueRefill({
     env: {
@@ -575,6 +605,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
     summary: makeSummary(),
     fetchImpl,
     workspace,
+    git,
   });
 
   assert.equal(core.failed, null);
@@ -627,9 +658,66 @@ test("runTriageQueueRefill blocks before status update when existing issue label
   assert.equal(result.ok, false);
   assert.match(core.failed, /GitHub REST POST/);
   assert.equal(calls.some((call) => call.body.query?.includes("updateProjectV2ItemFieldValue")), false);
+  assert.equal(
+    fs.existsSync(path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "candidate.md")),
+    true,
+  );
+  assert.equal(
+    fs.existsSync(path.join(workspace, "duumbi-vault", "Duumbi", "05 Archive", "Processed Inbox", "candidate.md")),
+    false,
+  );
   const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
   assert.equal(metrics.counts.issues_considered, 2);
   assert.equal(metrics.provider_usage.request_count, null);
+});
+
+test("runTriageQueueRefill archives Inbox notes after creating a queued issue", async () => {
+  const project = projectWithItems([
+    issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
+    issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
+  ]);
+  const decision = {
+    action: "create_issue",
+    source_links: [
+      "Duumbi/00 Inbox (ToProcess)/candidate.md",
+      "https://github.com/hgahub/duumbi/discussions/1",
+    ],
+    rationale: "No existing Todo issue represents the candidate.",
+    issue: {
+      title: "New triage candidate",
+      body: "Create a new triage candidate.",
+    },
+  };
+  const workspace = makeWorkspace();
+  const { fetchImpl } = makeFetch({ project, decision });
+  const core = makeCore();
+  const { git, calls: gitCalls } = makeGit();
+
+  const result = await runTriageQueueRefill({
+    env: {
+      GH_PROJECT_PAT: "pat",
+      DEEPSEEK_API_KEY: "deepseek-key",
+      DUUMBI_PROJECT_NUMBER: "1",
+      DUUMBI_METRICS_PATH: "metrics.json",
+    },
+    context: makeContext(),
+    core,
+    summary: makeSummary(),
+    fetchImpl,
+    workspace,
+    git,
+  });
+
+  assert.equal(core.failed, null);
+  assert.equal(result.decision, "create_issue");
+  assert.equal(result.issueNumber, 99);
+  assert.equal(result.inboxNotesArchived, 1);
+  assert.equal(result.commitSha, "vault-commit-sha");
+  assert.equal(gitCalls.some((call) => call.args[0] === "push"), true);
+  const archivedPath = path.join(workspace, "duumbi-vault", "Duumbi", "05 Archive", "Processed Inbox", "candidate.md");
+  assert.equal(fs.existsSync(path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "candidate.md")), false);
+  assert.equal(fs.existsSync(archivedPath), true);
+  assert.match(fs.readFileSync(archivedPath, "utf8"), /Created GitHub issue #99 and routed it to Needs Human Acceptance/);
 });
 
 test("runTriageQueueRefill closes a created issue when Project insertion fails", async () => {
