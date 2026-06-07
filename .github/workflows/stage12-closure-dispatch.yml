@@ -49,6 +49,55 @@ jobs:
             const prUrlFor = (prNumber) => `${context.serverUrl}/${owner}/${repo}/pull/${prNumber}`;
             const markerFor = (prNumber, mergeSha) =>
               `<!-- duumbi-stage12-closure-dispatch:v1 pr=${prNumber} merge_sha=${mergeSha || "unknown"} -->`;
+            const writeMetrics = (decision, reason, prNumber, issueNumber = null) => {
+              const now = new Date().toISOString();
+              fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
+                schema_version: "duumbi.workflow_metrics.v1",
+                generated_at: now,
+                source: "github_actions",
+                repository: `${owner}/${repo}`,
+                workflow: {
+                  name: context.workflow,
+                  file: ".github/workflows/stage12-closure-dispatch.yml",
+                  run_id: context.runId,
+                  run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
+                  event_name: eventName,
+                  actor: context.actor,
+                  ref: context.ref,
+                  sha: context.sha,
+                  conclusion: "success",
+                  started_at: now,
+                  completed_at: now,
+                  duration_ms: null,
+                },
+                correlation: {
+                  issue_number: issueNumber,
+                  pr_number: prNumber,
+                  stage: "12",
+                  decision,
+                  project_status: null,
+                },
+                counts: {
+                  issues_considered: issueNumber ? 1 : 0,
+                  issues_queued: decision === "closure_dispatch" ? 1 : 0,
+                  slack_notifications_attempted: decision === "closure_dispatch" ? 1 : 0,
+                  artifact_links_found: issueNumber ? 2 : 1,
+                  artifact_links_missing: issueNumber ? 0 : 1,
+                },
+                provider_usage: {
+                  available: false,
+                  reason: "agent_dispatch_only",
+                },
+                privacy: {
+                  metadata_only: true,
+                  raw_prompts_included: false,
+                  raw_completions_included: false,
+                  raw_slack_payloads_included: false,
+                  secrets_included: false,
+                },
+                warnings: reason ? [reason] : warnings,
+              }, null, 2)}\n`);
+            };
 
             const extractIssueNumbers = (text) => {
               const value = String(text || "");
@@ -90,6 +139,46 @@ jobs:
             const issueNumber = linkedIssueNumbers[0] || null;
             if (!issueNumber) {
               warnings.push("linked_issue_not_detected");
+            }
+
+            const prFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+            const specArtifactPattern = /^specs\/DUUMBI-\d+\/(?:PRODUCT|TECHNICAL)\.md$/;
+            const specArtifactOnly = prFiles.length > 0
+              && prFiles.every((file) => specArtifactPattern.test(file.filename || ""));
+            if (specArtifactOnly) {
+              const reason = `skipped_spec_artifact_pr:${prFiles.map((file) => file.filename).join(",")}`;
+              core.info(`Skipping Stage 12 closure dispatch for spec-only PR #${prNumber}.`);
+              writeMetrics("skipped", reason, prNumber, issueNumber);
+              return;
+            }
+
+            if (issueNumber) {
+              const { data: issue } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: issueNumber,
+              });
+              const labels = issue.labels
+                .map((label) => typeof label === "string" ? label : label.name)
+                .filter(Boolean);
+              const closureBlockedLabels = new Set([
+                "needs-spec",
+                "spec-review",
+                "needs-tech-spec",
+                "technical-spec-review",
+              ]);
+              const blockingLabels = labels.filter((label) => closureBlockedLabels.has(label));
+              if (blockingLabels.length > 0) {
+                const reason = `skipped_issue_not_ready_for_closure:${blockingLabels.join(",")}`;
+                core.info(`Skipping Stage 12 closure dispatch for issue #${issueNumber}; blocking labels: ${blockingLabels.join(", ")}.`);
+                writeMetrics("skipped", reason, prNumber, issueNumber);
+                return;
+              }
             }
 
             const prComments = await github.paginate(github.rest.issues.listComments, {
@@ -159,12 +248,19 @@ jobs:
               `Slack timestamp: ${body.ts || "<unavailable>"}`,
               issueNumber ? `Linked issue: ${issueUrlFor(issueNumber)}` : "Linked issue: not detected",
             ].join("\n");
-            const { data: prComment } = await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: prNumber,
-              body: markerBody,
-            });
+            let prCommentUrl = "";
+            try {
+              const { data: prComment } = await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: markerBody,
+              });
+              prCommentUrl = prComment.html_url;
+            } catch (error) {
+              warnings.push(`pr_comment_failed:${error.message}`);
+              core.warning(`PR closure-dispatch comment failed: ${error.message}`);
+            }
 
             let issueCommentUrl = "";
             if (issueNumber) {
@@ -188,53 +284,7 @@ jobs:
               }
             }
 
-            const now = new Date().toISOString();
-            fs.writeFileSync(process.env.DUUMBI_METRICS_PATH, `${JSON.stringify({
-              schema_version: "duumbi.workflow_metrics.v1",
-              generated_at: now,
-              source: "github_actions",
-              repository: `${owner}/${repo}`,
-              workflow: {
-                name: context.workflow,
-                file: ".github/workflows/stage12-closure-dispatch.yml",
-                run_id: context.runId,
-                run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1),
-                event_name: eventName,
-                actor: context.actor,
-                ref: context.ref,
-                sha: context.sha,
-                conclusion: "success",
-                started_at: now,
-                completed_at: now,
-                duration_ms: null,
-              },
-              correlation: {
-                issue_number: issueNumber,
-                pr_number: prNumber,
-                stage: "12",
-                decision: "closure_dispatch",
-                project_status: null,
-              },
-              counts: {
-                issues_considered: issueNumber ? 1 : 0,
-                issues_queued: 1,
-                slack_notifications_attempted: 1,
-                artifact_links_found: issueNumber ? 2 : 1,
-                artifact_links_missing: issueNumber ? 0 : 1,
-              },
-              provider_usage: {
-                available: false,
-                reason: "agent_dispatch_only",
-              },
-              privacy: {
-                metadata_only: true,
-                raw_prompts_included: false,
-                raw_completions_included: false,
-                raw_slack_payloads_included: false,
-                secrets_included: false,
-              },
-              warnings,
-            }, null, 2)}\n`);
+            writeMetrics("closure_dispatch", null, prNumber, issueNumber);
 
             await core.summary
               .addHeading("DUUMBI Stage 12 Closure Dispatch", 2)
@@ -242,7 +292,7 @@ jobs:
                 [{ data: "Field", header: true }, { data: "Value", header: true }],
                 ["PR", `#${prNumber}`],
                 ["Linked issue", issueNumber ? `#${issueNumber}` : "not detected"],
-                ["PR marker comment", prComment.html_url],
+                ["PR marker comment", prCommentUrl || "not written"],
                 ["Issue marker comment", issueCommentUrl || "not applicable"],
                 ["Slack dispatch", "posted"],
               ])
