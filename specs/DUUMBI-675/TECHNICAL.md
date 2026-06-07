@@ -267,8 +267,15 @@ Required schema concepts:
 - `catalog_version` or `content_version`: semantic catalog version/hash input.
 - `content_timestamp`: timestamp for the semantic catalog content, not an
   every-run generation timestamp.
+- `generator_status_summary`: safe user/reviewer-facing summary of the
+  generator result for the adopted semantic catalog, including whether all
+  providers used fresh discovery or whether validated fallback metadata was
+  included.
 - `providers`: accepted direct providers with display name, canonical config
   key, API key env var, and provider-level notes.
+- `provider_discovery_status`: per-provider status with discovery source,
+  freshness/fallback state, and warning text when curated or
+  previous-known-good metadata was used because live discovery was unavailable.
 - `models`: provider/model entries with lifecycle state, routing scores,
   `reasoning`, `coding`, and optional safe metadata.
 - provider/model provenance: semantic discovery status such as fresh discovery,
@@ -277,7 +284,8 @@ Required schema concepts:
   fallback warning so CLI/Studio review surfaces can explain why the metadata is
   not freshly discovered.
 - `change_summary`: concise user-facing summary for review surfaces.
-- `source`: commit or curated metadata reference for the semantic content.
+- `source`: commit or curated metadata reference for the semantic content,
+  including source and curation provenance sufficient for reviewer inspection.
 
 Do not include per-run publisher evidence in the adopted catalog bytes. The
 product spec requires that the semantic/adoption hash not change solely because
@@ -307,6 +315,8 @@ Validation must fail closed for:
 - invalid lifecycle values
 - routing scores outside 0-100
 - model entries pointing at unknown providers
+- missing generator status summary
+- missing per-provider discovery status
 - fallback metadata without catalog-visible provenance or stale/fallback warning
 - malformed or unexpected user-facing change summaries
 
@@ -445,8 +455,8 @@ Required behavior:
 - produces deterministic JSON bytes for unchanged semantic inputs
 - validates before publication
 - computes the SHA-256 artifact
-- records catalog-visible semantic provenance for fresh versus fallback-backed
-  entries
+- records catalog-visible generator status summary and per-provider discovery
+  status for fresh versus fallback-backed entries
 - records run-specific workflow evidence separately from adopted catalog bytes
 - publishes public files to:
   - `https://docs.duumbi.dev/model-catalog/v1/model-catalog.v1.json`
@@ -535,7 +545,7 @@ the implementation PR in this repo only prepares source behavior.
 | Catalog adoption does not overwrite provider setup | config snapshot test before/after adoption for roles, order, env vars, auth token env vars, base URLs, key storage, model overrides |
 | Legacy grok config remains explicit compatibility behavior | config load test for `grok` alias or unsupported migration state; no silent rewrite to user config without action |
 | Scheduled publisher emits deterministic artifacts | generator fixture test proves same semantic input yields identical JSON bytes and SHA-256; run evidence changes do not affect catalog hash |
-| Provider discovery outage uses accepted fallback metadata when valid | publisher fixture test with one discovery failure and curated/previous fallback still validates; public catalog includes fallback provenance and user-facing stale/fallback warning; run artifact includes operational warning evidence |
+| Provider discovery outage uses accepted fallback metadata when valid | publisher fixture test with one discovery failure and curated/previous fallback still validates; public catalog includes generator status summary, per-provider discovery status, fallback provenance, and user-facing stale/fallback warning; run artifact includes operational warning evidence |
 | Provider discovery outage blocks publication when no valid fallback exists | publisher fixture test fails generation/publication when required provider lacks discovery and fallback |
 | Provider docs describe accepted setup details | docs tests or grep assertions verify all nine providers, env vars, and config keys; OpenRouter absent; `xai` canonical |
 | Catalog update docs explain user controls and fallback | docs check for approval, skip, remind later, disable/frequency, local storage, validation, offline behavior, embedded fallback |
@@ -745,8 +755,8 @@ Stage 10 implementation can be considered ready for review only when:
 - `xai` is canonical in new behavior
 - legacy `grok` and OpenRouter config behavior is explicit and tested
 - catalog adoption cannot mutate provider config or credentials
-- catalog-visible fallback provenance is present when accepted fallback metadata
-  is adopted
+- catalog-visible generator status summary, per-provider discovery status, and
+  fallback provenance are present when accepted fallback metadata is adopted
 - run-specific publisher evidence is separated from deterministic adoption
   catalog bytes
 - user-level catalog update state is atomic and recoverable
