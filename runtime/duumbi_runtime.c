@@ -73,6 +73,10 @@
 #define DUUMBI_TRACE_STACK_LIMIT 1024
 #define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
 #define DUUMBI_JSON_MAX_PARSE_DEPTH 512
+#define DUUMBI_DB_BUSY_TIMEOUT_MS 1000
+#define DUUMBI_DB_MAX_ROWS 10000
+#define DUUMBI_DB_MAX_CELL_BYTES (8 * 1024 * 1024)
+#define DUUMBI_DB_MAX_COLUMNS 256
 
 #if defined(_WIN32)
 #define DUUMBI_TEMP_WRITE_MODE "wb"
@@ -2659,20 +2663,6 @@ typedef struct {
     int              header_error;
 } DuumbiHttpCapture;
 
-static void *duumbi_stdlib_pending(const char *operation) {
-    char message[160];
-    int written = snprintf(
-        message,
-        sizeof(message),
-        "%s failed: DUUMBI-380 runtime behavior is not implemented yet",
-        operation
-    );
-    if (written < 0 || (size_t)written >= sizeof(message)) {
-        return duumbi_err_cstr("stdlib failed: DUUMBI-380 runtime behavior is not implemented yet");
-    }
-    return duumbi_err_cstr(message);
-}
-
 static void *duumbi_http_err(const char *message) {
     return duumbi_result_new_err((int64_t)(intptr_t)duumbi_string_new(message, strlen(message)));
 }
@@ -3168,53 +3158,419 @@ void duumbi_http_response_free(void *response) {
     duumbi_dealloc(http_response);
 }
 
-/* ── SQLite dispatch stubs (DUUMBI-380 DB runtime cycle pending) ───── */
+/* ── SQLite runtime (DUUMBI-380) ───────────────────────────────────── */
+
+typedef struct {
+    sqlite3 *db;
+    int      closed;
+} DuumbiDbConnection;
+
+typedef struct {
+    uint64_t row_count;
+    uint64_t column_count;
+    char   **column_names;
+    char   **values;
+    uint8_t *is_null;
+    int      closed;
+} DuumbiDbRows;
+
+static void *duumbi_db_err(const char *message) {
+    return duumbi_err_cstr(message);
+}
+
+static void *duumbi_db_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static int duumbi_db_connection_open(DuumbiDbConnection *conn) {
+    return conn != NULL && !conn->closed && conn->db != NULL;
+}
+
+static char *duumbi_db_string_copy(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    if (s == NULL || s->len == 0) {
+        return NULL;
+    }
+    for (uint64_t i = 0; i < s->len; i++) {
+        if (s->data[i] == '\0') {
+            return NULL;
+        }
+    }
+    return duumbi_json_strndup(s->data, (size_t)s->len);
+}
+
+static int duumbi_db_path(void *path_ptr, char *out, size_t out_len) {
+    DuumbiString *path = (DuumbiString *)path_ptr;
+    if (path == NULL || path->len == 0) {
+        return -1;
+    }
+    if (path->len == strlen(":memory:") &&
+        memcmp(path->data, ":memory:", strlen(":memory:")) == 0) {
+        if (out_len <= strlen(":memory:")) {
+            return -1;
+        }
+        memcpy(out, ":memory:", strlen(":memory:") + 1);
+        return 0;
+    }
+    if (!duumbi_workspace_root_available()) {
+        return -1;
+    }
+    return duumbi_resolve_write_workspace_path(path_ptr, out, out_len);
+}
+
+static int duumbi_db_bind_params(sqlite3_stmt *stmt, void *params_ptr) {
+    DuumbiArray *params = (DuumbiArray *)params_ptr;
+    if (stmt == NULL || params == NULL || params->elem_size != sizeof(int64_t)) {
+        return -1;
+    }
+
+    int expected = sqlite3_bind_parameter_count(stmt);
+    if (expected < 0 || params->len != (uint64_t)expected) {
+        return -1;
+    }
+
+    for (uint64_t i = 0; i < params->len; i++) {
+        int64_t raw = duumbi_array_get(params, i);
+        DuumbiString *param = (DuumbiString *)(intptr_t)raw;
+        if (param == NULL || param->len > (uint64_t)INT32_MAX) {
+            return -1;
+        }
+        int rc = sqlite3_bind_text(
+            stmt,
+            (int)i + 1,
+            param->data,
+            (int)param->len,
+            SQLITE_TRANSIENT
+        );
+        if (rc != SQLITE_OK) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void duumbi_db_rows_release_contents(DuumbiDbRows *rows) {
+    if (rows == NULL) {
+        return;
+    }
+    if (rows->column_names != NULL) {
+        for (uint64_t i = 0; i < rows->column_count; i++) {
+            duumbi_dealloc(rows->column_names[i]);
+        }
+        duumbi_dealloc(rows->column_names);
+        rows->column_names = NULL;
+    }
+    if (rows->values != NULL) {
+        uint64_t total = rows->row_count * rows->column_count;
+        for (uint64_t i = 0; i < total; i++) {
+            duumbi_dealloc(rows->values[i]);
+        }
+        duumbi_dealloc(rows->values);
+        rows->values = NULL;
+    }
+    duumbi_dealloc(rows->is_null);
+    rows->is_null = NULL;
+    rows->row_count = 0;
+    rows->column_count = 0;
+}
+
+static void duumbi_db_rows_dispose(DuumbiDbRows *rows) {
+    if (rows == NULL || rows->closed) {
+        return;
+    }
+    duumbi_db_rows_release_contents(rows);
+    rows->closed = 1;
+}
+
+static int duumbi_db_rows_init_columns(DuumbiDbRows *rows, sqlite3_stmt *stmt, int column_count) {
+    if (column_count < 0 || column_count > DUUMBI_DB_MAX_COLUMNS) {
+        return -1;
+    }
+    rows->column_count = (uint64_t)column_count;
+    if (column_count == 0) {
+        return 0;
+    }
+    rows->column_names = (char **)duumbi_alloc(sizeof(char *) * (uint64_t)column_count);
+    memset(rows->column_names, 0, sizeof(char *) * (uint64_t)column_count);
+    for (int i = 0; i < column_count; i++) {
+        const char *name = sqlite3_column_name(stmt, i);
+        if (name == NULL || !duumbi_utf8_valid(name, (uint64_t)strlen(name))) {
+            return -1;
+        }
+        rows->column_names[i] = duumbi_json_strndup(name, strlen(name));
+    }
+    return 0;
+}
+
+static int duumbi_db_rows_append_row(
+    DuumbiDbRows *rows,
+    sqlite3_stmt *stmt,
+    uint64_t *cell_bytes
+) {
+    if (rows->row_count >= DUUMBI_DB_MAX_ROWS ||
+        rows->column_count > 0 &&
+            rows->row_count > UINT64_MAX / rows->column_count - 1) {
+        return -1;
+    }
+
+    uint64_t old_cells = rows->row_count * rows->column_count;
+    uint64_t new_row_count = rows->row_count + 1;
+    uint64_t new_cells = new_row_count * rows->column_count;
+
+    char **new_values = NULL;
+    uint8_t *new_is_null = NULL;
+    if (new_cells > 0) {
+        new_values = (char **)realloc(rows->values, sizeof(char *) * new_cells);
+        if (new_values == NULL) {
+            return -1;
+        }
+        rows->values = new_values;
+        new_is_null = (uint8_t *)realloc(rows->is_null, sizeof(uint8_t) * new_cells);
+        if (new_is_null == NULL) {
+            return -1;
+        }
+        rows->is_null = new_is_null;
+        for (uint64_t i = old_cells; i < new_cells; i++) {
+            rows->values[i] = NULL;
+            rows->is_null[i] = 0;
+        }
+    }
+
+    int column_count = (int)rows->column_count;
+    for (int col = 0; col < column_count; col++) {
+        uint64_t cell = old_cells + (uint64_t)col;
+        int kind = sqlite3_column_type(stmt, col);
+        if (kind == SQLITE_NULL) {
+            rows->is_null[cell] = 1;
+            continue;
+        }
+        if (kind == SQLITE_BLOB) {
+            return -1;
+        }
+
+        const unsigned char *text = sqlite3_column_text(stmt, col);
+        int bytes = sqlite3_column_bytes(stmt, col);
+        if (text == NULL || bytes < 0 ||
+            !duumbi_utf8_valid((const char *)text, (uint64_t)bytes)) {
+            return -1;
+        }
+        if (*cell_bytes > DUUMBI_DB_MAX_CELL_BYTES ||
+            (uint64_t)bytes > DUUMBI_DB_MAX_CELL_BYTES - *cell_bytes) {
+            return -1;
+        }
+        rows->values[cell] = duumbi_json_strndup((const char *)text, (size_t)bytes);
+        *cell_bytes += (uint64_t)bytes;
+    }
+
+    rows->row_count = new_row_count;
+    return 0;
+}
 
 void *duumbi_db_open(void *path) {
-    (void)path;
-    return duumbi_stdlib_pending("db_open");
+    char db_path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_db_path(path, db_path, sizeof(db_path)) != 0) {
+        return duumbi_db_err("db_path: path is outside the workspace or unsupported");
+    }
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(
+        db_path,
+        &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+        NULL
+    );
+    if (rc != SQLITE_OK) {
+        if (db != NULL) {
+            sqlite3_close(db);
+        }
+        return duumbi_db_err("db_open: failed to open SQLite database");
+    }
+    sqlite3_busy_timeout(db, DUUMBI_DB_BUSY_TIMEOUT_MS);
+
+    DuumbiDbConnection *conn =
+        (DuumbiDbConnection *)duumbi_alloc(sizeof(DuumbiDbConnection));
+    conn->db = db;
+    conn->closed = 0;
+    return duumbi_db_ok_ptr(conn);
 }
 
-void *duumbi_db_execute(void *conn, void *sql, void *params) {
-    (void)conn;
-    (void)sql;
-    (void)params;
-    return duumbi_stdlib_pending("db_execute");
+void *duumbi_db_execute(void *conn_ptr, void *sql_ptr, void *params_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (!duumbi_db_connection_open(conn)) {
+        return duumbi_db_err("db_resource: connection is closed");
+    }
+
+    DuumbiString *sql = (DuumbiString *)sql_ptr;
+    if (sql == NULL || sql->len == 0 || sql->len > (uint64_t)INT32_MAX) {
+        return duumbi_db_err("db_sql: SQL must be a non-empty string");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(conn->db, sql->data, (int)sql->len, &stmt, NULL);
+    if (rc != SQLITE_OK || stmt == NULL) {
+        return duumbi_db_err("db_sql: failed to prepare statement");
+    }
+    if (duumbi_db_bind_params(stmt, params_ptr) != 0) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_params: parameter count or value is invalid");
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_sql: query produced rows; use db_query");
+    }
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err(rc == SQLITE_BUSY ? "db_busy: SQLite statement is busy"
+                                               : "db_sql: failed to execute statement");
+    }
+    sqlite3_finalize(stmt);
+    return duumbi_ok_i64((int64_t)sqlite3_changes(conn->db));
 }
 
-void *duumbi_db_query(void *conn, void *sql, void *params) {
-    (void)conn;
-    (void)sql;
-    (void)params;
-    return duumbi_stdlib_pending("db_query");
+void *duumbi_db_query(void *conn_ptr, void *sql_ptr, void *params_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (!duumbi_db_connection_open(conn)) {
+        return duumbi_db_err("db_resource: connection is closed");
+    }
+
+    DuumbiString *sql = (DuumbiString *)sql_ptr;
+    if (sql == NULL || sql->len == 0 || sql->len > (uint64_t)INT32_MAX) {
+        return duumbi_db_err("db_sql: SQL must be a non-empty string");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(conn->db, sql->data, (int)sql->len, &stmt, NULL);
+    if (rc != SQLITE_OK || stmt == NULL) {
+        return duumbi_db_err("db_sql: failed to prepare query");
+    }
+    if (duumbi_db_bind_params(stmt, params_ptr) != 0) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_params: parameter count or value is invalid");
+    }
+
+    DuumbiDbRows *rows = (DuumbiDbRows *)duumbi_alloc(sizeof(DuumbiDbRows));
+    memset(rows, 0, sizeof(DuumbiDbRows));
+    if (duumbi_db_rows_init_columns(rows, stmt, sqlite3_column_count(stmt)) != 0) {
+        sqlite3_finalize(stmt);
+        duumbi_db_rows_release_contents(rows);
+        duumbi_dealloc(rows);
+        return duumbi_db_err("db_rows_limit: query column metadata is unsupported");
+    }
+
+    uint64_t cell_bytes = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (duumbi_db_rows_append_row(rows, stmt, &cell_bytes) != 0) {
+            sqlite3_finalize(stmt);
+            duumbi_db_rows_release_contents(rows);
+            duumbi_dealloc(rows);
+            return duumbi_db_err("db_rows_limit: query result exceeds v1 limits");
+        }
+    }
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        duumbi_db_rows_release_contents(rows);
+        duumbi_dealloc(rows);
+        return duumbi_db_err(rc == SQLITE_BUSY ? "db_busy: SQLite query is busy"
+                                               : "db_sql: failed to execute query");
+    }
+
+    sqlite3_finalize(stmt);
+    return duumbi_db_ok_ptr(rows);
 }
 
-void *duumbi_db_rows_len(void *rows) {
-    (void)rows;
-    return duumbi_stdlib_pending("db_rows_len");
+void *duumbi_db_rows_len(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are closed");
+    }
+    if (rows->row_count > (uint64_t)INT64_MAX) {
+        return duumbi_db_err("db_rows_limit: row count exceeds i64");
+    }
+    return duumbi_ok_i64((int64_t)rows->row_count);
 }
 
-void *duumbi_db_row_get(void *rows, int64_t row_index, void *column) {
-    (void)rows;
-    (void)row_index;
-    (void)column;
-    return duumbi_stdlib_pending("db_row_get");
+void *duumbi_db_row_get(void *rows_ptr, int64_t row_index, void *column_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are closed");
+    }
+    if (row_index < 0 || (uint64_t)row_index >= rows->row_count) {
+        return duumbi_db_err("db_row: row index out of bounds");
+    }
+    char *column = duumbi_db_string_copy(column_ptr);
+    if (column == NULL) {
+        return duumbi_db_err("db_row: column name is invalid");
+    }
+
+    uint64_t column_index = UINT64_MAX;
+    for (uint64_t i = 0; i < rows->column_count; i++) {
+        if (strcmp(rows->column_names[i], column) == 0) {
+            column_index = i;
+            break;
+        }
+    }
+    duumbi_dealloc(column);
+    if (column_index == UINT64_MAX) {
+        return duumbi_db_err("db_row: column is missing");
+    }
+
+    uint64_t cell = (uint64_t)row_index * rows->column_count + column_index;
+    if (rows->is_null[cell]) {
+        return duumbi_db_err("db_null: SQLite NULL is not representable as v1 string");
+    }
+    char *value = rows->values[cell];
+    if (value == NULL) {
+        return duumbi_db_err("db_row: value is unavailable");
+    }
+    return duumbi_result_new_ok(
+        (int64_t)(intptr_t)duumbi_string_new(value, (uint64_t)strlen(value))
+    );
 }
 
-void *duumbi_db_close(void *conn) {
-    (void)conn;
-    return duumbi_stdlib_pending("db_close");
+void *duumbi_db_close(void *conn_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (conn == NULL || conn->closed) {
+        return duumbi_db_err("db_resource: connection is already closed");
+    }
+    if (conn->db != NULL) {
+        int rc = sqlite3_close(conn->db);
+        if (rc != SQLITE_OK) {
+            return duumbi_db_err("db_busy: connection still has active statements");
+        }
+    }
+    conn->db = NULL;
+    conn->closed = 1;
+    return duumbi_ok_i64(0);
 }
 
-void *duumbi_db_rows_close(void *rows) {
-    (void)rows;
-    return duumbi_stdlib_pending("db_rows_close");
+void *duumbi_db_rows_close(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are already closed");
+    }
+    duumbi_db_rows_dispose(rows);
+    return duumbi_ok_i64(0);
 }
 
-void duumbi_db_connection_free(void *conn) {
-    (void)conn;
+void duumbi_db_connection_free(void *conn_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (conn == NULL) {
+        return;
+    }
+    if (!conn->closed && conn->db != NULL) {
+        sqlite3_close(conn->db);
+        conn->db = NULL;
+        conn->closed = 1;
+    }
+    duumbi_dealloc(conn);
 }
 
-void duumbi_db_rows_free(void *rows) {
-    (void)rows;
+void duumbi_db_rows_free(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL) {
+        return;
+    }
+    duumbi_db_rows_dispose(rows);
+    duumbi_dealloc(rows);
 }
