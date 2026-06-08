@@ -17,6 +17,7 @@ pub mod merger;
 pub mod minimax;
 pub mod model_access;
 pub mod model_catalog;
+pub mod model_catalog_publisher;
 pub mod model_performance;
 pub mod openai;
 pub mod openrouter;

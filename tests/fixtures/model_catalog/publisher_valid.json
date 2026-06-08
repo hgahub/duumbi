@@ -1,0 +1,114 @@
+{
+  "contentTimestamp": "2026-06-08T00:00:00Z",
+  "source": "cycle6-fixture:v1",
+  "generatorStatusSummary": "all accepted providers generated from curated fixture input",
+  "changeSummary": "Cycle 6 fixture catalog",
+  "providerDiscovery": [
+    { "providerKey": "anthropic", "state": "fresh_discovery" },
+    { "providerKey": "openai", "state": "fresh_discovery" },
+    { "providerKey": "xai", "state": "fresh_discovery" },
+    { "providerKey": "minimax", "state": "fresh_discovery" },
+    { "providerKey": "deepseek", "state": "fresh_discovery" },
+    { "providerKey": "qwen", "state": "fresh_discovery" },
+    { "providerKey": "moonshot", "state": "fresh_discovery" },
+    { "providerKey": "zhipu", "state": "fresh_discovery" },
+    { "providerKey": "gemini", "state": "fresh_discovery" }
+  ],
+  "models": [
+    {
+      "providerKey": "anthropic",
+      "modelId": "claude-opus-4-5",
+      "lifecycle": "active",
+      "quality": 98,
+      "speed": 52,
+      "costEfficiency": 42,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "openai",
+      "modelId": "gpt-5.5",
+      "lifecycle": "active",
+      "quality": 98,
+      "speed": 50,
+      "costEfficiency": 40,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "xai",
+      "modelId": "grok-4.20-reasoning",
+      "lifecycle": "active",
+      "quality": 95,
+      "speed": 60,
+      "costEfficiency": 60,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "minimax",
+      "modelId": "MiniMax-M2.7",
+      "lifecycle": "active",
+      "quality": 92,
+      "speed": 70,
+      "costEfficiency": 76,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "deepseek",
+      "modelId": "deepseek-chat",
+      "lifecycle": "active",
+      "quality": 84,
+      "speed": 78,
+      "costEfficiency": 94,
+      "reasoning": false,
+      "coding": true
+    },
+    {
+      "providerKey": "qwen",
+      "modelId": "qwen-plus",
+      "lifecycle": "active",
+      "quality": 84,
+      "speed": 78,
+      "costEfficiency": 90,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "moonshot",
+      "modelId": "kimi-k2",
+      "lifecycle": "active",
+      "quality": 86,
+      "speed": 72,
+      "costEfficiency": 84,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "zhipu",
+      "modelId": "glm-4.6",
+      "lifecycle": "active",
+      "quality": 86,
+      "speed": 74,
+      "costEfficiency": 86,
+      "reasoning": true,
+      "coding": true
+    },
+    {
+      "providerKey": "gemini",
+      "modelId": "gemini-3-pro",
+      "lifecycle": "active",
+      "quality": 94,
+      "speed": 68,
+      "costEfficiency": 78,
+      "reasoning": true,
+      "coding": true
+    }
+  ],
+  "runEvidence": {
+    "generatedAtUnixSecs": 1780910400,
+    "workflowRunUrl": "https://github.com/hgahub/duumbi/actions/runs/cycle6-fixture",
+    "warnings": []
+  }
+}
