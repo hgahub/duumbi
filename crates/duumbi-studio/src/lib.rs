@@ -922,14 +922,11 @@ async fn api_catalog_status() -> axum::response::Response {
 
 /// Checks the remote model-catalog hash and returns review data when changed.
 #[cfg(feature = "ssr")]
-async fn api_catalog_check(
-    body: axum::extract::Json<serde_json::Value>,
-) -> axum::response::Response {
+async fn api_catalog_check() -> axum::response::Response {
     use duumbi::agents::model_catalog::{CatalogRemoteCheckResult, CatalogRemoteClient};
 
     let store = studio_catalog_store();
-    let urls = studio_catalog_urls(&body.0);
-    let client = match CatalogRemoteClient::with_urls(urls) {
+    let client = match CatalogRemoteClient::new() {
         Ok(client) => client,
         Err(error) => {
             return catalog_json_response(
@@ -982,7 +979,6 @@ async fn api_catalog_approve(
     use duumbi::agents::model_catalog::CatalogRemoteClient;
 
     let store = studio_catalog_store();
-    let urls = studio_catalog_urls(&body.0);
     let approved_hash = body
         .0
         .get("hash")
@@ -998,7 +994,7 @@ async fn api_catalog_approve(
             }),
         );
     };
-    let client = match CatalogRemoteClient::with_urls(urls) {
+    let client = match CatalogRemoteClient::new() {
         Ok(client) => client,
         Err(error) => {
             return catalog_json_response(
@@ -1126,28 +1122,6 @@ async fn api_catalog_disable() -> axum::response::Response {
 fn studio_catalog_store() -> duumbi::agents::model_catalog::ModelCatalogStore {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     duumbi::agents::model_catalog::ModelCatalogStore::for_home(home)
-}
-
-#[cfg(feature = "ssr")]
-fn studio_catalog_urls(
-    body: &serde_json::Value,
-) -> duumbi::agents::model_catalog::CatalogRemoteUrls {
-    use duumbi::agents::model_catalog::{MODEL_CATALOG_V1_SHA256_URL, MODEL_CATALOG_V1_URL};
-
-    duumbi::agents::model_catalog::CatalogRemoteUrls {
-        catalog_url: body
-            .get("catalogUrl")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(MODEL_CATALOG_V1_URL)
-            .to_string(),
-        sha256_url: body
-            .get("sha256Url")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(MODEL_CATALOG_V1_SHA256_URL)
-            .to_string(),
-    }
 }
 
 #[cfg(feature = "ssr")]

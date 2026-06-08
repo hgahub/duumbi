@@ -169,6 +169,25 @@ fn duumbi675_studio_exposes_catalog_update_controls() {
     assert!(lib.contains("Catalog hash skipped"));
 }
 
+#[test]
+fn duumbi675_studio_catalog_update_does_not_accept_body_url_overrides() {
+    let lib = fs::read_to_string("crates/duumbi-studio/src/lib.rs").expect("studio lib");
+    let script =
+        fs::read_to_string("crates/duumbi-studio/src/script/studio.js").expect("studio script");
+
+    assert!(!lib.contains("studio_catalog_urls"));
+    assert!(!lib.contains(r#".get("catalogUrl")"#));
+    assert!(!lib.contains(r#".get("sha256Url")"#));
+    assert!(!lib.contains("CatalogRemoteClient::with_urls"));
+    assert!(lib.contains("CatalogRemoteClient::new()"));
+    assert!(script.contains("catalogAction('/api/settings/catalog/check', {}"));
+    assert!(
+        script.contains("catalogAction('/api/settings/catalog/approve', { hash: hash || null }")
+    );
+    assert!(!script.contains("catalogUrl"));
+    assert!(!script.contains("sha256Url"));
+}
+
 fn run_publisher(
     binary: &str,
     input: &str,
