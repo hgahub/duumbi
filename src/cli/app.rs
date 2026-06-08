@@ -34,6 +34,7 @@ const PROVIDER_KINDS: &[(&str, &str)] = &[
     ("openrouter", "OpenRouter (multi-model gateway)"),
     ("minimax", "MiniMax"),
 ];
+const PROVIDER_LIST_VISIBLE_LIMIT: usize = 8;
 
 /// Authentication modes the provider setup TUI can actually configure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +204,19 @@ fn provider_kind_index(kind: &crate::config::ProviderKind) -> Option<usize> {
     PROVIDER_KINDS.iter().enumerate().find_map(|(index, _)| {
         (parse_provider_kind_by_index(index).as_ref() == Some(kind)).then_some(index)
     })
+}
+
+fn provider_list_visible_window(selected: usize, total: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let visible = total.min(PROVIDER_LIST_VISIBLE_LIMIT);
+    let selected = selected.min(total - 1);
+    let start = selected
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(total - visible);
+    (start, start + visible)
 }
 
 /// Finds the configured provider entry for a provider kind.
@@ -3061,6 +3075,8 @@ impl ReplApp {
                 Some(PanelInputMode::AddStep3Key { .. }) => 9,
                 _ => {
                     let provider_count = PROVIDER_KINDS.len().max(1);
+                    let visible_provider_rows = provider_count.min(PROVIDER_LIST_VISIBLE_LIMIT);
+                    let scroll_affordance = u16::from(provider_count > PROVIDER_LIST_VISIBLE_LIMIT);
                     let status_line = match (&self.panel, input_mode) {
                         (
                             PanelState::ProviderManager {
@@ -3071,7 +3087,7 @@ impl ReplApp {
                         ) => 2,
                         _ => 0,
                     };
-                    (provider_count as u16) + 9 + status_line
+                    (visible_provider_rows as u16) + 9 + scroll_affordance + status_line
                 }
             }),
             PanelState::UserConfig { status_msg, .. } => {
@@ -4782,7 +4798,14 @@ impl ReplApp {
             theme::out_dim(),
         )));
 
-        for (i, (name, desc)) in PROVIDER_KINDS.iter().enumerate() {
+        let (visible_start, visible_end) =
+            provider_list_visible_window(selected, PROVIDER_KINDS.len());
+        for (i, (name, desc)) in PROVIDER_KINDS
+            .iter()
+            .enumerate()
+            .skip(visible_start)
+            .take(visible_end.saturating_sub(visible_start))
+        {
             let Some(kind) = parse_provider_kind_by_index(i) else {
                 continue;
             };
@@ -4824,6 +4847,17 @@ impl ReplApp {
                 theme::out_dim()
             };
             lines.push(Line::from(Span::styled(text, style)));
+        }
+        if PROVIDER_KINDS.len() > PROVIDER_LIST_VISIBLE_LIMIT {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  Showing {}-{} of {}",
+                    visible_start + 1,
+                    visible_end,
+                    PROVIDER_KINDS.len()
+                ),
+                theme::out_dim(),
+            )));
         }
 
         match input_mode {
@@ -6381,6 +6415,21 @@ mod tests {
         if let PanelState::ProviderManager { selected, .. } = &app.panel {
             assert_eq!(*selected, 0);
         }
+    }
+
+    #[test]
+    fn provider_panel_visible_window_caps_at_eight_rows() {
+        assert_eq!(provider_list_visible_window(0, 9), (0, 8));
+        assert_eq!(provider_list_visible_window(7, 9), (0, 8));
+        assert_eq!(provider_list_visible_window(8, 9), (1, 9));
+        assert_eq!(provider_list_visible_window(99, 9), (1, 9));
+    }
+
+    #[test]
+    fn provider_panel_visible_window_handles_short_lists() {
+        assert_eq!(provider_list_visible_window(0, 0), (0, 0));
+        assert_eq!(provider_list_visible_window(0, 5), (0, 5));
+        assert_eq!(provider_list_visible_window(4, 5), (0, 5));
     }
 
     #[test]
