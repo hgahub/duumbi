@@ -1070,7 +1070,7 @@ pub async fn get_provider_list() -> Result<Vec<ProviderInfo>, ServerFnError> {
     Ok(providers
         .iter()
         .map(|p| ProviderInfo {
-            kind: format!("{:?}", p.provider),
+            kind: p.provider.to_string(),
             role: format!("{:?}", p.role),
         })
         .collect())

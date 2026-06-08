@@ -528,13 +528,17 @@
   // ── Settings popup ──────────────────────────────────────────────────────────
 
   var PROVIDER_DEFAULTS = {
-  anthropic:  { env: 'ANTHROPIC_API_KEY',  hasSubscription: true  },
-  openai:     { env: 'OPENAI_API_KEY',     hasSubscription: false },
-  grok:       { env: 'XAI_API_KEY',        hasSubscription: false },
-  openrouter: { env: 'OPENROUTER_API_KEY', hasSubscription: false },
-  minimax:    { env: 'MINIMAX_API_KEY',    hasSubscription: false }
+  anthropic: { env: 'ANTHROPIC_API_KEY', hasSubscription: true  },
+  openai:    { env: 'OPENAI_API_KEY',    hasSubscription: false },
+  xai:       { env: 'XAI_API_KEY',       hasSubscription: false },
+  minimax:   { env: 'MINIMAX_API_KEY',   hasSubscription: false },
+  deepseek:  { env: 'DEEPSEEK_API_KEY',  hasSubscription: false },
+  qwen:      { env: 'DASHSCOPE_API_KEY', hasSubscription: false },
+  moonshot:  { env: 'MOONSHOT_API_KEY',  hasSubscription: false },
+  zhipu:     { env: 'ZHIPUAI_API_KEY',   hasSubscription: false },
+  gemini:    { env: 'GEMINI_API_KEY',    hasSubscription: false }
   };
-  var PROVIDER_NAMES = ['anthropic', 'openai', 'grok', 'openrouter', 'minimax'];
+  var PROVIDER_NAMES = ['anthropic', 'openai', 'xai', 'minimax', 'deepseek', 'qwen', 'moonshot', 'zhipu', 'gemini'];
 
   function openSettings() {
     closeUserMenu();

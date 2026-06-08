@@ -802,7 +802,7 @@ async fn api_get_providers(
         .iter()
         .map(|p| {
             serde_json::json!({
-                "provider": format!("{:?}", p.provider).to_lowercase(),
+                "provider": p.provider.to_string(),
                 "role": format!("{:?}", p.role).to_lowercase(),
                 "api_key_env": p.api_key_env,
                 "auth_token_env": p.auth_token_env,
