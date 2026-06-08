@@ -10,7 +10,15 @@ const CATALOG_FILE: &str = "model-catalog.v1.json";
 const SHA256_FILE: &str = "model-catalog.v1.sha256";
 
 fn main() -> Result<()> {
-    let args = PublisherArgs::parse(std::env::args().skip(1))?;
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    if raw_args
+        .iter()
+        .any(|arg| arg.as_str() == "-h" || arg.as_str() == "--help")
+    {
+        println!("{}", usage());
+        return Ok(());
+    }
+    let args = PublisherArgs::parse(raw_args)?;
     let body = fs::read_to_string(&args.input)
         .with_context(|| format!("failed to read input {}", args.input.display()))?;
     let input: CatalogPublisherInput = serde_json::from_str(&body)
@@ -70,7 +78,6 @@ impl PublisherArgs {
                 "--input" => input = Some(next_path(&mut args, "--input")?),
                 "--out-dir" => out_dir = Some(next_path(&mut args, "--out-dir")?),
                 "--evidence-out" => evidence_out = Some(next_path(&mut args, "--evidence-out")?),
-                "-h" | "--help" => bail!("{}", usage()),
                 other => bail!("unknown argument `{other}`\n{}", usage()),
             }
         }

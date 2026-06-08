@@ -1127,7 +1127,7 @@ fn validate_catalog_providers(
 ) -> HashSet<String> {
     let mut provider_keys = HashSet::new();
     for provider in &document.providers {
-        let key = provider.config_key.trim();
+        let key = provider.config_key.as_str();
         if key == "openrouter" {
             errors.push(ModelCatalogValidationError::OpenRouterExcluded);
         }
@@ -1857,6 +1857,31 @@ mod tests {
         let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
 
         assert!(errors.contains(&ModelCatalogValidationError::GrokIsLegacyAlias));
+    }
+
+    #[test]
+    fn validate_catalog_document_rejects_whitespace_padded_provider_key() {
+        let mut document = valid_catalog_document();
+        if let Some(provider) = document
+            .providers
+            .iter_mut()
+            .find(|provider| provider.config_key == "xai")
+        {
+            provider.config_key = " xai ".to_string();
+        }
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(
+            errors.contains(&ModelCatalogValidationError::UnsupportedProvider(
+                " xai ".to_string()
+            ))
+        );
+        assert!(
+            errors.contains(&ModelCatalogValidationError::MissingProvider(
+                "xai".to_string()
+            ))
+        );
     }
 
     #[test]

@@ -82,7 +82,8 @@ fn credential_available(env_var_name: &str) -> bool {
 ///
 /// Expected syntax: `<type> <api_key_env> [--role fallback] [--base-url URL] [--auth-token-env ENV]`
 ///
-/// `<type>` must be one of: `anthropic`, `openai`, `grok`, `openrouter`, `minimax`.
+/// `<type>` must be one of the accepted direct providers or an explicit
+/// compatibility provider alias.
 #[must_use]
 pub fn add_provider(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLine> {
     let tokens: Vec<&str> = args.split_whitespace().collect();
@@ -613,7 +614,7 @@ fn parse_provider_kind(s: &str) -> Result<ProviderKind, String> {
         "zhipu" => Ok(ProviderKind::Zhipu),
         "gemini" => Ok(ProviderKind::Gemini),
         other => Err(format!(
-            "Unknown provider type '{other}'. Use: anthropic, openai, xai, minimax, deepseek, qwen, moonshot, zhipu, gemini"
+            "Unknown provider type '{other}'. Use: anthropic, openai, xai, minimax, deepseek, qwen, moonshot, zhipu, gemini. Compatibility aliases: grok, openrouter"
         )),
     }
 }
@@ -746,7 +747,10 @@ mod tests {
         assert_eq!(parse_provider_kind("moonshot"), Ok(ProviderKind::Moonshot));
         assert_eq!(parse_provider_kind("zhipu"), Ok(ProviderKind::Zhipu));
         assert_eq!(parse_provider_kind("gemini"), Ok(ProviderKind::Gemini));
-        assert!(parse_provider_kind("unknown").is_err());
+        let error = parse_provider_kind("unknown").expect_err("unknown provider should fail");
+        assert!(error.contains("xai"));
+        assert!(error.contains("grok"));
+        assert!(error.contains("openrouter"));
     }
 
     #[test]

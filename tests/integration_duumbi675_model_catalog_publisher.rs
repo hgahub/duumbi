@@ -51,6 +51,19 @@ fn duumbi675_model_catalog_publisher_binary_fails_closed_for_unavailable_provide
 }
 
 #[test]
+fn duumbi675_model_catalog_publisher_help_exits_successfully() {
+    let binary = env!("CARGO_BIN_EXE_duumbi-model-catalog-publisher");
+    let output = Command::new(binary)
+        .arg("--help")
+        .output()
+        .expect("publisher help runs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("usage: duumbi-model-catalog-publisher"));
+}
+
+#[test]
 fn duumbi675_model_catalog_publisher_docs_cover_v1_contract() {
     let docs = fs::read_to_string("docs/provider-catalog.md").expect("provider catalog docs");
     for expected in [
@@ -133,6 +146,8 @@ fn duumbi675_studio_exposes_catalog_update_controls() {
     let lib = fs::read_to_string("crates/duumbi-studio/src/lib.rs").expect("studio lib");
     let script =
         fs::read_to_string("crates/duumbi-studio/src/script/studio.js").expect("studio script");
+    let style =
+        fs::read_to_string("crates/duumbi-studio/src/style/studio.css").expect("studio css");
 
     for route in [
         r#"/api/settings/catalog"#,
@@ -167,6 +182,18 @@ fn duumbi675_studio_exposes_catalog_update_controls() {
     assert!(lib.contains("Catalog approval requires a reviewed hash."));
     assert!(lib.contains("Catalog update approval failed"));
     assert!(lib.contains("Catalog hash skipped"));
+    assert!(style.contains(".catalog-card"));
+}
+
+#[test]
+fn duumbi675_studio_catalog_panel_is_not_collected_as_provider_card() {
+    let script =
+        fs::read_to_string("crates/duumbi-studio/src/script/studio.js").expect("studio script");
+
+    assert!(script.contains(r#"<div class="catalog-card" id="catalogPanel">"#));
+    assert!(!script.contains("provider-card catalog-card"));
+    assert!(script.contains("main.querySelectorAll('.provider-card[data-idx]')"));
+    assert!(script.contains("qsa('.provider-card[data-idx]')"));
 }
 
 #[test]

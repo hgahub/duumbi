@@ -586,7 +586,7 @@
   function buildCatalogPanelHtml() {
     return [
       '<div class="settings-section-title">Model Catalog Updates</div>',
-      '<div class="provider-card catalog-card" id="catalogPanel">',
+      '<div class="catalog-card" id="catalogPanel">',
       '<div class="pc-header"><strong>Provider model catalog</strong><span class="pc-role">LOCAL STATE</span></div>',
       '<div id="catalogStatus" class="pc-row">Loading catalog state...</div>',
       '<div id="catalogReview" class="pc-row"></div>',
@@ -751,7 +751,7 @@
   function addProviderCard() {
     var main = document.getElementById('settingsMain');
     if (!main) return;
-    var cards = main.querySelectorAll('.provider-card');
+    var cards = main.querySelectorAll('.provider-card[data-idx]');
     var idx = cards.length;
     var addBtn = main.querySelector('.provider-add');
     var newCard = document.createElement('div');
@@ -767,7 +767,7 @@
     var card = qs('.provider-card[data-idx="' + idx + '"]');
     if (card) card.remove();
     // Re-index remaining cards
-    var cards = qsa('.provider-card');
+    var cards = qsa('.provider-card[data-idx]');
     cards.forEach(function (c, i) { c.dataset.idx = i; });
   }
 
@@ -807,7 +807,7 @@
   }
 
   function collectProviders() {
-    var cards = qsa('.provider-card');
+    var cards = qsa('.provider-card[data-idx]');
     var result = [];
     cards.forEach(function (card, i) {
       var selectEl = card.querySelector('.pc-select');
