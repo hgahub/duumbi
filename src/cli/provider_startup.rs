@@ -74,7 +74,7 @@ fn discover_env_provider_setups_from(
                 return None;
             }
             Some(EnvProviderSetup {
-                provider: candidate.provider.clone(),
+                provider: candidate.provider,
                 env_var: candidate.env_var,
                 key,
                 #[cfg(test)]
@@ -212,14 +212,38 @@ fn env_provider_candidates() -> &'static [EnvProviderCandidate] {
             base_url: None,
         },
         EnvProviderCandidate {
-            provider: ProviderKind::OpenRouter,
-            env_var: "OPENROUTER_API_KEY",
+            provider: ProviderKind::MiniMax,
+            env_var: "MINIMAX_API_KEY",
             #[cfg(test)]
             base_url: None,
         },
         EnvProviderCandidate {
-            provider: ProviderKind::MiniMax,
-            env_var: "MINIMAX_API_KEY",
+            provider: ProviderKind::DeepSeek,
+            env_var: "DEEPSEEK_API_KEY",
+            #[cfg(test)]
+            base_url: None,
+        },
+        EnvProviderCandidate {
+            provider: ProviderKind::Qwen,
+            env_var: "DASHSCOPE_API_KEY",
+            #[cfg(test)]
+            base_url: None,
+        },
+        EnvProviderCandidate {
+            provider: ProviderKind::Moonshot,
+            env_var: "MOONSHOT_API_KEY",
+            #[cfg(test)]
+            base_url: None,
+        },
+        EnvProviderCandidate {
+            provider: ProviderKind::Zhipu,
+            env_var: "ZHIPUAI_API_KEY",
+            #[cfg(test)]
+            base_url: None,
+        },
+        EnvProviderCandidate {
+            provider: ProviderKind::Gemini,
+            env_var: "GEMINI_API_KEY",
             #[cfg(test)]
             base_url: None,
         },
@@ -266,7 +290,7 @@ fn provider_config_for_setup(
         });
 
     ProviderConfig {
-        provider: setup.provider.clone(),
+        provider: setup.provider,
         role,
         model: None,
         api_key_env: setup.env_var.to_string(),
@@ -369,13 +393,18 @@ mod tests {
             EnvGuard::set("XAI_API_KEY", "xai-key"),
             EnvGuard::set("OPENROUTER_API_KEY", "openrouter-key"),
             EnvGuard::set("MINIMAX_API_KEY", "minimax-key"),
+            EnvGuard::set("DEEPSEEK_API_KEY", "deepseek-key"),
+            EnvGuard::set("DASHSCOPE_API_KEY", "dashscope-key"),
+            EnvGuard::set("MOONSHOT_API_KEY", "moonshot-key"),
+            EnvGuard::set("ZHIPUAI_API_KEY", "zhipu-key"),
+            EnvGuard::set("GEMINI_API_KEY", "gemini-key"),
         ];
         let effective = effective_with(DuumbiConfig::default(), DuumbiConfig::default());
 
         let setups = discover_env_provider_setups(&effective);
 
         drop(guards);
-        assert_eq!(setups.len(), 5);
+        assert_eq!(setups.len(), 9);
         assert!(
             setups
                 .iter()
@@ -399,13 +428,25 @@ mod tests {
         assert!(
             setups
                 .iter()
-                .any(|setup| setup.provider == ProviderKind::OpenRouter)
+                .all(|setup| setup.provider != ProviderKind::OpenRouter)
         );
         assert!(
             setups
                 .iter()
                 .any(|setup| setup.provider == ProviderKind::MiniMax)
         );
+        for provider in [
+            ProviderKind::DeepSeek,
+            ProviderKind::Qwen,
+            ProviderKind::Moonshot,
+            ProviderKind::Zhipu,
+            ProviderKind::Gemini,
+        ] {
+            assert!(
+                setups.iter().any(|setup| setup.provider == provider),
+                "{provider} setup must be discovered"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,36 @@
+name: Model Catalog Publisher
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '25 4 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  generate:
+    name: generate deterministic v1 catalog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate catalog artifacts from curated fixture input
+        run: |
+          cargo run --bin duumbi-model-catalog-publisher -- \
+            --input tests/fixtures/model_catalog/publisher_valid.json \
+            --out-dir .tmp/model-catalog/v1 \
+            --evidence-out .tmp/model-catalog/run-evidence.json
+      - name: Validate publisher and docs checks
+        run: cargo test duumbi675_model_catalog_publisher --all
+      - name: Upload generated catalog evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-catalog-v1
+          path: .tmp/model-catalog/

@@ -127,6 +127,19 @@ fn create_resolved_provider(
     create_provider_with_api_key(config, api_key, use_auth_token)
 }
 
+fn openai_compatible_provider(
+    config: &ResolvedProviderConfig,
+    api_key: String,
+    default_url: &str,
+    provider_name: &'static str,
+) -> Box<dyn LlmProvider> {
+    let url = config.base_url.as_deref().unwrap_or(default_url);
+    Box::new(
+        super::openai::OpenAiClient::with_base_url(&config.model, api_key, url)
+            .with_provider_name(provider_name),
+    )
+}
+
 fn resolve_api_key(config: &ResolvedProviderConfig) -> Result<String, AgentError> {
     resolve_secret(&config.api_key_env).ok_or_else(|| {
         AgentError::Parse(format!(
@@ -174,7 +187,7 @@ pub fn create_provider_with_api_key(
             if let Some(ref url) = config.base_url {
                 Box::new(
                     super::openai::OpenAiClient::with_base_url(&config.model, api_key, url)
-                        .with_provider_name("grok"),
+                        .with_provider_name("xai"),
                 )
             } else {
                 Box::new(super::grok::GrokClient::new(&config.model, api_key))
@@ -203,6 +216,36 @@ pub fn create_provider_with_api_key(
                 Box::new(super::minimax::MiniMaxClient::new(&config.model, api_key))
             }
         }
+        ProviderKind::DeepSeek => openai_compatible_provider(
+            config,
+            api_key,
+            "https://api.deepseek.com/chat/completions",
+            "deepseek",
+        ),
+        ProviderKind::Qwen => openai_compatible_provider(
+            config,
+            api_key,
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen",
+        ),
+        ProviderKind::Moonshot => openai_compatible_provider(
+            config,
+            api_key,
+            "https://api.moonshot.ai/v1/chat/completions",
+            "moonshot",
+        ),
+        ProviderKind::Zhipu => openai_compatible_provider(
+            config,
+            api_key,
+            "https://api.z.ai/api/paas/v4/chat/completions",
+            "zhipu",
+        ),
+        ProviderKind::Gemini => openai_compatible_provider(
+            config,
+            api_key,
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini",
+        ),
     };
 
     if config.timeout_secs.is_some() {
@@ -390,7 +433,7 @@ mod tests {
             "DUUMBI_TEST_FACTORY_GROK",
         );
         let provider = create_provider(&config).expect("must create");
-        assert_eq!(provider.name(), "grok");
+        assert_eq!(provider.name(), "xai");
         unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_GROK") };
     }
 
@@ -405,6 +448,29 @@ mod tests {
         let provider = create_provider(&config).expect("must create");
         assert_eq!(provider.name(), "openrouter");
         unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_OPENROUTER") };
+    }
+
+    #[test]
+    fn create_provider_for_new_openai_compatible_direct_providers() {
+        unsafe { std::env::set_var("DUUMBI_TEST_FACTORY_COMPAT", "sk-test") };
+        for (kind, name) in [
+            (ProviderKind::DeepSeek, "deepseek"),
+            (ProviderKind::Qwen, "qwen"),
+            (ProviderKind::Moonshot, "moonshot"),
+            (ProviderKind::Zhipu, "zhipu"),
+            (ProviderKind::Gemini, "gemini"),
+        ] {
+            let config =
+                make_config_with_env(kind, ProviderRole::Primary, "DUUMBI_TEST_FACTORY_COMPAT");
+            let provider = create_provider(&config).expect("must create provider");
+
+            assert_eq!(provider.name(), name);
+            assert!(
+                provider.model_name().is_some(),
+                "{name} should resolve an embedded catalog model"
+            );
+        }
+        unsafe { std::env::remove_var("DUUMBI_TEST_FACTORY_COMPAT") };
     }
 
     #[test]
@@ -491,7 +557,7 @@ mod tests {
         ];
         let provider = create_provider_chain_for_global_access(&configs).expect("must create");
 
-        assert_eq!(provider.name(), "grok");
+        assert_eq!(provider.name(), "xai");
         unsafe { std::env::remove_var("DUUMBI_TEST_GLOBAL_CHAIN_KEY") };
     }
 

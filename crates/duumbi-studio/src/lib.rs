@@ -100,6 +100,15 @@ pub async fn start_server(port: u16, workspace: std::path::PathBuf) -> anyhow::R
                 }
             }),
         )
+        .route("/api/settings/catalog", get(api_catalog_status))
+        .route("/api/settings/catalog/check", post(api_catalog_check))
+        .route(
+            "/api/settings/catalog/approve",
+            post(api_catalog_approve),
+        )
+        .route("/api/settings/catalog/skip", post(api_catalog_skip))
+        .route("/api/settings/catalog/remind", post(api_catalog_remind))
+        .route("/api/settings/catalog/disable", post(api_catalog_disable))
         // Agent templates API (delegates to shared helper in server_fns).
         .route(
             "/api/agent_templates",
@@ -802,7 +811,7 @@ async fn api_get_providers(
         .iter()
         .map(|p| {
             serde_json::json!({
-                "provider": format!("{:?}", p.provider).to_lowercase(),
+                "provider": p.provider.to_string(),
                 "role": format!("{:?}", p.role).to_lowercase(),
                 "api_key_env": p.api_key_env,
                 "auth_token_env": p.auth_token_env,
@@ -903,4 +912,289 @@ fn api_check_env(params: std::collections::HashMap<String, String>) -> axum::res
         serde_json::json!({"var": var_name, "set": is_set}).to_string(),
     )
         .into_response()
+}
+
+/// Returns Studio model-catalog update state without performing remote I/O.
+#[cfg(feature = "ssr")]
+async fn api_catalog_status() -> axum::response::Response {
+    catalog_json_response(http_status_ok(), studio_catalog_status_payload())
+}
+
+/// Checks the remote model-catalog hash and returns review data when changed.
+#[cfg(feature = "ssr")]
+async fn api_catalog_check() -> axum::response::Response {
+    use duumbi::agents::model_catalog::{CatalogRemoteCheckResult, CatalogRemoteClient};
+
+    let store = studio_catalog_store();
+    let client = match CatalogRemoteClient::new() {
+        Ok(client) => client,
+        Err(error) => {
+            return catalog_json_response(
+                http_status_bad_request(),
+                serde_json::json!({"ok": false, "error": format!("Catalog update check could not start: {error}")}),
+            );
+        }
+    };
+
+    match client
+        .check_for_update(&store, studio_current_unix_secs())
+        .await
+    {
+        Ok(CatalogRemoteCheckResult::Quiet) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "reviewAvailable": false,
+                "message": "Catalog is current, skipped, deferred, or disabled.",
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Ok(CatalogRemoteCheckResult::ReviewAvailable { hash, document }) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "reviewAvailable": true,
+                "hash": hash,
+                "document": studio_catalog_document_summary(&document),
+                "message": "Catalog update available.",
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Err(error) => catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({
+                "ok": false,
+                "error": format!("Catalog update check failed: {error}"),
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+    }
+}
+
+/// Revalidates and adopts a remote model catalog after explicit user approval.
+#[cfg(feature = "ssr")]
+async fn api_catalog_approve(
+    body: axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use duumbi::agents::model_catalog::CatalogRemoteClient;
+
+    let store = studio_catalog_store();
+    let approved_hash = body
+        .0
+        .get("hash")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty());
+    let Some(approved_hash) = approved_hash else {
+        return catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({
+                "ok": false,
+                "error": "Catalog approval requires a reviewed hash.",
+                "status": studio_catalog_status_payload()
+            }),
+        );
+    };
+    let client = match CatalogRemoteClient::new() {
+        Ok(client) => client,
+        Err(error) => {
+            return catalog_json_response(
+                http_status_bad_request(),
+                serde_json::json!({"ok": false, "error": format!("Catalog update approval could not start: {error}")}),
+            );
+        }
+    };
+
+    match client
+        .approve_remote_catalog(&store, Some(approved_hash), studio_current_unix_secs())
+        .await
+    {
+        Ok(document) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "message": "Catalog update adopted.",
+                "document": studio_catalog_document_summary(&document),
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Err(error) => catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({
+                "ok": false,
+                "error": format!("Catalog update approval failed: {error}"),
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+    }
+}
+
+/// Skips an offered model-catalog hash.
+#[cfg(feature = "ssr")]
+async fn api_catalog_skip(
+    body: axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response {
+    let store = studio_catalog_store();
+    let hash = body
+        .0
+        .get("hash")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            store
+                .load_state()
+                .ok()
+                .and_then(|state| state.last_offered_hash)
+        });
+    let Some(hash) = hash else {
+        return catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({"ok": false, "error": "No offered catalog hash is available to skip."}),
+        );
+    };
+
+    match store.skip_hash(&hash) {
+        Ok(()) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "message": format!("Catalog hash skipped: {hash}"),
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Err(error) => catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({"ok": false, "error": format!("Catalog skip failed: {error}")}),
+        ),
+    }
+}
+
+/// Defers model-catalog update notifications.
+#[cfg(feature = "ssr")]
+async fn api_catalog_remind(
+    body: axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response {
+    let store = studio_catalog_store();
+    let hours = body
+        .0
+        .get("hours")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or(24);
+    let until = studio_current_unix_secs().saturating_add(hours.saturating_mul(60 * 60));
+
+    match store.remind_later_until(until) {
+        Ok(()) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "message": format!("Catalog update reminder deferred until Unix time {until}."),
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Err(error) => catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({"ok": false, "error": format!("Catalog remind-later failed: {error}")}),
+        ),
+    }
+}
+
+/// Disables automatic model-catalog checks.
+#[cfg(feature = "ssr")]
+async fn api_catalog_disable() -> axum::response::Response {
+    let store = studio_catalog_store();
+    match store.disable_checks() {
+        Ok(()) => catalog_json_response(
+            http_status_ok(),
+            serde_json::json!({
+                "ok": true,
+                "message": "Catalog update checks disabled.",
+                "status": studio_catalog_status_payload()
+            }),
+        ),
+        Err(error) => catalog_json_response(
+            http_status_bad_request(),
+            serde_json::json!({"ok": false, "error": format!("Catalog disable failed: {error}")}),
+        ),
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn studio_catalog_store() -> duumbi::agents::model_catalog::ModelCatalogStore {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    duumbi::agents::model_catalog::ModelCatalogStore::for_home(home)
+}
+
+#[cfg(feature = "ssr")]
+fn studio_catalog_status_payload() -> serde_json::Value {
+    use duumbi::agents::model_catalog::{MODEL_CATALOG_V1_SHA256_URL, MODEL_CATALOG_V1_URL};
+
+    let store = studio_catalog_store();
+    let state = store.load_state();
+    let active = store.load_active_catalog().ok().flatten();
+
+    serde_json::json!({
+        "catalogUrl": MODEL_CATALOG_V1_URL,
+        "sha256Url": MODEL_CATALOG_V1_SHA256_URL,
+        "state": state.as_ref().ok().map(|state| serde_json::json!({
+            "installedHash": state.installed_hash,
+            "lastOfferedHash": state.last_offered_hash,
+            "lastCheckUnixSecs": state.last_check_unix_secs,
+            "remindLaterUntilUnixSecs": state.remind_later_until_unix_secs,
+            "disabled": state.disabled,
+            "checkFrequencySecs": state.check_frequency_secs,
+            "skippedHashCount": state.skipped_hashes.len(),
+            "lastFailure": state.last_failure,
+        })),
+        "stateError": state.err().map(|error| error.to_string()),
+        "activeCatalog": active.as_ref().map(studio_catalog_document_summary),
+        "controls": ["check", "approve", "skip", "remind", "disable", "cancel"],
+    })
+}
+
+#[cfg(feature = "ssr")]
+fn studio_catalog_document_summary(
+    document: &duumbi::agents::model_catalog::ModelCatalogDocumentV1,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": document.schema_version,
+        "contentTimestamp": document.content_timestamp,
+        "source": document.source,
+        "changeSummary": document.change_summary,
+        "generatorStatusSummary": document.generator_status_summary,
+        "providerCount": document.providers.len(),
+        "modelCount": document.models.len(),
+    })
+}
+
+#[cfg(feature = "ssr")]
+fn studio_current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "ssr")]
+fn catalog_json_response(
+    status: axum::http::StatusCode,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    (
+        status,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+#[cfg(feature = "ssr")]
+fn http_status_ok() -> axum::http::StatusCode {
+    axum::http::StatusCode::OK
+}
+
+#[cfg(feature = "ssr")]
+fn http_status_bad_request() -> axum::http::StatusCode {
+    axum::http::StatusCode::BAD_REQUEST
 }

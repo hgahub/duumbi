@@ -17,6 +17,7 @@ pub mod merger;
 pub mod minimax;
 pub mod model_access;
 pub mod model_catalog;
+pub mod model_catalog_publisher;
 pub mod model_performance;
 pub mod openai;
 pub mod openrouter;
@@ -109,7 +110,7 @@ impl AgentError {
 // Do NOT refactor methods to `async fn` — that would break dyn LlmProvider,
 // ProviderChain, and all factory functions that return Box<dyn LlmProvider>.
 pub trait LlmProvider: Send + Sync {
-    /// Returns the provider's display name (e.g. `"anthropic"`, `"grok"`).
+    /// Returns the provider's display name (e.g. `"anthropic"`, `"xai"`).
     fn name(&self) -> &str;
 
     /// Returns the concrete model identifier, when available.

@@ -856,7 +856,7 @@ fn unique_workspace(prefix: &str, attempt: u32) -> PathBuf {
 
 fn provider_config(provider: &ProviderKind) -> ProviderConfig {
     ProviderConfig {
-        provider: provider.clone(),
+        provider: *provider,
         role: ProviderRole::Primary,
         model: None,
         api_key_env: provider_key_env(provider).to_string(),
@@ -872,8 +872,13 @@ fn parse_provider(provider: &str) -> Result<ProviderKind> {
         "minimax" => Ok(ProviderKind::MiniMax),
         "anthropic" => Ok(ProviderKind::Anthropic),
         "openai" => Ok(ProviderKind::OpenAI),
-        "grok" => Ok(ProviderKind::Grok),
+        "xai" | "grok" => Ok(ProviderKind::Grok),
         "openrouter" => Ok(ProviderKind::OpenRouter),
+        "deepseek" => Ok(ProviderKind::DeepSeek),
+        "qwen" => Ok(ProviderKind::Qwen),
+        "moonshot" => Ok(ProviderKind::Moonshot),
+        "zhipu" => Ok(ProviderKind::Zhipu),
+        "gemini" => Ok(ProviderKind::Gemini),
         _ => anyhow::bail!("Unsupported provider '{provider}'"),
     }
 }
@@ -885,6 +890,11 @@ fn provider_key_env(provider: &ProviderKind) -> &'static str {
         ProviderKind::Grok => "XAI_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
         ProviderKind::MiniMax => "MINIMAX_API_KEY",
+        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+        ProviderKind::Qwen => "DASHSCOPE_API_KEY",
+        ProviderKind::Moonshot => "MOONSHOT_API_KEY",
+        ProviderKind::Zhipu => "ZHIPUAI_API_KEY",
+        ProviderKind::Gemini => "GEMINI_API_KEY",
     }
 }
 
