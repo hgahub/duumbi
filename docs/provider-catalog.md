@@ -44,6 +44,35 @@ Accepted public URLs for closure verification:
 This repository contains the generator and validation path. Public static
 publication may require a separate docs-site update in `hgahub/duumbi-web`.
 
+## Public Catalog Publication Handoff
+
+Stage 10 local generation evidence is available from the deterministic
+publisher workflow and binary. For the current curated fixture input, local
+generation emitted:
+
+- catalog hash:
+  `0e80f66921d283cca8185a358f485004721dbc513e54c5fbe91f37895268107e`
+- catalog artifact: `model-catalog.v1.json`
+- checksum artifact: `model-catalog.v1.sha256`
+- run evidence artifact: `run-evidence.json`
+
+Public publication remains a docs-site/static-file handoff until a writable
+`hgahub/duumbi-web` workspace and publication path are authorized. The required
+docs-site outcome is:
+
+- add `model-catalog/v1/model-catalog.v1.json` to the static files served by
+  `https://docs.duumbi.dev/`
+- add `model-catalog/v1/model-catalog.v1.sha256` beside it
+- keep run evidence outside the public catalog bytes unless explicitly published
+  as a separate operational artifact
+- verify both public URLs after deployment before Stage 12 closure
+
+The handoff must not use registry publication, provider credentials, or live
+provider calls. If public docs publication is handled in `hgahub/duumbi-web`,
+the source bytes must match the generated catalog hash above or a newer
+deterministic publisher run must record its replacement hash in implementation
+evidence.
+
 ## Local Update State
 
 Refreshed catalog state is user-level installation state:

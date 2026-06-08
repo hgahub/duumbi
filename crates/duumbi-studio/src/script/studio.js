@@ -13,6 +13,14 @@
 
   function qs(sel, ctx) { return (ctx || document).querySelector(sel); }
   function qsa(sel, ctx) { return Array.prototype.slice.call((ctx || document).querySelectorAll(sel)); }
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   // ── State ────────────────────────────────────────────────────────────────────
 
@@ -566,11 +574,135 @@
     var html = '<div class="settings-section-title">LLM Providers</div>';
     providers.forEach(function (p, i) { html += buildCardHtml(p, i); });
     html += '<div class="provider-add" onclick="window.__studio.addProviderCard()">+ Add Provider</div>';
+    html += buildCatalogPanelHtml();
     main.innerHTML = html;
     // Check env vars for all cards
     providers.forEach(function (p, i) {
       checkEnvStatus(p.api_key_env, 'envStatus-' + i);
     });
+    loadCatalogStatus();
+  }
+
+  function buildCatalogPanelHtml() {
+    return [
+      '<div class="settings-section-title">Model Catalog Updates</div>',
+      '<div class="provider-card catalog-card" id="catalogPanel">',
+      '<div class="pc-header"><strong>Provider model catalog</strong><span class="pc-role">LOCAL STATE</span></div>',
+      '<div id="catalogStatus" class="pc-row">Loading catalog state...</div>',
+      '<div id="catalogReview" class="pc-row"></div>',
+      '<div class="pc-row">',
+      '<button class="pc-role-btn" onclick="window.__studio.checkCatalogUpdate()">Check</button>',
+      '<button class="pc-role-btn" onclick="window.__studio.approveCatalogUpdate()">Approve</button>',
+      '<button class="pc-role-btn" onclick="window.__studio.skipCatalogUpdate()">Skip</button>',
+      '<button class="pc-role-btn" onclick="window.__studio.remindCatalogUpdate()">Remind later</button>',
+      '<button class="pc-role-btn" onclick="window.__studio.disableCatalogUpdate()">Disable</button>',
+      '<button class="pc-role-btn" onclick="window.__studio.cancelCatalogUpdate()">Cancel</button>',
+      '</div>',
+      '<div id="catalogMessage" class="pc-row"></div>',
+      '</div>'
+    ].join('');
+  }
+
+  function loadCatalogStatus() {
+    fetch('/api/settings/catalog')
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderCatalogStatus(data); })
+      .catch(function (err) { setCatalogMessage(err.message, true); });
+  }
+
+  function renderCatalogStatus(data) {
+    var status = document.getElementById('catalogStatus');
+    if (!status) return;
+    var state = data && data.state ? data.state : {};
+    var active = data && data.activeCatalog ? data.activeCatalog : null;
+    var installed = state.installedHash || 'none';
+    var offered = state.lastOfferedHash || 'none';
+    var disabled = state.disabled ? 'yes' : 'no';
+    var timestamp = active ? active.contentTimestamp : 'embedded fallback';
+    status.innerHTML =
+      '<span class="pc-label">Installed</span><span>' + escapeHtml(installed) + '</span>' +
+      '<span class="pc-label">Offered</span><span>' + escapeHtml(offered) + '</span>' +
+      '<span class="pc-label">Disabled</span><span>' + escapeHtml(disabled) + '</span>' +
+      '<span class="pc-label">Catalog</span><span>' + escapeHtml(timestamp) + '</span>';
+    if (state.lastFailure) {
+      setCatalogMessage(state.lastFailure.code + ': ' + state.lastFailure.message, true);
+    }
+  }
+
+  function renderCatalogReview(data) {
+    var review = document.getElementById('catalogReview');
+    if (!review) return;
+    if (!data || !data.reviewAvailable) {
+      review.innerHTML = '<span class="pc-label">Remote</span><span>No reviewable update.</span>';
+      return;
+    }
+    var doc = data.document || {};
+    review.dataset.hash = data.hash || '';
+    review.innerHTML =
+      '<span class="pc-label">Remote hash</span><span>' + escapeHtml(data.hash || '') + '</span>' +
+      '<span class="pc-label">Timestamp</span><span>' + escapeHtml(doc.contentTimestamp || '') + '</span>' +
+      '<span class="pc-label">Summary</span><span>' + escapeHtml(doc.changeSummary || '') + '</span>';
+  }
+
+  function catalogAction(path, body, onDone) {
+    setCatalogMessage('Working...', false);
+    fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.status) renderCatalogStatus(data.status);
+      if (onDone) onDone(data);
+      if (data.error) setCatalogMessage(data.error, true);
+      else setCatalogMessage(data.message || 'Done.', false);
+    })
+    .catch(function (err) { setCatalogMessage(err.message, true); });
+  }
+
+  function checkCatalogUpdate() {
+    catalogAction('/api/settings/catalog/check', {}, function (data) { renderCatalogReview(data); });
+  }
+
+  function approveCatalogUpdate() {
+    var review = document.getElementById('catalogReview');
+    var hash = review ? review.dataset.hash : '';
+    if (!hash) {
+      setCatalogMessage('Check for a catalog update before approving.', true);
+      return;
+    }
+    catalogAction('/api/settings/catalog/approve', { hash: hash || null }, function () {
+      renderCatalogReview({ reviewAvailable: false });
+    });
+  }
+
+  function skipCatalogUpdate() {
+    var review = document.getElementById('catalogReview');
+    var hash = review ? review.dataset.hash : '';
+    catalogAction('/api/settings/catalog/skip', { hash: hash || null }, function () {
+      renderCatalogReview({ reviewAvailable: false });
+    });
+  }
+
+  function remindCatalogUpdate() {
+    catalogAction('/api/settings/catalog/remind', { hours: 24 });
+  }
+
+  function disableCatalogUpdate() {
+    catalogAction('/api/settings/catalog/disable', {});
+  }
+
+  function cancelCatalogUpdate() {
+    renderCatalogReview({ reviewAvailable: false });
+    setCatalogMessage('Catalog review canceled. Active catalog unchanged.', false);
+  }
+
+  function setCatalogMessage(message, isError) {
+    var el = document.getElementById('catalogMessage');
+    if (!el) return;
+    el.style.color = isError ? '#f09090' : '#6fd8b2';
+    el.textContent = message || '';
   }
 
   function buildCardHtml(p, idx) {
@@ -2937,7 +3069,14 @@
     onProviderChange:    onProviderChange,
     onAuthChange:        onAuthChange,
     onRoleChange:        onRoleChange,
-    checkEnvStatus:      checkEnvStatus
+    checkEnvStatus:      checkEnvStatus,
+    loadCatalogStatus:   loadCatalogStatus,
+    checkCatalogUpdate:  checkCatalogUpdate,
+    approveCatalogUpdate: approveCatalogUpdate,
+    skipCatalogUpdate:   skipCatalogUpdate,
+    remindCatalogUpdate: remindCatalogUpdate,
+    disableCatalogUpdate: disableCatalogUpdate,
+    cancelCatalogUpdate: cancelCatalogUpdate
   };
 
   // ── Initial load ──────────────────────────────────────────────────────────────

@@ -66,6 +66,12 @@ fn duumbi675_model_catalog_publisher_docs_cover_v1_contract() {
         "`~/.duumbi/model-catalog/current.json`",
         "approve, skip, remind later, or disable",
         "must not overwrite provider credentials",
+        "Public Catalog Publication Handoff",
+        "0e80f66921d283cca8185a358f485004721dbc513e54c5fbe91f37895268107e",
+        "model-catalog/v1/model-catalog.v1.json",
+        "model-catalog/v1/model-catalog.v1.sha256",
+        "hgahub/duumbi-web",
+        "verify both public URLs after deployment before Stage 12 closure",
     ] {
         assert!(docs.contains(expected), "missing docs text: {expected}");
     }
@@ -120,6 +126,47 @@ fn duumbi675_model_catalog_publisher_studio_uses_accepted_provider_list() {
         .expect("provider names");
     assert!(!provider_names.contains("grok"));
     assert!(!provider_names.contains("openrouter"));
+}
+
+#[test]
+fn duumbi675_studio_exposes_catalog_update_controls() {
+    let lib = fs::read_to_string("crates/duumbi-studio/src/lib.rs").expect("studio lib");
+    let script =
+        fs::read_to_string("crates/duumbi-studio/src/script/studio.js").expect("studio script");
+
+    for route in [
+        r#"/api/settings/catalog"#,
+        r#"/api/settings/catalog/check"#,
+        r#"/api/settings/catalog/approve"#,
+        r#"/api/settings/catalog/skip"#,
+        r#"/api/settings/catalog/remind"#,
+        r#"/api/settings/catalog/disable"#,
+    ] {
+        assert!(lib.contains(route), "missing Studio catalog route {route}");
+    }
+
+    for token in [
+        "Model Catalog Updates",
+        "checkCatalogUpdate",
+        "approveCatalogUpdate",
+        "skipCatalogUpdate",
+        "remindCatalogUpdate",
+        "disableCatalogUpdate",
+        "cancelCatalogUpdate",
+        "Check for a catalog update before approving.",
+        "Catalog review canceled. Active catalog unchanged.",
+    ] {
+        assert!(
+            script.contains(token),
+            "missing Studio catalog UI token {token}"
+        );
+    }
+
+    assert!(lib.contains("studio_catalog_status_payload"));
+    assert!(lib.contains("lastFailure"));
+    assert!(lib.contains("Catalog approval requires a reviewed hash."));
+    assert!(lib.contains("Catalog update approval failed"));
+    assert!(lib.contains("Catalog hash skipped"));
 }
 
 fn run_publisher(
