@@ -93,7 +93,7 @@ pub struct LlmConfig {
 // ---------------------------------------------------------------------------
 
 /// Provider kind for the `[[providers]]` config section.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// Anthropic Claude API.
@@ -102,6 +102,7 @@ pub enum ProviderKind {
     #[serde(rename = "openai")]
     OpenAI,
     /// xAI Grok API (OpenAI-compatible).
+    #[serde(rename = "xai", alias = "grok")]
     Grok,
     /// OpenRouter API (OpenAI-compatible).
     #[serde(rename = "openrouter")]
@@ -109,6 +110,21 @@ pub enum ProviderKind {
     /// MiniMax API (OpenAI-compatible).
     #[serde(rename = "minimax")]
     MiniMax,
+    /// DeepSeek API (OpenAI-compatible).
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    /// Alibaba Cloud Model Studio Qwen API (OpenAI-compatible).
+    #[serde(rename = "qwen")]
+    Qwen,
+    /// Moonshot AI Kimi API (OpenAI-compatible).
+    #[serde(rename = "moonshot")]
+    Moonshot,
+    /// Zhipu AI GLM API (OpenAI-compatible).
+    #[serde(rename = "zhipu")]
+    Zhipu,
+    /// Google Gemini OpenAI-compatible API.
+    #[serde(rename = "gemini")]
+    Gemini,
 }
 
 impl fmt::Display for ProviderKind {
@@ -116,9 +132,14 @@ impl fmt::Display for ProviderKind {
         match self {
             ProviderKind::Anthropic => f.write_str("anthropic"),
             ProviderKind::OpenAI => f.write_str("openai"),
-            ProviderKind::Grok => f.write_str("grok"),
+            ProviderKind::Grok => f.write_str("xai"),
             ProviderKind::OpenRouter => f.write_str("openrouter"),
             ProviderKind::MiniMax => f.write_str("minimax"),
+            ProviderKind::DeepSeek => f.write_str("deepseek"),
+            ProviderKind::Qwen => f.write_str("qwen"),
+            ProviderKind::Moonshot => f.write_str("moonshot"),
+            ProviderKind::Zhipu => f.write_str("zhipu"),
+            ProviderKind::Gemini => f.write_str("gemini"),
         }
     }
 }
@@ -130,9 +151,14 @@ impl ProviderKind {
         match name.to_ascii_lowercase().as_str() {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::OpenAI),
-            "grok" => Some(Self::Grok),
+            "xai" | "grok" => Some(Self::Grok),
             "openrouter" => Some(Self::OpenRouter),
             "minimax" => Some(Self::MiniMax),
+            "deepseek" => Some(Self::DeepSeek),
+            "qwen" => Some(Self::Qwen),
+            "moonshot" => Some(Self::Moonshot),
+            "zhipu" => Some(Self::Zhipu),
+            "gemini" => Some(Self::Gemini),
             _ => None,
         }
     }

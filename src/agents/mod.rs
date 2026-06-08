@@ -109,7 +109,7 @@ impl AgentError {
 // Do NOT refactor methods to `async fn` — that would break dyn LlmProvider,
 // ProviderChain, and all factory functions that return Box<dyn LlmProvider>.
 pub trait LlmProvider: Send + Sync {
-    /// Returns the provider's display name (e.g. `"anthropic"`, `"grok"`).
+    /// Returns the provider's display name (e.g. `"anthropic"`, `"xai"`).
     fn name(&self) -> &str;
 
     /// Returns the concrete model identifier, when available.

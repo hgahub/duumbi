@@ -19,7 +19,9 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::agents::LlmClient;
-use crate::config::{DuumbiConfig, LogLevel, LogMode, LoggingSection, ProviderConfigSource};
+use crate::config::{
+    DuumbiConfig, LogLevel, LogMode, LoggingSection, ProviderConfigSource, ProviderKind,
+};
 use crate::session::SessionManager;
 
 // ---------------------------------------------------------------------------
@@ -27,12 +29,20 @@ use crate::session::SessionManager;
 // ---------------------------------------------------------------------------
 
 /// Provider kinds available for selection in the wizard.
-const PROVIDER_KINDS: &[(&str, &str)] = &[
-    ("anthropic", "Anthropic (Claude)"),
-    ("openai", "OpenAI (GPT)"),
-    ("grok", "xAI (Grok)"),
-    ("openrouter", "OpenRouter (multi-model gateway)"),
-    ("minimax", "MiniMax"),
+const PROVIDER_KINDS: &[(ProviderKind, &str, &str)] = &[
+    (ProviderKind::Anthropic, "anthropic", "Anthropic (Claude)"),
+    (ProviderKind::OpenAI, "openai", "OpenAI (GPT)"),
+    (ProviderKind::Grok, "xai", "xAI (Grok)"),
+    (ProviderKind::MiniMax, "minimax", "MiniMax"),
+    (ProviderKind::DeepSeek, "deepseek", "DeepSeek"),
+    (
+        ProviderKind::Qwen,
+        "qwen",
+        "Alibaba Cloud Model Studio (Qwen)",
+    ),
+    (ProviderKind::Moonshot, "moonshot", "Moonshot AI (Kimi)"),
+    (ProviderKind::Zhipu, "zhipu", "Zhipu AI (GLM)"),
+    (ProviderKind::Gemini, "gemini", "Google Gemini"),
 ];
 const PROVIDER_LIST_VISIBLE_LIMIT: usize = 8;
 
@@ -120,9 +130,14 @@ fn provider_kind_label(kind: &crate::config::ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "anthropic",
         ProviderKind::OpenAI => "openai",
-        ProviderKind::Grok => "grok",
+        ProviderKind::Grok => "xai",
         ProviderKind::OpenRouter => "openrouter",
         ProviderKind::MiniMax => "minimax",
+        ProviderKind::DeepSeek => "deepseek",
+        ProviderKind::Qwen => "qwen",
+        ProviderKind::Moonshot => "moonshot",
+        ProviderKind::Zhipu => "zhipu",
+        ProviderKind::Gemini => "gemini",
     }
 }
 
@@ -135,6 +150,11 @@ fn default_api_key_env(kind: &crate::config::ProviderKind) -> &'static str {
         ProviderKind::Grok => "XAI_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
         ProviderKind::MiniMax => "MINIMAX_API_KEY",
+        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+        ProviderKind::Qwen => "DASHSCOPE_API_KEY",
+        ProviderKind::Moonshot => "MOONSHOT_API_KEY",
+        ProviderKind::Zhipu => "ZHIPUAI_API_KEY",
+        ProviderKind::Gemini => "GEMINI_API_KEY",
     }
 }
 
@@ -150,6 +170,11 @@ fn default_auth_token_env(kind: &crate::config::ProviderKind) -> &'static str {
         ProviderKind::Grok => "XAI_AUTH_TOKEN",
         ProviderKind::OpenRouter => "OPENROUTER_AUTH_TOKEN",
         ProviderKind::MiniMax => "MINIMAX_AUTH_TOKEN",
+        ProviderKind::DeepSeek => "DEEPSEEK_AUTH_TOKEN",
+        ProviderKind::Qwen => "DASHSCOPE_AUTH_TOKEN",
+        ProviderKind::Moonshot => "MOONSHOT_AUTH_TOKEN",
+        ProviderKind::Zhipu => "ZHIPUAI_AUTH_TOKEN",
+        ProviderKind::Gemini => "GEMINI_AUTH_TOKEN",
     }
 }
 
@@ -189,21 +214,13 @@ fn truncate_for_width(value: &str, max_chars: usize) -> String {
 
 /// Parses a provider kind by wizard list index.
 fn parse_provider_kind_by_index(idx: usize) -> Option<crate::config::ProviderKind> {
-    use crate::config::ProviderKind;
-    match idx {
-        0 => Some(ProviderKind::Anthropic),
-        1 => Some(ProviderKind::OpenAI),
-        2 => Some(ProviderKind::Grok),
-        3 => Some(ProviderKind::OpenRouter),
-        4 => Some(ProviderKind::MiniMax),
-        _ => None,
-    }
+    PROVIDER_KINDS.get(idx).map(|(provider, _, _)| *provider)
 }
 
 fn provider_kind_index(kind: &crate::config::ProviderKind) -> Option<usize> {
-    PROVIDER_KINDS.iter().enumerate().find_map(|(index, _)| {
-        (parse_provider_kind_by_index(index).as_ref() == Some(kind)).then_some(index)
-    })
+    PROVIDER_KINDS
+        .iter()
+        .position(|(provider, _, _)| provider == kind)
 }
 
 fn provider_list_visible_window(selected: usize, total: usize) -> (usize, usize) {
@@ -470,7 +487,7 @@ pub(crate) async fn probe_provider_config_with_key(
 
     for entry in models {
         let resolved = crate::config::ResolvedProviderConfig {
-            provider: config.provider.clone(),
+            provider: config.provider,
             model: entry.model.to_string(),
             api_key_env: config.api_key_env.clone(),
             base_url: config.base_url.clone(),
@@ -1659,7 +1676,7 @@ impl ReplApp {
                     KeyCode::Enter => {
                         if let Some(auth_mode) = provider_auth_mode_by_index(provider, *auth_sel) {
                             input_mode = Some(PanelInputMode::AddStep3Key {
-                                provider: provider.clone(),
+                                provider: *provider,
                                 key_buf: String::new(),
                                 is_subscription: auth_mode.is_subscription(),
                             });
@@ -1740,7 +1757,7 @@ impl ReplApp {
                             OutputStyle::Dim,
                         ));
                         action = Action::ProviderKeySubmitted {
-                            provider: provider.clone(),
+                            provider: *provider,
                             key: key_buf.clone(),
                             is_subscription: *is_subscription,
                         };
@@ -1937,7 +1954,7 @@ impl ReplApp {
             &key,
             is_subscription,
         );
-        self.save_provider_with_file_credential(provider.clone(), key, is_subscription)?;
+        self.save_provider_with_file_credential(provider, key, is_subscription)?;
         crate::agents::model_access::ModelAccessStore::record_report(
             &credential_fingerprint,
             &probe_report,
@@ -4800,26 +4817,23 @@ impl ReplApp {
 
         let (visible_start, visible_end) =
             provider_list_visible_window(selected, PROVIDER_KINDS.len());
-        for (i, (name, desc)) in PROVIDER_KINDS
+        for (i, (kind, name, desc)) in PROVIDER_KINDS
             .iter()
             .enumerate()
             .skip(visible_start)
             .take(visible_end.saturating_sub(visible_start))
         {
-            let Some(kind) = parse_provider_kind_by_index(i) else {
-                continue;
-            };
             let is_sel = i == selected;
             let prefix = if is_sel { "  \u{25cf} " } else { "    " };
             let (connection, key_source, required_secret) =
-                if let Some(index) = configured_provider_index(&self.config, &kind) {
+                if let Some(index) = configured_provider_index(&self.config, kind) {
                     let provider = &self.config.providers[index];
                     let auth = if provider.auth_token_env.is_some() {
                         "subscription"
                     } else {
                         "api key"
                     };
-                    let config_source = self.provider_config_source_label(&kind);
+                    let config_source = self.provider_config_source_label(kind);
                     (
                         "configured".to_string(),
                         config_source.to_string(),
@@ -4829,7 +4843,7 @@ impl ReplApp {
                     (
                         "not configured".to_string(),
                         "missing".to_string(),
-                        provider_auth_summary(&kind),
+                        provider_auth_summary(kind),
                     )
                 };
             let text = format!(
@@ -5022,6 +5036,10 @@ mod tests {
         );
         let textarea = TextArea::default();
         (app, textarea)
+    }
+
+    fn minimax_provider_index() -> usize {
+        provider_kind_index(&crate::config::ProviderKind::MiniMax).expect("minimax provider row")
     }
 
     fn make_app_with_workspace_state(
@@ -6438,8 +6456,12 @@ mod tests {
             crate::config::ProviderKind::Anthropic,
             crate::config::ProviderKind::OpenAI,
             crate::config::ProviderKind::Grok,
-            crate::config::ProviderKind::OpenRouter,
             crate::config::ProviderKind::MiniMax,
+            crate::config::ProviderKind::DeepSeek,
+            crate::config::ProviderKind::Qwen,
+            crate::config::ProviderKind::Moonshot,
+            crate::config::ProviderKind::Zhipu,
+            crate::config::ProviderKind::Gemini,
         ] {
             assert_eq!(provider_auth_summary(&kind), "api key");
             assert_eq!(provider_auth_modes(&kind), &[ProviderAuthMode::ApiKey]);
@@ -6532,7 +6554,7 @@ mod tests {
     fn provider_panel_enter_opens_api_key_input() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: None,
             status_msg: None,
         };
@@ -6685,7 +6707,7 @@ mod tests {
         let (mut app, mut textarea) = make_app();
         app.has_workspace = false;
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: "sk-test-key".to_string(),
@@ -6926,7 +6948,7 @@ mod tests {
             });
         app.refresh_effective_config();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: "123".to_string(),
@@ -6993,7 +7015,7 @@ mod tests {
             });
         app.refresh_effective_config();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: None,
             status_msg: None,
         };
@@ -7024,7 +7046,7 @@ mod tests {
     fn provider_panel_test_message_has_single_separator_rows() {
         let (mut app, textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: None,
             status_msg: Some(("minimax is not configured.".to_string(), OutputStyle::Dim)),
         };
@@ -7049,7 +7071,7 @@ mod tests {
     fn provider_panel_testing_status_drives_animation() {
         let (mut app, textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: "sk-test-key".to_string(),
@@ -7071,7 +7093,7 @@ mod tests {
     fn provider_panel_delete_confirmation_has_single_separator_rows() {
         let (mut app, textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::ConfirmDelete),
             status_msg: None,
         };
@@ -7096,7 +7118,7 @@ mod tests {
     fn provider_panel_paste_goes_to_api_key_field_not_prompt() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: String::new(),
@@ -7130,7 +7152,7 @@ mod tests {
         let (mut app, mut textarea) = make_app();
         textarea.insert_str("/provider");
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: None,
             status_msg: None,
         };
@@ -7158,7 +7180,7 @@ mod tests {
     fn provider_panel_api_key_render_has_only_input_field() {
         let (mut app, textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: "sk-test".to_string(),
@@ -7228,7 +7250,7 @@ mod tests {
     fn provider_panel_api_key_newline_char_submits_probe_action() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: "sk-test-key".to_string(),
@@ -7256,7 +7278,7 @@ mod tests {
     fn provider_panel_clipboard_shortcut_does_not_type_into_api_key_field() {
         let (mut app, mut textarea) = make_app();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::AddStep3Key {
                 provider: crate::config::ProviderKind::MiniMax,
                 key_buf: String::new(),
@@ -7345,7 +7367,7 @@ mod tests {
             });
         app.refresh_effective_config();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: Some(PanelInputMode::ConfirmDelete),
             status_msg: None,
         };
@@ -7387,7 +7409,7 @@ mod tests {
             });
         app.refresh_effective_config();
         app.panel = PanelState::ProviderManager {
-            selected: 4,
+            selected: minimax_provider_index(),
             input_mode: None,
             status_msg: None,
         };

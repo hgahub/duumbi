@@ -19,7 +19,7 @@ impl GrokClient {
     /// Creates a new Grok client targeting the xAI API.
     #[must_use]
     pub fn new(model: impl Into<String>, api_key: impl Into<String>) -> Self {
-        Self(OpenAiClient::with_base_url(model, api_key, GROK_API_URL).with_provider_name("grok"))
+        Self(OpenAiClient::with_base_url(model, api_key, GROK_API_URL).with_provider_name("xai"))
     }
 }
 
@@ -27,7 +27,7 @@ impl GrokClient {
 #[cfg(test)]
 impl GrokClient {
     fn with_base_url(model: impl Into<String>, api_key: impl Into<String>, url: &str) -> Self {
-        Self(OpenAiClient::with_base_url(model, api_key, url).with_provider_name("grok"))
+        Self(OpenAiClient::with_base_url(model, api_key, url).with_provider_name("xai"))
     }
 }
 
@@ -101,9 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn grok_name_returns_grok() {
+    fn grok_name_returns_xai() {
         let client = GrokClient::new("grok-beta", "dummy-key");
-        assert_eq!(client.name(), "grok");
+        assert_eq!(client.name(), "xai");
     }
 
     #[tokio::test]

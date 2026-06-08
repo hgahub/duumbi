@@ -16,7 +16,7 @@ pub fn provider_prompt_suffix(provider_name: &str) -> &'static str {
             "\n\nReminder: emit tool calls using the function calling format. \
                       Each tool call's `arguments` must be a valid JSON string."
         }
-        "grok" => {
+        "xai" | "grok" => {
             "\n\nReminder: respond ONLY with tool calls. Do not include explanatory \
                    text before or after the tool calls. Each tool call must have valid JSON arguments."
         }
@@ -45,8 +45,8 @@ mod tests {
     }
 
     #[test]
-    fn grok_has_suffix() {
-        let suffix = provider_prompt_suffix("grok");
+    fn xai_has_grok_suffix() {
+        let suffix = provider_prompt_suffix("xai");
         assert!(suffix.contains("ONLY with tool calls"));
     }
 

@@ -264,8 +264,29 @@ fn chain_requires_at_least_one_provider() {
 fn provider_kind_display() {
     assert_eq!(ProviderKind::Anthropic.to_string(), "anthropic");
     assert_eq!(ProviderKind::OpenAI.to_string(), "openai");
-    assert_eq!(ProviderKind::Grok.to_string(), "grok");
+    assert_eq!(ProviderKind::Grok.to_string(), "xai");
     assert_eq!(ProviderKind::OpenRouter.to_string(), "openrouter");
+    assert_eq!(ProviderKind::DeepSeek.to_string(), "deepseek");
+    assert_eq!(ProviderKind::Qwen.to_string(), "qwen");
+    assert_eq!(ProviderKind::Moonshot.to_string(), "moonshot");
+    assert_eq!(ProviderKind::Zhipu.to_string(), "zhipu");
+    assert_eq!(ProviderKind::Gemini.to_string(), "gemini");
+}
+
+#[test]
+fn legacy_grok_config_deserializes_to_xai_provider_kind() {
+    let cfg: DuumbiConfig = toml::from_str(
+        r#"
+[[providers]]
+provider = "grok"
+role = "primary"
+api_key_env = "XAI_API_KEY"
+"#,
+    )
+    .expect("legacy grok config should deserialize");
+
+    assert_eq!(cfg.providers[0].provider, ProviderKind::Grok);
+    assert_eq!(cfg.providers[0].provider.to_string(), "xai");
 }
 
 // ---------------------------------------------------------------------------
@@ -316,5 +337,6 @@ fn config_providers_roundtrip_toml() {
     assert_eq!(loaded.providers[0].provider, ProviderKind::Anthropic);
     assert_eq!(loaded.providers[1].provider, ProviderKind::Grok);
     assert!(!toml_str.contains("model ="));
+    assert!(toml_str.contains("provider = \"xai\""));
     assert_eq!(loaded.providers[1].timeout_secs, Some(30));
 }

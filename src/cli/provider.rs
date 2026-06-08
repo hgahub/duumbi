@@ -358,11 +358,16 @@ fn parse_provider_kind(s: &str) -> Result<ProviderKind, String> {
     match s {
         "anthropic" => Ok(ProviderKind::Anthropic),
         "openai" => Ok(ProviderKind::OpenAI),
-        "grok" => Ok(ProviderKind::Grok),
+        "xai" | "grok" => Ok(ProviderKind::Grok),
         "openrouter" => Ok(ProviderKind::OpenRouter),
         "minimax" => Ok(ProviderKind::MiniMax),
+        "deepseek" => Ok(ProviderKind::DeepSeek),
+        "qwen" => Ok(ProviderKind::Qwen),
+        "moonshot" => Ok(ProviderKind::Moonshot),
+        "zhipu" => Ok(ProviderKind::Zhipu),
+        "gemini" => Ok(ProviderKind::Gemini),
         other => Err(format!(
-            "Unknown provider type '{other}'. Use: anthropic, openai, grok, openrouter, minimax"
+            "Unknown provider type '{other}'. Use: anthropic, openai, xai, minimax, deepseek, qwen, moonshot, zhipu, gemini"
         )),
     }
 }
@@ -483,12 +488,18 @@ mod tests {
             Ok(ProviderKind::Anthropic)
         );
         assert_eq!(parse_provider_kind("openai"), Ok(ProviderKind::OpenAI));
+        assert_eq!(parse_provider_kind("xai"), Ok(ProviderKind::Grok));
         assert_eq!(parse_provider_kind("grok"), Ok(ProviderKind::Grok));
         assert_eq!(
             parse_provider_kind("openrouter"),
             Ok(ProviderKind::OpenRouter)
         );
         assert_eq!(parse_provider_kind("minimax"), Ok(ProviderKind::MiniMax));
+        assert_eq!(parse_provider_kind("deepseek"), Ok(ProviderKind::DeepSeek));
+        assert_eq!(parse_provider_kind("qwen"), Ok(ProviderKind::Qwen));
+        assert_eq!(parse_provider_kind("moonshot"), Ok(ProviderKind::Moonshot));
+        assert_eq!(parse_provider_kind("zhipu"), Ok(ProviderKind::Zhipu));
+        assert_eq!(parse_provider_kind("gemini"), Ok(ProviderKind::Gemini));
         assert!(parse_provider_kind("unknown").is_err());
     }
 

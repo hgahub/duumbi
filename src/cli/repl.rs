@@ -250,7 +250,7 @@ async fn event_loop(
                     } => {
                         if pending_provider_probe.is_none() {
                             let config = app.provider_config_for_key_submission(
-                                provider.clone(),
+                                provider,
                                 is_subscription,
                                 None,
                             );
@@ -3390,7 +3390,7 @@ mod tests {
         assert!(rendered.contains("Binary:"));
         assert!(rendered.contains("[ok], modified"));
         assert!(rendered.contains("Session / AI"));
-        assert!(rendered.contains("minimax primary, grok fallback (source: user)"));
+        assert!(rendered.contains("minimax primary, xai fallback (source: user)"));
         assert!(rendered.contains("0 persisted turns, 0 context turns"));
         assert!(!rendered.contains("LLM calls"));
     }
