@@ -4,7 +4,12 @@
 //! section of `.duumbi/config.toml`, returning [`OutputLine`] slices that
 //! the REPL pushes directly to its output buffer.
 
+use crate::agents::model_catalog::{
+    CatalogRemoteCheckResult, CatalogRemoteClient, CatalogRemoteUrls, MODEL_CATALOG_V1_SHA256_URL,
+    MODEL_CATALOG_V1_URL, ModelCatalogStore,
+};
 use crate::config::{DuumbiConfig, ProviderConfig, ProviderKind, ProviderRole};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::mode::{OutputLine, OutputStyle};
 
@@ -328,6 +333,247 @@ pub fn set_provider_field(config: &mut DuumbiConfig, args: &str) -> Vec<OutputLi
     }
 }
 
+/// Builds catalog remote URLs, applying explicit overrides independently.
+#[must_use]
+pub fn catalog_remote_urls(
+    catalog_url: Option<String>,
+    sha256_url: Option<String>,
+) -> CatalogRemoteUrls {
+    CatalogRemoteUrls {
+        catalog_url: catalog_url.unwrap_or_else(|| MODEL_CATALOG_V1_URL.to_string()),
+        sha256_url: sha256_url.unwrap_or_else(|| MODEL_CATALOG_V1_SHA256_URL.to_string()),
+    }
+}
+
+/// Returns local model-catalog update state lines.
+#[must_use]
+pub fn catalog_status(store: &ModelCatalogStore) -> Vec<OutputLine> {
+    match store.load_state() {
+        Ok(state) => {
+            let mut lines = vec![OutputLine::new(
+                "Model catalog update state",
+                OutputStyle::Normal,
+            )];
+            lines.push(OutputLine::new(
+                format!(
+                    "installed hash: {}",
+                    state.installed_hash.as_deref().unwrap_or("none")
+                ),
+                OutputStyle::Normal,
+            ));
+            lines.push(OutputLine::new(
+                format!(
+                    "last offered hash: {}",
+                    state.last_offered_hash.as_deref().unwrap_or("none")
+                ),
+                OutputStyle::Normal,
+            ));
+            lines.push(OutputLine::new(
+                format!(
+                    "last check: {}",
+                    state
+                        .last_check_unix_secs
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "never".to_string())
+                ),
+                OutputStyle::Normal,
+            ));
+            lines.push(OutputLine::new(
+                format!("disabled: {}", state.disabled),
+                OutputStyle::Normal,
+            ));
+            lines.push(OutputLine::new(
+                format!("check frequency seconds: {}", state.check_frequency_secs),
+                OutputStyle::Normal,
+            ));
+            if let Some(failure) = state.last_failure {
+                lines.push(OutputLine::new(
+                    format!("last failure: {} ({})", failure.code, failure.message),
+                    OutputStyle::Dim,
+                ));
+            }
+            lines
+        }
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog status unavailable: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Checks the remote catalog hash and formats a review surface when changed.
+///
+/// # Errors
+///
+/// This function reports errors as [`OutputLine`] values and never panics.
+pub async fn catalog_check(
+    store: &ModelCatalogStore,
+    urls: CatalogRemoteUrls,
+    now_unix_secs: u64,
+) -> Vec<OutputLine> {
+    let client = match CatalogRemoteClient::with_urls(urls) {
+        Ok(client) => client,
+        Err(error) => {
+            return vec![OutputLine::new(
+                format!("Catalog update check could not start: {error}"),
+                OutputStyle::Error,
+            )];
+        }
+    };
+
+    match client.check_for_update(store, now_unix_secs).await {
+        Ok(CatalogRemoteCheckResult::Quiet) => vec![OutputLine::new(
+            "Catalog is current, skipped, deferred, or disabled.",
+            OutputStyle::Dim,
+        )],
+        Ok(CatalogRemoteCheckResult::ReviewAvailable { hash, document }) => {
+            vec![
+                OutputLine::new("Catalog update available.", OutputStyle::Success),
+                OutputLine::new(format!("hash: {hash}"), OutputStyle::Normal),
+                OutputLine::new(
+                    format!("timestamp: {}", document.content_timestamp),
+                    OutputStyle::Normal,
+                ),
+                OutputLine::new(
+                    format!("summary: {}", document.change_summary),
+                    OutputStyle::Normal,
+                ),
+                OutputLine::new(
+                    "Use `duumbi provider catalog approve --hash <hash>`, `skip`, `remind`, or `disable`.",
+                    OutputStyle::Dim,
+                ),
+            ]
+        }
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog update check failed: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Revalidates and adopts the current remote catalog after explicit approval.
+///
+/// # Errors
+///
+/// This function reports errors as [`OutputLine`] values and never panics.
+pub async fn catalog_approve(
+    store: &ModelCatalogStore,
+    urls: CatalogRemoteUrls,
+    approved_hash: Option<&str>,
+    now_unix_secs: u64,
+) -> Vec<OutputLine> {
+    let client = match CatalogRemoteClient::with_urls(urls) {
+        Ok(client) => client,
+        Err(error) => {
+            return vec![OutputLine::new(
+                format!("Catalog update approval could not start: {error}"),
+                OutputStyle::Error,
+            )];
+        }
+    };
+
+    match client
+        .approve_remote_catalog(store, approved_hash, now_unix_secs)
+        .await
+    {
+        Ok(document) => vec![
+            OutputLine::new("Catalog update adopted.", OutputStyle::Success),
+            OutputLine::new(
+                format!("timestamp: {}", document.content_timestamp),
+                OutputStyle::Normal,
+            ),
+            OutputLine::new(
+                format!("summary: {}", document.change_summary),
+                OutputStyle::Normal,
+            ),
+        ],
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog update approval failed: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Skips an offered catalog hash.
+#[must_use]
+pub fn catalog_skip(store: &ModelCatalogStore, hash: Option<&str>) -> Vec<OutputLine> {
+    let hash = match hash {
+        Some(hash) => hash.to_string(),
+        None => match store.load_state() {
+            Ok(state) => match state.last_offered_hash {
+                Some(hash) => hash,
+                None => {
+                    return vec![OutputLine::new(
+                        "No offered catalog hash is available to skip.",
+                        OutputStyle::Error,
+                    )];
+                }
+            },
+            Err(error) => {
+                return vec![OutputLine::new(
+                    format!("Catalog state unavailable: {error}"),
+                    OutputStyle::Error,
+                )];
+            }
+        },
+    };
+
+    match store.skip_hash(&hash) {
+        Ok(()) => vec![OutputLine::new(
+            format!("Catalog hash skipped: {hash}"),
+            OutputStyle::Success,
+        )],
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog skip failed: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Defers catalog update notifications for the requested number of hours.
+#[must_use]
+pub fn catalog_remind(
+    store: &ModelCatalogStore,
+    hours: u64,
+    now_unix_secs: u64,
+) -> Vec<OutputLine> {
+    let until = now_unix_secs.saturating_add(hours.saturating_mul(60 * 60));
+    match store.remind_later_until(until) {
+        Ok(()) => vec![OutputLine::new(
+            format!("Catalog update reminder deferred until Unix time {until}."),
+            OutputStyle::Success,
+        )],
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog remind-later failed: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Disables automatic catalog update checks.
+#[must_use]
+pub fn catalog_disable(store: &ModelCatalogStore) -> Vec<OutputLine> {
+    match store.disable_checks() {
+        Ok(()) => vec![OutputLine::new(
+            "Catalog update checks disabled.",
+            OutputStyle::Success,
+        )],
+        Err(error) => vec![OutputLine::new(
+            format!("Catalog disable failed: {error}"),
+            OutputStyle::Error,
+        )],
+    }
+}
+
+/// Returns current Unix time in seconds for catalog state updates.
+#[must_use]
+pub fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // CLI output helper
 // ---------------------------------------------------------------------------
@@ -538,5 +784,35 @@ mod tests {
         let lines = add_provider(&mut cfg, "mistral mistral-large MISTRAL_API_KEY");
         assert_eq!(lines[0].style, OutputStyle::Error);
         assert!(cfg.providers.is_empty());
+    }
+
+    #[test]
+    fn catalog_skip_defaults_to_last_offered_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        store
+            .record_remote_hash_check(hash, 1_000)
+            .expect("hash check must record");
+
+        let lines = catalog_skip(&store, None);
+
+        assert_eq!(lines[0].style, OutputStyle::Success);
+        let state = store.load_state().expect("state must load");
+        assert!(state.skipped_hashes.iter().any(|skipped| skipped == hash));
+    }
+
+    #[test]
+    fn catalog_status_does_not_require_provider_config() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+
+        let lines = catalog_status(&store);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("installed hash"))
+        );
     }
 }

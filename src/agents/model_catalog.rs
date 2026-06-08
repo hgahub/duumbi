@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::agents::analyzer::{Complexity, Risk, TaskProfile, TaskType};
 use crate::agents::template::AgentRole;
@@ -281,6 +282,257 @@ pub enum CatalogHashCheckDecision {
     },
 }
 
+/// Remote catalog URLs used for hash-first update checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogRemoteUrls {
+    /// URL for the deterministic v1 catalog JSON document.
+    pub catalog_url: String,
+    /// URL for the SHA-256 checksum artifact.
+    pub sha256_url: String,
+}
+
+impl Default for CatalogRemoteUrls {
+    fn default() -> Self {
+        Self {
+            catalog_url: MODEL_CATALOG_V1_URL.to_string(),
+            sha256_url: MODEL_CATALOG_V1_SHA256_URL.to_string(),
+        }
+    }
+}
+
+/// Result of a hash-first remote catalog check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogRemoteCheckResult {
+    /// No user-visible update is available or allowed by current state.
+    Quiet,
+    /// A validated changed catalog is available for explicit review.
+    ReviewAvailable {
+        /// Normalized SHA-256 hash the user must approve.
+        hash: String,
+        /// Validated remote catalog document for display.
+        document: Box<ModelCatalogDocumentV1>,
+    },
+}
+
+/// HTTP client for bounded remote model-catalog update checks.
+#[derive(Debug, Clone)]
+pub struct CatalogRemoteClient {
+    http: reqwest::Client,
+    urls: CatalogRemoteUrls,
+}
+
+/// Errors from bounded remote catalog update checks.
+#[derive(Debug, Error)]
+pub enum CatalogRemoteClientError {
+    /// Remote request failed before a response could be consumed.
+    #[error("catalog remote request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    /// Remote server returned a non-success status code.
+    #[error("catalog remote returned HTTP status {status}")]
+    HttpStatus {
+        /// HTTP status returned by the remote artifact endpoint.
+        status: reqwest::StatusCode,
+    },
+    /// The user approved a hash that is no longer the current remote hash.
+    #[error("stale catalog approval: approved {approved}, current {current}")]
+    StaleApproval {
+        /// Hash approved by the user.
+        approved: String,
+        /// Current hash fetched before adoption.
+        current: String,
+    },
+    /// Store, checksum, schema, or local persistence validation failed.
+    #[error(transparent)]
+    Store(#[from] ModelCatalogStoreError),
+}
+
+impl CatalogRemoteClient {
+    /// Creates a remote client with default catalog URLs and a bounded timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be constructed.
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Self::with_urls(CatalogRemoteUrls::default())
+    }
+
+    /// Creates a remote client for explicit catalog URLs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be constructed.
+    pub fn with_urls(urls: CatalogRemoteUrls) -> Result<Self, reqwest::Error> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        Ok(Self { http, urls })
+    }
+
+    /// Returns the configured catalog URLs.
+    #[must_use]
+    pub fn urls(&self) -> &CatalogRemoteUrls {
+        &self.urls
+    }
+
+    /// Performs a hash-first remote catalog check without adopting content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for remote, checksum, schema, state, or storage
+    /// failures. Safe failure metadata is recorded when possible.
+    pub async fn check_for_update(
+        &self,
+        store: &ModelCatalogStore,
+        now_unix_secs: u64,
+    ) -> Result<CatalogRemoteCheckResult, CatalogRemoteClientError> {
+        let remote_hash = match self.fetch_remote_hash().await {
+            Ok(hash) => hash,
+            Err(error) => {
+                store.record_failure(
+                    "remote_hash_fetch_failed",
+                    "Remote catalog hash could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+
+        match store.record_remote_hash_check(&remote_hash, now_unix_secs)? {
+            CatalogHashCheckDecision::Quiet => Ok(CatalogRemoteCheckResult::Quiet),
+            CatalogHashCheckDecision::OfferReview { hash } => {
+                let bytes = match self.fetch_remote_catalog_bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        store.record_failure(
+                            "remote_catalog_fetch_failed",
+                            "Remote catalog document could not be fetched.",
+                            now_unix_secs,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                if catalog_sha256_hex(&bytes) != hash {
+                    store.record_failure(
+                        "remote_catalog_hash_mismatch",
+                        "Remote catalog bytes did not match the advertised hash.",
+                        now_unix_secs,
+                    )?;
+                    return Err(ModelCatalogStoreError::HashMismatch {
+                        expected: hash,
+                        actual: catalog_sha256_hex(&bytes),
+                    }
+                    .into());
+                }
+                let document = match validate_catalog_bytes_v1(&bytes) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        store.record_failure(
+                            "remote_catalog_validation_failed",
+                            "Remote catalog document failed v1 validation.",
+                            now_unix_secs,
+                        )?;
+                        return Err(error.into());
+                    }
+                };
+                Ok(CatalogRemoteCheckResult::ReviewAvailable {
+                    hash,
+                    document: Box::new(document),
+                })
+            }
+        }
+    }
+
+    /// Revalidates the current remote hash and adopts the matching catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the approved hash is stale, the remote artifacts
+    /// are invalid, or local atomic adoption fails.
+    pub async fn approve_remote_catalog(
+        &self,
+        store: &ModelCatalogStore,
+        approved_hash: Option<&str>,
+        now_unix_secs: u64,
+    ) -> Result<ModelCatalogDocumentV1, CatalogRemoteClientError> {
+        let current_hash = match self.fetch_remote_hash().await {
+            Ok(hash) => hash,
+            Err(error) => {
+                store.record_failure(
+                    "remote_hash_fetch_failed",
+                    "Remote catalog hash could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+        if let Some(approved_hash) = approved_hash {
+            let approved = normalize_catalog_sha256(approved_hash)?;
+            if approved != current_hash {
+                store.record_failure(
+                    "stale_catalog_approval",
+                    "Approved catalog hash no longer matches the current remote hash.",
+                    now_unix_secs,
+                )?;
+                return Err(CatalogRemoteClientError::StaleApproval {
+                    approved,
+                    current: current_hash,
+                });
+            }
+        }
+
+        let bytes = match self.fetch_remote_catalog_bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                store.record_failure(
+                    "remote_catalog_fetch_failed",
+                    "Remote catalog document could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+
+        match store.adopt_catalog_bytes(&current_hash, &bytes, now_unix_secs) {
+            Ok(document) => Ok(document),
+            Err(error) => {
+                store.record_failure(
+                    "remote_catalog_adoption_failed",
+                    "Remote catalog adoption failed; previous catalog remains active.",
+                    now_unix_secs,
+                )?;
+                Err(error.into())
+            }
+        }
+    }
+
+    async fn fetch_remote_hash(&self) -> Result<String, CatalogRemoteClientError> {
+        let text = self.fetch_remote_text(&self.urls.sha256_url).await?;
+        normalize_catalog_sha256(&text).map_err(Into::into)
+    }
+
+    async fn fetch_remote_catalog_bytes(&self) -> Result<Vec<u8>, CatalogRemoteClientError> {
+        let response = self.http.get(&self.urls.catalog_url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CatalogRemoteClientError::HttpStatus { status });
+        }
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(Into::into)
+    }
+
+    async fn fetch_remote_text(&self, url: &str) -> Result<String, CatalogRemoteClientError> {
+        let response = self.http.get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CatalogRemoteClientError::HttpStatus { status });
+        }
+        response.text().await.map_err(Into::into)
+    }
+}
+
 /// User-level model catalog store.
 #[derive(Debug, Clone)]
 pub struct ModelCatalogStore {
@@ -479,6 +731,26 @@ impl ModelCatalogStore {
     pub fn disable_checks(&self) -> Result<(), ModelCatalogStoreError> {
         let mut state = self.load_state()?;
         state.disabled = true;
+        self.save_state(&state)
+    }
+
+    /// Records safe catalog-refresh failure metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be saved.
+    pub fn record_failure(
+        &self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        now_unix_secs: u64,
+    ) -> Result<(), ModelCatalogStoreError> {
+        let mut state = self.load_state()?;
+        state.last_check_unix_secs = Some(now_unix_secs);
+        state.last_failure = Some(CatalogRefreshFailure {
+            code: code.into(),
+            message: message.into(),
+        });
         self.save_state(&state)
     }
 
@@ -1375,6 +1647,74 @@ mod tests {
     use super::*;
     use crate::agents::analyzer::{Complexity, Risk, Scope, TaskProfile};
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    struct LocalCatalogServer {
+        base_url: String,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl LocalCatalogServer {
+        fn spawn(catalog_bytes: Vec<u8>, sha256_body: String, expected_requests: usize) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("local server bind");
+            let addr = listener.local_addr().expect("local server addr");
+            let base_url = format!("http://{addr}");
+            let handle = thread::spawn(move || {
+                for stream in listener.incoming().take(expected_requests) {
+                    let mut stream = stream.expect("local server stream");
+                    let mut request = [0_u8; 1024];
+                    let read = stream.read(&mut request).expect("local server read");
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let body = if path == "/model-catalog.v1.sha256" {
+                        sha256_body.as_bytes().to_vec()
+                    } else if path == "/model-catalog.v1.json" {
+                        catalog_bytes.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let status = if body.is_empty() {
+                        "404 Not Found"
+                    } else {
+                        "200 OK"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("local server header write");
+                    stream.write_all(&body).expect("local server body write");
+                }
+            });
+            Self {
+                base_url,
+                handle: Some(handle),
+            }
+        }
+
+        fn urls(&self) -> CatalogRemoteUrls {
+            CatalogRemoteUrls {
+                catalog_url: format!("{}/model-catalog.v1.json", self.base_url),
+                sha256_url: format!("{}/model-catalog.v1.sha256", self.base_url),
+            }
+        }
+    }
+
+    impl Drop for LocalCatalogServer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("local catalog server joins");
+            }
+        }
+    }
 
     fn valid_catalog_document() -> ModelCatalogDocumentV1 {
         ModelCatalogDocumentV1 {
@@ -1698,6 +2038,116 @@ mod tests {
         );
         let state = store.load_state().expect("state must load");
         assert_eq!(state.installed_hash.as_deref(), Some(good_hash.as_str()));
+    }
+
+    #[tokio::test]
+    async fn remote_client_offers_review_for_changed_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let server = LocalCatalogServer::spawn(bytes, format!("{hash}  model-catalog.v1.json"), 2);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let result = client
+            .check_for_update(&store, 1_000)
+            .await
+            .expect("remote check must succeed");
+
+        match result {
+            CatalogRemoteCheckResult::ReviewAvailable {
+                hash: offered,
+                document,
+            } => {
+                assert_eq!(offered, hash);
+                assert_eq!(document.change_summary, "fixture catalog for validation");
+            }
+            CatalogRemoteCheckResult::Quiet => panic!("changed hash should offer review"),
+        }
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.last_offered_hash.as_deref(), Some(hash.as_str()));
+        assert!(state.last_failure.is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_client_stays_quiet_for_installed_hash_without_json_download() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+        let server = LocalCatalogServer::spawn(bytes, hash.clone(), 1);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let result = client
+            .check_for_update(&store, 2_000)
+            .await
+            .expect("remote check must succeed");
+
+        assert_eq!(result, CatalogRemoteCheckResult::Quiet);
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.last_check_unix_secs, Some(2_000));
+    }
+
+    #[tokio::test]
+    async fn remote_client_approve_revalidates_hash_and_preserves_provider_config() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let mut provider_config = crate::config::DuumbiConfig::default();
+        provider_config.providers.push(ProviderConfig {
+            provider: ProviderKind::MiniMax,
+            role: crate::config::ProviderRole::Primary,
+            model: Some("MiniMax-M2.7".to_string()),
+            api_key_env: "CUSTOM_MINIMAX_API_KEY".to_string(),
+            base_url: Some("https://example.invalid/minimax".to_string()),
+            timeout_secs: Some(42),
+            key_storage: Some(crate::config::KeyStorage::File),
+            auth_token_env: Some("CUSTOM_MINIMAX_AUTH_TOKEN".to_string()),
+        });
+        let before = toml::to_string(&provider_config).expect("provider config serializes");
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let server = LocalCatalogServer::spawn(bytes, hash.clone(), 2);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let document = client
+            .approve_remote_catalog(&store, Some(&hash), 1_000)
+            .await
+            .expect("remote catalog must adopt");
+
+        assert_eq!(document.change_summary, "fixture catalog for validation");
+        let after = toml::to_string(&provider_config).expect("provider config serializes");
+        assert_eq!(after, before);
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+    }
+
+    #[tokio::test]
+    async fn remote_client_rejects_stale_approval_without_adoption() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let stale = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let server = LocalCatalogServer::spawn(bytes, hash, 1);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let error = client
+            .approve_remote_catalog(&store, Some(stale), 1_000)
+            .await
+            .expect_err("stale approval must fail");
+
+        assert!(matches!(
+            error,
+            CatalogRemoteClientError::StaleApproval { .. }
+        ));
+        assert!(!store.root().join(CURRENT_CATALOG_FILE).exists());
+        let state = store.load_state().expect("state must load");
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(|failure| failure.code.as_str()),
+            Some("stale_catalog_approval")
+        );
     }
 
     #[test]

@@ -584,6 +584,59 @@ pub enum ProviderSubcommand {
         /// New value for the field.
         value: String,
     },
+
+    /// Inspect and control scheduled provider model-catalog updates.
+    Catalog {
+        /// Catalog subcommand.
+        #[command(subcommand)]
+        subcommand: ProviderCatalogSubcommand,
+    },
+}
+
+/// Subcommands for `duumbi provider catalog`.
+#[derive(Subcommand, Debug)]
+pub enum ProviderCatalogSubcommand {
+    /// Show local catalog update state.
+    Status,
+
+    /// Check the remote catalog hash and show review details when changed.
+    Check {
+        /// Override v1 catalog JSON URL for local smoke tests.
+        #[arg(long)]
+        catalog_url: Option<String>,
+        /// Override v1 catalog SHA-256 URL for local smoke tests.
+        #[arg(long)]
+        sha256_url: Option<String>,
+    },
+
+    /// Revalidate and adopt the currently approved remote catalog.
+    Approve {
+        /// Hash reviewed by the user; adoption fails if the remote hash changed.
+        #[arg(long)]
+        hash: Option<String>,
+        /// Override v1 catalog JSON URL for local smoke tests.
+        #[arg(long)]
+        catalog_url: Option<String>,
+        /// Override v1 catalog SHA-256 URL for local smoke tests.
+        #[arg(long)]
+        sha256_url: Option<String>,
+    },
+
+    /// Skip a catalog hash so it is not offered again.
+    Skip {
+        /// Hash to skip. Defaults to the last offered hash.
+        hash: Option<String>,
+    },
+
+    /// Remind later instead of offering the current catalog update.
+    Remind {
+        /// Hours to defer update prompts.
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
+        hours: u64,
+    },
+
+    /// Disable automatic catalog update checks.
+    Disable,
 }
 
 /// Subcommands for `duumbi intent`.
