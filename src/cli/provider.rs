@@ -463,6 +463,16 @@ pub async fn catalog_approve(
     approved_hash: Option<&str>,
     now_unix_secs: u64,
 ) -> Vec<OutputLine> {
+    let approved_hash = match approved_hash {
+        Some(hash) => hash,
+        None => {
+            return vec![OutputLine::new(
+                "Catalog update approval requires --hash <hash> from a reviewed catalog check.",
+                OutputStyle::Error,
+            )];
+        }
+    };
+
     let client = match CatalogRemoteClient::with_urls(urls) {
         Ok(client) => client,
         Err(error) => {
@@ -474,7 +484,7 @@ pub async fn catalog_approve(
     };
 
     match client
-        .approve_remote_catalog(store, approved_hash, now_unix_secs)
+        .approve_remote_catalog(store, Some(approved_hash), now_unix_secs)
         .await
     {
         Ok(document) => vec![
@@ -804,6 +814,17 @@ mod tests {
         assert_eq!(lines[0].style, OutputStyle::Success);
         let state = store.load_state().expect("state must load");
         assert!(state.skipped_hashes.iter().any(|skipped| skipped == hash));
+    }
+
+    #[tokio::test]
+    async fn catalog_approve_requires_reviewed_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+
+        let lines = catalog_approve(&store, CatalogRemoteUrls::default(), None, 1_000).await;
+
+        assert_eq!(lines[0].style, OutputStyle::Error);
+        assert!(lines[0].text.contains("--hash <hash>"));
     }
 
     #[test]

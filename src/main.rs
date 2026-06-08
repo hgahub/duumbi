@@ -968,7 +968,7 @@ async fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) ->
                     cli::provider::catalog_approve(
                         &store,
                         urls,
-                        hash.as_deref(),
+                        Some(hash.as_str()),
                         cli::provider::current_unix_secs(),
                     )
                     .await

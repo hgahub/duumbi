@@ -613,7 +613,7 @@ pub enum ProviderCatalogSubcommand {
     Approve {
         /// Hash reviewed by the user; adoption fails if the remote hash changed.
         #[arg(long)]
-        hash: Option<String>,
+        hash: String,
         /// Override v1 catalog JSON URL for local smoke tests.
         #[arg(long)]
         catalog_url: Option<String>,

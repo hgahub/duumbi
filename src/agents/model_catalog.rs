@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::agents::analyzer::{Complexity, Risk, TaskProfile, TaskType};
 use crate::agents::template::AgentRole;
 use crate::config::{ProviderConfig, ProviderKind, ResolvedProviderConfig};
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -34,6 +35,8 @@ const MODEL_CATALOG_DIR: &str = "model-catalog";
 const CURRENT_CATALOG_FILE: &str = "current.json";
 const CURRENT_HASH_FILE: &str = "current.sha256";
 const CATALOG_STATE_FILE: &str = "state.json";
+const MAX_REMOTE_CATALOG_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SKIPPED_CATALOG_HASHES: usize = 32;
 
 /// Canonical provider metadata used by v1 catalog validation and setup UX.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,6 +336,14 @@ pub enum CatalogRemoteClientError {
         /// HTTP status returned by the remote artifact endpoint.
         status: reqwest::StatusCode,
     },
+    /// Remote catalog body exceeded the bounded allocation limit.
+    #[error("catalog remote body too large: received {received} bytes, limit {limit}")]
+    ResponseTooLarge {
+        /// Bytes reported or received before aborting.
+        received: u64,
+        /// Maximum accepted catalog response size.
+        limit: u64,
+    },
     /// The user approved a hash that is no longer the current remote hash.
     #[error("stale catalog approval: approved {approved}, current {current}")]
     StaleApproval {
@@ -516,11 +527,29 @@ impl CatalogRemoteClient {
         if !status.is_success() {
             return Err(CatalogRemoteClientError::HttpStatus { status });
         }
-        response
-            .bytes()
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(Into::into)
+        if let Some(content_length) = response.content_length()
+            && content_length > MAX_REMOTE_CATALOG_BYTES
+        {
+            return Err(CatalogRemoteClientError::ResponseTooLarge {
+                received: content_length,
+                limit: MAX_REMOTE_CATALOG_BYTES,
+            });
+        }
+
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            let received = (bytes.len() + chunk.len()) as u64;
+            if received > MAX_REMOTE_CATALOG_BYTES {
+                return Err(CatalogRemoteClientError::ResponseTooLarge {
+                    received,
+                    limit: MAX_REMOTE_CATALOG_BYTES,
+                });
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     async fn fetch_remote_text(&self, url: &str) -> Result<String, CatalogRemoteClientError> {
@@ -702,13 +731,9 @@ impl ModelCatalogStore {
     pub fn skip_hash(&self, hash: &str) -> Result<(), ModelCatalogStoreError> {
         let hash = normalize_catalog_sha256(hash)?;
         let mut state = self.load_state()?;
-        if !state
-            .skipped_hashes
-            .iter()
-            .any(|existing| existing == &hash)
-        {
-            state.skipped_hashes.push(hash);
-        }
+        state.skipped_hashes.retain(|existing| existing != &hash);
+        state.skipped_hashes.push(hash);
+        cap_skipped_hashes(&mut state.skipped_hashes);
         self.save_state(&state)
     }
 
@@ -773,13 +798,22 @@ impl ModelCatalogStore {
         }
 
         let document = validate_catalog_bytes_v1(catalog_bytes)?;
-        replace_catalog_files_atomically(&self.root, catalog_bytes, expected.as_bytes())?;
-
         let mut state = self.load_state()?;
-        state.installed_hash = Some(expected);
+        state.installed_hash = Some(expected.clone());
         state.last_check_unix_secs = Some(now_unix_secs);
         state.last_failure = None;
-        self.save_state(&state)?;
+        state
+            .skipped_hashes
+            .retain(|skipped_hash| skipped_hash != &expected);
+        cap_skipped_hashes(&mut state.skipped_hashes);
+        let state_bytes = serde_json::to_vec_pretty(&state)?;
+
+        replace_catalog_files_atomically(
+            &self.root,
+            catalog_bytes,
+            expected.as_bytes(),
+            &state_bytes,
+        )?;
 
         Ok(document)
     }
@@ -799,6 +833,13 @@ impl ModelCatalogStore {
 
 fn default_catalog_check_frequency_secs() -> u64 {
     DEFAULT_CATALOG_CHECK_FREQUENCY_SECS
+}
+
+fn cap_skipped_hashes(skipped_hashes: &mut Vec<String>) {
+    if skipped_hashes.len() > MAX_SKIPPED_CATALOG_HASHES {
+        let overflow = skipped_hashes.len() - MAX_SKIPPED_CATALOG_HASHES;
+        skipped_hashes.drain(0..overflow);
+    }
 }
 
 /// Serializes v1 catalog content into deterministic JSON bytes.
@@ -888,67 +929,65 @@ fn replace_catalog_files_atomically(
     dir: &Path,
     catalog_bytes: &[u8],
     hash_bytes: &[u8],
+    state_bytes: &[u8],
 ) -> Result<(), ModelCatalogStoreError> {
     fs::create_dir_all(dir).map_err(|source| ModelCatalogStoreError::Io {
         path: dir.to_path_buf(),
         source,
     })?;
 
-    let catalog_path = dir.join(CURRENT_CATALOG_FILE);
-    let hash_path = dir.join(CURRENT_HASH_FILE);
-    let catalog_tmp = dir.join(format!("{CURRENT_CATALOG_FILE}.tmp"));
-    let hash_tmp = dir.join(format!("{CURRENT_HASH_FILE}.tmp"));
-    let catalog_backup = dir.join(format!("{CURRENT_CATALOG_FILE}.bak"));
-    let hash_backup = dir.join(format!("{CURRENT_HASH_FILE}.bak"));
+    let mut entries = [
+        AtomicWriteEntry::new(dir, CURRENT_CATALOG_FILE, catalog_bytes),
+        AtomicWriteEntry::new(dir, CURRENT_HASH_FILE, hash_bytes),
+        AtomicWriteEntry::new(dir, CATALOG_STATE_FILE, state_bytes),
+    ];
 
-    cleanup_optional_file(&catalog_backup);
-    cleanup_optional_file(&hash_backup);
-    write_temp_verified(&catalog_tmp, catalog_bytes)?;
-    write_temp_verified(&hash_tmp, hash_bytes)?;
+    for entry in &entries {
+        cleanup_optional_file(&entry.backup_path);
+        write_temp_verified(&entry.tmp_path, entry.bytes)?;
+    }
 
-    let catalog_backed_up = move_if_exists(&catalog_path, &catalog_backup)?;
-    let hash_backed_up = match move_if_exists(&hash_path, &hash_backup) {
-        Ok(backed_up) => backed_up,
-        Err(error) => {
-            restore_catalog_pair(
-                &catalog_path,
-                &hash_path,
-                &catalog_backup,
-                &hash_backup,
-                catalog_backed_up,
-                false,
-            );
+    for index in 0..entries.len() {
+        match move_if_exists(&entries[index].final_path, &entries[index].backup_path) {
+            Ok(backed_up) => entries[index].backed_up = backed_up,
+            Err(error) => {
+                restore_atomic_entries(&entries);
+                return Err(error);
+            }
+        }
+    }
+
+    for entry in &entries {
+        if let Err(error) = rename_path(&entry.tmp_path, &entry.final_path) {
+            restore_atomic_entries(&entries);
             return Err(error);
         }
-    };
-
-    if let Err(error) = rename_path(&catalog_tmp, &catalog_path) {
-        restore_catalog_pair(
-            &catalog_path,
-            &hash_path,
-            &catalog_backup,
-            &hash_backup,
-            catalog_backed_up,
-            hash_backed_up,
-        );
-        return Err(error);
     }
 
-    if let Err(error) = rename_path(&hash_tmp, &hash_path) {
-        restore_catalog_pair(
-            &catalog_path,
-            &hash_path,
-            &catalog_backup,
-            &hash_backup,
-            catalog_backed_up,
-            hash_backed_up,
-        );
-        return Err(error);
+    for entry in &entries {
+        cleanup_optional_file(&entry.backup_path);
     }
-
-    cleanup_optional_file(&catalog_backup);
-    cleanup_optional_file(&hash_backup);
     Ok(())
+}
+
+struct AtomicWriteEntry<'a> {
+    final_path: PathBuf,
+    tmp_path: PathBuf,
+    backup_path: PathBuf,
+    bytes: &'a [u8],
+    backed_up: bool,
+}
+
+impl<'a> AtomicWriteEntry<'a> {
+    fn new(dir: &Path, file_name: &'static str, bytes: &'a [u8]) -> Self {
+        Self {
+            final_path: dir.join(file_name),
+            tmp_path: dir.join(format!("{file_name}.tmp")),
+            backup_path: dir.join(format!("{file_name}.bak")),
+            bytes,
+            backed_up: false,
+        }
+    }
 }
 
 fn write_temp_verified(path: &Path, bytes: &[u8]) -> Result<(), ModelCatalogStoreError> {
@@ -982,21 +1021,17 @@ fn rename_path(from: &Path, to: &Path) -> Result<(), ModelCatalogStoreError> {
     })
 }
 
-fn restore_catalog_pair(
-    catalog_path: &Path,
-    hash_path: &Path,
-    catalog_backup: &Path,
-    hash_backup: &Path,
-    catalog_backed_up: bool,
-    hash_backed_up: bool,
-) {
-    cleanup_optional_file(catalog_path);
-    cleanup_optional_file(hash_path);
-    if catalog_backed_up {
-        let _ = fs::rename(catalog_backup, catalog_path);
+fn restore_atomic_entries(entries: &[AtomicWriteEntry<'_>]) {
+    for entry in entries {
+        cleanup_optional_file(&entry.final_path);
+        cleanup_optional_file(&entry.tmp_path);
     }
-    if hash_backed_up {
-        let _ = fs::rename(hash_backup, hash_path);
+    for entry in entries {
+        if entry.backed_up {
+            let _ = fs::rename(&entry.backup_path, &entry.final_path);
+        } else {
+            cleanup_optional_file(&entry.backup_path);
+        }
     }
 }
 
@@ -1658,6 +1693,20 @@ mod tests {
 
     impl LocalCatalogServer {
         fn spawn(catalog_bytes: Vec<u8>, sha256_body: String, expected_requests: usize) -> Self {
+            Self::spawn_with_catalog_content_length(
+                catalog_bytes,
+                None,
+                sha256_body,
+                expected_requests,
+            )
+        }
+
+        fn spawn_with_catalog_content_length(
+            catalog_bytes: Vec<u8>,
+            catalog_content_length: Option<usize>,
+            sha256_body: String,
+            expected_requests: usize,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("local server bind");
             let addr = listener.local_addr().expect("local server addr");
             let base_url = format!("http://{addr}");
@@ -1672,26 +1721,26 @@ mod tests {
                         .next()
                         .and_then(|line| line.split_whitespace().nth(1))
                         .unwrap_or("/");
-                    let body = if path == "/model-catalog.v1.sha256" {
-                        sha256_body.as_bytes().to_vec()
+                    let (status, body, content_length) = if path == "/model-catalog.v1.sha256" {
+                        let body = sha256_body.as_bytes().to_vec();
+                        ("200 OK", body.clone(), body.len())
                     } else if path == "/model-catalog.v1.json" {
-                        catalog_bytes.clone()
+                        let body = catalog_bytes.clone();
+                        (
+                            "200 OK",
+                            body.clone(),
+                            catalog_content_length.unwrap_or(body.len()),
+                        )
                     } else {
-                        Vec::new()
-                    };
-                    let status = if body.is_empty() {
-                        "404 Not Found"
-                    } else {
-                        "200 OK"
+                        ("404 Not Found", Vec::new(), 0)
                     };
                     let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
+                        "HTTP/1.1 {status}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
                     );
                     stream
                         .write_all(response.as_bytes())
                         .expect("local server header write");
-                    stream.write_all(&body).expect("local server body write");
+                    let _ = stream.write_all(&body);
                 }
             });
             Self {
@@ -1995,6 +2044,26 @@ mod tests {
     }
 
     #[test]
+    fn catalog_store_caps_skipped_hashes_to_recent_entries() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+
+        for index in 0..(MAX_SKIPPED_CATALOG_HASHES + 5) {
+            let hash = format!("{index:064x}");
+            store.skip_hash(&hash).expect("skip must save");
+        }
+
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.skipped_hashes.len(), MAX_SKIPPED_CATALOG_HASHES);
+        assert!(!state.skipped_hashes.contains(&format!("{:064x}", 0)));
+        assert!(
+            state
+                .skipped_hashes
+                .contains(&format!("{:064x}", MAX_SKIPPED_CATALOG_HASHES + 4))
+        );
+    }
+
+    #[test]
     fn catalog_store_adopts_valid_catalog_atomically() {
         let temp = tempfile::TempDir::new().expect("temp dir");
         let store = ModelCatalogStore::for_home(temp.path());
@@ -2020,6 +2089,22 @@ mod tests {
         assert_eq!(loaded.change_summary, adopted.change_summary);
         let state = store.load_state().expect("state must load");
         assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+    }
+
+    #[test]
+    fn catalog_store_adoption_removes_installed_hash_from_skipped_hashes() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        store.skip_hash(&hash).expect("skip must save");
+
+        store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+        assert!(!state.skipped_hashes.contains(&hash));
     }
 
     #[test]
@@ -2112,6 +2197,39 @@ mod tests {
         assert_eq!(result, CatalogRemoteCheckResult::Quiet);
         let state = store.load_state().expect("state must load");
         assert_eq!(state.last_check_unix_secs, Some(2_000));
+    }
+
+    #[tokio::test]
+    async fn remote_client_rejects_oversized_catalog_body() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let oversized_length = MAX_REMOTE_CATALOG_BYTES as usize + 1;
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let server = LocalCatalogServer::spawn_with_catalog_content_length(
+            Vec::new(),
+            Some(oversized_length),
+            hash,
+            2,
+        );
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let error = client
+            .check_for_update(&store, 1_000)
+            .await
+            .expect_err("oversized catalog must fail");
+
+        assert!(matches!(
+            error,
+            CatalogRemoteClientError::ResponseTooLarge { .. }
+        ));
+        let state = store.load_state().expect("state must load");
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(|failure| failure.code.as_str()),
+            Some("remote_catalog_fetch_failed")
+        );
     }
 
     #[tokio::test]
