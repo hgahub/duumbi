@@ -63,6 +63,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/duumbi" "${ARCHIVE}/"
           cp "target/${{ matrix.target }}/release/studio" "${ARCHIVE}/"
           cp runtime/duumbi_runtime.c "${ARCHIVE}/runtime/"
+          cp -R runtime/third_party "${ARCHIVE}/runtime/"
           cp LICENSE "${ARCHIVE}/" 2>/dev/null || true
           cp README.md "${ARCHIVE}/" 2>/dev/null || true
 
@@ -110,6 +111,7 @@ jobs:
             - `duumbi` — CLI compiler, AI mutation, intent system, MCP server
             - `studio` — Browser-based Studio (run with `duumbi studio`)
             - `runtime/duumbi_runtime.c` — C runtime for linking compiled binaries
+            - `runtime/third_party/` — vendored native runtime sources required by the C runtime
 
             ### Platforms
 

@@ -48,6 +48,26 @@ jobs:
         if: steps.scope.outputs.run_rust_checks == 'true'
         with:
           components: rustfmt, clippy
+      - name: Install native runtime dependencies (Ubuntu)
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Install native runtime dependencies (Windows)
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-curl
+          path-type: prepend
+      - name: Select DUUMBI runtime C compiler
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          mingw_prefix="$(cygpath -m /mingw64)"
+          gcc_path="$(cygpath -m "$(which gcc)")"
+          echo "DUUMBI_CC=${gcc_path}" >> "$GITHUB_ENV"
+          echo "DUUMBI_CFLAGS=-I${mingw_prefix}/include" >> "$GITHUB_ENV"
+          echo "DUUMBI_LDFLAGS=-L${mingw_prefix}/lib" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check
@@ -58,13 +78,13 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Install cargo-audit
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+          fallback: none
       - name: Dependency audit
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
         run: cargo audit
-      - name: Build
-        if: steps.scope.outputs.run_rust_checks == 'true'
-        run: cargo build
       - name: Test
         if: steps.scope.outputs.run_rust_checks == 'true'
         run: cargo test --all

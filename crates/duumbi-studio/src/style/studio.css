@@ -3032,7 +3032,8 @@ body.resizing * {
 }
 
 /* Provider card */
-.provider-card {
+.provider-card,
+.catalog-card {
   background: #111213;
   border: 1px solid #1f2224;
   border-radius: 8px;

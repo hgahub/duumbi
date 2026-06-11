@@ -126,6 +126,9 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         "tcp_socket" => Ok(DuumbiType::TcpSocket),
         "tcp_listener" => Ok(DuumbiType::TcpListener),
         "http_server" => Ok(DuumbiType::HttpServer),
+        "http_response" => Ok(DuumbiType::HttpResponse),
+        "db_connection" => Ok(DuumbiType::DbConnection),
+        "db_rows" => Ok(DuumbiType::DbRows),
         _ if s.starts_with("array<") && s.ends_with('>') => {
             let inner = &s[6..s.len() - 1];
             let elem_type = parse_type_str(inner)?;
@@ -206,19 +209,22 @@ fn parse_node_ref(
     })
 }
 
-fn parse_node_refs_array(
+fn parse_node_ref_array(
     obj: &serde_json::Value,
     field: &str,
     node_id: &str,
 ) -> Result<Vec<NodeRef>, ParseError> {
-    let args_arr =
-        obj.get(field)
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| ParseError::MissingField {
-                code: codes::E003_MISSING_FIELD,
-                field: field.to_string(),
-                node_id: node_id.to_string(),
-            })?;
+    let args_val = obj.get(field).ok_or_else(|| ParseError::MissingField {
+        code: codes::E003_MISSING_FIELD,
+        field: field.to_string(),
+        node_id: node_id.to_string(),
+    })?;
+    let args_arr = args_val
+        .as_array()
+        .ok_or_else(|| ParseError::SchemaInvalid {
+            code: codes::E009_SCHEMA_INVALID,
+            message: format!("Field '{field}' on node {node_id} must be an array of node refs"),
+        })?;
     let mut refs = Vec::with_capacity(args_arr.len());
     for arg_val in args_arr {
         let id = arg_val.get("@id").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -526,7 +532,7 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let args = if value.get("duumbi:args").is_some() {
-                parse_node_refs_array(value, "duumbi:args", node_id_str)?
+                parse_node_ref_array(value, "duumbi:args", node_id_str)?
             } else {
                 Vec::new()
             };
@@ -1026,7 +1032,7 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 result_type,
             );
             ast.operand = Some(operand);
-            ast.args = parse_node_refs_array(value, "duumbi:args", node_id_str)?;
+            ast.args = parse_node_ref_array(value, "duumbi:args", node_id_str)?;
             Ok(ast)
         }
         "duumbi:ServerClose" => {
@@ -1037,6 +1043,88 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 result_type,
             );
             ast.operand = Some(operand);
+            Ok(ast)
+        }
+        // -- HTTP ops (DUUMBI-380) --
+        "duumbi:HttpGet" | "duumbi:HttpDelete" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:HttpGet" => Op::HttpGet,
+                "duumbi:HttpDelete" => Op::HttpDelete,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:HttpPost" | "duumbi:HttpPut" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let args = parse_node_ref_array(value, "duumbi:args", node_id_str)?;
+            let op = match at_type {
+                "duumbi:HttpPost" => Op::HttpPost,
+                "duumbi:HttpPut" => Op::HttpPut,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            ast.args = args;
+            Ok(ast)
+        }
+        "duumbi:HttpStatus"
+        | "duumbi:HttpBody"
+        | "duumbi:HttpHeaders"
+        | "duumbi:HttpResponseFree"
+        | "duumbi:DbOpen"
+        | "duumbi:DbRowsLen"
+        | "duumbi:DbClose"
+        | "duumbi:DbRowsFree" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let op = match at_type {
+                "duumbi:HttpStatus" => Op::HttpStatus,
+                "duumbi:HttpBody" => Op::HttpBody,
+                "duumbi:HttpHeaders" => Op::HttpHeaders,
+                "duumbi:HttpResponseFree" => Op::HttpResponseFree,
+                "duumbi:DbOpen" => Op::DbOpen,
+                "duumbi:DbRowsLen" => Op::DbRowsLen,
+                "duumbi:DbClose" => Op::DbClose,
+                "duumbi:DbRowsFree" => Op::DbRowsFree,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:DbExecute" | "duumbi:DbQuery" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:DbExecute" => Op::DbExecute,
+                "duumbi:DbQuery" => Op::DbQuery,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:DbRowGet" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), Op::DbRowGet, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
             Ok(ast)
         }
         // -- Match op (Phase 9a-3) --
@@ -1728,6 +1816,33 @@ mod tests {
                 Box::new(DuumbiType::String)
             )
         );
+        assert_eq!(
+            parse_type_str("http_response").unwrap(),
+            DuumbiType::HttpResponse
+        );
+        assert_eq!(
+            parse_type_str("db_connection").unwrap(),
+            DuumbiType::DbConnection
+        );
+        assert_eq!(parse_type_str("db_rows").unwrap(), DuumbiType::DbRows);
+        assert_eq!(
+            parse_type_str("result<http_response,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::HttpResponse),
+                Box::new(DuumbiType::String)
+            )
+        );
+        assert_eq!(
+            parse_type_str("result<db_connection,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::DbConnection),
+                Box::new(DuumbiType::String)
+            )
+        );
+        assert_eq!(
+            parse_type_str("result<db_rows,string>").unwrap(),
+            DuumbiType::Result(Box::new(DuumbiType::DbRows), Box::new(DuumbiType::String))
+        );
     }
 
     #[test]
@@ -1834,6 +1949,142 @@ mod tests {
                 Box::new(DuumbiType::HttpServer),
                 Box::new(DuumbiType::String)
             )
+        );
+    }
+
+    #[test]
+    fn parse_http_db_ops() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:HttpGet", "@id": "duumbi:t/main/e/0",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<http_response,string>"},
+                        {"@type": "duumbi:HttpPost", "@id": "duumbi:t/main/e/1",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/body"},
+                         "duumbi:args": [{"@id": "duumbi:t/main/e/timeout"}],
+                         "duumbi:resultType": "result<http_response,string>"},
+                        {"@type": "duumbi:HttpPut", "@id": "duumbi:t/main/e/2",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/body"},
+                         "duumbi:args": [{"@id": "duumbi:t/main/e/timeout"}],
+                         "duumbi:resultType": "result<http_response,string>"},
+                        {"@type": "duumbi:HttpDelete", "@id": "duumbi:t/main/e/3",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<http_response,string>"},
+                        {"@type": "duumbi:HttpStatus", "@id": "duumbi:t/main/e/4",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/response"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:HttpBody", "@id": "duumbi:t/main/e/5",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/response"},
+                         "duumbi:resultType": "result<string,string>"},
+                        {"@type": "duumbi:HttpHeaders", "@id": "duumbi:t/main/e/6",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/response"},
+                         "duumbi:resultType": "result<json,string>"},
+                        {"@type": "duumbi:HttpResponseFree", "@id": "duumbi:t/main/e/7",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/response"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:DbOpen", "@id": "duumbi:t/main/e/8",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/path"},
+                         "duumbi:resultType": "result<db_connection,string>"},
+                        {"@type": "duumbi:DbExecute", "@id": "duumbi:t/main/e/9",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/conn"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/sql"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/params"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:DbQuery", "@id": "duumbi:t/main/e/10",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/conn"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/sql"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/params"},
+                         "duumbi:resultType": "result<db_rows,string>"},
+                        {"@type": "duumbi:DbRowsLen", "@id": "duumbi:t/main/e/11",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/rows"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:DbRowGet", "@id": "duumbi:t/main/e/12",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/rows"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/index"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/column"},
+                         "duumbi:resultType": "result<string,string>"},
+                        {"@type": "duumbi:DbClose", "@id": "duumbi:t/main/e/13",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/conn"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:DbRowsFree", "@id": "duumbi:t/main/e/14",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/rows"},
+                         "duumbi:resultType": "result<i64,string>"},
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/15",
+                         "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/16",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/15"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let module = parse_jsonld(json).expect("http/db ops should parse");
+        let ops = &module.functions[0].blocks[0].ops;
+        assert!(matches!(ops[0].op, Op::HttpGet));
+        assert!(matches!(ops[1].op, Op::HttpPost));
+        assert_eq!(ops[1].args[0].id.0, "duumbi:t/main/e/timeout");
+        assert!(matches!(ops[2].op, Op::HttpPut));
+        assert!(matches!(ops[3].op, Op::HttpDelete));
+        assert!(matches!(ops[4].op, Op::HttpStatus));
+        assert!(matches!(ops[5].op, Op::HttpBody));
+        assert!(matches!(ops[6].op, Op::HttpHeaders));
+        assert!(matches!(ops[7].op, Op::HttpResponseFree));
+        assert!(matches!(ops[8].op, Op::DbOpen));
+        assert!(matches!(ops[9].op, Op::DbExecute));
+        assert!(matches!(ops[10].op, Op::DbQuery));
+        assert!(matches!(ops[11].op, Op::DbRowsLen));
+        assert!(matches!(ops[12].op, Op::DbRowGet));
+        assert!(matches!(ops[13].op, Op::DbClose));
+        assert!(matches!(ops[14].op, Op::DbRowsFree));
+    }
+
+    #[test]
+    fn parse_node_ref_array_wrong_type_reports_schema_invalid() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:HttpPost", "@id": "duumbi:t/main/e/0",
+                         "duumbi:operand": {"@id": "duumbi:t/main/e/url"},
+                         "duumbi:left": {"@id": "duumbi:t/main/e/headers"},
+                         "duumbi:right": {"@id": "duumbi:t/main/e/body"},
+                         "duumbi:args": {"@id": "duumbi:t/main/e/timeout"},
+                         "duumbi:resultType": "result<http_response,string>"}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let err = parse_jsonld(json).expect_err("non-array args should fail schema validation");
+        assert!(
+            matches!(
+                err,
+                ParseError::SchemaInvalid {
+                    code: codes::E009_SCHEMA_INVALID,
+                    ..
+                }
+            ),
+            "expected E009 schema error, got: {err:?}"
         );
     }
 

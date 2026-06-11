@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -33,6 +37,11 @@
 #define DUUMBI_PROCESS_ID() getpid()
 #endif
 
+#include <curl/curl.h>
+
+#define SQLITE_OMIT_LOAD_EXTENSION 1
+#include "third_party/sqlite/sqlite3.c"
+
 #ifndef S_IFMT
 #define S_IFMT _S_IFMT
 #endif
@@ -64,8 +73,26 @@
 #define DUUMBI_TRACE_STACK_LIMIT 1024
 #define DUUMBI_WORKSPACE_ROOT_ENV "DUUMBI_WORKSPACE_ROOT"
 #define DUUMBI_JSON_MAX_PARSE_DEPTH 512
+#define DUUMBI_DB_BUSY_TIMEOUT_MS 1000
+#define DUUMBI_DB_MAX_ROWS 10000
+#define DUUMBI_DB_MAX_CELL_BYTES (8 * 1024 * 1024)
+#define DUUMBI_DB_MAX_COLUMNS 256
+
+#if defined(_WIN32)
+#define DUUMBI_TEMP_WRITE_MODE "wb"
+#else
+#define DUUMBI_TEMP_WRITE_MODE "wbx"
+#endif
 
 /* ── Internal types ────────────────────────────────────────────────── */
+
+/* Keep approved DUUMBI-380 runtime dependencies link-visible before public
+ * HTTP/DB APIs are added. Cycle 1 uses this as a narrow feasibility proof. */
+int64_t duumbi_dependency_probe(void) {
+    curl_version_info_data *curl_info = curl_version_info(CURLVERSION_NOW);
+    int64_t curl_version = curl_info != NULL ? (int64_t)curl_info->version_num : 0;
+    return curl_version + (int64_t)sqlite3_libversion_number();
+}
 
 typedef struct {
     uint64_t len;
@@ -90,6 +117,55 @@ static DUUMBI_THREAD_LOCAL size_t duumbi_function_id_stack_len = 0;
 static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_len = 0;
 static DUUMBI_THREAD_LOCAL size_t duumbi_function_id_stack_overflow = 0;
 static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_overflow = 0;
+
+#define DUUMBI_CURL_INIT_UNINITIALIZED 0
+#define DUUMBI_CURL_INIT_INITIALIZING 1
+#define DUUMBI_CURL_INIT_READY 2
+#define DUUMBI_CURL_INIT_FAILED 3
+
+static volatile int duumbi_curl_init_state = DUUMBI_CURL_INIT_UNINITIALIZED;
+
+static int duumbi_atomic_load_int(volatile int *value) {
+#if defined(_WIN32)
+    return (int)InterlockedCompareExchange((volatile LONG *)value, 0, 0);
+#else
+    __sync_synchronize();
+    return *value;
+#endif
+}
+
+static void duumbi_atomic_store_int(volatile int *value, int new_value) {
+#if defined(_WIN32)
+    InterlockedExchange((volatile LONG *)value, (LONG)new_value);
+#else
+    __sync_lock_test_and_set(value, new_value);
+    __sync_synchronize();
+#endif
+}
+
+static int duumbi_atomic_compare_exchange_int(
+    volatile int *value,
+    int expected,
+    int desired
+) {
+#if defined(_WIN32)
+    return InterlockedCompareExchange((volatile LONG *)value, (LONG)desired, (LONG)expected) ==
+           (LONG)expected;
+#else
+    return __sync_bool_compare_and_swap(value, expected, desired);
+#endif
+}
+
+static void duumbi_yield_while_initializing(void) {
+#if defined(_WIN32)
+    Sleep(0);
+#else
+    struct timespec delay;
+    delay.tv_sec = 0;
+    delay.tv_nsec = 1000000L;
+    nanosleep(&delay, NULL);
+#endif
+}
 
 static void duumbi_push_trace_id(int64_t *stack,
                                  size_t *len,
@@ -2042,7 +2118,7 @@ static const char *duumbi_http_status_text(int64_t status) {
     case 400: return "Bad Request";
     case 404: return "Not Found";
     case 500: return "Internal Server Error";
-    default: return "OK";
+    default: return "Unknown";
     }
 }
 
@@ -2053,6 +2129,9 @@ static int duumbi_http_send_all(DuumbiSocketHandle handle, const char *data, siz
         int n = send(handle, data + sent, (int)(len - sent), 0);
 #else
         ssize_t n = send(handle, data + sent, len - sent, 0);
+#endif
+#if !defined(_WIN32)
+        if (n < 0 && errno == EINTR) continue;
 #endif
         if (n <= 0) return 0;
         sent += (size_t)n;
@@ -2772,7 +2851,7 @@ void *duumbi_file_write(void *path_ptr, void *contents_ptr) {
     }
 
     remove(tmp_path);
-    FILE *file = fopen(tmp_path, "wbx");
+    FILE *file = fopen(tmp_path, DUUMBI_TEMP_WRITE_MODE);
     if (file == NULL) {
         return duumbi_err_cstr("io_error: failed to open file for writing");
     }
@@ -2958,4 +3037,942 @@ void *duumbi_path_join(void *left_ptr, void *right_ptr) {
         return duumbi_err_cstr("path_policy: path_join produced an invalid path");
     }
     return duumbi_ok_string(normalized, (uint64_t)strlen(normalized));
+}
+
+/* ── HTTP (libcurl-backed response resources) ─────────────────────── */
+
+#define DUUMBI_HTTP_MAX_BODY_BYTES (1024 * 1024)
+#define DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES 65536
+
+typedef struct {
+    int64_t     status;
+    char       *body;
+    size_t      body_len;
+    DuumbiJson *headers;
+    int         closed;
+} DuumbiHttpResponse;
+
+typedef struct {
+    char  *data;
+    size_t len;
+    size_t cap;
+    int    overflow;
+} DuumbiHttpBuffer;
+
+typedef struct {
+    DuumbiHttpBuffer body;
+    DuumbiJson      *headers;
+    int              header_error;
+} DuumbiHttpCapture;
+
+static void *duumbi_http_err(const char *message) {
+    return duumbi_result_new_err((int64_t)(intptr_t)duumbi_string_new(message, strlen(message)));
+}
+
+static void *duumbi_http_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static void *duumbi_http_ok_i64(int64_t value) {
+    return duumbi_result_new_ok(value);
+}
+
+static const char *duumbi_http_curl_error_class(CURLcode rc) {
+    switch (rc) {
+        case CURLE_OPERATION_TIMEDOUT:
+            return "http_timeout";
+        case CURLE_PEER_FAILED_VERIFICATION:
+        case CURLE_SSL_CACERT_BADFILE:
+        case CURLE_SSL_CONNECT_ERROR:
+            return "http_tls";
+        default:
+            return "http_transport";
+    }
+}
+
+static int duumbi_http_validate_timeout(int64_t timeout_ms) {
+    return timeout_ms > 0 && timeout_ms <= INT32_MAX;
+}
+
+static const char *duumbi_http_ca_bundle_path(void) {
+    const char *path = getenv("CURL_CA_BUNDLE");
+    if (path != NULL && path[0] != '\0') {
+        return path;
+    }
+    path = getenv("SSL_CERT_FILE");
+    if (path != NULL && path[0] != '\0') {
+        return path;
+    }
+    return NULL;
+}
+
+static long duumbi_http_connect_timeout_ms(int64_t timeout_ms) {
+    int64_t connect_timeout = timeout_ms / 3;
+    if (connect_timeout < 1) {
+        connect_timeout = 1;
+    }
+    return (long)connect_timeout;
+}
+
+static void duumbi_http_global_cleanup(void) {
+    if (duumbi_atomic_load_int(&duumbi_curl_init_state) == DUUMBI_CURL_INIT_READY) {
+        curl_global_cleanup();
+    }
+}
+
+static int duumbi_http_global_init(void) {
+    for (;;) {
+        int state = duumbi_atomic_load_int(&duumbi_curl_init_state);
+        if (state == DUUMBI_CURL_INIT_READY) {
+            return 1;
+        }
+        if (state == DUUMBI_CURL_INIT_FAILED) {
+            return 0;
+        }
+        if (state == DUUMBI_CURL_INIT_UNINITIALIZED &&
+            duumbi_atomic_compare_exchange_int(
+                &duumbi_curl_init_state,
+                DUUMBI_CURL_INIT_UNINITIALIZED,
+                DUUMBI_CURL_INIT_INITIALIZING
+            )) {
+            CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+            if (rc != CURLE_OK) {
+                duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_FAILED);
+                return 0;
+            }
+            if (atexit(duumbi_http_global_cleanup) != 0) {
+                curl_global_cleanup();
+                duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_FAILED);
+                return 0;
+            }
+            duumbi_atomic_store_int(&duumbi_curl_init_state, DUUMBI_CURL_INIT_READY);
+            return 1;
+        }
+        duumbi_yield_while_initializing();
+    }
+}
+
+static int duumbi_http_has_scheme(const char *url) {
+    return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
+}
+
+static void duumbi_http_buffer_free(DuumbiHttpBuffer *buffer) {
+    if (buffer == NULL) return;
+    duumbi_dealloc(buffer->data);
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+}
+
+static int duumbi_http_buffer_append(DuumbiHttpBuffer *buffer, const char *data, size_t len) {
+    if (len == 0) return 1;
+    if (buffer->len > DUUMBI_HTTP_MAX_BODY_BYTES ||
+        len > DUUMBI_HTTP_MAX_BODY_BYTES - buffer->len) {
+        buffer->overflow = 1;
+        return 0;
+    }
+    size_t needed = buffer->len + len + 1;
+    if (needed > buffer->cap) {
+        size_t new_cap = buffer->cap == 0 ? 4096 : buffer->cap;
+        while (new_cap < needed) {
+            if (new_cap > DUUMBI_HTTP_MAX_BODY_BYTES / 2) {
+                new_cap = DUUMBI_HTTP_MAX_BODY_BYTES + 1;
+                break;
+            }
+            new_cap *= 2;
+        }
+        char *new_data = (char *)realloc(buffer->data, new_cap);
+        if (new_data == NULL) {
+            buffer->overflow = 1;
+            return 0;
+        }
+        buffer->data = new_data;
+        buffer->cap = new_cap;
+    }
+    memcpy(buffer->data + buffer->len, data, len);
+    buffer->len += len;
+    buffer->data[buffer->len] = '\0';
+    return 1;
+}
+
+static size_t duumbi_http_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t len = size * nmemb;
+    DuumbiHttpCapture *capture = (DuumbiHttpCapture *)userdata;
+    if (!duumbi_http_buffer_append(&capture->body, ptr, len)) {
+        return 0;
+    }
+    return len;
+}
+
+static char duumbi_http_lower_ascii(char ch) {
+    return (char)tolower((unsigned char)ch);
+}
+
+static int duumbi_http_header_name_valid(const char *name, size_t len) {
+    if (len == 0) return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)name[i];
+        if (ch <= 32 || ch >= 127) return 0;
+        switch (ch) {
+            case '(':
+            case ')':
+            case '<':
+            case '>':
+            case '@':
+            case ',':
+            case ';':
+            case ':':
+            case '\\':
+            case '"':
+            case '/':
+            case '[':
+            case ']':
+            case '?':
+            case '=':
+            case '{':
+            case '}':
+                return 0;
+            default:
+                break;
+        }
+    }
+    return 1;
+}
+
+static char *duumbi_http_lower_header_name(const char *name, size_t len) {
+    char *out = (char *)duumbi_alloc((uint64_t)len + 1);
+    for (size_t i = 0; i < len; i++) {
+        out[i] = duumbi_http_lower_ascii(name[i]);
+    }
+    out[len] = '\0';
+    return out;
+}
+
+static DuumbiJson *duumbi_http_json_string(const char *value, size_t len) {
+    DuumbiJson *json = duumbi_json_new(DUUMBI_JSON_STRING);
+    json->string_value = duumbi_json_strndup(value, len);
+    json->string_len = len;
+    return json;
+}
+
+static int duumbi_http_object_set_string(
+    DuumbiJson *object,
+    char *key,
+    size_t key_len,
+    const char *value,
+    size_t value_len
+) {
+    for (uint64_t i = 0; i < object->object_len; i++) {
+        DuumbiJsonObjectEntry *entry = &object->object_entries[i];
+        if (entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0) {
+            DuumbiJson *existing = entry->value;
+            if (existing == NULL || existing->kind != DUUMBI_JSON_STRING) {
+                duumbi_dealloc(key);
+                return 0;
+            }
+            if (existing->string_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES ||
+                value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES ||
+                existing->string_len + value_len + 2 > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+                duumbi_dealloc(key);
+                return 0;
+            }
+            size_t joined_len = existing->string_len + 2 + value_len;
+            char *joined = (char *)duumbi_alloc((uint64_t)joined_len + 1);
+            memcpy(joined, existing->string_value, existing->string_len);
+            memcpy(joined + existing->string_len, ", ", 2);
+            memcpy(joined + existing->string_len + 2, value, value_len);
+            joined[joined_len] = '\0';
+            duumbi_dealloc(existing->string_value);
+            existing->string_value = joined;
+            existing->string_len = joined_len;
+            duumbi_dealloc(key);
+            return 1;
+        }
+    }
+
+    DuumbiJson *json_value = duumbi_http_json_string(value, value_len);
+    if (!duumbi_json_object_add(object, key, key_len, json_value)) {
+        duumbi_json_free(json_value);
+        duumbi_dealloc(key);
+        return 0;
+    }
+    return 1;
+}
+
+static size_t duumbi_http_header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t len = size * nmemb;
+    DuumbiHttpCapture *capture = (DuumbiHttpCapture *)userdata;
+    char *colon = memchr(ptr, ':', len);
+    if (colon == NULL) {
+        return len;
+    }
+
+    char *name_start = ptr;
+    char *name_end = colon;
+    while (name_end > name_start && isspace((unsigned char)name_end[-1])) name_end--;
+    char *value_start = colon + 1;
+    char *value_end = ptr + len;
+    while (value_start < value_end && isspace((unsigned char)*value_start)) value_start++;
+    while (value_end > value_start && isspace((unsigned char)value_end[-1])) value_end--;
+
+    size_t name_len = (size_t)(name_end - name_start);
+    size_t value_len = (size_t)(value_end - value_start);
+    if (!duumbi_http_header_name_valid(name_start, name_len) ||
+        value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+        capture->header_error = 1;
+        return 0;
+    }
+
+    char *lower_name = duumbi_http_lower_header_name(name_start, name_len);
+    if (!duumbi_http_object_set_string(
+            capture->headers,
+            lower_name,
+            name_len,
+            value_start,
+            value_len
+        )) {
+        capture->header_error = 1;
+        return 0;
+    }
+    return len;
+}
+
+static struct curl_slist *duumbi_http_build_request_headers(void *headers_ptr, char **error) {
+    DuumbiJson *headers = (DuumbiJson *)headers_ptr;
+    if (headers == NULL || headers->kind != DUUMBI_JSON_OBJECT) {
+        *error = "http_headers: request headers must be a json object";
+        return NULL;
+    }
+
+    struct curl_slist *list = NULL;
+    for (uint64_t i = 0; i < headers->object_len; i++) {
+        DuumbiJsonObjectEntry *entry = &headers->object_entries[i];
+        if (!duumbi_http_header_name_valid(entry->key, entry->key_len)) {
+            curl_slist_free_all(list);
+            *error = "http_headers: header name is invalid";
+            return NULL;
+        }
+        if (entry->value == NULL || entry->value->kind != DUUMBI_JSON_STRING) {
+            curl_slist_free_all(list);
+            *error = "http_headers: header values must be strings";
+            return NULL;
+        }
+        size_t value_len = entry->value->string_len;
+        if (value_len > DUUMBI_HTTP_MAX_HEADER_VALUE_BYTES) {
+            curl_slist_free_all(list);
+            *error = "http_headers: header value is too large";
+            return NULL;
+        }
+        size_t line_len = entry->key_len + 2 + value_len;
+        char *line = (char *)duumbi_alloc((uint64_t)line_len + 1);
+        memcpy(line, entry->key, entry->key_len);
+        memcpy(line + entry->key_len, ": ", 2);
+        memcpy(line + entry->key_len + 2, entry->value->string_value, value_len);
+        line[line_len] = '\0';
+        struct curl_slist *updated = curl_slist_append(list, line);
+        duumbi_dealloc(line);
+        if (updated == NULL) {
+            curl_slist_free_all(list);
+            *error = "http_headers: failed to build request headers";
+            return NULL;
+        }
+        list = updated;
+    }
+    return list;
+}
+
+static void duumbi_http_response_release_contents(DuumbiHttpResponse *response) {
+    if (response == NULL) return;
+    duumbi_dealloc(response->body);
+    response->body = NULL;
+    response->body_len = 0;
+    duumbi_json_free(response->headers);
+    response->headers = NULL;
+}
+
+static void *duumbi_http_request(
+    const char *method,
+    void *url_ptr,
+    void *headers_ptr,
+    void *body_ptr,
+    int64_t timeout_ms
+) {
+    DuumbiString *url = (DuumbiString *)url_ptr;
+    DuumbiString *body = (DuumbiString *)body_ptr;
+    if (url == NULL) return duumbi_http_err("http_url: url is null");
+    if (!duumbi_http_validate_timeout(timeout_ms)) {
+        return duumbi_http_err("http_timeout: invalid timeout_ms");
+    }
+
+    char *url_c = duumbi_json_strndup(url->data, (size_t)url->len);
+    if (!duumbi_http_has_scheme(url_c)) {
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_url: unsupported URL scheme");
+    }
+
+    char *header_error = NULL;
+    struct curl_slist *request_headers =
+        duumbi_http_build_request_headers(headers_ptr, &header_error);
+    if (header_error != NULL) {
+        duumbi_dealloc(url_c);
+        return duumbi_http_err(header_error);
+    }
+
+    if (!duumbi_http_global_init()) {
+        curl_slist_free_all(request_headers);
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_transport: curl global init failed");
+    }
+
+    CURL *curl = curl_easy_init();
+    if (curl == NULL) {
+        curl_slist_free_all(request_headers);
+        duumbi_dealloc(url_c);
+        return duumbi_http_err("http_transport: curl init failed");
+    }
+
+    DuumbiHttpCapture capture;
+    memset(&capture, 0, sizeof(capture));
+    capture.headers = duumbi_json_new(DUUMBI_JSON_OBJECT);
+
+    char error_buffer[CURL_ERROR_SIZE];
+    error_buffer[0] = '\0';
+    curl_easy_setopt(curl, CURLOPT_URL, url_c);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, request_headers);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, duumbi_http_connect_timeout_ms(timeout_ms));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, duumbi_http_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &capture);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, duumbi_http_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &capture);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    const char *ca_bundle = duumbi_http_ca_bundle_path();
+    if (ca_bundle != NULL) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+    if (body != NULL) {
+        const char *body_data = (const char *)body->data;
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_data);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body->len);
+    }
+
+    CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(request_headers);
+    duumbi_dealloc(url_c);
+
+    if (rc != CURLE_OK) {
+        duumbi_json_free(capture.headers);
+        duumbi_http_buffer_free(&capture.body);
+        if (capture.body.overflow) {
+            return duumbi_http_err("http_body_limit: response body exceeds limit");
+        }
+        if (capture.header_error) {
+            return duumbi_http_err("http_header: failed to materialize response headers");
+        }
+        const char *msg = error_buffer[0] != '\0' ? error_buffer : curl_easy_strerror(rc);
+        const char *error_class = duumbi_http_curl_error_class(rc);
+        char full[256];
+        int written = snprintf(full, sizeof(full), "%s: %s", error_class, msg);
+        if (written < 0 || (size_t)written >= sizeof(full)) {
+            int fallback_written = snprintf(full, sizeof(full), "%s: request failed", error_class);
+            if (fallback_written < 0 || (size_t)fallback_written >= sizeof(full)) {
+                return duumbi_http_err("http_transport: request failed");
+            }
+        }
+        return duumbi_http_err(full);
+    }
+
+    DuumbiHttpResponse *response =
+        (DuumbiHttpResponse *)duumbi_alloc(sizeof(DuumbiHttpResponse));
+    response->status = (int64_t)status;
+    response->body = capture.body.data;
+    response->body_len = capture.body.len;
+    response->headers = capture.headers;
+    response->closed = 0;
+    return duumbi_http_ok_ptr(response);
+}
+
+void *duumbi_http_get(void *url, void *headers, int64_t timeout_ms) {
+    return duumbi_http_request("GET", url, headers, NULL, timeout_ms);
+}
+
+void *duumbi_http_post(void *url, void *headers, void *body, int64_t timeout_ms) {
+    if (body == NULL) return duumbi_http_err("http_body: request body is null");
+    return duumbi_http_request("POST", url, headers, body, timeout_ms);
+}
+
+void *duumbi_http_put(void *url, void *headers, void *body, int64_t timeout_ms) {
+    if (body == NULL) return duumbi_http_err("http_body: request body is null");
+    return duumbi_http_request("PUT", url, headers, body, timeout_ms);
+}
+
+void *duumbi_http_delete(void *url, void *headers, int64_t timeout_ms) {
+    return duumbi_http_request("DELETE", url, headers, NULL, timeout_ms);
+}
+
+void *duumbi_http_status(void *response) {
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_status failed: response is closed");
+    }
+    return duumbi_http_ok_i64(http_response->status);
+}
+
+void *duumbi_http_body(void *response) {
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_body failed: response is closed");
+    }
+    const char *body = http_response->body != NULL ? http_response->body : "";
+    return duumbi_http_ok_ptr(duumbi_string_new(body, http_response->body_len));
+}
+
+void *duumbi_http_headers(void *response) {
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_headers failed: response is closed");
+    }
+    return duumbi_http_ok_ptr(duumbi_json_clone(http_response->headers));
+}
+
+void *duumbi_http_response_close(void *response) {
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL || http_response->closed) {
+        return duumbi_http_err("http_response_close failed: response is already closed");
+    }
+    duumbi_http_response_release_contents(http_response);
+    http_response->closed = 1;
+    return duumbi_http_ok_i64(0);
+}
+
+void duumbi_http_response_free(void *response) {
+    DuumbiHttpResponse *http_response = (DuumbiHttpResponse *)response;
+    if (http_response == NULL) return;
+    duumbi_http_response_release_contents(http_response);
+    http_response->closed = 1;
+    duumbi_dealloc(http_response);
+}
+
+/* ── SQLite runtime (DUUMBI-380) ───────────────────────────────────── */
+
+typedef struct {
+    sqlite3 *db;
+    int      closed;
+} DuumbiDbConnection;
+
+typedef struct {
+    uint64_t row_count;
+    uint64_t column_count;
+    char   **column_names;
+    char   **values;
+    uint8_t *is_null;
+    int      closed;
+} DuumbiDbRows;
+
+static void *duumbi_db_err(const char *message) {
+    return duumbi_err_cstr(message);
+}
+
+static void *duumbi_db_ok_ptr(void *ptr) {
+    return duumbi_result_new_ok((int64_t)(intptr_t)ptr);
+}
+
+static int duumbi_db_connection_open(DuumbiDbConnection *conn) {
+    return conn != NULL && !conn->closed && conn->db != NULL;
+}
+
+static char *duumbi_db_string_copy(void *ptr) {
+    DuumbiString *s = (DuumbiString *)ptr;
+    if (s == NULL || s->len == 0) {
+        return NULL;
+    }
+    for (uint64_t i = 0; i < s->len; i++) {
+        if (s->data[i] == '\0') {
+            return NULL;
+        }
+    }
+    return duumbi_json_strndup(s->data, (size_t)s->len);
+}
+
+static int duumbi_db_path(void *path_ptr, char *out, size_t out_len) {
+    DuumbiString *path = (DuumbiString *)path_ptr;
+    if (path == NULL || path->len == 0) {
+        return -1;
+    }
+    if (path->len == strlen(":memory:") &&
+        memcmp(path->data, ":memory:", strlen(":memory:")) == 0) {
+        if (out_len <= strlen(":memory:")) {
+            return -1;
+        }
+        memcpy(out, ":memory:", strlen(":memory:") + 1);
+        return 0;
+    }
+    if (!duumbi_workspace_root_available()) {
+        return -1;
+    }
+    return duumbi_resolve_write_workspace_path(path_ptr, out, out_len);
+}
+
+static int duumbi_db_bind_params(sqlite3_stmt *stmt, void *params_ptr) {
+    DuumbiArray *params = (DuumbiArray *)params_ptr;
+    if (stmt == NULL || params == NULL || params->elem_size != sizeof(int64_t)) {
+        return -1;
+    }
+
+    int expected = sqlite3_bind_parameter_count(stmt);
+    if (expected < 0 || params->len != (uint64_t)expected) {
+        return -1;
+    }
+
+    for (uint64_t i = 0; i < params->len; i++) {
+        int64_t raw = duumbi_array_get(params, i);
+        DuumbiString *param = (DuumbiString *)(intptr_t)raw;
+        if (param == NULL || param->len > (uint64_t)INT32_MAX) {
+            return -1;
+        }
+        int rc = sqlite3_bind_text(
+            stmt,
+            (int)i + 1,
+            param->data,
+            (int)param->len,
+            SQLITE_TRANSIENT
+        );
+        if (rc != SQLITE_OK) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void duumbi_db_rows_release_contents(DuumbiDbRows *rows) {
+    if (rows == NULL) {
+        return;
+    }
+    if (rows->column_names != NULL) {
+        for (uint64_t i = 0; i < rows->column_count; i++) {
+            duumbi_dealloc(rows->column_names[i]);
+        }
+        duumbi_dealloc(rows->column_names);
+        rows->column_names = NULL;
+    }
+    if (rows->values != NULL) {
+        uint64_t total = rows->row_count * rows->column_count;
+        for (uint64_t i = 0; i < total; i++) {
+            duumbi_dealloc(rows->values[i]);
+        }
+        duumbi_dealloc(rows->values);
+        rows->values = NULL;
+    }
+    duumbi_dealloc(rows->is_null);
+    rows->is_null = NULL;
+    rows->row_count = 0;
+    rows->column_count = 0;
+}
+
+static void duumbi_db_rows_dispose(DuumbiDbRows *rows) {
+    if (rows == NULL || rows->closed) {
+        return;
+    }
+    duumbi_db_rows_release_contents(rows);
+    rows->closed = 1;
+}
+
+static int duumbi_db_rows_init_columns(DuumbiDbRows *rows, sqlite3_stmt *stmt, int column_count) {
+    if (column_count < 0 || column_count > DUUMBI_DB_MAX_COLUMNS) {
+        return -1;
+    }
+    rows->column_count = (uint64_t)column_count;
+    if (column_count == 0) {
+        return 0;
+    }
+    rows->column_names = (char **)duumbi_alloc(sizeof(char *) * (uint64_t)column_count);
+    memset(rows->column_names, 0, sizeof(char *) * (uint64_t)column_count);
+    for (int i = 0; i < column_count; i++) {
+        const char *name = sqlite3_column_name(stmt, i);
+        if (name == NULL || !duumbi_utf8_valid(name, (uint64_t)strlen(name))) {
+            return -1;
+        }
+        rows->column_names[i] = duumbi_json_strndup(name, strlen(name));
+    }
+    return 0;
+}
+
+static int duumbi_db_rows_append_row(
+    DuumbiDbRows *rows,
+    sqlite3_stmt *stmt,
+    uint64_t *cell_bytes
+) {
+    if (rows->row_count >= DUUMBI_DB_MAX_ROWS ||
+        rows->column_count > 0 &&
+            rows->row_count > UINT64_MAX / rows->column_count - 1) {
+        return -1;
+    }
+
+    uint64_t old_cells = rows->row_count * rows->column_count;
+    uint64_t new_row_count = rows->row_count + 1;
+    uint64_t new_cells = new_row_count * rows->column_count;
+
+    char **new_values = NULL;
+    uint8_t *new_is_null = NULL;
+    if (new_cells > 0) {
+        new_values = (char **)realloc(rows->values, sizeof(char *) * new_cells);
+        if (new_values == NULL) {
+            return -1;
+        }
+        rows->values = new_values;
+        new_is_null = (uint8_t *)realloc(rows->is_null, sizeof(uint8_t) * new_cells);
+        if (new_is_null == NULL) {
+            return -1;
+        }
+        rows->is_null = new_is_null;
+        for (uint64_t i = old_cells; i < new_cells; i++) {
+            rows->values[i] = NULL;
+            rows->is_null[i] = 0;
+        }
+    }
+
+    int column_count = (int)rows->column_count;
+    for (int col = 0; col < column_count; col++) {
+        uint64_t cell = old_cells + (uint64_t)col;
+        int kind = sqlite3_column_type(stmt, col);
+        if (kind == SQLITE_NULL) {
+            rows->is_null[cell] = 1;
+            continue;
+        }
+        if (kind == SQLITE_BLOB) {
+            return -1;
+        }
+
+        const unsigned char *text = sqlite3_column_text(stmt, col);
+        int bytes = sqlite3_column_bytes(stmt, col);
+        if (text == NULL || bytes < 0 ||
+            !duumbi_utf8_valid((const char *)text, (uint64_t)bytes)) {
+            return -1;
+        }
+        if (*cell_bytes > DUUMBI_DB_MAX_CELL_BYTES ||
+            (uint64_t)bytes > DUUMBI_DB_MAX_CELL_BYTES - *cell_bytes) {
+            return -1;
+        }
+        rows->values[cell] = duumbi_json_strndup((const char *)text, (size_t)bytes);
+        *cell_bytes += (uint64_t)bytes;
+    }
+
+    rows->row_count = new_row_count;
+    return 0;
+}
+
+void *duumbi_db_open(void *path) {
+    char db_path[DUUMBI_PATH_BUFFER_LEN];
+    if (duumbi_db_path(path, db_path, sizeof(db_path)) != 0) {
+        return duumbi_db_err("db_path: path is outside the workspace or unsupported");
+    }
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(
+        db_path,
+        &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+        NULL
+    );
+    if (rc != SQLITE_OK) {
+        if (db != NULL) {
+            sqlite3_close(db);
+        }
+        return duumbi_db_err("db_open: failed to open SQLite database");
+    }
+    sqlite3_busy_timeout(db, DUUMBI_DB_BUSY_TIMEOUT_MS);
+
+    DuumbiDbConnection *conn =
+        (DuumbiDbConnection *)duumbi_alloc(sizeof(DuumbiDbConnection));
+    conn->db = db;
+    conn->closed = 0;
+    return duumbi_db_ok_ptr(conn);
+}
+
+void *duumbi_db_execute(void *conn_ptr, void *sql_ptr, void *params_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (!duumbi_db_connection_open(conn)) {
+        return duumbi_db_err("db_resource: connection is closed");
+    }
+
+    DuumbiString *sql = (DuumbiString *)sql_ptr;
+    if (sql == NULL || sql->len == 0 || sql->len > (uint64_t)INT32_MAX) {
+        return duumbi_db_err("db_sql: SQL must be a non-empty string");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(conn->db, sql->data, (int)sql->len, &stmt, NULL);
+    if (rc != SQLITE_OK || stmt == NULL) {
+        return duumbi_db_err("db_sql: failed to prepare statement");
+    }
+    if (duumbi_db_bind_params(stmt, params_ptr) != 0) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_params: parameter count or value is invalid");
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_sql: query produced rows; use db_query");
+    }
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err(rc == SQLITE_BUSY ? "db_busy: SQLite statement is busy"
+                                               : "db_sql: failed to execute statement");
+    }
+    sqlite3_finalize(stmt);
+    return duumbi_ok_i64((int64_t)sqlite3_changes(conn->db));
+}
+
+void *duumbi_db_query(void *conn_ptr, void *sql_ptr, void *params_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (!duumbi_db_connection_open(conn)) {
+        return duumbi_db_err("db_resource: connection is closed");
+    }
+
+    DuumbiString *sql = (DuumbiString *)sql_ptr;
+    if (sql == NULL || sql->len == 0 || sql->len > (uint64_t)INT32_MAX) {
+        return duumbi_db_err("db_sql: SQL must be a non-empty string");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(conn->db, sql->data, (int)sql->len, &stmt, NULL);
+    if (rc != SQLITE_OK || stmt == NULL) {
+        return duumbi_db_err("db_sql: failed to prepare query");
+    }
+    if (duumbi_db_bind_params(stmt, params_ptr) != 0) {
+        sqlite3_finalize(stmt);
+        return duumbi_db_err("db_params: parameter count or value is invalid");
+    }
+
+    DuumbiDbRows *rows = (DuumbiDbRows *)duumbi_alloc(sizeof(DuumbiDbRows));
+    memset(rows, 0, sizeof(DuumbiDbRows));
+    if (duumbi_db_rows_init_columns(rows, stmt, sqlite3_column_count(stmt)) != 0) {
+        sqlite3_finalize(stmt);
+        duumbi_db_rows_release_contents(rows);
+        duumbi_dealloc(rows);
+        return duumbi_db_err("db_rows_limit: query column metadata is unsupported");
+    }
+
+    uint64_t cell_bytes = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (duumbi_db_rows_append_row(rows, stmt, &cell_bytes) != 0) {
+            sqlite3_finalize(stmt);
+            duumbi_db_rows_release_contents(rows);
+            duumbi_dealloc(rows);
+            return duumbi_db_err("db_rows_limit: query result exceeds v1 limits");
+        }
+    }
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        duumbi_db_rows_release_contents(rows);
+        duumbi_dealloc(rows);
+        return duumbi_db_err(rc == SQLITE_BUSY ? "db_busy: SQLite query is busy"
+                                               : "db_sql: failed to execute query");
+    }
+
+    sqlite3_finalize(stmt);
+    return duumbi_db_ok_ptr(rows);
+}
+
+void *duumbi_db_rows_len(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are closed");
+    }
+    if (rows->row_count > (uint64_t)INT64_MAX) {
+        return duumbi_db_err("db_rows_limit: row count exceeds i64");
+    }
+    return duumbi_ok_i64((int64_t)rows->row_count);
+}
+
+void *duumbi_db_row_get(void *rows_ptr, int64_t row_index, void *column_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are closed");
+    }
+    if (row_index < 0 || (uint64_t)row_index >= rows->row_count) {
+        return duumbi_db_err("db_row: row index out of bounds");
+    }
+    char *column = duumbi_db_string_copy(column_ptr);
+    if (column == NULL) {
+        return duumbi_db_err("db_row: column name is invalid");
+    }
+
+    uint64_t column_index = UINT64_MAX;
+    for (uint64_t i = 0; i < rows->column_count; i++) {
+        if (strcmp(rows->column_names[i], column) == 0) {
+            column_index = i;
+            break;
+        }
+    }
+    duumbi_dealloc(column);
+    if (column_index == UINT64_MAX) {
+        return duumbi_db_err("db_row: column is missing");
+    }
+
+    uint64_t cell = (uint64_t)row_index * rows->column_count + column_index;
+    if (rows->is_null[cell]) {
+        return duumbi_db_err("db_null: SQLite NULL is not representable as v1 string");
+    }
+    char *value = rows->values[cell];
+    if (value == NULL) {
+        return duumbi_db_err("db_row: value is unavailable");
+    }
+    return duumbi_result_new_ok(
+        (int64_t)(intptr_t)duumbi_string_new(value, (uint64_t)strlen(value))
+    );
+}
+
+void *duumbi_db_close(void *conn_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (conn == NULL || conn->closed) {
+        return duumbi_db_err("db_resource: connection is already closed");
+    }
+    if (conn->db != NULL) {
+        int rc = sqlite3_close(conn->db);
+        if (rc != SQLITE_OK) {
+            return duumbi_db_err("db_busy: connection still has active statements");
+        }
+    }
+    conn->db = NULL;
+    conn->closed = 1;
+    return duumbi_ok_i64(0);
+}
+
+void *duumbi_db_rows_close(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL || rows->closed) {
+        return duumbi_db_err("db_resource: rows are already closed");
+    }
+    duumbi_db_rows_dispose(rows);
+    return duumbi_ok_i64(0);
+}
+
+void duumbi_db_connection_free(void *conn_ptr) {
+    DuumbiDbConnection *conn = (DuumbiDbConnection *)conn_ptr;
+    if (conn == NULL) {
+        return;
+    }
+    if (!conn->closed && conn->db != NULL) {
+        sqlite3_close(conn->db);
+        conn->db = NULL;
+        conn->closed = 1;
+    }
+    duumbi_dealloc(conn);
+}
+
+void duumbi_db_rows_free(void *rows_ptr) {
+    DuumbiDbRows *rows = (DuumbiDbRows *)rows_ptr;
+    if (rows == NULL) {
+        return;
+    }
+    duumbi_db_rows_dispose(rows);
+    duumbi_dealloc(rows);
 }

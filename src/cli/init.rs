@@ -32,6 +32,12 @@ const STDLIB_NET: &str = include_str!("../../stdlib/net.jsonld");
 /// Embedded `stdlib/server.jsonld` — bounded local static-route HTTP server helpers.
 const STDLIB_SERVER: &str = include_str!("../../stdlib/server.jsonld");
 
+/// Embedded `stdlib/http.jsonld` — timeout-bounded HTTP/HTTPS client helpers.
+const STDLIB_HTTP: &str = include_str!("../../stdlib/http.jsonld");
+
+/// Embedded `stdlib/db.jsonld` — local SQLite helpers.
+const STDLIB_DB: &str = include_str!("../../stdlib/db.jsonld");
+
 /// Stdlib module versions pinned at init time.
 const STDLIB_VERSION: &str = "1.0.0";
 
@@ -437,6 +443,59 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
     )
     .context("Failed to write stdlib server module")?;
 
+    // Write stdlib http module to cache. It remains opt-in and is not added to
+    // default dependencies by this issue.
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-http",
+        STDLIB_VERSION,
+        "http.jsonld",
+        STDLIB_HTTP,
+        ModuleManifest::new(
+            "@duumbi/stdlib-http",
+            STDLIB_VERSION,
+            "HTTP/HTTPS utility functions (GET, POST, PUT, DELETE, response accessors)",
+            vec![
+                "http_get".to_string(),
+                "http_post".to_string(),
+                "http_put".to_string(),
+                "http_delete".to_string(),
+                "http_status".to_string(),
+                "http_body".to_string(),
+                "http_headers".to_string(),
+                "http_response_free".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib http module")?;
+
+    // Write stdlib db module to cache. It remains opt-in and is not added to
+    // default dependencies by this issue.
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-db",
+        STDLIB_VERSION,
+        "db.jsonld",
+        STDLIB_DB,
+        ModuleManifest::new(
+            "@duumbi/stdlib-db",
+            STDLIB_VERSION,
+            "Local SQLite utility functions (open, execute, query, row access, cleanup)",
+            vec![
+                "db_open".to_string(),
+                "db_execute".to_string(),
+                "db_query".to_string(),
+                "db_rows_len".to_string(),
+                "db_row_get".to_string(),
+                "db_close".to_string(),
+                "db_rows_free".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib db module")?;
+
     // Write config (includes stdlib deps by default).
     //
     // The `[workspace]` block is built via formatting (not chained string
@@ -590,6 +649,26 @@ mod tests {
                 .exists(),
             "stdlib-server manifest must exist"
         );
+        assert!(
+            d.join("cache/@duumbi/stdlib-http@1.0.0/graph/http.jsonld")
+                .exists(),
+            "stdlib-http jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-http@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-http manifest must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-db@1.0.0/graph/db.jsonld")
+                .exists(),
+            "stdlib-db jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-db@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-db manifest must exist"
+        );
     }
 
     #[test]
@@ -661,10 +740,46 @@ mod tests {
                 "server_close"
             ]
         );
+
+        let http_manifest = crate::manifest::parse_manifest(
+            &d.join("cache/@duumbi/stdlib-http@1.0.0/manifest.toml"),
+        )
+        .expect("http manifest must parse");
+        assert_eq!(http_manifest.module.name, "@duumbi/stdlib-http");
+        assert_eq!(
+            http_manifest.exports.functions,
+            vec![
+                "http_get",
+                "http_post",
+                "http_put",
+                "http_delete",
+                "http_status",
+                "http_body",
+                "http_headers",
+                "http_response_free",
+            ]
+        );
+
+        let db_manifest =
+            crate::manifest::parse_manifest(&d.join("cache/@duumbi/stdlib-db@1.0.0/manifest.toml"))
+                .expect("db manifest must parse");
+        assert_eq!(db_manifest.module.name, "@duumbi/stdlib-db");
+        assert_eq!(
+            db_manifest.exports.functions,
+            vec![
+                "db_open",
+                "db_execute",
+                "db_query",
+                "db_rows_len",
+                "db_row_get",
+                "db_close",
+                "db_rows_free",
+            ]
+        );
     }
 
     #[test]
-    fn init_keeps_integration_modules_out_of_default_dependencies() {
+    fn init_keeps_opt_in_stdlibs_out_of_default_dependencies() {
         let tmp = TempDir::new().expect("tempdir");
         run_init(tmp.path()).expect("init must succeed");
 

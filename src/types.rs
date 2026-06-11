@@ -91,6 +91,7 @@ impl fmt::Display for CompareOp {
 /// Phase 9a-1 ops: ConstString, String*, Array*, Struct*, PrintString.
 /// DUUMBI-378 ops: ReadLine, PrintLn, ReadFile, WriteFile, FileExists,
 /// ListDir, PathJoin.
+/// DUUMBI-380 ops: Http*, Db* integration stdlib operations.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)] // Variants used as parser/compiler are extended
 pub enum Op {
@@ -299,6 +300,40 @@ pub enum Op {
     /// Close an HTTP server resource: `duumbi:ServerClose`
     ServerClose,
 
+    // -- HTTP operations (DUUMBI-380) --
+    /// HTTP GET request: `duumbi:HttpGet`
+    HttpGet,
+    /// HTTP POST request: `duumbi:HttpPost`
+    HttpPost,
+    /// HTTP PUT request: `duumbi:HttpPut`
+    HttpPut,
+    /// HTTP DELETE request: `duumbi:HttpDelete`
+    HttpDelete,
+    /// Read response status: `duumbi:HttpStatus`
+    HttpStatus,
+    /// Read response body: `duumbi:HttpBody`
+    HttpBody,
+    /// Read response headers as JSON: `duumbi:HttpHeaders`
+    HttpHeaders,
+    /// Close/free an HTTP response resource: `duumbi:HttpResponseFree`
+    HttpResponseFree,
+
+    // -- Database operations (DUUMBI-380) --
+    /// Open a SQLite database: `duumbi:DbOpen`
+    DbOpen,
+    /// Execute a SQLite statement: `duumbi:DbExecute`
+    DbExecute,
+    /// Query SQLite rows: `duumbi:DbQuery`
+    DbQuery,
+    /// Return row count: `duumbi:DbRowsLen`
+    DbRowsLen,
+    /// Read a row column as string: `duumbi:DbRowGet`
+    DbRowGet,
+    /// Close/free a DB connection resource: `duumbi:DbClose`
+    DbClose,
+    /// Close/free DB rows resource: `duumbi:DbRowsFree`
+    DbRowsFree,
+
     // -- Match operation (Phase 9a-3) --
     /// Pattern match on Result/Option — branches to Ok/Some or Err/None block: `duumbi:Match`
     Match {
@@ -426,6 +461,21 @@ impl fmt::Display for Op {
             Op::RouteAddStatic => f.write_str("RouteAddStatic"),
             Op::ServerStart => f.write_str("ServerStart"),
             Op::ServerClose => f.write_str("ServerClose"),
+            Op::HttpGet => f.write_str("HttpGet"),
+            Op::HttpPost => f.write_str("HttpPost"),
+            Op::HttpPut => f.write_str("HttpPut"),
+            Op::HttpDelete => f.write_str("HttpDelete"),
+            Op::HttpStatus => f.write_str("HttpStatus"),
+            Op::HttpBody => f.write_str("HttpBody"),
+            Op::HttpHeaders => f.write_str("HttpHeaders"),
+            Op::HttpResponseFree => f.write_str("HttpResponseFree"),
+            Op::DbOpen => f.write_str("DbOpen"),
+            Op::DbExecute => f.write_str("DbExecute"),
+            Op::DbQuery => f.write_str("DbQuery"),
+            Op::DbRowsLen => f.write_str("DbRowsLen"),
+            Op::DbRowGet => f.write_str("DbRowGet"),
+            Op::DbClose => f.write_str("DbClose"),
+            Op::DbRowsFree => f.write_str("DbRowsFree"),
             Op::Match {
                 ok_block,
                 err_block,
@@ -497,7 +547,22 @@ impl Op {
             | Op::ServerNew
             | Op::RouteAddStatic
             | Op::ServerStart
-            | Op::ServerClose => result_type.clone(),
+            | Op::ServerClose
+            | Op::HttpGet
+            | Op::HttpPost
+            | Op::HttpPut
+            | Op::HttpDelete
+            | Op::HttpStatus
+            | Op::HttpBody
+            | Op::HttpHeaders
+            | Op::HttpResponseFree
+            | Op::DbOpen
+            | Op::DbExecute
+            | Op::DbQuery
+            | Op::DbRowsLen
+            | Op::DbRowGet
+            | Op::DbClose
+            | Op::DbRowsFree => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
             Op::StringConcat
@@ -566,6 +631,12 @@ pub enum DuumbiType {
     TcpListener,
     /// Opaque runtime-owned HTTP server resource.
     HttpServer,
+    /// Opaque runtime-owned HTTP response resource.
+    HttpResponse,
+    /// Opaque runtime-owned SQLite database connection resource.
+    DbConnection,
+    /// Opaque runtime-owned SQLite row-set resource.
+    DbRows,
     /// Homogeneous dynamic array, generic over element type.
     #[allow(dead_code)] // Used starting from Phase 9a-1 array ops
     Array(Box<DuumbiType>),
@@ -599,6 +670,9 @@ impl DuumbiType {
                 | DuumbiType::TcpSocket
                 | DuumbiType::TcpListener
                 | DuumbiType::HttpServer
+                | DuumbiType::HttpResponse
+                | DuumbiType::DbConnection
+                | DuumbiType::DbRows
                 | DuumbiType::Array(_)
                 | DuumbiType::Struct(_)
                 | DuumbiType::Result(_, _)
@@ -657,6 +731,9 @@ impl fmt::Display for DuumbiType {
             DuumbiType::TcpSocket => f.write_str("tcp_socket"),
             DuumbiType::TcpListener => f.write_str("tcp_listener"),
             DuumbiType::HttpServer => f.write_str("http_server"),
+            DuumbiType::HttpResponse => f.write_str("http_response"),
+            DuumbiType::DbConnection => f.write_str("db_connection"),
+            DuumbiType::DbRows => f.write_str("db_rows"),
             DuumbiType::Array(elem) => write!(f, "array<{elem}>"),
             DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
             DuumbiType::Ref(inner) => write!(f, "&{inner}"),
@@ -744,6 +821,10 @@ mod tests {
         assert_eq!(DuumbiType::TcpSocket.to_string(), "tcp_socket");
         assert_eq!(DuumbiType::TcpListener.to_string(), "tcp_listener");
         assert_eq!(DuumbiType::HttpServer.to_string(), "http_server");
+        assert_eq!(DuumbiType::HttpServer.to_string(), "http_server");
+        assert_eq!(DuumbiType::HttpResponse.to_string(), "http_response");
+        assert_eq!(DuumbiType::DbConnection.to_string(), "db_connection");
+        assert_eq!(DuumbiType::DbRows.to_string(), "db_rows");
     }
 
     #[test]
@@ -757,6 +838,10 @@ mod tests {
         assert!(DuumbiType::TcpSocket.is_heap_type());
         assert!(DuumbiType::TcpListener.is_heap_type());
         assert!(DuumbiType::HttpServer.is_heap_type());
+        assert!(DuumbiType::HttpServer.is_heap_type());
+        assert!(DuumbiType::HttpResponse.is_heap_type());
+        assert!(DuumbiType::DbConnection.is_heap_type());
+        assert!(DuumbiType::DbRows.is_heap_type());
         assert!(DuumbiType::Array(Box::new(DuumbiType::I64)).is_heap_type());
         assert!(DuumbiType::Struct("Point".to_string()).is_heap_type());
     }
@@ -991,6 +1076,38 @@ mod tests {
         assert_eq!(
             Op::ServerClose.output_type(&Some(close_result.clone())),
             Some(close_result)
+        );
+    }
+
+    #[test]
+    fn http_db_op_output_types() {
+        let http_result = DuumbiType::Result(
+            Box::new(DuumbiType::HttpResponse),
+            Box::new(DuumbiType::String),
+        );
+        assert_eq!(
+            Op::HttpGet.output_type(&Some(http_result.clone())),
+            Some(http_result.clone())
+        );
+        assert_eq!(
+            Op::HttpPost.output_type(&Some(http_result.clone())),
+            Some(http_result)
+        );
+
+        let db_result = DuumbiType::Result(
+            Box::new(DuumbiType::DbConnection),
+            Box::new(DuumbiType::String),
+        );
+        assert_eq!(
+            Op::DbOpen.output_type(&Some(db_result.clone())),
+            Some(db_result)
+        );
+
+        let rows_result =
+            DuumbiType::Result(Box::new(DuumbiType::DbRows), Box::new(DuumbiType::String));
+        assert_eq!(
+            Op::DbQuery.output_type(&Some(rows_result.clone())),
+            Some(rows_result)
         );
     }
 

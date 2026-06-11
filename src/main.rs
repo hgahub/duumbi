@@ -490,7 +490,7 @@ async fn run(cli: Cli) -> Result<i32> {
         Commands::Studio { port, dev } => studio(port, dev).await,
         Commands::Provider { subcommand } => {
             let workspace = PathBuf::from(".");
-            success_exit(run_provider(subcommand, &workspace))
+            success_exit(run_provider(subcommand, &workspace).await)
         }
         Commands::Mcp { sse, port } => success_exit(run_mcp(sse, port).await),
     }
@@ -908,8 +908,9 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
 }
 
 /// Dispatches `duumbi provider` subcommands.
-fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) -> Result<()> {
+async fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) -> Result<()> {
     let mut cfg = config::load_user_config().unwrap_or_default();
+    let mut save_provider_config = false;
 
     let lines = match subcommand {
         cli::ProviderSubcommand::List => cli::provider::list_providers(&cfg),
@@ -930,24 +931,66 @@ fn run_provider(subcommand: cli::ProviderSubcommand, _workspace: &Path) -> Resul
             if let Some(ref token_env) = auth_token_env {
                 args.push_str(&format!(" --auth-token-env {token_env}"));
             }
+            save_provider_config = true;
             cli::provider::add_provider(&mut cfg, &args)
         }
         cli::ProviderSubcommand::Remove { selector } => {
+            save_provider_config = true;
             cli::provider::remove_provider(&mut cfg, &selector)
         }
         cli::ProviderSubcommand::Set {
             index,
             field,
             value,
-        } => cli::provider::set_provider_field(&mut cfg, &format!("{index} {field} {value}")),
+        } => {
+            save_provider_config = true;
+            cli::provider::set_provider_field(&mut cfg, &format!("{index} {field} {value}"))
+        }
+        cli::ProviderSubcommand::Catalog { subcommand } => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let store = agents::model_catalog::ModelCatalogStore::for_home(home);
+            match subcommand {
+                cli::ProviderCatalogSubcommand::Status => cli::provider::catalog_status(&store),
+                cli::ProviderCatalogSubcommand::Check {
+                    catalog_url,
+                    sha256_url,
+                } => {
+                    let urls = cli::provider::catalog_remote_urls(catalog_url, sha256_url);
+                    cli::provider::catalog_check(&store, urls, cli::provider::current_unix_secs())
+                        .await
+                }
+                cli::ProviderCatalogSubcommand::Approve {
+                    hash,
+                    catalog_url,
+                    sha256_url,
+                } => {
+                    let urls = cli::provider::catalog_remote_urls(catalog_url, sha256_url);
+                    cli::provider::catalog_approve(
+                        &store,
+                        urls,
+                        Some(hash.as_str()),
+                        cli::provider::current_unix_secs(),
+                    )
+                    .await
+                }
+                cli::ProviderCatalogSubcommand::Skip { hash } => {
+                    cli::provider::catalog_skip(&store, hash.as_deref())
+                }
+                cli::ProviderCatalogSubcommand::Remind { hours } => {
+                    cli::provider::catalog_remind(&store, hours, cli::provider::current_unix_secs())
+                }
+                cli::ProviderCatalogSubcommand::Disable => cli::provider::catalog_disable(&store),
+            }
+        }
     };
 
     cli::provider::print_output_lines(&lines);
 
     // Persist config if a mutation succeeded.
-    if lines
-        .iter()
-        .any(|l| l.style == cli::mode::OutputStyle::Success)
+    if save_provider_config
+        && lines
+            .iter()
+            .any(|l| l.style == cli::mode::OutputStyle::Success)
     {
         config::save_user_config(&cfg)
             .map_err(|e| anyhow::anyhow!("Failed to save config: {e}"))?;

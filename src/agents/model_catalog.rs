@@ -4,11 +4,1306 @@
 //! selection so releases can update model IDs and routing policy without
 //! exposing model choice as user workflow.
 
+use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use crate::agents::analyzer::{Complexity, Risk, TaskProfile, TaskType};
 use crate::agents::template::AgentRole;
 use crate::config::{ProviderConfig, ProviderKind, ResolvedProviderConfig};
+use futures_util::StreamExt as _;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
 
 pub(crate) const RETIRED_GROK_CODE_FAST_1: &str = "grok-code-fast-1";
+
+/// Schema version accepted for refreshed provider model catalogs.
+pub const MODEL_CATALOG_V1_SCHEMA_VERSION: &str = "duumbi.model_catalog.v1";
+/// Default remote v1 catalog URL.
+pub const MODEL_CATALOG_V1_URL: &str =
+    "https://docs.duumbi.dev/model-catalog/v1/model-catalog.v1.json";
+/// Default remote v1 catalog SHA-256 URL.
+pub const MODEL_CATALOG_V1_SHA256_URL: &str =
+    "https://docs.duumbi.dev/model-catalog/v1/model-catalog.v1.sha256";
+/// Default catalog hash-check interval in seconds.
+pub const DEFAULT_CATALOG_CHECK_FREQUENCY_SECS: u64 = 24 * 60 * 60;
+
+const MODEL_CATALOG_DIR: &str = "model-catalog";
+const CURRENT_CATALOG_FILE: &str = "current.json";
+const CURRENT_HASH_FILE: &str = "current.sha256";
+const CATALOG_STATE_FILE: &str = "state.json";
+const MAX_REMOTE_CATALOG_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SKIPPED_CATALOG_HASHES: usize = 32;
+
+/// Canonical provider metadata used by v1 catalog validation and setup UX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogProviderMetadata {
+    /// User-facing provider name.
+    pub display_name: &'static str,
+    /// Canonical config key used in new catalog and provider setup paths.
+    pub config_key: &'static str,
+    /// Conventional environment variable that stores the provider API key.
+    pub api_key_env: &'static str,
+}
+
+const ACCEPTED_V1_PROVIDERS: &[CatalogProviderMetadata] = &[
+    CatalogProviderMetadata {
+        display_name: "Anthropic",
+        config_key: "anthropic",
+        api_key_env: "ANTHROPIC_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "OpenAI",
+        config_key: "openai",
+        api_key_env: "OPENAI_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "xAI",
+        config_key: "xai",
+        api_key_env: "XAI_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "MiniMax",
+        config_key: "minimax",
+        api_key_env: "MINIMAX_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "DeepSeek",
+        config_key: "deepseek",
+        api_key_env: "DEEPSEEK_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "Alibaba Cloud Model Studio (Qwen)",
+        config_key: "qwen",
+        api_key_env: "DASHSCOPE_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "Moonshot AI (Kimi)",
+        config_key: "moonshot",
+        api_key_env: "MOONSHOT_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "Zhipu AI (GLM)",
+        config_key: "zhipu",
+        api_key_env: "ZHIPUAI_API_KEY",
+    },
+    CatalogProviderMetadata {
+        display_name: "Google Gemini",
+        config_key: "gemini",
+        api_key_env: "GEMINI_API_KEY",
+    },
+];
+
+/// Returns the accepted v1 direct-provider metadata.
+#[must_use]
+pub fn accepted_v1_provider_metadata() -> &'static [CatalogProviderMetadata] {
+    ACCEPTED_V1_PROVIDERS
+}
+
+/// Returns canonical provider metadata for a v1 provider key.
+#[must_use]
+pub fn v1_provider_metadata_for_key(config_key: &str) -> Option<&'static CatalogProviderMetadata> {
+    ACCEPTED_V1_PROVIDERS
+        .iter()
+        .find(|provider| provider.config_key == config_key)
+}
+
+/// Returns the canonical key for a legacy provider alias.
+#[must_use]
+pub fn legacy_provider_alias_canonical_key(config_key: &str) -> Option<&'static str> {
+    match config_key {
+        "grok" => Some("xai"),
+        _ => None,
+    }
+}
+
+/// A provider entry in a refreshed v1 model catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogProviderDocument {
+    /// User-facing provider name.
+    pub display_name: String,
+    /// Canonical config key.
+    pub config_key: String,
+    /// Conventional API key environment variable.
+    pub api_key_env: String,
+    /// Optional safe provider note for review surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Discovery status for a provider in a refreshed v1 catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiscoveryState {
+    /// Provider metadata came from fresh discovery for this semantic catalog.
+    FreshDiscovery,
+    /// Provider metadata came from curated fallback input.
+    CuratedFallback,
+    /// Provider metadata came from previous-known-good fallback input.
+    PreviousKnownGoodFallback,
+    /// Provider metadata was manually curated without live discovery.
+    ManuallyCurated,
+}
+
+/// Provider discovery status carried in the adopted catalog bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDiscoveryStatus {
+    /// Canonical provider config key.
+    pub provider_key: String,
+    /// Discovery or fallback state used for the semantic catalog content.
+    pub state: ProviderDiscoveryState,
+    /// User-facing warning shown when fallback-backed metadata is adopted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// Lifecycle state for a model in a refreshed v1 catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelLifecycle {
+    /// Model is active and selectable by DUUMBI routing.
+    Active,
+    /// Model is still known but should be avoided for new default routing.
+    Deprecated,
+    /// Model is retained for compatibility evidence and must not be selected.
+    Retired,
+}
+
+/// A model entry in a refreshed v1 catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDocumentEntry {
+    /// Canonical provider config key.
+    pub provider_key: String,
+    /// Provider-specific model identifier.
+    pub model_id: String,
+    /// Model lifecycle state.
+    pub lifecycle: ModelLifecycle,
+    /// Relative output quality score, 0-100.
+    pub quality: u8,
+    /// Relative latency score, 0-100.
+    pub speed: u8,
+    /// Relative affordability score, 0-100.
+    pub cost_efficiency: u8,
+    /// Whether this model is preferred for reasoning-heavy tasks.
+    pub reasoning: bool,
+    /// Whether this model is preferred for coding/graph mutation tasks.
+    pub coding: bool,
+}
+
+/// Versioned refreshed model catalog document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDocumentV1 {
+    /// Catalog schema version.
+    pub schema_version: String,
+    /// Semantic catalog content timestamp.
+    pub content_timestamp: String,
+    /// Source and curation provenance for reviewer inspection.
+    pub source: String,
+    /// Safe summary of generator status for the adopted semantic catalog.
+    pub generator_status_summary: String,
+    /// Accepted direct providers covered by this catalog.
+    pub providers: Vec<CatalogProviderDocument>,
+    /// Per-provider discovery or fallback status carried in the adopted catalog.
+    pub provider_discovery_status: Vec<ProviderDiscoveryStatus>,
+    /// Provider/model routing entries.
+    pub models: Vec<ModelCatalogDocumentEntry>,
+    /// Concise user-facing change summary.
+    pub change_summary: String,
+}
+
+/// User-level catalog update state stored outside provider credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogRefreshState {
+    /// Last completed remote hash check as Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check_unix_secs: Option<u64>,
+    /// Hash of the installed refreshed catalog, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_hash: Option<String>,
+    /// Last remote hash offered to the user for review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_offered_hash: Option<String>,
+    /// Remote hashes the user chose to skip.
+    #[serde(default)]
+    pub skipped_hashes: Vec<String>,
+    /// Do not offer another review before this Unix timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_later_until_unix_secs: Option<u64>,
+    /// Whether automatic catalog checks are disabled.
+    #[serde(default)]
+    pub disabled: bool,
+    /// Configured hash-check interval in seconds.
+    #[serde(default = "default_catalog_check_frequency_secs")]
+    pub check_frequency_secs: u64,
+    /// Last safe failure code and message, without secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<CatalogRefreshFailure>,
+}
+
+impl Default for CatalogRefreshState {
+    fn default() -> Self {
+        Self {
+            last_check_unix_secs: None,
+            installed_hash: None,
+            last_offered_hash: None,
+            skipped_hashes: Vec::new(),
+            remind_later_until_unix_secs: None,
+            disabled: false,
+            check_frequency_secs: DEFAULT_CATALOG_CHECK_FREQUENCY_SECS,
+            last_failure: None,
+        }
+    }
+}
+
+/// Safe catalog refresh failure metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogRefreshFailure {
+    /// Stable failure code for UI and telemetry surfaces.
+    pub code: String,
+    /// Safe diagnostic message with no secrets or provider payloads.
+    pub message: String,
+}
+
+/// Decision made after a bounded hash-first catalog check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogHashCheckDecision {
+    /// Nothing user-visible should happen.
+    Quiet,
+    /// A new catalog hash should be offered for user review.
+    OfferReview {
+        /// Normalized SHA-256 hash to review.
+        hash: String,
+    },
+}
+
+/// Remote catalog URLs used for hash-first update checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogRemoteUrls {
+    /// URL for the deterministic v1 catalog JSON document.
+    pub catalog_url: String,
+    /// URL for the SHA-256 checksum artifact.
+    pub sha256_url: String,
+}
+
+impl Default for CatalogRemoteUrls {
+    fn default() -> Self {
+        Self {
+            catalog_url: MODEL_CATALOG_V1_URL.to_string(),
+            sha256_url: MODEL_CATALOG_V1_SHA256_URL.to_string(),
+        }
+    }
+}
+
+/// Result of a hash-first remote catalog check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogRemoteCheckResult {
+    /// No user-visible update is available or allowed by current state.
+    Quiet,
+    /// A validated changed catalog is available for explicit review.
+    ReviewAvailable {
+        /// Normalized SHA-256 hash the user must approve.
+        hash: String,
+        /// Validated remote catalog document for display.
+        document: Box<ModelCatalogDocumentV1>,
+    },
+}
+
+/// HTTP client for bounded remote model-catalog update checks.
+#[derive(Debug, Clone)]
+pub struct CatalogRemoteClient {
+    http: reqwest::Client,
+    urls: CatalogRemoteUrls,
+}
+
+/// Errors from bounded remote catalog update checks.
+#[derive(Debug, Error)]
+pub enum CatalogRemoteClientError {
+    /// Remote request failed before a response could be consumed.
+    #[error("catalog remote request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    /// Remote server returned a non-success status code.
+    #[error("catalog remote returned HTTP status {status}")]
+    HttpStatus {
+        /// HTTP status returned by the remote artifact endpoint.
+        status: reqwest::StatusCode,
+    },
+    /// Remote catalog body exceeded the bounded allocation limit.
+    #[error("catalog remote body too large: received {received} bytes, limit {limit}")]
+    ResponseTooLarge {
+        /// Bytes reported or received before aborting.
+        received: u64,
+        /// Maximum accepted catalog response size.
+        limit: u64,
+    },
+    /// The user approved a hash that is no longer the current remote hash.
+    #[error("stale catalog approval: approved {approved}, current {current}")]
+    StaleApproval {
+        /// Hash approved by the user.
+        approved: String,
+        /// Current hash fetched before adoption.
+        current: String,
+    },
+    /// Store, checksum, schema, or local persistence validation failed.
+    #[error(transparent)]
+    Store(#[from] ModelCatalogStoreError),
+}
+
+impl CatalogRemoteClient {
+    /// Creates a remote client with default catalog URLs and a bounded timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be constructed.
+    pub fn new() -> Result<Self, reqwest::Error> {
+        Self::with_urls(CatalogRemoteUrls::default())
+    }
+
+    /// Creates a remote client for explicit catalog URLs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be constructed.
+    pub fn with_urls(urls: CatalogRemoteUrls) -> Result<Self, reqwest::Error> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        Ok(Self { http, urls })
+    }
+
+    /// Returns the configured catalog URLs.
+    #[must_use]
+    pub fn urls(&self) -> &CatalogRemoteUrls {
+        &self.urls
+    }
+
+    /// Performs a hash-first remote catalog check without adopting content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for remote, checksum, schema, state, or storage
+    /// failures. Safe failure metadata is recorded when possible.
+    pub async fn check_for_update(
+        &self,
+        store: &ModelCatalogStore,
+        now_unix_secs: u64,
+    ) -> Result<CatalogRemoteCheckResult, CatalogRemoteClientError> {
+        let remote_hash = match self.fetch_remote_hash().await {
+            Ok(hash) => hash,
+            Err(error) => {
+                store.record_failure(
+                    "remote_hash_fetch_failed",
+                    "Remote catalog hash could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+
+        match store.record_remote_hash_check(&remote_hash, now_unix_secs)? {
+            CatalogHashCheckDecision::Quiet => Ok(CatalogRemoteCheckResult::Quiet),
+            CatalogHashCheckDecision::OfferReview { hash } => {
+                let bytes = match self.fetch_remote_catalog_bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        store.record_failure(
+                            "remote_catalog_fetch_failed",
+                            "Remote catalog document could not be fetched.",
+                            now_unix_secs,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                if catalog_sha256_hex(&bytes) != hash {
+                    store.record_failure(
+                        "remote_catalog_hash_mismatch",
+                        "Remote catalog bytes did not match the advertised hash.",
+                        now_unix_secs,
+                    )?;
+                    return Err(ModelCatalogStoreError::HashMismatch {
+                        expected: hash,
+                        actual: catalog_sha256_hex(&bytes),
+                    }
+                    .into());
+                }
+                let document = match validate_catalog_bytes_v1(&bytes) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        store.record_failure(
+                            "remote_catalog_validation_failed",
+                            "Remote catalog document failed v1 validation.",
+                            now_unix_secs,
+                        )?;
+                        return Err(error.into());
+                    }
+                };
+                Ok(CatalogRemoteCheckResult::ReviewAvailable {
+                    hash,
+                    document: Box::new(document),
+                })
+            }
+        }
+    }
+
+    /// Revalidates the current remote hash and adopts the matching catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the approved hash is stale, the remote artifacts
+    /// are invalid, or local atomic adoption fails.
+    pub async fn approve_remote_catalog(
+        &self,
+        store: &ModelCatalogStore,
+        approved_hash: Option<&str>,
+        now_unix_secs: u64,
+    ) -> Result<ModelCatalogDocumentV1, CatalogRemoteClientError> {
+        let current_hash = match self.fetch_remote_hash().await {
+            Ok(hash) => hash,
+            Err(error) => {
+                store.record_failure(
+                    "remote_hash_fetch_failed",
+                    "Remote catalog hash could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+        if let Some(approved_hash) = approved_hash {
+            let approved = normalize_catalog_sha256(approved_hash)?;
+            if approved != current_hash {
+                store.record_failure(
+                    "stale_catalog_approval",
+                    "Approved catalog hash no longer matches the current remote hash.",
+                    now_unix_secs,
+                )?;
+                return Err(CatalogRemoteClientError::StaleApproval {
+                    approved,
+                    current: current_hash,
+                });
+            }
+        }
+
+        let bytes = match self.fetch_remote_catalog_bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                store.record_failure(
+                    "remote_catalog_fetch_failed",
+                    "Remote catalog document could not be fetched.",
+                    now_unix_secs,
+                )?;
+                return Err(error);
+            }
+        };
+
+        match store.adopt_catalog_bytes(&current_hash, &bytes, now_unix_secs) {
+            Ok(document) => Ok(document),
+            Err(error) => {
+                store.record_failure(
+                    "remote_catalog_adoption_failed",
+                    "Remote catalog adoption failed; previous catalog remains active.",
+                    now_unix_secs,
+                )?;
+                Err(error.into())
+            }
+        }
+    }
+
+    async fn fetch_remote_hash(&self) -> Result<String, CatalogRemoteClientError> {
+        let text = self.fetch_remote_text(&self.urls.sha256_url).await?;
+        normalize_catalog_sha256(&text).map_err(Into::into)
+    }
+
+    async fn fetch_remote_catalog_bytes(&self) -> Result<Vec<u8>, CatalogRemoteClientError> {
+        let response = self.http.get(&self.urls.catalog_url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CatalogRemoteClientError::HttpStatus { status });
+        }
+        if let Some(content_length) = response.content_length()
+            && content_length > MAX_REMOTE_CATALOG_BYTES
+        {
+            return Err(CatalogRemoteClientError::ResponseTooLarge {
+                received: content_length,
+                limit: MAX_REMOTE_CATALOG_BYTES,
+            });
+        }
+
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            let received = (bytes.len() + chunk.len()) as u64;
+            if received > MAX_REMOTE_CATALOG_BYTES {
+                return Err(CatalogRemoteClientError::ResponseTooLarge {
+                    received,
+                    limit: MAX_REMOTE_CATALOG_BYTES,
+                });
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
+    async fn fetch_remote_text(&self, url: &str) -> Result<String, CatalogRemoteClientError> {
+        let response = self.http.get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CatalogRemoteClientError::HttpStatus { status });
+        }
+        response.text().await.map_err(Into::into)
+    }
+}
+
+/// User-level model catalog store.
+#[derive(Debug, Clone)]
+pub struct ModelCatalogStore {
+    root: PathBuf,
+}
+
+/// Errors from catalog parsing, validation, hashing, and local storage.
+#[derive(Debug, Error)]
+pub enum ModelCatalogStoreError {
+    /// Local filesystem operation failed.
+    #[error("catalog store I/O failed at {path}: {source}")]
+    Io {
+        /// Path that was accessed.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// Catalog JSON parsing or serialization failed.
+    #[error("catalog JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    /// Catalog schema validation failed.
+    #[error("catalog validation failed")]
+    Validation {
+        /// Collected validation errors.
+        errors: Vec<ModelCatalogValidationError>,
+    },
+    /// Expected and actual hashes differ.
+    #[error("catalog SHA-256 mismatch: expected {expected}, actual {actual}")]
+    HashMismatch {
+        /// Expected normalized SHA-256 hash.
+        expected: String,
+        /// Actual normalized SHA-256 hash.
+        actual: String,
+    },
+    /// A SHA-256 value could not be parsed.
+    #[error("invalid catalog SHA-256 value: {0}")]
+    InvalidHash(String),
+    /// Read-back verification after an atomic write failed.
+    #[error("catalog write verification failed")]
+    ReadBackMismatch,
+}
+
+impl ModelCatalogStore {
+    /// Creates a user-level catalog store rooted at `<home>/.duumbi/model-catalog`.
+    #[must_use]
+    pub fn for_home(home: impl AsRef<Path>) -> Self {
+        Self {
+            root: home.as_ref().join(".duumbi").join(MODEL_CATALOG_DIR),
+        }
+    }
+
+    /// Creates a catalog store rooted directly at the given directory.
+    #[must_use]
+    pub fn from_catalog_dir(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Returns the catalog store directory.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Loads update-control state, returning defaults when no state exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an existing state file cannot be read or parsed.
+    pub fn load_state(&self) -> Result<CatalogRefreshState, ModelCatalogStoreError> {
+        let path = self.state_path();
+        match fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).map_err(Into::into),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                Ok(CatalogRefreshState::default())
+            }
+            Err(source) => Err(ModelCatalogStoreError::Io { path, source }),
+        }
+    }
+
+    /// Saves update-control state atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when serialization, write, read-back, or rename fails.
+    pub fn save_state(&self, state: &CatalogRefreshState) -> Result<(), ModelCatalogStoreError> {
+        let bytes = serde_json::to_vec_pretty(state)?;
+        atomic_write_verified(&self.root, CATALOG_STATE_FILE, &bytes)
+    }
+
+    /// Loads the active refreshed catalog, if one exists and is valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an existing local catalog cannot be read, parsed,
+    /// hash-verified, or schema-validated.
+    pub fn load_active_catalog(
+        &self,
+    ) -> Result<Option<ModelCatalogDocumentV1>, ModelCatalogStoreError> {
+        let catalog_path = self.current_catalog_path();
+        let bytes = match fs::read(&catalog_path) {
+            Ok(bytes) => bytes,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(ModelCatalogStoreError::Io {
+                    path: catalog_path,
+                    source,
+                });
+            }
+        };
+        let hash_path = self.current_hash_path();
+        let expected = match fs::read_to_string(&hash_path) {
+            Ok(hash) => normalize_catalog_sha256(&hash)?,
+            Err(source) => {
+                return Err(ModelCatalogStoreError::Io {
+                    path: hash_path,
+                    source,
+                });
+            }
+        };
+        let actual = catalog_sha256_hex(&bytes);
+        if expected != actual {
+            return Err(ModelCatalogStoreError::HashMismatch { expected, actual });
+        }
+        validate_catalog_bytes_v1(&bytes).map(Some)
+    }
+
+    /// Records a remote hash check and decides whether the user should review it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the remote hash is malformed or state cannot be saved.
+    pub fn record_remote_hash_check(
+        &self,
+        remote_hash: &str,
+        now_unix_secs: u64,
+    ) -> Result<CatalogHashCheckDecision, ModelCatalogStoreError> {
+        let remote_hash = normalize_catalog_sha256(remote_hash)?;
+        let mut state = self.load_state()?;
+        state.last_check_unix_secs = Some(now_unix_secs);
+
+        let decision = if state.disabled
+            || state
+                .installed_hash
+                .as_deref()
+                .is_some_and(|hash| hash == remote_hash)
+            || state.skipped_hashes.iter().any(|hash| hash == &remote_hash)
+            || state
+                .remind_later_until_unix_secs
+                .is_some_and(|until| now_unix_secs < until)
+        {
+            CatalogHashCheckDecision::Quiet
+        } else {
+            state.last_offered_hash = Some(remote_hash.clone());
+            CatalogHashCheckDecision::OfferReview { hash: remote_hash }
+        };
+
+        self.save_state(&state)?;
+        Ok(decision)
+    }
+
+    /// Marks a catalog hash as skipped by the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the hash is malformed or state cannot be saved.
+    pub fn skip_hash(&self, hash: &str) -> Result<(), ModelCatalogStoreError> {
+        let hash = normalize_catalog_sha256(hash)?;
+        let mut state = self.load_state()?;
+        state.skipped_hashes.retain(|existing| existing != &hash);
+        state.skipped_hashes.push(hash);
+        cap_skipped_hashes(&mut state.skipped_hashes);
+        self.save_state(&state)
+    }
+
+    /// Defers the currently offered catalog hash until the given timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be saved.
+    pub fn remind_later_until(&self, until_unix_secs: u64) -> Result<(), ModelCatalogStoreError> {
+        let mut state = self.load_state()?;
+        state.remind_later_until_unix_secs = Some(until_unix_secs);
+        self.save_state(&state)
+    }
+
+    /// Disables automatic catalog checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be saved.
+    pub fn disable_checks(&self) -> Result<(), ModelCatalogStoreError> {
+        let mut state = self.load_state()?;
+        state.disabled = true;
+        self.save_state(&state)
+    }
+
+    /// Records safe catalog-refresh failure metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be saved.
+    pub fn record_failure(
+        &self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        now_unix_secs: u64,
+    ) -> Result<(), ModelCatalogStoreError> {
+        let mut state = self.load_state()?;
+        state.last_check_unix_secs = Some(now_unix_secs);
+        state.last_failure = Some(CatalogRefreshFailure {
+            code: code.into(),
+            message: message.into(),
+        });
+        self.save_state(&state)
+    }
+
+    /// Validates and atomically adopts catalog bytes approved by the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the hash mismatches, validation fails, or local
+    /// atomic writes fail.
+    pub fn adopt_catalog_bytes(
+        &self,
+        approved_hash: &str,
+        catalog_bytes: &[u8],
+        now_unix_secs: u64,
+    ) -> Result<ModelCatalogDocumentV1, ModelCatalogStoreError> {
+        let expected = normalize_catalog_sha256(approved_hash)?;
+        let actual = catalog_sha256_hex(catalog_bytes);
+        if expected != actual {
+            return Err(ModelCatalogStoreError::HashMismatch { expected, actual });
+        }
+
+        let document = validate_catalog_bytes_v1(catalog_bytes)?;
+        let mut state = self.load_state()?;
+        state.installed_hash = Some(expected.clone());
+        state.last_check_unix_secs = Some(now_unix_secs);
+        state.last_failure = None;
+        state
+            .skipped_hashes
+            .retain(|skipped_hash| skipped_hash != &expected);
+        cap_skipped_hashes(&mut state.skipped_hashes);
+        let state_bytes = serde_json::to_vec_pretty(&state)?;
+
+        replace_catalog_files_atomically(
+            &self.root,
+            catalog_bytes,
+            expected.as_bytes(),
+            &state_bytes,
+        )?;
+
+        Ok(document)
+    }
+
+    fn current_catalog_path(&self) -> PathBuf {
+        self.root.join(CURRENT_CATALOG_FILE)
+    }
+
+    fn current_hash_path(&self) -> PathBuf {
+        self.root.join(CURRENT_HASH_FILE)
+    }
+
+    fn state_path(&self) -> PathBuf {
+        self.root.join(CATALOG_STATE_FILE)
+    }
+}
+
+fn default_catalog_check_frequency_secs() -> u64 {
+    DEFAULT_CATALOG_CHECK_FREQUENCY_SECS
+}
+
+fn cap_skipped_hashes(skipped_hashes: &mut Vec<String>) {
+    if skipped_hashes.len() > MAX_SKIPPED_CATALOG_HASHES {
+        let overflow = skipped_hashes.len() - MAX_SKIPPED_CATALOG_HASHES;
+        skipped_hashes.drain(0..overflow);
+    }
+}
+
+/// Serializes v1 catalog content into deterministic JSON bytes.
+///
+/// Determinism depends on callers providing stable vector ordering for provider,
+/// discovery-status, and model entries. This function does not add run-specific
+/// publisher evidence to the adopted catalog bytes.
+///
+/// # Errors
+///
+/// Returns an error when JSON serialization fails.
+pub fn deterministic_catalog_bytes(
+    document: &ModelCatalogDocumentV1,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec_pretty(document)
+}
+
+/// Returns the lowercase SHA-256 hex digest for catalog bytes.
+#[must_use]
+pub fn catalog_sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Normalizes a catalog SHA-256 value from a `.sha256` artifact.
+///
+/// Accepts a bare hex digest, `sha256:<hex>`, or the first whitespace-separated
+/// token from common checksum-file formats.
+///
+/// # Errors
+///
+/// Returns an error when the value is not a 64-character hex SHA-256 digest.
+pub fn normalize_catalog_sha256(hash: &str) -> Result<String, ModelCatalogStoreError> {
+    let token = hash
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches("sha256:")
+        .to_ascii_lowercase();
+    if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(token)
+    } else {
+        Err(ModelCatalogStoreError::InvalidHash(hash.to_string()))
+    }
+}
+
+/// Parses and validates v1 catalog bytes.
+///
+/// # Errors
+///
+/// Returns an error when JSON parsing or v1 schema validation fails.
+pub fn validate_catalog_bytes_v1(
+    bytes: &[u8],
+) -> Result<ModelCatalogDocumentV1, ModelCatalogStoreError> {
+    let document = serde_json::from_slice::<ModelCatalogDocumentV1>(bytes)?;
+    validate_catalog_document_v1(&document)
+        .map_err(|errors| ModelCatalogStoreError::Validation { errors })?;
+    Ok(document)
+}
+
+fn atomic_write_verified(
+    dir: &Path,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(), ModelCatalogStoreError> {
+    fs::create_dir_all(dir).map_err(|source| ModelCatalogStoreError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    let tmp_path = dir.join(format!("{file_name}.tmp"));
+    let final_path = dir.join(file_name);
+    write_temp_verified(&tmp_path, bytes)?;
+    fs::rename(&tmp_path, &final_path).map_err(|source| ModelCatalogStoreError::Io {
+        path: final_path,
+        source,
+    })
+}
+
+fn replace_catalog_files_atomically(
+    dir: &Path,
+    catalog_bytes: &[u8],
+    hash_bytes: &[u8],
+    state_bytes: &[u8],
+) -> Result<(), ModelCatalogStoreError> {
+    fs::create_dir_all(dir).map_err(|source| ModelCatalogStoreError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    let mut entries = [
+        AtomicWriteEntry::new(dir, CURRENT_CATALOG_FILE, catalog_bytes),
+        AtomicWriteEntry::new(dir, CURRENT_HASH_FILE, hash_bytes),
+        AtomicWriteEntry::new(dir, CATALOG_STATE_FILE, state_bytes),
+    ];
+
+    for entry in &entries {
+        cleanup_optional_file(&entry.backup_path);
+        write_temp_verified(&entry.tmp_path, entry.bytes)?;
+    }
+
+    for index in 0..entries.len() {
+        match move_if_exists(&entries[index].final_path, &entries[index].backup_path) {
+            Ok(backed_up) => entries[index].backed_up = backed_up,
+            Err(error) => {
+                restore_atomic_entries(&entries);
+                return Err(error);
+            }
+        }
+    }
+
+    for entry in &entries {
+        if let Err(error) = rename_path(&entry.tmp_path, &entry.final_path) {
+            restore_atomic_entries(&entries);
+            return Err(error);
+        }
+    }
+
+    for entry in &entries {
+        cleanup_optional_file(&entry.backup_path);
+    }
+    Ok(())
+}
+
+struct AtomicWriteEntry<'a> {
+    final_path: PathBuf,
+    tmp_path: PathBuf,
+    backup_path: PathBuf,
+    bytes: &'a [u8],
+    backed_up: bool,
+}
+
+impl<'a> AtomicWriteEntry<'a> {
+    fn new(dir: &Path, file_name: &'static str, bytes: &'a [u8]) -> Self {
+        Self {
+            final_path: dir.join(file_name),
+            tmp_path: dir.join(format!("{file_name}.tmp")),
+            backup_path: dir.join(format!("{file_name}.bak")),
+            bytes,
+            backed_up: false,
+        }
+    }
+}
+
+fn write_temp_verified(path: &Path, bytes: &[u8]) -> Result<(), ModelCatalogStoreError> {
+    fs::write(path, bytes).map_err(|source| ModelCatalogStoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let read_back = fs::read(path).map_err(|source| ModelCatalogStoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if read_back != bytes {
+        cleanup_optional_file(path);
+        return Err(ModelCatalogStoreError::ReadBackMismatch);
+    }
+    Ok(())
+}
+
+fn move_if_exists(from: &Path, to: &Path) -> Result<bool, ModelCatalogStoreError> {
+    if !from.exists() {
+        return Ok(false);
+    }
+    rename_path(from, to)?;
+    Ok(true)
+}
+
+fn rename_path(from: &Path, to: &Path) -> Result<(), ModelCatalogStoreError> {
+    fs::rename(from, to).map_err(|source| ModelCatalogStoreError::Io {
+        path: to.to_path_buf(),
+        source,
+    })
+}
+
+fn restore_atomic_entries(entries: &[AtomicWriteEntry<'_>]) {
+    for entry in entries {
+        cleanup_optional_file(&entry.final_path);
+        cleanup_optional_file(&entry.tmp_path);
+    }
+    for entry in entries {
+        if entry.backed_up {
+            let _ = fs::rename(&entry.backup_path, &entry.final_path);
+        } else {
+            cleanup_optional_file(&entry.backup_path);
+        }
+    }
+}
+
+fn cleanup_optional_file(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => {}
+    }
+}
+
+/// Validation error for a refreshed v1 model catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ModelCatalogValidationError {
+    /// The catalog schema version is unsupported.
+    #[error("unsupported schema version: {0}")]
+    UnsupportedSchemaVersion(String),
+    /// A required text field is empty.
+    #[error("required field is empty: {0}")]
+    EmptyRequiredField(&'static str),
+    /// The provider is not supported by the v1 direct-provider catalog.
+    #[error("unsupported v1 provider: {0}")]
+    UnsupportedProvider(String),
+    /// An accepted v1 provider is absent from the catalog.
+    #[error("missing accepted v1 provider: {0}")]
+    MissingProvider(String),
+    /// OpenRouter appeared in v1 catalog content.
+    #[error("OpenRouter is excluded from the v1 provider catalog")]
+    OpenRouterExcluded,
+    /// Grok appeared as a canonical provider key.
+    #[error("grok is a legacy alias; xai must be the canonical provider key")]
+    GrokIsLegacyAlias,
+    /// A provider appears more than once.
+    #[error("duplicate provider key: {0}")]
+    DuplicateProvider(String),
+    /// Provider display name or API key env var does not match canonical metadata.
+    #[error("provider metadata mismatch for key: {0}")]
+    ProviderMetadataMismatch(String),
+    /// Discovery status is missing for a provider.
+    #[error("missing provider discovery status: {0}")]
+    MissingProviderDiscoveryStatus(String),
+    /// Discovery status references a provider that is not in the catalog.
+    #[error("unknown discovery status provider: {0}")]
+    UnknownDiscoveryStatusProvider(String),
+    /// Discovery status appears more than once for a provider.
+    #[error("duplicate provider discovery status: {0}")]
+    DuplicateProviderDiscoveryStatus(String),
+    /// Fallback-backed provider metadata lacks a user-facing warning.
+    #[error("fallback metadata lacks a user-facing warning: {0}")]
+    MissingFallbackWarning(String),
+    /// A model references a provider absent from the provider list.
+    #[error("model references unknown provider: {0}")]
+    UnknownModelProvider(String),
+    /// A provider/model pair appears more than once.
+    #[error("duplicate model entry: {provider_key}/{model_id}")]
+    DuplicateModel {
+        /// Provider key for the duplicate model entry.
+        provider_key: String,
+        /// Model identifier for the duplicate model entry.
+        model_id: String,
+    },
+    /// A model identifier is empty.
+    #[error("empty model identifier for provider: {0}")]
+    EmptyModelId(String),
+    /// A routing score is outside the accepted 0-100 range.
+    #[error("invalid routing score {field}={value} for {provider_key}/{model_id}")]
+    InvalidRoutingScore {
+        /// Score field name.
+        field: &'static str,
+        /// Provider key for the model.
+        provider_key: String,
+        /// Model identifier.
+        model_id: String,
+        /// Invalid score value.
+        value: u8,
+    },
+}
+
+/// Validates a refreshed v1 catalog document.
+///
+/// Returns all validation errors so publisher and client surfaces can report
+/// complete safe diagnostics without adopting invalid catalog content.
+pub fn validate_catalog_document_v1(
+    document: &ModelCatalogDocumentV1,
+) -> Result<(), Vec<ModelCatalogValidationError>> {
+    let mut errors = Vec::new();
+
+    if document.schema_version != MODEL_CATALOG_V1_SCHEMA_VERSION {
+        errors.push(ModelCatalogValidationError::UnsupportedSchemaVersion(
+            document.schema_version.clone(),
+        ));
+    }
+    push_empty_field_errors(document, &mut errors);
+
+    let provider_keys = validate_catalog_providers(document, &mut errors);
+    validate_discovery_status(document, &provider_keys, &mut errors);
+    validate_catalog_models(document, &provider_keys, &mut errors);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn push_empty_field_errors(
+    document: &ModelCatalogDocumentV1,
+    errors: &mut Vec<ModelCatalogValidationError>,
+) {
+    for (field, value) in [
+        ("content_timestamp", document.content_timestamp.as_str()),
+        ("source", document.source.as_str()),
+        (
+            "generator_status_summary",
+            document.generator_status_summary.as_str(),
+        ),
+        ("change_summary", document.change_summary.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            errors.push(ModelCatalogValidationError::EmptyRequiredField(field));
+        }
+    }
+}
+
+fn validate_catalog_providers(
+    document: &ModelCatalogDocumentV1,
+    errors: &mut Vec<ModelCatalogValidationError>,
+) -> HashSet<String> {
+    let mut provider_keys = HashSet::new();
+    for provider in &document.providers {
+        let key = provider.config_key.as_str();
+        if key == "openrouter" {
+            errors.push(ModelCatalogValidationError::OpenRouterExcluded);
+        }
+        if key == "grok" {
+            errors.push(ModelCatalogValidationError::GrokIsLegacyAlias);
+        }
+        let Some(metadata) = v1_provider_metadata_for_key(key) else {
+            errors.push(ModelCatalogValidationError::UnsupportedProvider(
+                provider.config_key.clone(),
+            ));
+            continue;
+        };
+        if !provider_keys.insert(key.to_string()) {
+            errors.push(ModelCatalogValidationError::DuplicateProvider(
+                key.to_string(),
+            ));
+        }
+        if provider.display_name != metadata.display_name
+            || provider.api_key_env != metadata.api_key_env
+        {
+            errors.push(ModelCatalogValidationError::ProviderMetadataMismatch(
+                key.to_string(),
+            ));
+        }
+    }
+    for metadata in accepted_v1_provider_metadata() {
+        if !provider_keys.contains(metadata.config_key) {
+            errors.push(ModelCatalogValidationError::MissingProvider(
+                metadata.config_key.to_string(),
+            ));
+        }
+    }
+    provider_keys
+}
+
+fn validate_discovery_status(
+    document: &ModelCatalogDocumentV1,
+    provider_keys: &HashSet<String>,
+    errors: &mut Vec<ModelCatalogValidationError>,
+) {
+    let mut discovery_keys = HashSet::new();
+    for status in &document.provider_discovery_status {
+        if !provider_keys.contains(&status.provider_key) {
+            errors.push(ModelCatalogValidationError::UnknownDiscoveryStatusProvider(
+                status.provider_key.clone(),
+            ));
+        }
+        if !discovery_keys.insert(status.provider_key.clone()) {
+            errors.push(
+                ModelCatalogValidationError::DuplicateProviderDiscoveryStatus(
+                    status.provider_key.clone(),
+                ),
+            );
+        }
+        if matches!(
+            status.state,
+            ProviderDiscoveryState::CuratedFallback
+                | ProviderDiscoveryState::PreviousKnownGoodFallback
+        ) && status
+            .warning
+            .as_deref()
+            .is_none_or(|warning| warning.trim().is_empty())
+        {
+            errors.push(ModelCatalogValidationError::MissingFallbackWarning(
+                status.provider_key.clone(),
+            ));
+        }
+    }
+
+    for key in provider_keys {
+        if !discovery_keys.contains(key) {
+            errors.push(ModelCatalogValidationError::MissingProviderDiscoveryStatus(
+                key.clone(),
+            ));
+        }
+    }
+}
+
+fn validate_catalog_models(
+    document: &ModelCatalogDocumentV1,
+    provider_keys: &HashSet<String>,
+    errors: &mut Vec<ModelCatalogValidationError>,
+) {
+    let mut model_keys = HashSet::new();
+    for model in &document.models {
+        if !provider_keys.contains(&model.provider_key) {
+            errors.push(ModelCatalogValidationError::UnknownModelProvider(
+                model.provider_key.clone(),
+            ));
+        }
+        if model.model_id.trim().is_empty() {
+            errors.push(ModelCatalogValidationError::EmptyModelId(
+                model.provider_key.clone(),
+            ));
+        }
+        if !model_keys.insert((model.provider_key.clone(), model.model_id.clone())) {
+            errors.push(ModelCatalogValidationError::DuplicateModel {
+                provider_key: model.provider_key.clone(),
+                model_id: model.model_id.clone(),
+            });
+        }
+        push_invalid_score_error(
+            "quality",
+            model.quality,
+            &model.provider_key,
+            &model.model_id,
+            errors,
+        );
+        push_invalid_score_error(
+            "speed",
+            model.speed,
+            &model.provider_key,
+            &model.model_id,
+            errors,
+        );
+        push_invalid_score_error(
+            "cost_efficiency",
+            model.cost_efficiency,
+            &model.provider_key,
+            &model.model_id,
+            errors,
+        );
+    }
+}
+
+fn push_invalid_score_error(
+    field: &'static str,
+    value: u8,
+    provider_key: &str,
+    model_id: &str,
+    errors: &mut Vec<ModelCatalogValidationError>,
+) {
+    if value > 100 {
+        errors.push(ModelCatalogValidationError::InvalidRoutingScore {
+            field,
+            provider_key: provider_key.to_string(),
+            model_id: model_id.to_string(),
+            value,
+        });
+    }
+}
 
 /// Static metadata for a model that Duumbi may select.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +1476,87 @@ pub fn catalog() -> &'static [ModelCatalogEntry] {
             coding: true,
         },
         ModelCatalogEntry {
+            provider: ProviderKind::DeepSeek,
+            model: "deepseek-v4-pro",
+            quality: 94,
+            speed: 70,
+            cost_efficiency: 82,
+            reasoning: true,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::DeepSeek,
+            model: "deepseek-v4-flash",
+            quality: 88,
+            speed: 90,
+            cost_efficiency: 92,
+            reasoning: false,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Qwen,
+            model: "qwen3.5-plus",
+            quality: 92,
+            speed: 72,
+            cost_efficiency: 78,
+            reasoning: true,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Qwen,
+            model: "qwen3.5-flash",
+            quality: 84,
+            speed: 92,
+            cost_efficiency: 92,
+            reasoning: false,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Moonshot,
+            model: "kimi-k2.6",
+            quality: 93,
+            speed: 72,
+            cost_efficiency: 82,
+            reasoning: true,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Moonshot,
+            model: "moonshot-v1-128k",
+            quality: 82,
+            speed: 78,
+            cost_efficiency: 84,
+            reasoning: false,
+            coding: false,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Zhipu,
+            model: "glm-5.1",
+            quality: 92,
+            speed: 70,
+            cost_efficiency: 80,
+            reasoning: true,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Zhipu,
+            model: "glm-4.7-flash",
+            quality: 84,
+            speed: 92,
+            cost_efficiency: 92,
+            reasoning: false,
+            coding: true,
+        },
+        ModelCatalogEntry {
+            provider: ProviderKind::Gemini,
+            model: "gemini-3.5-flash",
+            quality: 84,
+            speed: 94,
+            cost_efficiency: 94,
+            reasoning: false,
+            coding: true,
+        },
+        ModelCatalogEntry {
             provider: ProviderKind::OpenRouter,
             model: "openrouter/auto",
             quality: 86,
@@ -225,7 +1601,7 @@ pub fn resolve_provider_config(
         .or_else(|| select_model(&config.provider, context).map(|entry| entry.model.to_string()))?;
 
     Some(ResolvedProviderConfig {
-        provider: config.provider.clone(),
+        provider: config.provider,
         model: selected,
         api_key_env: config.api_key_env.clone(),
         base_url: config.base_url.clone(),
@@ -305,6 +1681,617 @@ fn score_entry(entry: &ModelCatalogEntry, context: &ModelSelectionContext) -> i3
 mod tests {
     use super::*;
     use crate::agents::analyzer::{Complexity, Risk, Scope, TaskProfile};
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    struct LocalCatalogServer {
+        base_url: String,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl LocalCatalogServer {
+        fn spawn(catalog_bytes: Vec<u8>, sha256_body: String, expected_requests: usize) -> Self {
+            Self::spawn_with_catalog_content_length(
+                catalog_bytes,
+                None,
+                sha256_body,
+                expected_requests,
+            )
+        }
+
+        fn spawn_with_catalog_content_length(
+            catalog_bytes: Vec<u8>,
+            catalog_content_length: Option<usize>,
+            sha256_body: String,
+            expected_requests: usize,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("local server bind");
+            let addr = listener.local_addr().expect("local server addr");
+            let base_url = format!("http://{addr}");
+            let handle = thread::spawn(move || {
+                for stream in listener.incoming().take(expected_requests) {
+                    let mut stream = stream.expect("local server stream");
+                    let mut request = [0_u8; 1024];
+                    let read = stream.read(&mut request).expect("local server read");
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    let (status, body, content_length) = if path == "/model-catalog.v1.sha256" {
+                        let body = sha256_body.as_bytes().to_vec();
+                        ("200 OK", body.clone(), body.len())
+                    } else if path == "/model-catalog.v1.json" {
+                        let body = catalog_bytes.clone();
+                        (
+                            "200 OK",
+                            body.clone(),
+                            catalog_content_length.unwrap_or(body.len()),
+                        )
+                    } else {
+                        ("404 Not Found", Vec::new(), 0)
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("local server header write");
+                    let _ = stream.write_all(&body);
+                }
+            });
+            Self {
+                base_url,
+                handle: Some(handle),
+            }
+        }
+
+        fn urls(&self) -> CatalogRemoteUrls {
+            CatalogRemoteUrls {
+                catalog_url: format!("{}/model-catalog.v1.json", self.base_url),
+                sha256_url: format!("{}/model-catalog.v1.sha256", self.base_url),
+            }
+        }
+    }
+
+    impl Drop for LocalCatalogServer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("local catalog server joins");
+            }
+        }
+    }
+
+    fn valid_catalog_document() -> ModelCatalogDocumentV1 {
+        ModelCatalogDocumentV1 {
+            schema_version: MODEL_CATALOG_V1_SCHEMA_VERSION.to_string(),
+            content_timestamp: "2026-06-08T00:00:00Z".to_string(),
+            source: "fixture-input@abc123".to_string(),
+            generator_status_summary: "all providers validated from curated fixture".to_string(),
+            providers: accepted_v1_provider_metadata()
+                .iter()
+                .map(|provider| CatalogProviderDocument {
+                    display_name: provider.display_name.to_string(),
+                    config_key: provider.config_key.to_string(),
+                    api_key_env: provider.api_key_env.to_string(),
+                    note: None,
+                })
+                .collect(),
+            provider_discovery_status: accepted_v1_provider_metadata()
+                .iter()
+                .map(|provider| ProviderDiscoveryStatus {
+                    provider_key: provider.config_key.to_string(),
+                    state: ProviderDiscoveryState::FreshDiscovery,
+                    warning: None,
+                })
+                .collect(),
+            models: accepted_v1_provider_metadata()
+                .iter()
+                .map(|provider| ModelCatalogDocumentEntry {
+                    provider_key: provider.config_key.to_string(),
+                    model_id: format!("{}-fixture-model", provider.config_key),
+                    lifecycle: ModelLifecycle::Active,
+                    quality: 80,
+                    speed: 80,
+                    cost_efficiency: 80,
+                    reasoning: true,
+                    coding: true,
+                })
+                .collect(),
+            change_summary: "fixture catalog for validation".to_string(),
+        }
+    }
+
+    fn valid_catalog_bytes_and_hash() -> (Vec<u8>, String) {
+        let bytes = deterministic_catalog_bytes(&valid_catalog_document())
+            .expect("invariant: fixture catalog serializes");
+        let hash = catalog_sha256_hex(&bytes);
+        (bytes, hash)
+    }
+
+    #[test]
+    fn accepted_v1_provider_metadata_matches_product_spec() {
+        let providers = accepted_v1_provider_metadata();
+
+        assert_eq!(providers.len(), 9);
+        assert!(providers.iter().any(|provider| {
+            provider.display_name == "xAI"
+                && provider.config_key == "xai"
+                && provider.api_key_env == "XAI_API_KEY"
+        }));
+        assert!(providers.iter().any(|provider| {
+            provider.display_name == "Alibaba Cloud Model Studio (Qwen)"
+                && provider.config_key == "qwen"
+                && provider.api_key_env == "DASHSCOPE_API_KEY"
+        }));
+        assert!(
+            !providers
+                .iter()
+                .any(|provider| provider.config_key == "openrouter")
+        );
+        assert_eq!(legacy_provider_alias_canonical_key("grok"), Some("xai"));
+    }
+
+    #[test]
+    fn deterministic_catalog_bytes_have_stable_hash() {
+        let first = deterministic_catalog_bytes(&valid_catalog_document())
+            .expect("invariant: fixture serializes");
+        let second = deterministic_catalog_bytes(&valid_catalog_document())
+            .expect("invariant: fixture serializes");
+
+        assert_eq!(first, second);
+        assert_eq!(catalog_sha256_hex(&first), catalog_sha256_hex(&second));
+    }
+
+    #[test]
+    fn normalize_catalog_sha256_accepts_checksum_file_formats() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        assert_eq!(normalize_catalog_sha256(hash).expect("hash"), hash);
+        assert_eq!(
+            normalize_catalog_sha256(&format!("sha256:{hash}")).expect("hash"),
+            hash
+        );
+        assert_eq!(
+            normalize_catalog_sha256(&format!("{hash}  model-catalog.v1.json")).expect("hash"),
+            hash
+        );
+        assert!(normalize_catalog_sha256("not-a-hash").is_err());
+    }
+
+    #[test]
+    fn validate_catalog_document_accepts_valid_v1_catalog() {
+        let document = valid_catalog_document();
+
+        assert!(validate_catalog_document_v1(&document).is_ok());
+    }
+
+    #[test]
+    fn validate_catalog_bytes_returns_document_for_valid_bytes() {
+        let (bytes, _) = valid_catalog_bytes_and_hash();
+
+        let document = validate_catalog_bytes_v1(&bytes).expect("catalog must validate");
+
+        assert_eq!(document.schema_version, MODEL_CATALOG_V1_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn validate_catalog_document_rejects_openrouter() {
+        let mut document = valid_catalog_document();
+        document.providers.push(CatalogProviderDocument {
+            display_name: "OpenRouter".to_string(),
+            config_key: "openrouter".to_string(),
+            api_key_env: "OPENROUTER_API_KEY".to_string(),
+            note: None,
+        });
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(errors.contains(&ModelCatalogValidationError::OpenRouterExcluded));
+    }
+
+    #[test]
+    fn validate_catalog_document_rejects_grok_as_canonical_key() {
+        let mut document = valid_catalog_document();
+        document.providers.push(CatalogProviderDocument {
+            display_name: "xAI (Grok)".to_string(),
+            config_key: "grok".to_string(),
+            api_key_env: "XAI_API_KEY".to_string(),
+            note: None,
+        });
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(errors.contains(&ModelCatalogValidationError::GrokIsLegacyAlias));
+    }
+
+    #[test]
+    fn validate_catalog_document_rejects_whitespace_padded_provider_key() {
+        let mut document = valid_catalog_document();
+        if let Some(provider) = document
+            .providers
+            .iter_mut()
+            .find(|provider| provider.config_key == "xai")
+        {
+            provider.config_key = " xai ".to_string();
+        }
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(
+            errors.contains(&ModelCatalogValidationError::UnsupportedProvider(
+                " xai ".to_string()
+            ))
+        );
+        assert!(
+            errors.contains(&ModelCatalogValidationError::MissingProvider(
+                "xai".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_catalog_document_requires_every_accepted_provider() {
+        let mut document = valid_catalog_document();
+        document
+            .providers
+            .retain(|provider| provider.config_key != "gemini");
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(
+            errors.contains(&ModelCatalogValidationError::MissingProvider(
+                "gemini".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_catalog_document_requires_discovery_status_for_each_provider() {
+        let mut document = valid_catalog_document();
+        document
+            .provider_discovery_status
+            .retain(|status| status.provider_key != "xai");
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(errors.contains(
+            &ModelCatalogValidationError::MissingProviderDiscoveryStatus("xai".to_string())
+        ));
+    }
+
+    #[test]
+    fn validate_catalog_document_requires_warning_for_fallback_metadata() {
+        let mut document = valid_catalog_document();
+        let status = document
+            .provider_discovery_status
+            .iter_mut()
+            .find(|status| status.provider_key == "minimax")
+            .expect("invariant: minimax status exists");
+        status.state = ProviderDiscoveryState::PreviousKnownGoodFallback;
+        status.warning = None;
+
+        let errors = validate_catalog_document_v1(&document).expect_err("catalog must fail");
+
+        assert!(
+            errors.contains(&ModelCatalogValidationError::MissingFallbackWarning(
+                "minimax".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn catalog_store_offers_review_for_new_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (_, hash) = valid_catalog_bytes_and_hash();
+
+        let decision = store
+            .record_remote_hash_check(&hash, 1_000)
+            .expect("hash check must record");
+
+        assert_eq!(decision, CatalogHashCheckDecision::OfferReview { hash });
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.last_check_unix_secs, Some(1_000));
+        assert!(state.last_offered_hash.is_some());
+    }
+
+    #[test]
+    fn catalog_store_stays_quiet_for_installed_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+
+        let decision = store
+            .record_remote_hash_check(&hash, 2_000)
+            .expect("hash check must record");
+
+        assert_eq!(decision, CatalogHashCheckDecision::Quiet);
+    }
+
+    #[test]
+    fn catalog_store_skip_remind_and_disable_suppress_review() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (_, hash) = valid_catalog_bytes_and_hash();
+        store.skip_hash(&hash).expect("skip must save");
+
+        let skipped = store
+            .record_remote_hash_check(&hash, 1_000)
+            .expect("hash check must record");
+        assert_eq!(skipped, CatalogHashCheckDecision::Quiet);
+
+        let remind_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        store
+            .remind_later_until(5_000)
+            .expect("remind later must save");
+        let reminded = store
+            .record_remote_hash_check(remind_hash, 2_000)
+            .expect("hash check must record");
+        assert_eq!(reminded, CatalogHashCheckDecision::Quiet);
+
+        store.disable_checks().expect("disable must save");
+        let disabled = store
+            .record_remote_hash_check(remind_hash, 6_000)
+            .expect("hash check must record");
+        assert_eq!(disabled, CatalogHashCheckDecision::Quiet);
+    }
+
+    #[test]
+    fn catalog_store_caps_skipped_hashes_to_recent_entries() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+
+        for index in 0..(MAX_SKIPPED_CATALOG_HASHES + 5) {
+            let hash = format!("{index:064x}");
+            store.skip_hash(&hash).expect("skip must save");
+        }
+
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.skipped_hashes.len(), MAX_SKIPPED_CATALOG_HASHES);
+        assert!(!state.skipped_hashes.contains(&format!("{:064x}", 0)));
+        assert!(
+            state
+                .skipped_hashes
+                .contains(&format!("{:064x}", MAX_SKIPPED_CATALOG_HASHES + 4))
+        );
+    }
+
+    #[test]
+    fn catalog_store_adopts_valid_catalog_atomically() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+
+        let adopted = store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+
+        assert_eq!(adopted.schema_version, MODEL_CATALOG_V1_SCHEMA_VERSION);
+        assert_eq!(
+            fs::read(store.root().join(CURRENT_CATALOG_FILE)).expect("catalog file"),
+            bytes
+        );
+        assert_eq!(
+            fs::read_to_string(store.root().join(CURRENT_HASH_FILE)).expect("hash file"),
+            hash
+        );
+        let loaded = store
+            .load_active_catalog()
+            .expect("active catalog must load")
+            .expect("active catalog must exist");
+        assert_eq!(loaded.change_summary, adopted.change_summary);
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+    }
+
+    #[test]
+    fn catalog_store_adoption_removes_installed_hash_from_skipped_hashes() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        store.skip_hash(&hash).expect("skip must save");
+
+        store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+        assert!(!state.skipped_hashes.contains(&hash));
+    }
+
+    #[test]
+    fn catalog_store_hash_mismatch_fails_closed() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, _) = valid_catalog_bytes_and_hash();
+        let wrong_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        let error = store
+            .adopt_catalog_bytes(wrong_hash, &bytes, 1_000)
+            .expect_err("catalog adoption must fail");
+
+        assert!(matches!(error, ModelCatalogStoreError::HashMismatch { .. }));
+        assert!(!store.root().join(CURRENT_CATALOG_FILE).exists());
+        assert!(!store.root().join(CURRENT_HASH_FILE).exists());
+    }
+
+    #[test]
+    fn catalog_store_invalid_schema_fails_without_replacing_active_catalog() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (good_bytes, good_hash) = valid_catalog_bytes_and_hash();
+        store
+            .adopt_catalog_bytes(&good_hash, &good_bytes, 1_000)
+            .expect("initial adoption must succeed");
+
+        let mut invalid_document = valid_catalog_document();
+        invalid_document.schema_version = "duumbi.model_catalog.v2".to_string();
+        let invalid_bytes = deterministic_catalog_bytes(&invalid_document)
+            .expect("invalid fixture still serializes");
+        let invalid_hash = catalog_sha256_hex(&invalid_bytes);
+        let error = store
+            .adopt_catalog_bytes(&invalid_hash, &invalid_bytes, 2_000)
+            .expect_err("invalid catalog must fail");
+
+        assert!(matches!(error, ModelCatalogStoreError::Validation { .. }));
+        assert_eq!(
+            fs::read(store.root().join(CURRENT_CATALOG_FILE)).expect("catalog file"),
+            good_bytes
+        );
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(good_hash.as_str()));
+    }
+
+    #[tokio::test]
+    async fn remote_client_offers_review_for_changed_hash() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let server = LocalCatalogServer::spawn(bytes, format!("{hash}  model-catalog.v1.json"), 2);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let result = client
+            .check_for_update(&store, 1_000)
+            .await
+            .expect("remote check must succeed");
+
+        match result {
+            CatalogRemoteCheckResult::ReviewAvailable {
+                hash: offered,
+                document,
+            } => {
+                assert_eq!(offered, hash);
+                assert_eq!(document.change_summary, "fixture catalog for validation");
+            }
+            CatalogRemoteCheckResult::Quiet => panic!("changed hash should offer review"),
+        }
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.last_offered_hash.as_deref(), Some(hash.as_str()));
+        assert!(state.last_failure.is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_client_stays_quiet_for_installed_hash_without_json_download() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        store
+            .adopt_catalog_bytes(&hash, &bytes, 1_000)
+            .expect("catalog adoption must succeed");
+        let server = LocalCatalogServer::spawn(bytes, hash.clone(), 1);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let result = client
+            .check_for_update(&store, 2_000)
+            .await
+            .expect("remote check must succeed");
+
+        assert_eq!(result, CatalogRemoteCheckResult::Quiet);
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.last_check_unix_secs, Some(2_000));
+    }
+
+    #[tokio::test]
+    async fn remote_client_rejects_oversized_catalog_body() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let oversized_length = MAX_REMOTE_CATALOG_BYTES as usize + 1;
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let server = LocalCatalogServer::spawn_with_catalog_content_length(
+            Vec::new(),
+            Some(oversized_length),
+            hash,
+            2,
+        );
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let error = client
+            .check_for_update(&store, 1_000)
+            .await
+            .expect_err("oversized catalog must fail");
+
+        assert!(matches!(
+            error,
+            CatalogRemoteClientError::ResponseTooLarge { .. }
+        ));
+        let state = store.load_state().expect("state must load");
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(|failure| failure.code.as_str()),
+            Some("remote_catalog_fetch_failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_client_approve_revalidates_hash_and_preserves_provider_config() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let mut provider_config = crate::config::DuumbiConfig::default();
+        provider_config.providers.push(ProviderConfig {
+            provider: ProviderKind::MiniMax,
+            role: crate::config::ProviderRole::Primary,
+            model: Some("MiniMax-M2.7".to_string()),
+            api_key_env: "CUSTOM_MINIMAX_API_KEY".to_string(),
+            base_url: Some("https://example.invalid/minimax".to_string()),
+            timeout_secs: Some(42),
+            key_storage: Some(crate::config::KeyStorage::File),
+            auth_token_env: Some("CUSTOM_MINIMAX_AUTH_TOKEN".to_string()),
+        });
+        let before = toml::to_string(&provider_config).expect("provider config serializes");
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let server = LocalCatalogServer::spawn(bytes, hash.clone(), 2);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let document = client
+            .approve_remote_catalog(&store, Some(&hash), 1_000)
+            .await
+            .expect("remote catalog must adopt");
+
+        assert_eq!(document.change_summary, "fixture catalog for validation");
+        let after = toml::to_string(&provider_config).expect("provider config serializes");
+        assert_eq!(after, before);
+        let state = store.load_state().expect("state must load");
+        assert_eq!(state.installed_hash.as_deref(), Some(hash.as_str()));
+    }
+
+    #[tokio::test]
+    async fn remote_client_rejects_stale_approval_without_adoption() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let store = ModelCatalogStore::for_home(temp.path());
+        let (bytes, hash) = valid_catalog_bytes_and_hash();
+        let stale = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let server = LocalCatalogServer::spawn(bytes, hash, 1);
+        let client = CatalogRemoteClient::with_urls(server.urls()).expect("client");
+
+        let error = client
+            .approve_remote_catalog(&store, Some(stale), 1_000)
+            .await
+            .expect_err("stale approval must fail");
+
+        assert!(matches!(
+            error,
+            CatalogRemoteClientError::StaleApproval { .. }
+        ));
+        assert!(!store.root().join(CURRENT_CATALOG_FILE).exists());
+        let state = store.load_state().expect("state must load");
+        assert_eq!(
+            state
+                .last_failure
+                .as_ref()
+                .map(|failure| failure.code.as_str()),
+            Some("stale_catalog_approval")
+        );
+    }
 
     #[test]
     fn catalog_has_entry_for_each_provider() {

@@ -369,8 +369,22 @@ fn http_get_health(port: u16) -> Result<String, String> {
 fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Output {
     let deadline = Instant::now() + timeout;
     loop {
-        if child.try_wait().expect("poll child").is_some() {
-            return child.wait_with_output().expect("collect child output");
+        if let Some(status) = child.try_wait().expect("poll child") {
+            let mut stdout = Vec::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                pipe.read_to_end(&mut stdout)
+                    .expect("read child stdout after exit");
+            }
+            let mut stderr = Vec::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                pipe.read_to_end(&mut stderr)
+                    .expect("read child stderr after exit");
+            }
+            return Output {
+                status,
+                stdout,
+                stderr,
+            };
         }
         if Instant::now() >= deadline {
             let _ = child.kill();

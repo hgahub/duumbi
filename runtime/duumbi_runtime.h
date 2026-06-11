@@ -123,4 +123,28 @@ void    *duumbi_server_start(void *server, int64_t max_requests, int64_t timeout
 void    *duumbi_server_close(void *server);
 void     duumbi_server_free(void *server);
 
+/* ── HTTP ─────────────────────────────────────────────────────────── */
+
+void    *duumbi_http_get(void *url, void *headers, int64_t timeout_ms);
+void    *duumbi_http_post(void *url, void *headers, void *body, int64_t timeout_ms);
+void    *duumbi_http_put(void *url, void *headers, void *body, int64_t timeout_ms);
+void    *duumbi_http_delete(void *url, void *headers, int64_t timeout_ms);
+void    *duumbi_http_status(void *response);
+void    *duumbi_http_body(void *response);
+void    *duumbi_http_headers(void *response);
+void    *duumbi_http_response_close(void *response);
+void     duumbi_http_response_free(void *response);
+
+/* ── SQLite DB ────────────────────────────────────────────────────── */
+
+void    *duumbi_db_open(void *path);
+void    *duumbi_db_execute(void *conn, void *sql, void *params);
+void    *duumbi_db_query(void *conn, void *sql, void *params);
+void    *duumbi_db_rows_len(void *rows);
+void    *duumbi_db_row_get(void *rows, int64_t row_index, void *column);
+void    *duumbi_db_close(void *conn);
+void    *duumbi_db_rows_close(void *rows);
+void     duumbi_db_connection_free(void *conn);
+void     duumbi_db_rows_free(void *rows);
+
 #endif /* DUUMBI_RUNTIME_H */
