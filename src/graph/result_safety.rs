@@ -38,6 +38,10 @@ pub fn has_result_option_ops(graph: &SemanticGraph) -> bool {
                 | Op::FileExists
                 | Op::ListDir
                 | Op::PathJoin
+                | Op::ServerNew
+                | Op::RouteAddStatic
+                | Op::ServerStart
+                | Op::ServerClose
                 | Op::JsonParse
                 | Op::JsonStringify
                 | Op::JsonGetField
@@ -141,6 +145,10 @@ fn direct_result_or_option_type(node: &GraphNode) -> Option<&DuumbiType> {
             | Op::FileExists
             | Op::ListDir
             | Op::PathJoin
+            | Op::ServerNew
+            | Op::RouteAddStatic
+            | Op::ServerStart
+            | Op::ServerClose
             | Op::JsonParse
             | Op::JsonStringify
             | Op::JsonGetField

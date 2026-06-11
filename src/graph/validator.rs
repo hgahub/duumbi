@@ -333,6 +333,127 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
                     diagnostics,
                 );
             }
+            Op::ServerNew => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::String,
+                    "ServerNew host must be string",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::I64,
+                    "ServerNew port must be i64",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::I64,
+                    "ServerNew timeout_ms must be i64",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &DuumbiType::Result(
+                        Box::new(DuumbiType::HttpServer),
+                        Box::new(DuumbiType::String),
+                    ),
+                    "ServerNew must return result<http_server,string>",
+                    diagnostics,
+                );
+            }
+            Op::RouteAddStatic => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpServer,
+                    "RouteAddStatic server must be http_server",
+                    diagnostics,
+                );
+                check_arg_types(
+                    graph,
+                    node_idx,
+                    node,
+                    &[
+                        DuumbiType::String,
+                        DuumbiType::String,
+                        DuumbiType::I64,
+                        DuumbiType::Json,
+                        DuumbiType::String,
+                    ],
+                    "RouteAddStatic args must be method string, path string, status i64, headers json, body string",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "RouteAddStatic must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::ServerStart => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpServer,
+                    "ServerStart server must be http_server",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Left,
+                    &DuumbiType::I64,
+                    "ServerStart max_requests must be i64",
+                    diagnostics,
+                );
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Right,
+                    &DuumbiType::I64,
+                    "ServerStart timeout_ms must be i64",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "ServerStart must return result<i64,string>",
+                    diagnostics,
+                );
+            }
+            Op::ServerClose => {
+                check_operand_type(
+                    graph,
+                    node_idx,
+                    node,
+                    GraphEdge::Operand,
+                    &DuumbiType::HttpServer,
+                    "ServerClose server must be http_server",
+                    diagnostics,
+                );
+                check_exact_result_type(
+                    node,
+                    &result_i64_string(),
+                    "ServerClose must return result<i64,string>",
+                    diagnostics,
+                );
+            }
             Op::HttpGet | Op::HttpDelete => {
                 check_operand_type(
                     graph,
@@ -763,6 +884,68 @@ fn check_operand_type(
     }
 }
 
+fn check_arg_types(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    node: &super::GraphNode,
+    expected: &[DuumbiType],
+    message: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut args: Vec<(usize, Option<DuumbiType>)> = Vec::new();
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if let GraphEdge::Arg(idx) = edge_ref.weight() {
+            let source_node = &graph.graph[edge_ref.source()];
+            args.push((*idx, resolve_output_type(source_node)));
+        }
+    }
+    args.sort_by_key(|(idx, _)| *idx);
+
+    if args.len() != expected.len() {
+        let mut details = HashMap::new();
+        details.insert("expected".to_string(), expected.len().to_string());
+        details.insert("found".to_string(), args.len().to_string());
+        diagnostics.push(
+            Diagnostic::error(codes::E009_SCHEMA_INVALID, message)
+                .with_node(&node.id)
+                .with_details(details),
+        );
+        return;
+    }
+
+    for (idx, actual) in args {
+        let Some(expected_type) = expected.get(idx) else {
+            let mut details = HashMap::new();
+            details.insert("expected".to_string(), expected.len().to_string());
+            details.insert("found".to_string(), idx.to_string());
+            diagnostics.push(
+                Diagnostic::error(codes::E009_SCHEMA_INVALID, message)
+                    .with_node(&node.id)
+                    .with_details(details),
+            );
+            continue;
+        };
+        if actual.as_ref() != Some(expected_type) {
+            let mut details = HashMap::new();
+            details.insert("expected".to_string(), expected_type.to_string());
+            details.insert(
+                "found".to_string(),
+                actual
+                    .map(|ty| ty.to_string())
+                    .unwrap_or_else(|| "<missing>".to_string()),
+            );
+            diagnostics.push(
+                Diagnostic::error(codes::E001_TYPE_MISMATCH, message)
+                    .with_node(&node.id)
+                    .with_details(details),
+            );
+        }
+    }
+}
+
 fn check_arg_type(
     graph: &SemanticGraph,
     node_idx: petgraph::stable_graph::NodeIndex,
@@ -1067,6 +1250,17 @@ mod tests {
     fn valid_add_graph_no_errors() {
         let module = parse_jsonld(&fixture_add()).expect("invariant: fixture must parse");
         let sg = build_graph(&module).expect("invariant: fixture must build");
+        let diags = validate(&sg);
+        assert!(diags.is_empty(), "Expected no errors, got: {diags:?}");
+    }
+
+    #[test]
+    fn server_stdlib_graph_validates() {
+        let json = std::fs::read_to_string("stdlib/server.jsonld")
+            .expect("invariant: server stdlib graph must exist");
+        let module = parse_jsonld(&json).expect("server stdlib graph must parse");
+        let sg = crate::graph::builder::build_graph_no_call_check(&module)
+            .expect("server stdlib graph must build");
         let diags = validate(&sg);
         assert!(diags.is_empty(), "Expected no errors, got: {diags:?}");
     }

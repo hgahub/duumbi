@@ -125,6 +125,7 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         "json" => Ok(DuumbiType::Json),
         "tcp_socket" => Ok(DuumbiType::TcpSocket),
         "tcp_listener" => Ok(DuumbiType::TcpListener),
+        "http_server" => Ok(DuumbiType::HttpServer),
         "http_response" => Ok(DuumbiType::HttpResponse),
         "db_connection" => Ok(DuumbiType::DbConnection),
         "db_rows" => Ok(DuumbiType::DbRows),
@@ -1005,6 +1006,42 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 _ => unreachable!(),
             };
             let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ServerNew" | "duumbi:ServerStart" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:ServerNew" => Op::ServerNew,
+                "duumbi:ServerStart" => Op::ServerStart,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:RouteAddStatic" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::RouteAddStatic,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            ast.args = parse_node_ref_array(value, "duumbi:args", node_id_str)?;
+            Ok(ast)
+        }
+        "duumbi:ServerClose" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::ServerClose,
+                result_type,
+            );
             ast.operand = Some(operand);
             Ok(ast)
         }
@@ -1901,6 +1938,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_type_str_http_server_resource() {
+        assert_eq!(
+            parse_type_str("http_server").unwrap(),
+            DuumbiType::HttpServer
+        );
+        assert_eq!(
+            parse_type_str("result<http_server,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::HttpServer),
+                Box::new(DuumbiType::String)
+            )
+        );
+    }
+
+    #[test]
     fn parse_http_db_ops() {
         let json = r#"{
             "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
@@ -2034,6 +2086,35 @@ mod tests {
             ),
             "expected E009 schema error, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn parse_server_stdlib_graph() {
+        let json = std::fs::read_to_string("stdlib/server.jsonld")
+            .expect("invariant: server stdlib graph must exist");
+        let module = parse_jsonld(&json).expect("server stdlib graph should parse");
+        assert_eq!(module.name.0, "server");
+        assert_eq!(
+            module.exports,
+            vec![
+                "server_new",
+                "route_add_static",
+                "server_start",
+                "server_close"
+            ]
+        );
+
+        let route_fn = module
+            .functions
+            .iter()
+            .find(|func| func.name.0 == "route_add_static")
+            .expect("route_add_static must exist");
+        let op = route_fn.blocks[0]
+            .ops
+            .iter()
+            .find(|op| matches!(op.op, Op::RouteAddStatic))
+            .expect("RouteAddStatic op must exist");
+        assert_eq!(op.args.len(), 5);
     }
 
     #[test]

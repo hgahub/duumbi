@@ -290,6 +290,16 @@ pub enum Op {
     /// Close a TCP listener: `duumbi:TcpListenerClose`
     TcpListenerClose,
 
+    // -- HTTP server operations (DUUMBI-381) --
+    /// Create a bounded local HTTP server: `duumbi:ServerNew`
+    ServerNew,
+    /// Register a static HTTP route: `duumbi:RouteAddStatic`
+    RouteAddStatic,
+    /// Serve bounded requests: `duumbi:ServerStart`
+    ServerStart,
+    /// Close an HTTP server resource: `duumbi:ServerClose`
+    ServerClose,
+
     // -- HTTP operations (DUUMBI-380) --
     /// HTTP GET request: `duumbi:HttpGet`
     HttpGet,
@@ -447,6 +457,10 @@ impl fmt::Display for Op {
             Op::TcpWrite => f.write_str("TcpWrite"),
             Op::TcpClose => f.write_str("TcpClose"),
             Op::TcpListenerClose => f.write_str("TcpListenerClose"),
+            Op::ServerNew => f.write_str("ServerNew"),
+            Op::RouteAddStatic => f.write_str("RouteAddStatic"),
+            Op::ServerStart => f.write_str("ServerStart"),
+            Op::ServerClose => f.write_str("ServerClose"),
             Op::HttpGet => f.write_str("HttpGet"),
             Op::HttpPost => f.write_str("HttpPost"),
             Op::HttpPut => f.write_str("HttpPut"),
@@ -530,6 +544,10 @@ impl Op {
             | Op::TcpWrite
             | Op::TcpClose
             | Op::TcpListenerClose
+            | Op::ServerNew
+            | Op::RouteAddStatic
+            | Op::ServerStart
+            | Op::ServerClose
             | Op::HttpGet
             | Op::HttpPost
             | Op::HttpPut
@@ -611,6 +629,8 @@ pub enum DuumbiType {
     TcpSocket,
     /// Opaque runtime-owned TCP listener resource.
     TcpListener,
+    /// Opaque runtime-owned HTTP server resource.
+    HttpServer,
     /// Opaque runtime-owned HTTP response resource.
     HttpResponse,
     /// Opaque runtime-owned SQLite database connection resource.
@@ -649,6 +669,7 @@ impl DuumbiType {
                 | DuumbiType::Json
                 | DuumbiType::TcpSocket
                 | DuumbiType::TcpListener
+                | DuumbiType::HttpServer
                 | DuumbiType::HttpResponse
                 | DuumbiType::DbConnection
                 | DuumbiType::DbRows
@@ -709,6 +730,7 @@ impl fmt::Display for DuumbiType {
             DuumbiType::Json => f.write_str("json"),
             DuumbiType::TcpSocket => f.write_str("tcp_socket"),
             DuumbiType::TcpListener => f.write_str("tcp_listener"),
+            DuumbiType::HttpServer => f.write_str("http_server"),
             DuumbiType::HttpResponse => f.write_str("http_response"),
             DuumbiType::DbConnection => f.write_str("db_connection"),
             DuumbiType::DbRows => f.write_str("db_rows"),
@@ -798,6 +820,8 @@ mod tests {
         assert_eq!(DuumbiType::Json.to_string(), "json");
         assert_eq!(DuumbiType::TcpSocket.to_string(), "tcp_socket");
         assert_eq!(DuumbiType::TcpListener.to_string(), "tcp_listener");
+        assert_eq!(DuumbiType::HttpServer.to_string(), "http_server");
+        assert_eq!(DuumbiType::HttpServer.to_string(), "http_server");
         assert_eq!(DuumbiType::HttpResponse.to_string(), "http_response");
         assert_eq!(DuumbiType::DbConnection.to_string(), "db_connection");
         assert_eq!(DuumbiType::DbRows.to_string(), "db_rows");
@@ -813,6 +837,8 @@ mod tests {
         assert!(DuumbiType::Json.is_heap_type());
         assert!(DuumbiType::TcpSocket.is_heap_type());
         assert!(DuumbiType::TcpListener.is_heap_type());
+        assert!(DuumbiType::HttpServer.is_heap_type());
+        assert!(DuumbiType::HttpServer.is_heap_type());
         assert!(DuumbiType::HttpResponse.is_heap_type());
         assert!(DuumbiType::DbConnection.is_heap_type());
         assert!(DuumbiType::DbRows.is_heap_type());
@@ -1028,6 +1054,27 @@ mod tests {
         );
         assert_eq!(
             Op::TcpListenerClose.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+
+        let server_result = DuumbiType::Result(
+            Box::new(DuumbiType::HttpServer),
+            Box::new(DuumbiType::String),
+        );
+        assert_eq!(
+            Op::ServerNew.output_type(&Some(server_result.clone())),
+            Some(server_result)
+        );
+        assert_eq!(
+            Op::RouteAddStatic.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+        assert_eq!(
+            Op::ServerStart.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+        assert_eq!(
+            Op::ServerClose.output_type(&Some(close_result.clone())),
             Some(close_result)
         );
     }

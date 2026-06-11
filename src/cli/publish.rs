@@ -4,8 +4,9 @@
 //! registry. Validates the manifest and graph before packaging.
 
 use std::fmt::Write as _;
+use std::fs;
 use std::io::{self, Write as IoWrite};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -50,17 +51,17 @@ pub async fn run_publish(
         })?
         .clone();
 
-    // 2. Validate graph files pass `duumbi check`
-    let graph_path = workspace.join(".duumbi/graph/main.jsonld");
-    if !graph_path.exists() {
-        anyhow::bail!(
-            "No graph file found at .duumbi/graph/main.jsonld.\n\
-             A publishable module must have at least a main.jsonld."
-        );
+    // 2. Validate graph files
+    let graph_files = collect_publish_graph_files(workspace)?;
+    eprintln!("Validating graph files...");
+    for graph_path in &graph_files {
+        super::commands::parse_and_validate(graph_path).with_context(|| {
+            format!(
+                "Graph validation failed for '{}'. Fix errors before publishing.",
+                graph_path.display()
+            )
+        })?;
     }
-    eprintln!("Validating graph...");
-    super::commands::check(&graph_path)
-        .context("Graph validation failed. Fix errors before publishing.")?;
 
     // 3. Package module
     eprintln!("Packaging module...");
@@ -181,6 +182,39 @@ fn resolve_target_registry(cfg: &config::DuumbiConfig, explicit: Option<&str>) -
         "No target registry specified.\n\
          Use `--registry <name>` or set a default with `duumbi registry default <name>`."
     )
+}
+
+/// Collects all publishable `.jsonld` graph files from a workspace.
+fn collect_publish_graph_files(workspace: &Path) -> Result<Vec<PathBuf>> {
+    let graph_dir = workspace.join(".duumbi/graph");
+    if !graph_dir.exists() {
+        anyhow::bail!(
+            "No graph directory found at .duumbi/graph.\n\
+             A publishable module must have at least one .jsonld graph file."
+        );
+    }
+
+    let mut graph_files = Vec::new();
+    for entry in fs::read_dir(&graph_dir)
+        .with_context(|| format!("Failed to read graph directory '{}'", graph_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Failed to read entry in '{}'", graph_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonld") {
+            graph_files.push(path);
+        }
+    }
+    graph_files.sort();
+
+    if graph_files.is_empty() {
+        anyhow::bail!(
+            "No .jsonld graph files found in .duumbi/graph.\n\
+             A publishable module must have at least one .jsonld graph file."
+        );
+    }
+
+    Ok(graph_files)
 }
 
 /// Formats a byte count as a human-readable size string.
@@ -308,6 +342,14 @@ mod tests {
         fs::write(graph.join("main.jsonld"), VALID_GRAPH).expect("invariant: write graph");
     }
 
+    fn rename_main_graph(dir: &std::path::Path, new_name: &str) {
+        use std::fs;
+
+        let graph = dir.join(".duumbi/graph");
+        fs::rename(graph.join("main.jsonld"), graph.join(new_name))
+            .expect("invariant: rename graph");
+    }
+
     #[test]
     fn resolve_explicit_registry() {
         let cfg = make_config(vec![("duumbi", "https://r.dev")], None);
@@ -348,6 +390,43 @@ mod tests {
 
         let tarball = package::pack_module(tmp.path()).expect("pack must succeed");
         assert!(!tarball.is_empty());
+    }
+
+    #[test]
+    fn collect_publish_graph_files_returns_sorted_jsonld_files() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        let graph = tmp.path().join(".duumbi/graph");
+        fs::create_dir_all(&graph).expect("invariant: create dirs");
+        fs::write(graph.join("z.jsonld"), VALID_GRAPH).expect("write z");
+        fs::write(graph.join("a.jsonld"), VALID_GRAPH).expect("write a");
+        fs::write(graph.join("README.md"), "ignored").expect("write ignored");
+
+        let files = collect_publish_graph_files(tmp.path()).expect("must collect");
+        let names: Vec<String> = files
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.jsonld", "z.jsonld"]);
+    }
+
+    #[test]
+    fn collect_publish_graph_files_requires_jsonld_files() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        let graph = tmp.path().join(".duumbi/graph");
+        fs::create_dir_all(&graph).expect("invariant: create dirs");
+        fs::write(graph.join("README.md"), "ignored").expect("write ignored");
+
+        let err = collect_publish_graph_files(tmp.path()).expect_err("must fail without jsonld");
+        assert!(
+            err.to_string().contains("No .jsonld graph files found"),
+            "expected missing graph file error, got: {err}"
+        );
     }
 
     #[test]
@@ -424,6 +503,48 @@ mod tests {
         run_publish(tmp.path(), Some("test"), true, false)
             .await
             .expect("dry-run must succeed without auth");
+    }
+
+    #[tokio::test]
+    async fn publish_dry_run_accepts_non_main_graph_file() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        make_publishable_workspace(tmp.path(), "@test/non-main", "1.0.0");
+        rename_main_graph(tmp.path(), "stdlib-test.jsonld");
+
+        run_publish(tmp.path(), Some("test"), true, false)
+            .await
+            .expect("dry-run must validate and package non-main graph");
+    }
+
+    #[tokio::test]
+    async fn publish_dry_run_requires_release_manifest_metadata() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        make_publishable_workspace(tmp.path(), "@test/missing-metadata", "1.0.0");
+
+        let duumbi = tmp.path().join(".duumbi");
+        let mut manifest = crate::manifest::ModuleManifest::new(
+            "@test/missing-metadata",
+            "1.0.0",
+            "",
+            vec!["main".into()],
+        );
+        manifest.module.license.clear();
+        fs::write(duumbi.join("manifest.toml"), manifest.to_toml())
+            .expect("invariant: write manifest");
+
+        let err = run_publish(tmp.path(), Some("test"), true, false)
+            .await
+            .expect_err("dry-run must fail without required release metadata");
+        assert!(
+            err.to_string().contains("module.description")
+                || err.to_string().contains("module.license"),
+            "expected release metadata error, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -534,12 +655,12 @@ mod tests {
         fs::write(duumbi.join("manifest.toml"), manifest.to_toml())
             .expect("invariant: write manifest");
 
-        // No main.jsonld — should fail
+        // No .jsonld file — should fail
         let err = run_publish(tmp.path(), Some("test"), true, false)
             .await
-            .expect_err("must fail without main.jsonld");
+            .expect_err("must fail without graph jsonld");
         assert!(
-            err.to_string().contains("No graph file found"),
+            err.to_string().contains("No .jsonld graph files found"),
             "expected missing graph error, got: {err}"
         );
     }

@@ -114,6 +114,15 @@ void    *duumbi_tcp_listener_close(void *listener);
 void     duumbi_tcp_socket_free(void *socket);
 void     duumbi_tcp_listener_free(void *listener);
 
+/* ── HTTP server ─────────────────────────────────────────────────── */
+
+void    *duumbi_server_new(void *host, int64_t port, int64_t timeout_ms);
+void    *duumbi_route_add_static(void *server, void *method, void *path,
+                                 int64_t status, void *headers, void *body);
+void    *duumbi_server_start(void *server, int64_t max_requests, int64_t timeout_ms);
+void    *duumbi_server_close(void *server);
+void     duumbi_server_free(void *server);
+
 /* ── HTTP ─────────────────────────────────────────────────────────── */
 
 void    *duumbi_http_get(void *url, void *headers, int64_t timeout_ms);

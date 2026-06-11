@@ -67,8 +67,9 @@ pub enum PackageError {
 /// Packs a duumbi module workspace into a `.tar.gz` archive in memory.
 ///
 /// Reads `manifest.toml` and all `.jsonld` files from the workspace's
-/// `.duumbi/graph/` directory. Validates required manifest fields (name, version).
-/// Produces a reproducible archive: sorted entries, fixed timestamps.
+/// `.duumbi/graph/` directory. Validates required release manifest fields
+/// (name, version, description, license, and exports). Produces a reproducible
+/// archive: sorted entries, fixed timestamps.
 ///
 /// # Errors
 ///
@@ -125,14 +126,24 @@ pub fn pack_module(workspace_path: &Path) -> Result<Vec<u8>, PackageError> {
 
 /// Validates that the manifest has all required fields for publishing.
 fn validate_manifest(manifest: &ModuleManifest) -> Result<(), PackageError> {
-    if manifest.module.name.is_empty() {
+    if manifest.module.name.trim().is_empty() {
         return Err(PackageError::MissingField {
             field: "module.name".to_string(),
         });
     }
-    if manifest.module.version.is_empty() {
+    if manifest.module.version.trim().is_empty() {
         return Err(PackageError::MissingField {
             field: "module.version".to_string(),
+        });
+    }
+    if manifest.module.description.trim().is_empty() {
+        return Err(PackageError::MissingField {
+            field: "module.description".to_string(),
+        });
+    }
+    if manifest.module.license.trim().is_empty() {
+        return Err(PackageError::MissingField {
+            field: "module.license".to_string(),
         });
     }
     if manifest.exports.functions.is_empty() {
@@ -439,6 +450,50 @@ mod tests {
         assert!(
             matches!(err, PackageError::MissingField { .. }),
             "expected MissingField for exports, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pack_module_empty_description_returns_error() {
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        let duumbi = tmp.path().join(".duumbi");
+        let graph = duumbi.join("graph");
+        fs::create_dir_all(&graph).expect("create dirs");
+        fs::write(graph.join("main.jsonld"), "{}").expect("write");
+
+        let manifest = ModuleManifest::new("@test/no-desc", "1.0.0", "", vec!["fn".into()]);
+        fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
+
+        let err = pack_module(tmp.path()).expect_err("must fail with empty description");
+        assert!(
+            matches!(
+                err,
+                PackageError::MissingField { ref field } if field == "module.description"
+            ),
+            "expected MissingField for description, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pack_module_empty_license_returns_error() {
+        let tmp = TempDir::new().expect("invariant: tempdir");
+        let duumbi = tmp.path().join(".duumbi");
+        let graph = duumbi.join("graph");
+        fs::create_dir_all(&graph).expect("create dirs");
+        fs::write(graph.join("main.jsonld"), "{}").expect("write");
+
+        let mut manifest =
+            ModuleManifest::new("@test/no-license", "1.0.0", "desc", vec!["fn".into()]);
+        manifest.module.license.clear();
+        fs::write(duumbi.join("manifest.toml"), manifest.to_toml()).expect("write");
+
+        let err = pack_module(tmp.path()).expect_err("must fail with empty license");
+        assert!(
+            matches!(
+                err,
+                PackageError::MissingField { ref field } if field == "module.license"
+            ),
+            "expected MissingField for license, got: {err}"
         );
     }
 

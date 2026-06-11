@@ -1869,6 +1869,408 @@ void *duumbi_tcp_listener_close(void *listener_ptr) {
     return duumbi_tcp_ok_i64(0);
 }
 
+/* ── HTTP server (DUUMBI-381) ─────────────────────────────────────── */
+
+#define DUUMBI_HTTP_MAX_REQUEST_BYTES 8192
+
+typedef struct {
+    char *key;
+    char *value;
+} DuumbiHttpHeader;
+
+typedef struct {
+    char *method;
+    char *path;
+    int64_t status;
+    DuumbiHttpHeader *headers;
+    uint64_t header_len;
+    char *body;
+    uint64_t body_len;
+} DuumbiHttpRoute;
+
+typedef struct {
+    DuumbiSocketHandle handle;
+    int closed;
+    int started;
+    DuumbiHttpRoute *routes;
+    uint64_t route_len;
+    uint64_t route_cap;
+} DuumbiHttpServer;
+
+static void *duumbi_server_err(const char *message) {
+    void *err = duumbi_string_new(message, (uint64_t)strlen(message));
+    return duumbi_result_new_err((int64_t)(intptr_t)err);
+}
+
+static char *duumbi_server_string_to_c(void *ptr) {
+    return duumbi_tcp_string_to_c(ptr);
+}
+
+static int duumbi_http_method_valid(const char *method) {
+    if (method == NULL || method[0] == '\0') return 0;
+    for (const unsigned char *p = (const unsigned char *)method; *p != '\0'; p++) {
+        if (!isalnum(*p) && *p != '!' && *p != '#' && *p != '$' && *p != '%' &&
+            *p != '&' && *p != '\'' && *p != '*' && *p != '+' && *p != '-' &&
+            *p != '.' && *p != '^' && *p != '_' && *p != '`' && *p != '|' &&
+            *p != '~') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int duumbi_http_header_text_valid(const char *text) {
+    if (text == NULL || text[0] == '\0') return 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        if (*p == '\r' || *p == '\n') return 0;
+    }
+    return 1;
+}
+
+static void duumbi_http_route_free(DuumbiHttpRoute *route) {
+    if (route == NULL) return;
+    duumbi_dealloc(route->method);
+    duumbi_dealloc(route->path);
+    duumbi_dealloc(route->body);
+    for (uint64_t i = 0; i < route->header_len; i++) {
+        duumbi_dealloc(route->headers[i].key);
+        duumbi_dealloc(route->headers[i].value);
+    }
+    duumbi_dealloc(route->headers);
+    memset(route, 0, sizeof(*route));
+}
+
+static int duumbi_http_copy_headers(void *headers_ptr, DuumbiHttpHeader **out, uint64_t *out_len) {
+    DuumbiJson *headers = (DuumbiJson *)headers_ptr;
+    if (headers == NULL || headers->kind != DUUMBI_JSON_OBJECT) return 0;
+    *out = NULL;
+    *out_len = headers->object_len;
+    if (headers->object_len == 0) return 1;
+
+    DuumbiHttpHeader *copied =
+        (DuumbiHttpHeader *)duumbi_alloc(sizeof(DuumbiHttpHeader) * headers->object_len);
+    memset(copied, 0, sizeof(DuumbiHttpHeader) * headers->object_len);
+    for (uint64_t i = 0; i < headers->object_len; i++) {
+        DuumbiJsonObjectEntry *entry = &headers->object_entries[i];
+        if (entry->value == NULL || entry->value->kind != DUUMBI_JSON_STRING) {
+            for (uint64_t j = 0; j < i; j++) {
+                duumbi_dealloc(copied[j].key);
+                duumbi_dealloc(copied[j].value);
+            }
+            duumbi_dealloc(copied);
+            return 0;
+        }
+        copied[i].key = duumbi_json_strndup(entry->key, entry->key_len);
+        copied[i].value = duumbi_json_strndup(entry->value->string_value, entry->value->string_len);
+        if (!duumbi_http_header_text_valid(copied[i].key) ||
+            !duumbi_http_header_text_valid(copied[i].value)) {
+            for (uint64_t j = 0; j <= i; j++) {
+                duumbi_dealloc(copied[j].key);
+                duumbi_dealloc(copied[j].value);
+            }
+            duumbi_dealloc(copied);
+            return 0;
+        }
+    }
+    *out = copied;
+    return 1;
+}
+
+void *duumbi_server_new(void *host_ptr, int64_t port, int64_t timeout_ms) {
+    if (!duumbi_socket_init()) return duumbi_server_err("server_new failed: socket init failed");
+    if (!duumbi_tcp_validate_port(port)) return duumbi_server_err("server_new failed: invalid port");
+    if (!duumbi_tcp_validate_common(timeout_ms)) {
+        return duumbi_server_err("server_new failed: invalid timeout_ms");
+    }
+    char *host = duumbi_server_string_to_c(host_ptr);
+    if (host == NULL) return duumbi_server_err("server_new failed: host is null");
+    uint64_t start_ms = duumbi_tcp_now_ms();
+
+    char port_buf[16];
+    snprintf(port_buf, sizeof(port_buf), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port_buf, &hints, &res) != 0) {
+        duumbi_dealloc(host);
+        return duumbi_server_err("server_new failed: address resolution failed");
+    }
+
+    DuumbiSocketHandle bound = DUUMBI_INVALID_SOCKET;
+    int timed_out = 0;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (duumbi_tcp_remaining_timeout(start_ms, timeout_ms) <= 0) {
+            timed_out = 1;
+            break;
+        }
+        DuumbiSocketHandle handle = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (handle == DUUMBI_INVALID_SOCKET) continue;
+        int yes = 1;
+        setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+        if (bind(handle, ai->ai_addr, (int)ai->ai_addrlen) == 0 &&
+            listen(handle, 16) == 0 &&
+            duumbi_socket_set_nonblocking(handle)) {
+            bound = handle;
+            break;
+        }
+        duumbi_socket_close_handle(handle);
+    }
+    freeaddrinfo(res);
+    duumbi_dealloc(host);
+
+    if (bound == DUUMBI_INVALID_SOCKET) {
+        return duumbi_server_err(timed_out ? "server_new failed: timeout" : "server_new failed");
+    }
+    DuumbiHttpServer *server = (DuumbiHttpServer *)duumbi_alloc(sizeof(DuumbiHttpServer));
+    memset(server, 0, sizeof(*server));
+    server->handle = bound;
+    return duumbi_tcp_ok_ptr(server);
+}
+
+void *duumbi_route_add_static(
+    void *server_ptr,
+    void *method_ptr,
+    void *path_ptr,
+    int64_t status,
+    void *headers_ptr,
+    void *body_ptr
+) {
+    DuumbiHttpServer *server = (DuumbiHttpServer *)server_ptr;
+    if (server == NULL || server->closed) {
+        return duumbi_server_err("route_add_static failed: server is closed");
+    }
+    if (server->started) return duumbi_server_err("route_add_static failed: server already started");
+    if (status < 100 || status > 599) return duumbi_server_err("route_add_static failed: invalid status");
+
+    char *method = duumbi_server_string_to_c(method_ptr);
+    char *path = duumbi_server_string_to_c(path_ptr);
+    char *body = duumbi_server_string_to_c(body_ptr);
+    if (method == NULL || path == NULL || body == NULL) {
+        duumbi_dealloc(method);
+        duumbi_dealloc(path);
+        duumbi_dealloc(body);
+        return duumbi_server_err("route_add_static failed: null string");
+    }
+    if (!duumbi_http_method_valid(method) || path[0] != '/') {
+        duumbi_dealloc(method);
+        duumbi_dealloc(path);
+        duumbi_dealloc(body);
+        return duumbi_server_err("route_add_static failed: invalid route");
+    }
+    for (uint64_t i = 0; i < server->route_len; i++) {
+        if (strcmp(server->routes[i].method, method) == 0 &&
+            strcmp(server->routes[i].path, path) == 0) {
+            duumbi_dealloc(method);
+            duumbi_dealloc(path);
+            duumbi_dealloc(body);
+            return duumbi_server_err("route_add_static failed: duplicate route");
+        }
+    }
+
+    DuumbiHttpHeader *headers = NULL;
+    uint64_t header_len = 0;
+    if (!duumbi_http_copy_headers(headers_ptr, &headers, &header_len)) {
+        duumbi_dealloc(method);
+        duumbi_dealloc(path);
+        duumbi_dealloc(body);
+        return duumbi_server_err("route_add_static failed: invalid headers");
+    }
+
+    if (server->route_len == server->route_cap) {
+        uint64_t new_cap = server->route_cap == 0 ? 4 : server->route_cap * 2;
+        DuumbiHttpRoute *new_routes =
+            (DuumbiHttpRoute *)realloc(server->routes, sizeof(DuumbiHttpRoute) * new_cap);
+        if (new_routes == NULL) {
+            duumbi_dealloc(method);
+            duumbi_dealloc(path);
+            duumbi_dealloc(body);
+            for (uint64_t i = 0; i < header_len; i++) {
+                duumbi_dealloc(headers[i].key);
+                duumbi_dealloc(headers[i].value);
+            }
+            duumbi_dealloc(headers);
+            return duumbi_server_err("route_add_static failed: out of memory");
+        }
+        server->routes = new_routes;
+        server->route_cap = new_cap;
+    }
+
+    DuumbiHttpRoute *route = &server->routes[server->route_len++];
+    memset(route, 0, sizeof(*route));
+    route->method = method;
+    route->path = path;
+    route->status = status;
+    route->headers = headers;
+    route->header_len = header_len;
+    route->body = body;
+    route->body_len = strlen(body);
+    return duumbi_tcp_ok_i64(0);
+}
+
+static const char *duumbi_http_status_text(int64_t status) {
+    switch (status) {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 204: return "No Content";
+    case 400: return "Bad Request";
+    case 404: return "Not Found";
+    case 500: return "Internal Server Error";
+    default: return "Unknown";
+    }
+}
+
+static int duumbi_http_send_all(DuumbiSocketHandle handle, const char *data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+#if defined(_WIN32)
+        int n = send(handle, data + sent, (int)(len - sent), 0);
+#else
+        ssize_t n = send(handle, data + sent, len - sent, 0);
+#endif
+#if !defined(_WIN32)
+        if (n < 0 && errno == EINTR) continue;
+#endif
+        if (n <= 0) return 0;
+        sent += (size_t)n;
+    }
+    return 1;
+}
+
+static int duumbi_http_write_response(DuumbiSocketHandle client, DuumbiHttpRoute *route) {
+    char head[2048];
+    size_t len = 0;
+    if (route == NULL) {
+        len = (size_t)snprintf(
+            head,
+            sizeof(head),
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+        );
+        return len < sizeof(head) && duumbi_http_send_all(client, head, len);
+    }
+    len = (size_t)snprintf(
+        head,
+        sizeof(head),
+        "HTTP/1.1 %lld %s\r\nContent-Length: %llu\r\nConnection: close\r\n",
+        (long long)route->status,
+        duumbi_http_status_text(route->status),
+        (unsigned long long)route->body_len
+    );
+    if (len >= sizeof(head)) return 0;
+    for (uint64_t i = 0; i < route->header_len; i++) {
+        int written = snprintf(
+            head + len,
+            sizeof(head) - len,
+            "%s: %s\r\n",
+            route->headers[i].key,
+            route->headers[i].value
+        );
+        if (written < 0 || (size_t)written >= sizeof(head) - len) return 0;
+        len += (size_t)written;
+    }
+    if (len + 2 >= sizeof(head)) return 0;
+    memcpy(head + len, "\r\n", 3);
+    len += 2;
+    return duumbi_http_send_all(client, head, len) &&
+           duumbi_http_send_all(client, route->body, (size_t)route->body_len);
+}
+
+static DuumbiHttpRoute *duumbi_http_find_route(DuumbiHttpServer *server, const char *method, const char *path) {
+    for (uint64_t i = 0; i < server->route_len; i++) {
+        if (strcmp(server->routes[i].method, method) == 0 &&
+            strcmp(server->routes[i].path, path) == 0) {
+            return &server->routes[i];
+        }
+    }
+    return NULL;
+}
+
+static int duumbi_http_handle_client(
+    DuumbiHttpServer *server,
+    DuumbiSocketHandle client,
+    int64_t timeout_ms
+) {
+    int ready = duumbi_tcp_wait(client, 0, timeout_ms);
+    if (ready <= 0) return 0;
+
+    char request[DUUMBI_HTTP_MAX_REQUEST_BYTES + 1];
+#if defined(_WIN32)
+    int n = recv(client, request, DUUMBI_HTTP_MAX_REQUEST_BYTES, 0);
+#else
+    ssize_t n = recv(client, request, DUUMBI_HTTP_MAX_REQUEST_BYTES, 0);
+#endif
+    if (n <= 0) return 0;
+    request[n] = '\0';
+    char method[32];
+    char path[1024];
+    if (sscanf(request, "%31s %1023s", method, path) != 2) {
+        DuumbiHttpRoute *missing = NULL;
+        return duumbi_http_write_response(client, missing);
+    }
+    return duumbi_http_write_response(client, duumbi_http_find_route(server, method, path));
+}
+
+void *duumbi_server_start(void *server_ptr, int64_t max_requests, int64_t timeout_ms) {
+    DuumbiHttpServer *server = (DuumbiHttpServer *)server_ptr;
+    if (server == NULL || server->closed) {
+        return duumbi_server_err("server_start failed: server is closed");
+    }
+    if (max_requests <= 0) return duumbi_server_err("server_start failed: invalid max_requests");
+    if (!duumbi_tcp_validate_common(timeout_ms)) {
+        return duumbi_server_err("server_start failed: invalid timeout_ms");
+    }
+    server->started = 1;
+    uint64_t start_ms = duumbi_tcp_now_ms();
+    int64_t handled = 0;
+
+    while (handled < max_requests) {
+        int64_t remaining = duumbi_tcp_remaining_timeout(start_ms, timeout_ms);
+        if (remaining <= 0) {
+            return handled > 0
+                ? duumbi_tcp_ok_i64(handled)
+                : duumbi_server_err("server_start failed: timeout");
+        }
+        int ready = duumbi_tcp_wait(server->handle, 0, remaining);
+        if (ready == 0) {
+            return handled > 0
+                ? duumbi_tcp_ok_i64(handled)
+                : duumbi_server_err("server_start failed: timeout");
+        }
+        if (ready < 0) return duumbi_server_err("server_start failed");
+        DuumbiSocketHandle client = accept(server->handle, NULL, NULL);
+        if (client == DUUMBI_INVALID_SOCKET) return duumbi_server_err("server_start failed: accept");
+        int64_t read_timeout = duumbi_tcp_remaining_timeout(start_ms, timeout_ms);
+        if (read_timeout <= 0) read_timeout = 1;
+        (void)duumbi_http_handle_client(server, client, read_timeout);
+        duumbi_socket_close_handle(client);
+        handled++;
+    }
+    return duumbi_tcp_ok_i64(handled);
+}
+
+void *duumbi_server_close(void *server_ptr) {
+    DuumbiHttpServer *server = (DuumbiHttpServer *)server_ptr;
+    if (server == NULL) return duumbi_tcp_ok_i64(0);
+    if (!server->closed && server->handle != DUUMBI_INVALID_SOCKET) {
+        duumbi_socket_close_handle(server->handle);
+        server->closed = 1;
+    }
+    return duumbi_tcp_ok_i64(0);
+}
+
+void duumbi_server_free(void *server_ptr) {
+    DuumbiHttpServer *server = (DuumbiHttpServer *)server_ptr;
+    if (server == NULL) return;
+    (void)duumbi_server_close(server);
+    for (uint64_t i = 0; i < server->route_len; i++) {
+        duumbi_http_route_free(&server->routes[i]);
+    }
+    duumbi_dealloc(server->routes);
+    duumbi_dealloc(server);
+}
+
 /* ── Option (tagged union: {i8 discriminant, i64 payload}) ────────── */
 /*
  * Layout: DuumbiOption = { int8_t tag, int64_t payload }
