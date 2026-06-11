@@ -2967,9 +2967,15 @@ static void client_request(int port) {{
     const char *req = "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
     assert(send(fd, req, strlen(req), 0) > 0);
     char buf[512];
-    int n = (int)recv(fd, buf, sizeof(buf) - 1, 0);
-    assert(n > 0);
-    buf[n] = '\0';
+    int total = 0;
+    for (;;) {{
+        int n = (int)recv(fd, buf + total, sizeof(buf) - 1 - (size_t)total, 0);
+        if (n <= 0) break;
+        total += n;
+        if (total >= (int)sizeof(buf) - 1) break;
+    }}
+    assert(total > 0);
+    buf[total] = '\0';
     assert(strstr(buf, "HTTP/1.1 200 OK") != NULL);
     assert(strstr(buf, "Content-Length: 2") != NULL);
     assert(strstr(buf, "\r\n\r\nok") != NULL);
