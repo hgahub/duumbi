@@ -29,6 +29,9 @@ const STDLIB_JSON: &str = include_str!("../../stdlib/json.jsonld");
 /// Embedded `stdlib/net.jsonld` — bounded TCP socket and listener helpers.
 const STDLIB_NET: &str = include_str!("../../stdlib/net.jsonld");
 
+/// Embedded `stdlib/server.jsonld` — bounded local static-route HTTP server helpers.
+const STDLIB_SERVER: &str = include_str!("../../stdlib/server.jsonld");
+
 /// Stdlib module versions pinned at init time.
 const STDLIB_VERSION: &str = "1.0.0";
 
@@ -411,6 +414,29 @@ pub fn run_init_with_options(base: &Path, options: &InitOptions) -> Result<InitS
     )
     .context("Failed to write stdlib net module")?;
 
+    // Write stdlib server module to cache. It remains opt-in and is not added
+    // to default dependencies by this issue.
+    write_cache_module(
+        &duumbi_dir,
+        "@duumbi",
+        "stdlib-server",
+        STDLIB_VERSION,
+        "server.jsonld",
+        STDLIB_SERVER,
+        ModuleManifest::new(
+            "@duumbi/stdlib-server",
+            STDLIB_VERSION,
+            "Bounded local static-route HTTP server functions",
+            vec![
+                "server_new".to_string(),
+                "route_add_static".to_string(),
+                "server_start".to_string(),
+                "server_close".to_string(),
+            ],
+        ),
+    )
+    .context("Failed to write stdlib server module")?;
+
     // Write config (includes stdlib deps by default).
     //
     // The `[workspace]` block is built via formatting (not chained string
@@ -554,6 +580,16 @@ mod tests {
                 .exists(),
             "stdlib-net manifest must exist"
         );
+        assert!(
+            d.join("cache/@duumbi/stdlib-server@1.0.0/graph/server.jsonld")
+                .exists(),
+            "stdlib-server jsonld must exist"
+        );
+        assert!(
+            d.join("cache/@duumbi/stdlib-server@1.0.0/manifest.toml")
+                .exists(),
+            "stdlib-server manifest must exist"
+        );
     }
 
     #[test]
@@ -610,10 +646,25 @@ mod tests {
                 "tcp_listener_close"
             ]
         );
+
+        let server_manifest = crate::manifest::parse_manifest(
+            &d.join("cache/@duumbi/stdlib-server@1.0.0/manifest.toml"),
+        )
+        .expect("server manifest must parse");
+        assert_eq!(server_manifest.module.name, "@duumbi/stdlib-server");
+        assert_eq!(
+            server_manifest.exports.functions,
+            vec![
+                "server_new",
+                "route_add_static",
+                "server_start",
+                "server_close"
+            ]
+        );
     }
 
     #[test]
-    fn init_keeps_json_net_out_of_default_dependencies() {
+    fn init_keeps_integration_modules_out_of_default_dependencies() {
         let tmp = TempDir::new().expect("tempdir");
         run_init(tmp.path()).expect("init must succeed");
 
@@ -625,6 +676,9 @@ mod tests {
         assert!(config.contains("\"@duumbi/stdlib-string\" = \"1.0.0\""));
         assert!(!config.contains("@duumbi/stdlib-json"));
         assert!(!config.contains("@duumbi/stdlib-net"));
+        assert!(!config.contains("@duumbi/stdlib-server"));
+        assert!(!config.contains("@duumbi/stdlib-http"));
+        assert!(!config.contains("@duumbi/stdlib-db"));
     }
 
     #[test]

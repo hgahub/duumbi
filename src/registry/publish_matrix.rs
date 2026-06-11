@@ -94,10 +94,10 @@ pub const TIER1_PUBLISH_MATRIX: &[PublishMatrixEntry] = &[
     },
     PublishMatrixEntry {
         module: "@duumbi/stdlib-server",
-        state: PublishMatrixState::DeferredUpstream,
-        source_graph: None,
+        state: PublishMatrixState::PublishableAfterVerify,
+        source_graph: Some("stdlib/server.jsonld"),
         upstream_issue: Some(381),
-        evidence: "DUUMBI-381 owns the server module; it remains deferred until implementation evidence exists.",
+        evidence: "DUUMBI-381 implementation evidence added the bounded server source module.",
     },
     PublishMatrixEntry {
         module: "@duumbi/stdlib-http",
@@ -190,11 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn server_module_remains_deferred_until_issue_381_implementation() {
+    fn server_module_is_source_backed_after_issue_381_implementation() {
         let row = entry("@duumbi/stdlib-server");
-        assert_eq!(row.state, PublishMatrixState::DeferredUpstream);
+        assert_eq!(row.state, PublishMatrixState::PublishableAfterVerify);
         assert_eq!(row.upstream_issue, Some(381));
-        assert_eq!(row.source_graph, None);
+        assert_eq!(row.source_graph, Some("stdlib/server.jsonld"));
     }
 
     #[test]

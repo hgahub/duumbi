@@ -2108,7 +2108,14 @@ static DuumbiHttpRoute *duumbi_http_find_route(DuumbiHttpServer *server, const c
     return NULL;
 }
 
-static int duumbi_http_handle_client(DuumbiHttpServer *server, DuumbiSocketHandle client) {
+static int duumbi_http_handle_client(
+    DuumbiHttpServer *server,
+    DuumbiSocketHandle client,
+    int64_t timeout_ms
+) {
+    int ready = duumbi_tcp_wait(client, 0, timeout_ms);
+    if (ready <= 0) return 0;
+
     char request[DUUMBI_HTTP_MAX_REQUEST_BYTES + 1];
 #if defined(_WIN32)
     int n = recv(client, request, DUUMBI_HTTP_MAX_REQUEST_BYTES, 0);
@@ -2155,7 +2162,9 @@ void *duumbi_server_start(void *server_ptr, int64_t max_requests, int64_t timeou
         if (ready < 0) return duumbi_server_err("server_start failed");
         DuumbiSocketHandle client = accept(server->handle, NULL, NULL);
         if (client == DUUMBI_INVALID_SOCKET) return duumbi_server_err("server_start failed: accept");
-        (void)duumbi_http_handle_client(server, client);
+        int64_t read_timeout = duumbi_tcp_remaining_timeout(start_ms, timeout_ms);
+        if (read_timeout <= 0) read_timeout = 1;
+        (void)duumbi_http_handle_client(server, client, read_timeout);
         duumbi_socket_close_handle(client);
         handled++;
     }
