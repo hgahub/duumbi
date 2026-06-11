@@ -112,6 +112,13 @@ struct RuntimeFuncs {
     tcp_socket_free: FuncId,
     tcp_listener_free: FuncId,
 
+    // HTTP server functions (DUUMBI-381)
+    server_new: FuncId,
+    route_add_static: FuncId,
+    server_start: FuncId,
+    server_close: FuncId,
+    server_free: FuncId,
+
     trace: Option<RuntimeTraceFuncs>,
 }
 
@@ -353,6 +360,21 @@ fn declare_all_runtime_fns(
         )?,
         tcp_socket_free: declare_runtime_fn(module, "duumbi_tcp_socket_free", &[i64t], &[])?,
         tcp_listener_free: declare_runtime_fn(module, "duumbi_tcp_listener_free", &[i64t], &[])?,
+        server_new: declare_runtime_fn(module, "duumbi_server_new", &[i64t, i64t, i64t], &[i64t])?,
+        route_add_static: declare_runtime_fn(
+            module,
+            "duumbi_route_add_static",
+            &[i64t, i64t, i64t, i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        server_start: declare_runtime_fn(
+            module,
+            "duumbi_server_start",
+            &[i64t, i64t, i64t],
+            &[i64t],
+        )?,
+        server_close: declare_runtime_fn(module, "duumbi_server_close", &[i64t], &[i64t])?,
+        server_free: declare_runtime_fn(module, "duumbi_server_free", &[i64t], &[])?,
         trace,
     })
 }
@@ -373,6 +395,7 @@ fn duumbi_type_to_cl(ty: &DuumbiType) -> cranelift_codegen::ir::Type {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpServer
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => types::I64,
         // References are pointer-sized (Phase 9a-2)
@@ -901,6 +924,12 @@ fn compile_function(
         obj_module.declare_func_in_func(runtime.tcp_socket_free, builder.func);
     let tcp_listener_free_ref =
         obj_module.declare_func_in_func(runtime.tcp_listener_free, builder.func);
+    let server_new_ref = obj_module.declare_func_in_func(runtime.server_new, builder.func);
+    let route_add_static_ref =
+        obj_module.declare_func_in_func(runtime.route_add_static, builder.func);
+    let server_start_ref = obj_module.declare_func_in_func(runtime.server_start, builder.func);
+    let server_close_ref = obj_module.declare_func_in_func(runtime.server_close, builder.func);
+    let server_free_ref = obj_module.declare_func_in_func(runtime.server_free, builder.func);
     let trace_refs = runtime.trace.as_ref().map(|trace| RuntimeTraceRefs {
         init: obj_module.declare_func_in_func(trace.init, builder.func),
         function_enter: obj_module.declare_func_in_func(trace.function_enter, builder.func),
@@ -1166,6 +1195,9 @@ fn compile_function(
                             }
                             DuumbiType::TcpListener => {
                                 builder.ins().call(tcp_listener_free_ref, &[*val]);
+                            }
+                            DuumbiType::HttpServer => {
+                                builder.ins().call(server_free_ref, &[*val]);
                             }
                             DuumbiType::Array(_) => {
                                 builder.ins().call(array_free_ref, &[*val]);
@@ -1589,6 +1621,9 @@ fn compile_function(
                         Some(DuumbiType::TcpListener) => {
                             builder.ins().call(tcp_listener_free_ref, &[operand_val]);
                         }
+                        Some(DuumbiType::HttpServer) => {
+                            builder.ins().call(server_free_ref, &[operand_val]);
+                        }
                         Some(DuumbiType::Array(_)) => {
                             builder.ins().call(array_free_ref, &[operand_val]);
                         }
@@ -1912,6 +1947,51 @@ fn compile_function(
                 Op::TcpListenerClose => {
                     let listener_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let call = builder.ins().call(tcp_listener_close_ref, &[listener_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ServerNew => {
+                    let host_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let port_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder
+                        .ins()
+                        .call(server_new_ref, &[host_val, port_val, timeout_val]);
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::RouteAddStatic => {
+                    let server_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let args = get_call_args(graph, node_idx, &value_map)?;
+                    if args.len() != 5 {
+                        return Err(CompileError::Cranelift {
+                            message: format!(
+                                "RouteAddStatic node '{}' must have exactly 5 args",
+                                node.id
+                            ),
+                        });
+                    }
+                    let call = builder.ins().call(
+                        route_add_static_ref,
+                        &[server_val, args[0], args[1], args[2], args[3], args[4]],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ServerStart => {
+                    let server_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let max_requests_val = get_left_operand(graph, node_idx, &value_map)?;
+                    let timeout_val = get_right_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(
+                        server_start_ref,
+                        &[server_val, max_requests_val, timeout_val],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::ServerClose => {
+                    let server_val = get_unary_operand(graph, node_idx, &value_map)?;
+                    let call = builder.ins().call(server_close_ref, &[server_val]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
@@ -2257,6 +2337,7 @@ fn type_size(ty: &DuumbiType) -> i64 {
         | DuumbiType::Json
         | DuumbiType::TcpSocket
         | DuumbiType::TcpListener
+        | DuumbiType::HttpServer
         | DuumbiType::Array(_)
         | DuumbiType::Struct(_) => 8,
         // References are pointer-sized (Phase 9a-2)
@@ -2563,6 +2644,134 @@ mod tests {
         let sg = build_graph(&module).expect("invariant: fixture must build");
         let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
         assert_valid_object(&obj_bytes);
+    }
+
+    #[test]
+    fn compile_server_stdlib_graph_produces_runtime_imports() {
+        let module = parse_jsonld(
+            &std::fs::read_to_string("stdlib/server.jsonld")
+                .expect("invariant: server stdlib graph must exist"),
+        )
+        .expect("server stdlib graph must parse");
+        let sg = crate::graph::builder::build_graph_no_call_check(&module)
+            .expect("server stdlib graph must build");
+        let obj_bytes = compile_to_object(&sg).expect("compilation should succeed");
+        assert_valid_object(&obj_bytes);
+        assert!(object_contains(&obj_bytes, "duumbi_server_new"));
+        assert!(object_contains(&obj_bytes, "duumbi_route_add_static"));
+        assert!(object_contains(&obj_bytes, "duumbi_server_start"));
+        assert!(object_contains(&obj_bytes, "duumbi_server_close"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c_runtime_server_handles_one_loopback_request() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::process::Command;
+
+        let probe = TcpListener::bind("127.0.0.1:0").expect("free loopback port");
+        let port = probe.local_addr().expect("local addr").port();
+        drop(probe);
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let harness = tmp.path().join("server_harness.c");
+        let binary = tmp.path().join("server_harness");
+        let mut file = std::fs::File::create(&harness).expect("create harness");
+        writeln!(
+            file,
+            r#"
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include "duumbi_runtime.h"
+
+static void *str(const char *s) {{
+    return duumbi_string_new(s, (uint64_t)strlen(s));
+}}
+
+static void client_request(int port) {{
+    usleep(100000);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    assert(fd >= 0);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    assert(inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1);
+    assert(connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    const char *req = "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    assert(send(fd, req, strlen(req), 0) > 0);
+    char buf[512];
+    int n = (int)recv(fd, buf, sizeof(buf) - 1, 0);
+    assert(n > 0);
+    buf[n] = '\0';
+    assert(strstr(buf, "HTTP/1.1 200 OK") != NULL);
+    assert(strstr(buf, "Content-Length: 2") != NULL);
+    assert(strstr(buf, "\r\n\r\nok") != NULL);
+    close(fd);
+    _exit(0);
+}}
+
+int main(void) {{
+    void *server_res = duumbi_server_new(str("127.0.0.1"), {port}, 1000);
+    assert(duumbi_result_is_ok(server_res));
+    void *server = (void *)(intptr_t)duumbi_result_unwrap(server_res);
+    void *headers_res = duumbi_json_parse(str("{{}}"));
+    assert(duumbi_result_is_ok(headers_res));
+    void *headers = (void *)(intptr_t)duumbi_result_unwrap(headers_res);
+    void *route_res = duumbi_route_add_static(
+        server, str("GET"), str("/health"), 200, headers, str("ok")
+    );
+    assert(duumbi_result_is_ok(route_res));
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) client_request({port});
+    void *start_res = duumbi_server_start(server, 1, 2000);
+    assert(duumbi_result_is_ok(start_res));
+    assert(duumbi_result_unwrap(start_res) == 1);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    void *close_res = duumbi_server_close(server);
+    assert(duumbi_result_is_ok(close_res));
+    duumbi_server_free(server);
+    return 0;
+}}
+"#
+        )
+        .expect("write harness");
+
+        let compile = Command::new("cc")
+            .arg("runtime/duumbi_runtime.c")
+            .arg(&harness)
+            .arg("-Iruntime")
+            .arg("-lm")
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("run cc");
+        assert!(
+            compile.status.success(),
+            "cc failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary).output().expect("run harness");
+        assert!(
+            run.status.success(),
+            "server harness failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 
     #[test]

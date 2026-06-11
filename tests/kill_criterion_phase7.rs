@@ -112,6 +112,7 @@ fn make_publishable_module(dir: &Path, name: &str, version: &str) {
 name = "@test/{name}"
 version = "{version}"
 description = "Test module for kill criterion"
+license = "MPL-2.0"
 
 [exports]
 functions = ["helper"]

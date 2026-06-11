@@ -1,0 +1,13 @@
+[module]
+name = "@duumbi/stdlib-server"
+version = "1.0.0"
+description = "Bounded local static-route HTTP server functions"
+license = "MPL-2.0"
+
+[exports]
+functions = [
+    "server_new",
+    "route_add_static",
+    "server_start",
+    "server_close",
+]

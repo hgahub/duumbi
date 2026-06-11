@@ -125,6 +125,7 @@ fn parse_type_str(s: &str) -> Result<DuumbiType, ParseError> {
         "json" => Ok(DuumbiType::Json),
         "tcp_socket" => Ok(DuumbiType::TcpSocket),
         "tcp_listener" => Ok(DuumbiType::TcpListener),
+        "http_server" => Ok(DuumbiType::HttpServer),
         _ if s.starts_with("array<") && s.ends_with('>') => {
             let inner = &s[6..s.len() - 1];
             let elem_type = parse_type_str(inner)?;
@@ -203,6 +204,35 @@ fn parse_node_ref(
     Ok(NodeRef {
         id: NodeId(id.to_string()),
     })
+}
+
+fn parse_node_refs_array(
+    obj: &serde_json::Value,
+    field: &str,
+    node_id: &str,
+) -> Result<Vec<NodeRef>, ParseError> {
+    let args_arr =
+        obj.get(field)
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ParseError::MissingField {
+                code: codes::E003_MISSING_FIELD,
+                field: field.to_string(),
+                node_id: node_id.to_string(),
+            })?;
+    let mut refs = Vec::with_capacity(args_arr.len());
+    for arg_val in args_arr {
+        let id = arg_val.get("@id").and_then(|v| v.as_str()).ok_or_else(|| {
+            ParseError::MissingField {
+                code: codes::E003_MISSING_FIELD,
+                field: format!("{field}.@id"),
+                node_id: node_id.to_string(),
+            }
+        })?;
+        refs.push(NodeRef {
+            id: NodeId(id.to_string()),
+        });
+    }
+    Ok(refs)
 }
 
 fn parse_module(value: &serde_json::Value) -> Result<ModuleAst, ParseError> {
@@ -495,25 +525,8 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 .get("duumbi:module")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let args = if let Some(args_val) = value.get("duumbi:args") {
-                if let Some(args_arr) = args_val.as_array() {
-                    let mut refs = Vec::with_capacity(args_arr.len());
-                    for arg_val in args_arr {
-                        let id = arg_val.get("@id").and_then(|v| v.as_str()).ok_or_else(|| {
-                            ParseError::MissingField {
-                                code: codes::E003_MISSING_FIELD,
-                                field: "duumbi:args.@id".to_string(),
-                                node_id: node_id_str.to_string(),
-                            }
-                        })?;
-                        refs.push(NodeRef {
-                            id: NodeId(id.to_string()),
-                        });
-                    }
-                    refs
-                } else {
-                    Vec::new()
-                }
+            let args = if value.get("duumbi:args").is_some() {
+                parse_node_refs_array(value, "duumbi:args", node_id_str)?
             } else {
                 Vec::new()
             };
@@ -987,6 +1000,42 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 _ => unreachable!(),
             };
             let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            Ok(ast)
+        }
+        "duumbi:ServerNew" | "duumbi:ServerStart" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
+            let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
+            let op = match at_type {
+                "duumbi:ServerNew" => Op::ServerNew,
+                "duumbi:ServerStart" => Op::ServerStart,
+                _ => unreachable!(),
+            };
+            let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);
+            ast.operand = Some(operand);
+            ast.left = Some(left);
+            ast.right = Some(right);
+            Ok(ast)
+        }
+        "duumbi:RouteAddStatic" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::RouteAddStatic,
+                result_type,
+            );
+            ast.operand = Some(operand);
+            ast.args = parse_node_refs_array(value, "duumbi:args", node_id_str)?;
+            Ok(ast)
+        }
+        "duumbi:ServerClose" => {
+            let operand = parse_node_ref(value, "duumbi:operand", node_id_str)?;
+            let mut ast = make_op_ast(
+                NodeId(node_id_str.to_string()),
+                Op::ServerClose,
+                result_type,
+            );
             ast.operand = Some(operand);
             Ok(ast)
         }
@@ -1771,6 +1820,50 @@ mod tests {
             ops[5].right.as_ref().unwrap().id.0,
             "duumbi:t/main/e/timeout"
         );
+    }
+
+    #[test]
+    fn parse_type_str_http_server_resource() {
+        assert_eq!(
+            parse_type_str("http_server").unwrap(),
+            DuumbiType::HttpServer
+        );
+        assert_eq!(
+            parse_type_str("result<http_server,string>").unwrap(),
+            DuumbiType::Result(
+                Box::new(DuumbiType::HttpServer),
+                Box::new(DuumbiType::String)
+            )
+        );
+    }
+
+    #[test]
+    fn parse_server_stdlib_graph() {
+        let json = std::fs::read_to_string("stdlib/server.jsonld")
+            .expect("invariant: server stdlib graph must exist");
+        let module = parse_jsonld(&json).expect("server stdlib graph should parse");
+        assert_eq!(module.name.0, "server");
+        assert_eq!(
+            module.exports,
+            vec![
+                "server_new",
+                "route_add_static",
+                "server_start",
+                "server_close"
+            ]
+        );
+
+        let route_fn = module
+            .functions
+            .iter()
+            .find(|func| func.name.0 == "route_add_static")
+            .expect("route_add_static must exist");
+        let op = route_fn.blocks[0]
+            .ops
+            .iter()
+            .find(|op| matches!(op.op, Op::RouteAddStatic))
+            .expect("RouteAddStatic op must exist");
+        assert_eq!(op.args.len(), 5);
     }
 
     #[test]

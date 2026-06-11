@@ -289,6 +289,16 @@ pub enum Op {
     /// Close a TCP listener: `duumbi:TcpListenerClose`
     TcpListenerClose,
 
+    // -- HTTP server operations (DUUMBI-381) --
+    /// Create a bounded local HTTP server: `duumbi:ServerNew`
+    ServerNew,
+    /// Register a static HTTP route: `duumbi:RouteAddStatic`
+    RouteAddStatic,
+    /// Serve bounded requests: `duumbi:ServerStart`
+    ServerStart,
+    /// Close an HTTP server resource: `duumbi:ServerClose`
+    ServerClose,
+
     // -- Match operation (Phase 9a-3) --
     /// Pattern match on Result/Option — branches to Ok/Some or Err/None block: `duumbi:Match`
     Match {
@@ -412,6 +422,10 @@ impl fmt::Display for Op {
             Op::TcpWrite => f.write_str("TcpWrite"),
             Op::TcpClose => f.write_str("TcpClose"),
             Op::TcpListenerClose => f.write_str("TcpListenerClose"),
+            Op::ServerNew => f.write_str("ServerNew"),
+            Op::RouteAddStatic => f.write_str("RouteAddStatic"),
+            Op::ServerStart => f.write_str("ServerStart"),
+            Op::ServerClose => f.write_str("ServerClose"),
             Op::Match {
                 ok_block,
                 err_block,
@@ -479,7 +493,11 @@ impl Op {
             | Op::TcpRead
             | Op::TcpWrite
             | Op::TcpClose
-            | Op::TcpListenerClose => result_type.clone(),
+            | Op::TcpListenerClose
+            | Op::ServerNew
+            | Op::RouteAddStatic
+            | Op::ServerStart
+            | Op::ServerClose => result_type.clone(),
             Op::Compare(_) | Op::StringEquals | Op::StringContains => Some(DuumbiType::Bool),
             Op::StringCompare(_) => Some(DuumbiType::Bool),
             Op::StringConcat
@@ -546,6 +564,8 @@ pub enum DuumbiType {
     TcpSocket,
     /// Opaque runtime-owned TCP listener resource.
     TcpListener,
+    /// Opaque runtime-owned HTTP server resource.
+    HttpServer,
     /// Homogeneous dynamic array, generic over element type.
     #[allow(dead_code)] // Used starting from Phase 9a-1 array ops
     Array(Box<DuumbiType>),
@@ -578,6 +598,7 @@ impl DuumbiType {
                 | DuumbiType::Json
                 | DuumbiType::TcpSocket
                 | DuumbiType::TcpListener
+                | DuumbiType::HttpServer
                 | DuumbiType::Array(_)
                 | DuumbiType::Struct(_)
                 | DuumbiType::Result(_, _)
@@ -635,6 +656,7 @@ impl fmt::Display for DuumbiType {
             DuumbiType::Json => f.write_str("json"),
             DuumbiType::TcpSocket => f.write_str("tcp_socket"),
             DuumbiType::TcpListener => f.write_str("tcp_listener"),
+            DuumbiType::HttpServer => f.write_str("http_server"),
             DuumbiType::Array(elem) => write!(f, "array<{elem}>"),
             DuumbiType::Struct(name) => write!(f, "struct<{name}>"),
             DuumbiType::Ref(inner) => write!(f, "&{inner}"),
@@ -721,6 +743,7 @@ mod tests {
         assert_eq!(DuumbiType::Json.to_string(), "json");
         assert_eq!(DuumbiType::TcpSocket.to_string(), "tcp_socket");
         assert_eq!(DuumbiType::TcpListener.to_string(), "tcp_listener");
+        assert_eq!(DuumbiType::HttpServer.to_string(), "http_server");
     }
 
     #[test]
@@ -733,6 +756,7 @@ mod tests {
         assert!(DuumbiType::Json.is_heap_type());
         assert!(DuumbiType::TcpSocket.is_heap_type());
         assert!(DuumbiType::TcpListener.is_heap_type());
+        assert!(DuumbiType::HttpServer.is_heap_type());
         assert!(DuumbiType::Array(Box::new(DuumbiType::I64)).is_heap_type());
         assert!(DuumbiType::Struct("Point".to_string()).is_heap_type());
     }
@@ -945,6 +969,27 @@ mod tests {
         );
         assert_eq!(
             Op::TcpListenerClose.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+
+        let server_result = DuumbiType::Result(
+            Box::new(DuumbiType::HttpServer),
+            Box::new(DuumbiType::String),
+        );
+        assert_eq!(
+            Op::ServerNew.output_type(&Some(server_result.clone())),
+            Some(server_result)
+        );
+        assert_eq!(
+            Op::RouteAddStatic.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+        assert_eq!(
+            Op::ServerStart.output_type(&Some(close_result.clone())),
+            Some(close_result.clone())
+        );
+        assert_eq!(
+            Op::ServerClose.output_type(&Some(close_result.clone())),
             Some(close_result)
         );
     }
