@@ -1084,7 +1084,12 @@ fn accept_with_timeout(listener: &TcpListener, timeout: Duration, context: &str)
 
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .unwrap_or_else(|error| panic!("{context}: restore blocking stream: {error}"));
+                return stream;
+            }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "{context}: timed out");
                 thread::sleep(Duration::from_millis(20));
