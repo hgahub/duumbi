@@ -56,7 +56,6 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-curl
           path-type: prepend
       - name: Select DUUMBI runtime C compiler
@@ -71,7 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check
-        if: steps.scope.outputs.run_rust_checks == 'true'
+        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - name: Clippy
         if: steps.scope.outputs.run_rust_checks == 'true'
@@ -85,9 +84,18 @@ jobs:
       - name: Dependency audit
         if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
         run: cargo audit
+      - name: Install cargo-nextest
+        if: steps.scope.outputs.run_rust_checks == 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+          fallback: none
+      # nextest schedules tests from all test binaries in parallel; cargo test
+      # runs each integration-test binary serially, which dominated the
+      # windows-latest wall time (~6 min of serial test execution).
       - name: Test
         if: steps.scope.outputs.run_rust_checks == 'true'
-        run: cargo test --all
+        run: cargo nextest run --workspace
 
   check-complete:
     name: check

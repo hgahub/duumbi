@@ -1,4 +1,4 @@
-name: Docs Review (Copilot)
+name: Docs Review Reminder
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ jobs:
     name: Docs AI Update Request
     runs-on: ubuntu-latest
     steps:
-      - name: Analyze docs impact and request Copilot docs update
+      - name: Post docs impact reminder
         uses: actions/github-script@v9
         with:
           script: |
@@ -28,7 +28,7 @@ jobs:
 
             // This workflow only fires when src/**, crates/**, or Cargo.toml change,
             // so code changes are guaranteed — docs live in hgahub/duumbi-web.
-            const body = `${marker}\n⚠️ Code changed; docs may need updates.\n\n@copilot Please check if documentation needs updating in [hgahub/duumbi-web](https://github.com/hgahub/duumbi-web/tree/main/docs/src/content/docs) for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. If updates are needed, open a PR in that repo.`;
+            const body = `${marker}\n⚠️ Code changed; docs may need updates.\n\nPlease check whether documentation needs updating in [hgahub/duumbi-web](https://github.com/hgahub/duumbi-web/tree/main/docs/src/content/docs) for this PR. Focus on CLI behavior, JSON-LD schema/types/ops, and architecture implications. If updates are needed, open a PR in that repo.`;
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,

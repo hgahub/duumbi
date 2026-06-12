@@ -14,14 +14,14 @@ Describe what changed and why.
 
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo test --all`
+- [ ] `cargo nextest run --workspace`
 - [ ] `cargo audit`
 
 ## AI Review Plan
 
 - [ ] Codex self-review completed and blocking findings are fixed or listed
-- [ ] Copilot review requested/received or explicitly not applicable
-- [ ] Greptile not used, or manually requested because this PR meets the high-risk criteria in `docs/automation/code-review-policy.md`
+- [ ] Final implementation PR: Codex review requested from `@chatgpt-codex-connector`; otherwise optional quick low-cost review (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) or explicitly not applicable
+- [ ] Greptile not used, or manually requested on the final implementation PR because it meets the high-risk criteria in `docs/automation/code-review-policy.md` (need signaled on Slack and in the issue)
 - [ ] Review threads are resolved after verifying fixes
 
 ## Docs Impact
