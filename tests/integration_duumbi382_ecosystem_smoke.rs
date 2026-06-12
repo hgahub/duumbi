@@ -279,6 +279,10 @@ fn output_text(output: &DuumbiOutput) -> String {
     )
 }
 
+fn normalized_stdout(stdout: &str) -> String {
+    stdout.trim().replace("\r\n", "\n")
+}
+
 fn run_duumbi(workspace: &Path, args: &[&str]) -> DuumbiOutput {
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1408,7 +1412,7 @@ async fn installed_core_modules_import_build_and_run_from_clean_workspace() {
             format!("exit={} stderr={}", run.exit_code, run.stderr)
         )
     );
-    assert_eq!(run.stdout.trim(), "7\n6");
+    assert_eq!(normalized_stdout(&run.stdout), "7\n6");
     assert_eq!(run.stderr.trim(), "");
 }
 
@@ -1422,7 +1426,7 @@ async fn installed_json_module_import_build_and_run_from_clean_workspace() {
     );
 
     assert_eq!(run.exit_code, 0);
-    assert_eq!(run.stdout.trim(), "\"duumbi\"\n3");
+    assert_eq!(normalized_stdout(&run.stdout), "\"duumbi\"\n3");
     assert_eq!(run.stderr.trim(), "");
 }
 
@@ -1436,7 +1440,7 @@ async fn installed_file_module_uses_temporary_workspace_storage() {
     );
 
     assert_eq!(run.exit_code, 0);
-    assert_eq!(run.stdout.trim(), "true\nhello-file");
+    assert_eq!(normalized_stdout(&run.stdout), "true\nhello-file");
     assert_eq!(run.stderr.trim(), "");
     assert!(
         workspace.path().join("duumbi382-file-smoke.txt").exists(),
@@ -1455,7 +1459,7 @@ async fn installed_db_module_uses_temporary_memory_storage() {
     let run = build_and_run_graph(workspace.path(), "@duumbi/stdlib-db", db_memory_graph());
 
     assert_eq!(run.exit_code, 0);
-    assert_eq!(run.stdout.trim(), "0\n1\n1\nAda");
+    assert_eq!(normalized_stdout(&run.stdout), "0\n1\n1\nAda");
     assert_eq!(run.stderr.trim(), "");
 }
 
@@ -1471,7 +1475,7 @@ async fn installed_http_module_uses_loopback_fixture_only() {
     server.join().expect("HTTP fixture joins");
 
     assert_eq!(run.exit_code, 0);
-    assert_eq!(run.stdout.trim(), "200\nok");
+    assert_eq!(normalized_stdout(&run.stdout), "200\nok");
     assert_eq!(run.stderr.trim(), "");
 }
 
@@ -1496,7 +1500,7 @@ async fn installed_net_module_uses_loopback_and_explicit_timeouts() {
     server.join().expect("TCP fixture joins");
 
     assert_eq!(run.exit_code, 0);
-    assert_eq!(run.stdout.trim(), "4\nping\ntrue");
+    assert_eq!(normalized_stdout(&run.stdout), "4\nping\ntrue");
     assert_eq!(run.stderr.trim(), "");
 }
 
