@@ -16,7 +16,7 @@
         "ghcr.io/stu-bell/devcontainer-features/open-code:0": {},
         "ghcr.io/gvatsal60/dev-container-features/pre-commit:1": {},
         "ghcr.io/devcontainers/features/python:1": {
-            "version": "3.14.5"
+            "version": "3.14.6"
         }
     },
     "containerEnv": {
