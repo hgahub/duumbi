@@ -1,8 +1,7 @@
 //! DUUMBI-382 ecosystem smoke harness evidence.
 //!
-//! This file starts with the reusable embedded-registry harness and one
-//! representative module install. Later Ralph cycles can extend the same
-//! helpers across the full required module matrix.
+//! This file covers the embedded-registry harness, required-module matrix, and
+//! per-module clean-workspace import/build/run smoke tests.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -308,21 +307,15 @@ fn run_duumbi(workspace: &Path, args: &[&str]) -> DuumbiOutput {
         thread::sleep(Duration::from_millis(25));
     }
 
-    let mut stdout = Vec::new();
-    if let Some(mut reader) = child.stdout.take() {
-        reader.read_to_end(&mut stdout).expect("read stdout");
-    }
-    let mut stderr = Vec::new();
-    if let Some(mut reader) = child.stderr.take() {
-        reader.read_to_end(&mut stderr).expect("read stderr");
-    }
-    let status = child.wait().expect("wait for duumbi command");
+    let output = child
+        .wait_with_output()
+        .expect("collect duumbi command output");
 
     DuumbiOutput {
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
-        status,
-        stdout,
-        stderr,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
         timed_out,
     }
 }
@@ -1083,13 +1076,40 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Outpu
     }
 }
 
+fn accept_with_timeout(listener: &TcpListener, timeout: Duration, context: &str) -> TcpStream {
+    listener
+        .set_nonblocking(true)
+        .unwrap_or_else(|error| panic!("{context}: set nonblocking listener: {error}"));
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "{context}: timed out");
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => panic!("{context}: {error}"),
+        }
+    }
+}
+
 fn start_one_shot_http_server() -> (u16, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
     let port = listener.local_addr().expect("local addr").port();
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept HTTP client");
+        let mut stream =
+            accept_with_timeout(&listener, Duration::from_secs(30), "accept HTTP client");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set HTTP fixture read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .expect("set HTTP fixture write timeout");
         let mut buffer = [0_u8; 1024];
-        let _ = stream.read(&mut buffer).expect("read HTTP request");
+        let bytes_read = stream.read(&mut buffer).expect("read HTTP request");
+        assert!(bytes_read > 0, "HTTP fixture received an empty request");
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
             .expect("write HTTP response");
@@ -1484,7 +1504,14 @@ async fn installed_net_module_uses_loopback_and_explicit_timeouts() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
     let port = listener.local_addr().expect("local addr").port();
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept echo client");
+        let mut stream =
+            accept_with_timeout(&listener, Duration::from_secs(30), "accept echo client");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set echo read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .expect("set echo write timeout");
         let mut buf = [0_u8; 4];
         stream.read_exact(&mut buf).expect("read ping");
         assert_eq!(&buf, b"ping");
