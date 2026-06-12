@@ -101,24 +101,24 @@ pub const TIER1_PUBLISH_MATRIX: &[PublishMatrixEntry] = &[
     },
     PublishMatrixEntry {
         module: "@duumbi/stdlib-http",
-        state: PublishMatrixState::DeferredUpstream,
-        source_graph: None,
+        state: PublishMatrixState::PublishableAfterVerify,
+        source_graph: Some("stdlib/http.jsonld"),
         upstream_issue: Some(380),
-        evidence: "#380 owns HTTP client behavior and publication readiness.",
+        evidence: "#380 completed Stage 12 with accepted HTTP/HTTPS source behavior.",
     },
     PublishMatrixEntry {
         module: "@duumbi/stdlib-tls",
         state: PublishMatrixState::DeferredUpstream,
         source_graph: None,
         upstream_issue: Some(380),
-        evidence: "#380 must decide whether TLS is separate or HTTP behavior.",
+        evidence: "#380 v1 keeps TLS as HTTPS behavior inside @duumbi/stdlib-http.",
     },
     PublishMatrixEntry {
         module: "@duumbi/stdlib-db",
-        state: PublishMatrixState::DeferredUpstream,
-        source_graph: None,
+        state: PublishMatrixState::PublishableAfterVerify,
+        source_graph: Some("stdlib/db.jsonld"),
         upstream_issue: Some(380),
-        evidence: "#380 owns database behavior and publication readiness.",
+        evidence: "#380 completed Stage 12 with accepted local SQLite source behavior.",
     },
 ];
 
@@ -151,6 +151,9 @@ mod tests {
             "@duumbi/stdlib-file",
             "@duumbi/stdlib-json",
             "@duumbi/stdlib-net",
+            "@duumbi/stdlib-server",
+            "@duumbi/stdlib-http",
+            "@duumbi/stdlib-db",
         ] {
             let row = entry(module);
             assert_eq!(row.state, PublishMatrixState::PublishableAfterVerify);
@@ -176,17 +179,33 @@ mod tests {
     }
 
     #[test]
-    fn issue_380_owned_modules_remain_deferred() {
-        for module in [
-            "@duumbi/stdlib-http",
-            "@duumbi/stdlib-tls",
-            "@duumbi/stdlib-db",
+    fn issue_380_http_and_db_are_source_backed_after_stage12() {
+        for (module, source_graph) in [
+            ("@duumbi/stdlib-http", "stdlib/http.jsonld"),
+            ("@duumbi/stdlib-db", "stdlib/db.jsonld"),
         ] {
             let row = entry(module);
-            assert_eq!(row.state, PublishMatrixState::DeferredUpstream);
+            assert_eq!(row.state, PublishMatrixState::PublishableAfterVerify);
             assert_eq!(row.upstream_issue, Some(380));
-            assert_eq!(row.source_graph, None);
+            assert_eq!(row.source_graph, Some(source_graph));
+            assert!(
+                row.evidence.contains("#380 completed Stage 12"),
+                "{module} must cite accepted #380 Stage 12 evidence"
+            );
         }
+    }
+
+    #[test]
+    fn raw_tls_remains_deferred_with_v1_reason() {
+        let row = entry("@duumbi/stdlib-tls");
+        assert_eq!(row.state, PublishMatrixState::DeferredUpstream);
+        assert_eq!(row.upstream_issue, Some(380));
+        assert_eq!(row.source_graph, None);
+        assert!(
+            row.evidence
+                .contains("TLS as HTTPS behavior inside @duumbi/stdlib-http"),
+            "raw TLS deferral must explain the #380 v1 boundary"
+        );
     }
 
     #[test]
