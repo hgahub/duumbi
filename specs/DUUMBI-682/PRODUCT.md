@@ -55,8 +55,8 @@ When this work is done:
 - Model-access analytics show provider/model accessibility counts, latest
   status, and freshness/staleness without returning credential fingerprints.
 - Model-performance analytics show call counts, success/failure rates, failure
-  classes, retry counts, latency EWMA, cost EWMA, and available token totals by
-  provider/model/task profile.
+  classes, retry counts, latency EWMA, and cost EWMA by provider/model/task
+  profile.
 - Empty, absent, stale, or partially unreadable stores return explicit status
   metadata instead of panicking or pretending the data is fresh.
 - Raw event inspection, if implemented in V1, is explicit, bounded, redacted, and
@@ -148,6 +148,10 @@ Assumptions:
 - Aggregate analytics are safe to expose by default when credential
   fingerprints, raw provider messages, raw event rows, and sensitive future
   fields are omitted.
+- Default model-performance aggregate analytics should not promise historical
+  token totals or template-version grouping unless a later approved aggregate
+  schema change stores those fields safely. In the current source model, token
+  counts and template version are raw event fields, not aggregate fields.
 - A default stale threshold of 168 hours is reasonable for V1 if no existing
   provider freshness setting is available. The threshold should be overrideable
   per query.
@@ -230,7 +234,7 @@ V1 supports at least these categories:
     failures, validation failures, retry totals, EWMA latency, EWMA cost, and
     last update metadata;
   - groups by provider/model and optional task profile dimensions: agent role,
-    template version, task type, complexity, scope, and risk;
+    task type, complexity, scope, and risk;
   - supports filters and result limits.
 
 - `model_telemetry_health`
