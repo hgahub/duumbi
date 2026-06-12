@@ -23,8 +23,8 @@ chrono = { version = "0.4.45", optional = true }
 anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
-web-sys = { version = "0.3.99", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
-wasm-bindgen = "0.2.122"
+web-sys = { version = "0.3.102", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
+wasm-bindgen = "0.2.125"
 console_error_panic_hook = "0.1.7"
 
 [[bin]]
