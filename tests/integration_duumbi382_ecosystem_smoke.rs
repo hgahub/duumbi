@@ -27,7 +27,16 @@ use duumbi_registry::{
 };
 
 const STDLIB_VERSION: &str = "1.0.0";
+const STDLIB_MATH_GRAPH: &str = include_str!("../stdlib/math.jsonld");
+const STDLIB_IO_GRAPH: &str = include_str!("../stdlib/io.jsonld");
+const STDLIB_LANG_GRAPH: &str = include_str!("../stdlib/lang.jsonld");
 const STDLIB_STRING_GRAPH: &str = include_str!("../stdlib/string.jsonld");
+const STDLIB_FILE_GRAPH: &str = include_str!("../stdlib/file.jsonld");
+const STDLIB_JSON_GRAPH: &str = include_str!("../stdlib/json.jsonld");
+const STDLIB_NET_GRAPH: &str = include_str!("../stdlib/net.jsonld");
+const STDLIB_HTTP_GRAPH: &str = include_str!("../stdlib/http.jsonld");
+const STDLIB_DB_GRAPH: &str = include_str!("../stdlib/db.jsonld");
+const STDLIB_SERVER_GRAPH: &str = include_str!("../stdlib/server.jsonld");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmokeStage {
@@ -90,6 +99,147 @@ struct EmbeddedRegistry {
     token: String,
     _tmp: tempfile::TempDir,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct ModuleSpec {
+    module: &'static str,
+    graph_file: &'static str,
+    graph: &'static str,
+    description: &'static str,
+    exports: &'static [&'static str],
+}
+
+impl ModuleSpec {
+    fn manifest(self) -> ModuleManifest {
+        ModuleManifest::new(
+            self.module,
+            STDLIB_VERSION,
+            self.description,
+            self.exports
+                .iter()
+                .map(|export| (*export).to_string())
+                .collect(),
+        )
+    }
+}
+
+const REQUIRED_MODULES: &[ModuleSpec] = &[
+    ModuleSpec {
+        module: "@duumbi/stdlib-math",
+        graph_file: "math.jsonld",
+        graph: STDLIB_MATH_GRAPH,
+        description: "Mathematical utility functions (abs, max, min, sqrt, pow, mod, clamp, sign)",
+        exports: &["abs", "max", "min", "sqrt", "pow", "mod", "clamp", "sign"],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-io",
+        graph_file: "io.jsonld",
+        graph: STDLIB_IO_GRAPH,
+        description: "I/O utility functions (print wrappers, read_line, print_ln)",
+        exports: &[
+            "print_i64",
+            "print_f64",
+            "print_bool",
+            "print_string",
+            "read_line",
+            "print_ln",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-lang",
+        graph_file: "lang.jsonld",
+        graph: STDLIB_LANG_GRAPH,
+        description: "Language utility functions (assert_true, i64_to_f64, f64_to_i64)",
+        exports: &["assert_true", "i64_to_f64", "f64_to_i64"],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-string",
+        graph_file: "string.jsonld",
+        graph: STDLIB_STRING_GRAPH,
+        description: "String utility functions (length, contains, find, trim, to_upper, to_lower, replace)",
+        exports: &[
+            "length", "contains", "find", "trim", "to_upper", "to_lower", "replace",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-file",
+        graph_file: "file.jsonld",
+        graph: STDLIB_FILE_GRAPH,
+        description: "Workspace-confined UTF-8 file and path utility functions",
+        exports: &[
+            "read_file",
+            "write_file",
+            "file_exists",
+            "list_dir",
+            "path_join",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-json",
+        graph_file: "json.jsonld",
+        graph: STDLIB_JSON_GRAPH,
+        description: "JSON utility functions (parse, stringify, get_field, array_len, array_get)",
+        exports: &["parse", "stringify", "get_field", "array_len", "array_get"],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-net",
+        graph_file: "net.jsonld",
+        graph: STDLIB_NET_GRAPH,
+        description: "TCP utility functions (connect, listen, accept, read, write, close)",
+        exports: &[
+            "tcp_connect",
+            "tcp_listen",
+            "tcp_accept",
+            "tcp_read",
+            "tcp_write",
+            "tcp_close",
+            "tcp_listener_close",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-http",
+        graph_file: "http.jsonld",
+        graph: STDLIB_HTTP_GRAPH,
+        description: "HTTP/HTTPS utility functions (GET, POST, PUT, DELETE, response accessors)",
+        exports: &[
+            "http_get",
+            "http_post",
+            "http_put",
+            "http_delete",
+            "http_status",
+            "http_body",
+            "http_headers",
+            "http_response_free",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-db",
+        graph_file: "db.jsonld",
+        graph: STDLIB_DB_GRAPH,
+        description: "Local SQLite utility functions (open, execute, query, row access, cleanup)",
+        exports: &[
+            "db_open",
+            "db_execute",
+            "db_query",
+            "db_rows_len",
+            "db_row_get",
+            "db_close",
+            "db_rows_free",
+        ],
+    },
+    ModuleSpec {
+        module: "@duumbi/stdlib-server",
+        graph_file: "server.jsonld",
+        graph: STDLIB_SERVER_GRAPH,
+        description: "Bounded local static-route HTTP server functions",
+        exports: &[
+            "server_new",
+            "route_add_static",
+            "server_start",
+            "server_close",
+        ],
+    },
+];
 
 fn duumbi_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_duumbi"))
@@ -230,39 +380,27 @@ fn registry_client(registry_url: &str, token: Option<&str>) -> RegistryClient {
     RegistryClient::new(registries, credentials, None).expect("registry client")
 }
 
-fn make_stdlib_string_package(workspace: &Path) {
+fn make_stdlib_package(workspace: &Path, module: ModuleSpec) {
     let graph_dir = workspace.join(".duumbi/graph");
     fs::create_dir_all(&graph_dir).expect("create package graph dir");
-    fs::write(graph_dir.join("string.jsonld"), STDLIB_STRING_GRAPH).expect("write string graph");
+    fs::write(graph_dir.join(module.graph_file), module.graph).expect("write graph");
 
-    let manifest = ModuleManifest::new(
-        "@duumbi/stdlib-string",
-        STDLIB_VERSION,
-        "String utility functions",
-        vec![
-            "length".to_string(),
-            "concat".to_string(),
-            "contains".to_string(),
-            "substring".to_string(),
-            "trim".to_string(),
-            "replace".to_string(),
-        ],
-    );
+    let manifest = module.manifest();
     fs::write(workspace.join(".duumbi/manifest.toml"), manifest.to_toml()).expect("write manifest");
 }
 
-async fn publish_stdlib_string(registry: &EmbeddedRegistry) {
+async fn publish_module(registry: &EmbeddedRegistry, module: ModuleSpec) {
     let package_workspace = tempfile::TempDir::new().expect("package workspace");
-    make_stdlib_string_package(package_workspace.path());
+    make_stdlib_package(package_workspace.path(), module);
 
     let tarball = duumbi::registry::package::pack_module(package_workspace.path())
-        .expect("pack stdlib-string");
+        .unwrap_or_else(|error| panic!("pack {}: {error}", module.module));
     let client = registry_client(&registry.url, Some(&registry.token));
     let response = client
-        .publish("local", "@duumbi/stdlib-string", &tarball)
+        .publish("local", module.module, &tarball)
         .await
-        .expect("publish stdlib-string");
-    assert_eq!(response.name, "@duumbi/stdlib-string");
+        .unwrap_or_else(|error| panic!("publish {}: {error}", module.module));
+    assert_eq!(response.name, module.module);
     assert_eq!(response.version, STDLIB_VERSION);
 }
 
@@ -275,27 +413,38 @@ fn configure_embedded_registry(workspace: &Path, registry_url: &str) {
     config::save_config(workspace, &cfg).expect("save registry config");
 }
 
-fn assert_installed_string_metadata(workspace: &Path) {
-    let module = "@duumbi/stdlib-string";
+fn assert_installed_metadata(workspace: &Path, module: ModuleSpec) {
+    let cache_leaf = module
+        .module
+        .strip_prefix("@duumbi/")
+        .expect("stdlib scope");
     let cache_entry = workspace
         .join(".duumbi/cache")
-        .join("@duumbi/stdlib-string@1.0.0");
+        .join(format!("@duumbi/{cache_leaf}@{STDLIB_VERSION}"));
 
     assert!(
-        cache_entry.join("graph/string.jsonld").exists(),
+        cache_entry.join("graph").join(module.graph_file).exists(),
         "{}",
-        StageFailure::new(module, SmokeStage::Install, "missing graph/string.jsonld")
+        StageFailure::new(
+            module.module,
+            SmokeStage::Install,
+            format!("missing graph/{}", module.graph_file)
+        )
     );
     assert!(
         cache_entry.join("CHECKSUM").exists(),
         "{}",
-        StageFailure::new(module, SmokeStage::Integrity, "missing package CHECKSUM")
+        StageFailure::new(
+            module.module,
+            SmokeStage::Integrity,
+            "missing package CHECKSUM"
+        )
     );
     assert!(
         cache_entry.join(".integrity").exists(),
         "{}",
         StageFailure::new(
-            module,
+            module.module,
             SmokeStage::Integrity,
             "missing downloaded .integrity"
         )
@@ -305,73 +454,82 @@ fn assert_installed_string_metadata(workspace: &Path) {
     let manifest = duumbi::manifest::parse_manifest(&manifest_path).unwrap_or_else(|error| {
         panic!(
             "{}",
-            StageFailure::new(module, SmokeStage::Manifest, error.to_string())
+            StageFailure::new(module.module, SmokeStage::Manifest, error.to_string())
         )
     });
-    assert_eq!(manifest.module.name, module);
+    assert_eq!(manifest.module.name, module.module);
     assert_eq!(manifest.module.version, STDLIB_VERSION);
-    assert!(
-        manifest.exports.functions.contains(&"length".to_string()),
-        "{}",
-        StageFailure::new(module, SmokeStage::Manifest, "missing length export")
-    );
+    for expected_export in module.exports {
+        assert!(
+            manifest
+                .exports
+                .functions
+                .contains(&(*expected_export).to_string()),
+            "{}",
+            StageFailure::new(
+                module.module,
+                SmokeStage::Manifest,
+                format!("missing {expected_export} export")
+            )
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn embedded_registry_harness_searches_installs_and_verifies_string_metadata() {
-    let module = "@duumbi/stdlib-string";
+async fn embedded_registry_harness_searches_installs_and_verifies_required_module_metadata() {
     let registry = start_embedded_registry().await;
-    publish_stdlib_string(&registry).await;
+    for module in REQUIRED_MODULES {
+        publish_module(&registry, *module).await;
+    }
 
     let workspace = tempfile::TempDir::new().expect("workspace");
     let init = run_duumbi(
         workspace.path(),
         &["init", workspace.path().to_str().unwrap()],
     );
-    assert_command_success(module, SmokeStage::Install, init);
+    assert_command_success("@duumbi/stdlib-string", SmokeStage::Install, init);
     configure_embedded_registry(workspace.path(), &registry.url);
 
     let search = assert_command_success(
-        module,
+        "@duumbi/stdlib-string",
         SmokeStage::Search,
         run_duumbi(
             workspace.path(),
             &["search", "stdlib", "--registry", "local"],
         ),
     );
-    assert!(
-        output_text(&search).contains(module),
-        "{}",
-        StageFailure::new(
-            module,
-            SmokeStage::Search,
-            "search output did not list module"
-        )
-    );
+    let search_text = output_text(&search);
 
-    let add = run_duumbi(
-        workspace.path(),
-        &[
-            "deps",
-            "add",
-            "@duumbi/stdlib-string@1.0.0",
-            "--registry",
-            "local",
-        ],
-    );
-    assert_command_success(module, SmokeStage::Install, add);
+    for module in REQUIRED_MODULES {
+        assert!(
+            search_text.contains(module.module),
+            "{}",
+            StageFailure::new(
+                module.module,
+                SmokeStage::Search,
+                "search output did not list module"
+            )
+        );
 
-    let cfg = config::load_config(workspace.path()).expect("config should parse");
-    assert!(
-        cfg.dependencies.contains_key(module),
-        "{}",
-        StageFailure::new(
-            module,
-            SmokeStage::Install,
-            "config dependency was not recorded"
-        )
-    );
-    assert_installed_string_metadata(workspace.path());
+        let specifier = format!("{}@{STDLIB_VERSION}", module.module);
+        let add = run_duumbi(
+            workspace.path(),
+            &["deps", "add", &specifier, "--registry", "local"],
+        );
+        assert_command_success(module.module, SmokeStage::Install, add);
+
+        let cfg = config::load_config(workspace.path()).expect("config should parse");
+        assert!(
+            cfg.dependencies.contains_key(module.module),
+            "{}",
+            StageFailure::new(
+                module.module,
+                SmokeStage::Install,
+                "config dependency was not recorded"
+            )
+        );
+        assert_installed_metadata(workspace.path(), *module);
+    }
 }
 
 #[test]
