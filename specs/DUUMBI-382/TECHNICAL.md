@@ -89,8 +89,8 @@ Verified source facts:
 - `src/cli/init.rs` currently does not seed `@duumbi/stdlib-file` by default.
   File can still be packaged from source because `stdlib/file.jsonld` and
   `stdlib/file.manifest.toml` exist.
-- `src/registry/package.rs` packs `manifest.toml`, sorted graph files, and
-  `CHECKSUM` from `.duumbi/graph/`.
+- `src/registry/package.rs` reads `manifest.toml` and sorted graph files from
+  `.duumbi/graph/`, then generates archive `CHECKSUM` metadata.
 - `src/registry/client.rs` provides `RegistryClient::search()` and
   `RegistryClient::download_module()`. Download writes cache entries and an
   `.integrity` file.
