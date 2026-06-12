@@ -722,21 +722,12 @@ defines safe defaults:
   `stdlib/string.jsonld`, `stdlib/file.jsonld`, `stdlib/json.jsonld`,
   `stdlib/net.jsonld`, `stdlib/http.jsonld`, `stdlib/db.jsonld`,
   `stdlib/server.jsonld`
-- DUUMBI PRD:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - PRD.md`
-- DUUMBI Glossary:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Glossary.md`
-- DUUMBI Agentic Development Map:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Maps (Overviews)/DUUMBI Agentic Development Map.md`
-- DUUMBI Agentic Development Runbook:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Works (Developed Materials)/DUUMBI - Agentic Development Runbook.md`
-- DUUMBI Registry Architecture:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/DUUMBI Registry Architecture.md`
-- Module Package Lifecycle:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Module Package Lifecycle.md`
-- Registry Authentication Model:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/Registry Authentication Model.md`
-- AI Code Review Service Policy:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/01 Atlas (Knowledge Base)/Dots (Atomic Ideas)/AI Code Review Service Policy.md`
-- Phase 14 roadmap:
-  `/Users/heizergabor/space/hgahub/duumbi-vault/Duumbi/05 Archive/Execution and Roadmap Docs/DUUMBI - Phase 14 - Marketing & Go-to-Market.md`
+- DUUMBI vault note: `DUUMBI - PRD`
+- DUUMBI vault note: `DUUMBI - Glossary`
+- DUUMBI vault note: `DUUMBI Agentic Development Map`
+- DUUMBI vault note: `DUUMBI - Agentic Development Runbook`
+- DUUMBI vault note: `DUUMBI Registry Architecture`
+- DUUMBI vault note: `Module Package Lifecycle`
+- DUUMBI vault note: `Registry Authentication Model`
+- DUUMBI vault note: `AI Code Review Service Policy`
+- DUUMBI vault note: `DUUMBI - Phase 14 - Marketing & Go-to-Market`
