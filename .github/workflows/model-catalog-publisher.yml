@@ -30,7 +30,7 @@ jobs:
       - name: Validate publisher and docs checks
         run: cargo test duumbi675_model_catalog_publisher --all
       - name: Upload generated catalog evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: model-catalog-v1
           path: .tmp/model-catalog/
