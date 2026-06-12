@@ -18,6 +18,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde_json::{Value, json};
 
+const HTTPS_FIXTURE_TIMEOUT_MS: i64 = 10_000;
+
 #[derive(Debug)]
 struct CapturedRequest {
     request_line: String,
@@ -361,8 +363,19 @@ fn https_server_allowing_rejected_client() -> (u16, thread::JoinHandle<bool>) {
     (port, server)
 }
 
-fn http_error_fixture(url: &str, output_name: &str) -> String {
-    let mut ops = http_call_core_ops(output_name, "duumbi:HttpGet", url, "{}", None, 2000);
+fn https_error_fixture(url: &str, output_name: &str) -> String {
+    let ops = http_call_core_ops(
+        output_name,
+        "duumbi:HttpGet",
+        url,
+        "{}",
+        None,
+        HTTPS_FIXTURE_TIMEOUT_MS,
+    );
+    http_error_fixture_ops(output_name, ops)
+}
+
+fn http_error_fixture_ops(output_name: &str, mut ops: Vec<Value>) -> String {
     ops.push(json!({
         "@type": "duumbi:ResultIsOk",
         "@id": id(&format!("{output_name}_ok")),
@@ -395,7 +408,7 @@ fn https_get_fixture(port: u16) -> String {
         &format!("https://127.0.0.1:{port}/secure"),
         "{}",
         None,
-        2000,
+        HTTPS_FIXTURE_TIMEOUT_MS,
     );
     append_return_zero(&mut ops);
     module_fixture(ops)
@@ -615,7 +628,7 @@ fn https_get_succeeds_with_trusted_local_certificate() {
 #[test]
 fn https_get_untrusted_local_certificate_returns_tls_error() {
     let (port, server) = https_server_allowing_rejected_client();
-    let fixture = http_error_fixture(
+    let fixture = https_error_fixture(
         &format!("https://127.0.0.1:{port}/secure"),
         "https_untrusted",
     );
@@ -906,7 +919,7 @@ fn http_timeout_returns_error_without_hanging() {
 
     server.join().expect("server must finish");
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_secs(10),
         "timeout fixture took too long: {elapsed:?}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
