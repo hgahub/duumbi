@@ -41,11 +41,10 @@ Before approving through the AI gate, verify all of these facts:
 - the product spec PR is a spec-only PR and contains no implementation code
 - the product spec PR is open, non-draft, review-clean, and ready for approval merge
 - Codex self-review has no blocking finding
-- each required automated reviewer has submitted actual, non-dismissed review
-  evidence; in this repository the default required reviewer is
-  `copilot-pull-request-reviewer` unless repository configuration states
-  otherwise. Greptile is manual-only and must not be treated as required unless
-  a human explicitly configured or requested it for this PR.
+- any configured required reviewer has submitted actual, non-dismissed review
+  evidence; by default `DUUMBI_REQUIRED_SPEC_REVIEWERS` is empty and no
+  automated reviewer is required. Greptile must never be treated as required
+  and must not run on spec PRs.
 - do not treat a successful reviewer-request check as completed review evidence
 - no latest automated or human review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a fix
@@ -68,13 +67,11 @@ If any requirement is missing, fail closed: record a review report, route to `Sp
 ## AI Review Service Policy
 
 - Stage 7 always performs Codex product-spec review against the checklist below.
-- File-based product spec PR approval also requires required automated review
-  evidence, Copilot by default.
-- CodeRabbit and Greptile comments are advisory unless branch protection or an
-  explicit human instruction says otherwise.
-- Do not invoke Greptile from Stage 7 by default. Product spec review should use
-  Codex checklist plus Copilot evidence; Greptile is reserved for rare manual
-  escalation.
+- There is no required automated reviewer for spec PRs. Quick low-cost
+  reviewer comments (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) are
+  advisory when present.
+- Do not invoke Greptile from Stage 7. Greptile is reserved for the final
+  implementation PR.
 
 ## Language Rules
 
@@ -99,7 +96,7 @@ When the prompt contains an explicit **Approve** decision (e.g. `Human decision:
 1. `gh issue view <N> --json number,title,labels,body` — verify `spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 6 Product Spec Draft artifact link
 3. Construct and post the Stage 7 Decision Comment on the issue
-4. If the artifact is a PR, verify it is open, non-draft, changes only `specs/DUUMBI-<N>/PRODUCT.md`, has green checks, Codex self-review with no blocking finding, actual non-dismissed required automated reviewer submissions, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
+4. If the artifact is a PR, verify it is open, non-draft, changes only `specs/DUUMBI-<N>/PRODUCT.md`, has green checks, Codex self-review with no blocking finding, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
 5. If the artifact is a PR, squash-merge it with non-closing issue references such as `Related to #<N>`; do not close the execution issue
 6. Post a short pointer comment on the PR (if identifiable)
 7. Update labels: remove `needs-spec` and `spec-review`, add `product-spec-approved` and `needs-tech-spec`
@@ -220,7 +217,7 @@ For file-based specs, also comment on the PR with the same decision or a short p
 For `Approve`:
 
 - require explicit human approval or a fully satisfied AI gate
-- for file-based specs, require an open non-draft spec-only PR with green checks, Codex self-review with no blocking finding, actual non-dismissed required automated reviewer submissions, no blocking review decisions, and no unresolved review threads
+- for file-based specs, require an open non-draft spec-only PR with green checks, Codex self-review with no blocking finding, no blocking review decisions, and no unresolved review threads
 - for file-based specs, squash-merge the product spec PR before moving the issue to `Technical Spec Needed`
 - write the decision comment
 - set Project Status to `Technical Spec Needed` when available

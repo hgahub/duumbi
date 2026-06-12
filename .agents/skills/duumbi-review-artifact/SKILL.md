@@ -42,14 +42,18 @@ Stage 10 owns implementation changes after review findings. Human reviewers own 
 ## AI Review Service Policy
 
 - Stage 11 always includes Codex self-review as part of the review artifact.
-- Inspect Copilot review state as the default automated PR review evidence.
-  A reviewer-request workflow alone is not enough.
-- Treat CodeRabbit as advisory unless branch protection explicitly requires it.
-- Greptile is manual-only and quota-limited. Do not invoke it by default. If a
-  PR meets high-risk criteria from `docs/automation/code-review-policy.md`,
-  record whether Greptile was `not requested`, `recommended for human decision`,
-  `manually requested`, or `completed`. Only treat Greptile findings as gate
-  inputs after an actual configured or manually requested review exists.
+- Inspect the Codex (`@chatgpt-codex-connector`) review state as the required
+  automated review evidence on the final implementation PR. A reviewer-request
+  workflow alone is not enough.
+- Treat quick low-cost reviewer comments (MiniMax, DeepSeek Pro, Grok Build,
+  Cursor BugBot) as advisory when present.
+- Greptile is manual-only, quota-limited, and reserved for the final
+  implementation PR. Do not invoke it. If the PR meets high-risk criteria from
+  `docs/automation/code-review-policy.md`, signal the recommendation to the
+  developer on Slack and in the issue, and record whether Greptile was
+  `not requested`, `recommended for human decision`, `manually requested`, or
+  `completed`. Only treat Greptile findings as gate inputs after an actual
+  manually requested review exists.
 
 ## Language Rules
 
@@ -75,7 +79,8 @@ Before reviewing:
 - GitHub issue title, body, comments, labels, Project status, and linked artifacts
 - implementation PR title, body, commits, changed files, review threads, and check/CI status
 - PR AI review plan from the body or Stage 10 evidence, including Codex
-  self-review, Copilot, CodeRabbit when present, and Greptile status
+  self-review, the `@chatgpt-codex-connector` review, optional quick low-cost
+  reviews when present, and Greptile status
 - approved product spec and product-spec `Checks`
 - approved product spec BDD scenarios
 - approved technical spec, BDD-to-test mapping, live E2E plan, and completion criteria
@@ -105,9 +110,10 @@ Verify:
 - live E2E evidence exists for the canonical interface when required by the technical spec
 - technical-spec completion criteria are satisfied
 - Codex self-review was performed and has no unresolved blocking finding
-- Copilot review is clean, handled, or explicitly unavailable with rationale
-- Greptile was not needed, recommended but not run, or manually requested and
-  handled according to the policy
+- the Codex (`@chatgpt-codex-connector`) review is clean, handled, or
+  explicitly unavailable with rationale
+- Greptile was not needed, recommended but not run (with the Slack/issue
+  signal recorded), or manually requested and handled according to the policy
 - Ralph cycle resource approvals exist for any cycles that exceeded the resource gate, and evidence exists for all cycles
 - no unapproved scope expansion, broad refactor, or unrelated cleanup is present
 - risks and open questions are documented
@@ -146,9 +152,9 @@ Write or return:
 
 ## AI Review Evidence
 - Codex self-review:
-- Copilot review:
-- CodeRabbit review:
-- Greptile review:
+- Codex (`@chatgpt-codex-connector`) review:
+- Quick low-cost review (optional):
+- Greptile review (final PR only, when justified):
 
 ## Changed Files Review
 - <file/module>: <expected by spec | resource-approved or permitted cycle | unexpected> - <note>

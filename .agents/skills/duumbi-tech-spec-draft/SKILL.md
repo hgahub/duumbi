@@ -18,9 +18,9 @@ This skill covers:
 - drafting `specs/DUUMBI-<issue-number>/TECHNICAL.md` in the relevant source repository
 - mapping product-spec BDD scenarios to concrete verification evidence
 - defining at least one live LLM-backed E2E path through the canonical interface when the work touches LLM behavior
-- defining the Ralph Cycle resource policy, approval thresholds, and autonomous batch cap
+- defining the Ralph Cycle resource policy and its USD 1 external-LLM approval threshold
 - opening a PR for the technical spec artifact
-- marking the technical spec PR ready for review, running Codex self-review, requesting required automated review, waiting for actual reviewer submissions, addressing blocking review feedback, resolving review threads, and reaching green checks before Slack approval is requested
+- marking the technical spec PR ready for review, running Codex self-review, addressing blocking findings, resolving review threads, and reaching green checks before Slack approval is requested; optionally suggesting a quick low-cost review (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) without waiting for it
 - linking the technical spec review-ready PR back to the GitHub Issue
 - moving the issue to `Technical Spec Review`, or to `Needs Clarification` when blocked
 - when the initiating prompt explicitly asks to continue through `Ready for Build`, handing off to `duumbi-tech-spec-review` after Stage 8 is review-clean so Stage 9 can process an explicit human or AI-gate approval, merge the spec PR, and advance the issue
@@ -50,13 +50,11 @@ Stage 9 owns technical spec review, approval, spec PR merge, and `Ready for Buil
 
 - Run Codex self-review before marking a technical spec PR ready for review and
   before moving the issue to `Technical Spec Review`.
-- Copilot is the default required automated reviewer for file-based technical
-  spec PRs in this repository, recorded as `copilot-pull-request-reviewer`
-  unless repository configuration states otherwise.
-- Greptile is manual-only and quota-limited. Do not invoke it for normal
-  technical spec PRs, docs-only changes, or every push. Use it only when the
-  developer explicitly requests a manual deep review for high-risk architecture
-  or implementation-plan concerns.
+- Spec PRs have no required automated reviewer. A quick low-cost review
+  (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) may be suggested on the
+  PR; it is advisory and the flow must not wait for it.
+- Greptile must not be used on spec PRs; it is reserved for the final
+  implementation PR.
 - Do not treat a successful reviewer-request workflow as review evidence.
 
 ## Language Rules
@@ -141,13 +139,10 @@ specs/DUUMBI-<issue-number>/TECHNICAL.md
 ```
 
 Open a PR for the technical spec artifact and link it from the GitHub Issue. Use draft
-state while assembling the first artifact, then mark it ready for review, run
-Codex self-review, and request or wait for required automated reviewers. In this
-repository the default required automated reviewer is
-`copilot-pull-request-reviewer` unless repository configuration states
-otherwise. Do not include Greptile in this default gate and do not treat a
-successful "Request Copilot Review" check as completed review evidence; it only
-proves the request was sent. Address blocking review feedback
+state while assembling the first artifact, then mark it ready for review and run
+Codex self-review. There is no required automated reviewer for spec PRs; a
+quick low-cost review may be suggested but the flow must not wait for it, and
+Greptile must not be used on spec PRs. Address blocking review feedback
 inside `TECHNICAL.md`, push the fix, and continue until checks are green and all
 review threads are resolved, including threads that became outdated after the
 fix. Only then route the issue to `Technical Spec Review`; Stage 9 Slack or AI
@@ -165,8 +160,8 @@ are verified:
 - CI/checks and status contexts are complete and passing, or explicitly
   not applicable for a docs-only diff
 - Codex self-review has no blocking finding
-- each required automated reviewer has submitted actual, non-dismissed review
-  evidence; review-request workflow success is not enough
+- any configured required reviewer has submitted actual, non-dismissed review
+  evidence; by default no automated reviewer is required
 - no latest review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a push
 - every blocking review finding has been addressed in the technical spec or the
@@ -231,15 +226,15 @@ Each cycle must:
 6. implement only the approved or resource-permitted goal
 7. run the agreed checks
 8. report evidence, failures, and remaining gaps
-9. stop if requirements are met, a blocker appears, resource thresholds are exceeded, scope changes, or the autonomous batch cap is reached
+9. stop only if requirements are met, a blocker appears, the expected external LLM cost of the next cycle exceeds USD 1, or scope changes; iteration count is not a stop condition
 
 ## Cycle Budget
 - Default cycle size: one bounded implementation goal per cycle.
 - Max files or modules per cycle:
 - Expected command budget:
-- Human approval required when planned external LLM usage exceeds USD 2, exceeds 10 calls, exceeds approved scope, adds risky dependencies or irreversible operations, or needs a product/architecture decision.
-- External LLM usage counted: DUUMBI live provider calls and external model/agent CLI calls. Codex internal reasoning usage is reported only as an estimate.
-- Autonomous batch cap:
+- Human approval required only when the cycle will use an external LLM with expected cost above USD 1, exceeds approved scope, adds risky dependencies or irreversible operations, or needs a product/architecture decision.
+- External LLM usage counted: DUUMBI live provider calls and external model/agent CLI calls. Codex internal reasoning usage is covered by the Codex App subscription and never triggers the gate.
+- No autonomous batch cap: cycles continue until completion, blocker, gate breach, or scope change.
 - When to stop and ask for human guidance:
 
 ## Task Breakdown
@@ -268,11 +263,10 @@ Every technical spec must include a bounded resource policy:
 - expected file or module area listed before work starts
 - planned commands and checks listed before work starts
 - expected external LLM calls and estimated external LLM cost
-- approval required above USD 2 or 10 external LLM calls
+- approval required only when a cycle will use an external LLM with expected cost above USD 1
 - approval required for scope expansion, risky dependency changes, irreversible operations, blockers, or product/architecture decisions
-- default autonomous batch cap of three low-budget cycles unless the spec sets a lower cap
-- stop after evidence report
-- continue cycles only while below thresholds, inside scope, inside batch cap, and while requirements remain unmet
+- no autonomous batch cap; iteration count is not a stop condition
+- continue cycles while below the gate, inside scope, and while requirements remain unmet
 
 ## GitHub Outcome Rules
 
@@ -325,7 +319,7 @@ Technical spec draft complete:
 - Do not modify implementation code, tests, migrations, generated outputs, or runtime assets.
 - Do not run Ralph cycles or implementation commands.
 - Do not approve your own technical spec.
-- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing Codex self-review, missing actual non-dismissed required automated review evidence, or has any unresolved review thread.
+- Do not request Slack approval for a technical spec while its PR is still draft, missing checks, missing Codex self-review, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the technical spec traceable to the approved product spec and source evidence.
 - Stop and ask the user if a requested write exceeds Stage 8.

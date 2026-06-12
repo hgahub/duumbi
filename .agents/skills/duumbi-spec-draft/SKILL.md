@@ -19,9 +19,10 @@ This skill covers:
 - adding English Gherkin-style BDD scenarios that express observable behavior
 - writing the product spec as a GitHub issue comment for small issues
 - creating `specs/DUUMBI-<issue-number>/PRODUCT.md` in the relevant source repository and opening a review-ready PR for larger, architectural, cross-module, or durable specs
-- marking the file-based spec PR ready for review, running Codex self-review, requesting required automated review, waiting for actual reviewer submissions, addressing blocking review feedback, resolving review threads, and reaching green checks before Slack approval is requested
+- marking the file-based spec PR ready for review, running Codex self-review, addressing blocking findings, resolving review threads, and reaching green checks before Slack approval is requested; optionally suggesting a quick low-cost review (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) without waiting for it
 - linking the spec artifact back to the GitHub Issue
 - moving the issue to `Spec Review`, or to `Needs Clarification` when blocked
+- when the initiating prompt requests combined spec drafting, handing off to `duumbi-tech-spec-draft` immediately after the product spec artifact exists, without waiting for Stage 7 review; Stage 7 and Stage 9 gates are then processed before `Ready for Build`
 - keeping the execution issue open by avoiding GitHub auto-close keywords in spec-only PR titles, bodies, and commit messages
 
 This skill does not:
@@ -47,12 +48,11 @@ Stage 7 owns product spec review and approval. Stage 8 owns technical specificat
 
 - Run Codex self-review before marking a file-based product spec PR ready for
   review and before moving the issue to `Spec Review`.
-- Copilot is the default required automated reviewer for file-based product spec
-  PRs in this repository, recorded as `copilot-pull-request-reviewer` unless
-  repository configuration states otherwise.
-- Greptile is manual-only and quota-limited. Do not invoke it for normal
-  product spec PRs, docs-only changes, or every push. Use it only when the
-  developer explicitly requests a manual deep review.
+- Spec PRs have no required automated reviewer. A quick low-cost review
+  (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) may be suggested on the
+  PR; it is advisory and the flow must not wait for it.
+- Greptile must not be used on spec PRs; it is reserved for the final
+  implementation PR.
 - Do not treat a successful reviewer-request workflow as review evidence.
 
 ## Language Rules
@@ -122,11 +122,9 @@ For file-based specs:
 - create or update only the spec file and minimal supporting metadata if required by the source repo
 - open the PR as a draft while the first artifact is being assembled
 - mark the PR ready for review after the spec artifact is complete and local checks are complete
-- run Codex self-review, then request or wait for the required automated
-  reviewers when available. In this repository the default required reviewer is
-  `copilot-pull-request-reviewer` unless repository configuration states
-  otherwise. Do not include Greptile in this default gate and do not treat a
-  successful reviewer-request check as completed review evidence.
+- run Codex self-review; there is no required automated reviewer for spec PRs.
+  A quick low-cost review may be suggested but the flow must not wait for it,
+  and Greptile must not be used on spec PRs.
 - inspect review feedback and check results, fix blocking findings inside the spec file, and repeat until the PR is review-clean
 - link the review-ready PR and spec path from the GitHub Issue
 - treat the PR as a spec-review artifact only; it must not close the execution issue when merged or closed
@@ -195,8 +193,7 @@ After a successful spec artifact exists:
 - do not mark the product spec approved
 - do not close the execution issue; it must remain open until Stage 12 closure verifies merged implementation evidence
 - for file-based specs, add `spec-review` only after the PR is no longer draft,
-  checks are green, Codex self-review has no blocking finding, actual
-  non-dismissed required automated reviewer submissions exist, and every review
+  checks are green, Codex self-review has no blocking finding, and every review
   thread is resolved, including outdated threads after fixes; the Stage 7 Slack
   approval will merge the spec PR if approved
 
@@ -233,7 +230,7 @@ Product spec draft complete:
 - Do not bury blocking questions in a draft spec.
 - Do not create technical specs, implementation code, PRs for implementation, or Ralph cycles.
 - Do not approve your own product spec.
-- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing Codex self-review, missing actual non-dismissed required automated review evidence, or has any unresolved review thread.
+- Do not request Slack approval for a file-based product spec while its PR is still draft, missing checks, missing Codex self-review, or has any unresolved review thread.
 - Do not use GitHub auto-close keywords in spec-only PRs; only Stage 12 closure may close the execution issue.
 - Keep the spec traceable to source links and decisions.
 - Stop and ask the user if a requested write exceeds Stage 6.
