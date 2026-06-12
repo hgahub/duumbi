@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use duumbi::config::{self, WorkspaceSection};
 use duumbi::manifest::ModuleManifest;
 use duumbi::registry::client::{RegistryClient, RegistryCredential};
+use duumbi::workspace::{build_workspace, run_workspace_binary, workspace_output_path};
 use duumbi_registry::{
     AppState, AuthMode,
     auth::rate_limit::RateLimiter,
@@ -25,6 +26,7 @@ use duumbi_registry::{
     db::{CreateUser, Database},
     storage::Storage,
 };
+use serde_json::{Value, json};
 
 const STDLIB_VERSION: &str = "1.0.0";
 const STDLIB_MATH_GRAPH: &str = include_str!("../stdlib/math.jsonld");
@@ -44,6 +46,10 @@ enum SmokeStage {
     Install,
     Manifest,
     Integrity,
+    Import,
+    Build,
+    Run,
+    ProductionGuard,
 }
 
 impl SmokeStage {
@@ -53,6 +59,10 @@ impl SmokeStage {
             Self::Install => "install",
             Self::Manifest => "manifest",
             Self::Integrity => "integrity",
+            Self::Import => "import",
+            Self::Build => "build",
+            Self::Run => "run",
+            Self::ProductionGuard => "production-guard",
         }
     }
 }
@@ -98,6 +108,12 @@ struct EmbeddedRegistry {
     url: String,
     token: String,
     _tmp: tempfile::TempDir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductionSmokeDecision {
+    Skipped,
+    Ready,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -241,6 +257,13 @@ const REQUIRED_MODULES: &[ModuleSpec] = &[
     },
 ];
 
+const BUILD_RUN_MODULES: &[ModuleSpec] = &[
+    REQUIRED_MODULES[0],
+    REQUIRED_MODULES[1],
+    REQUIRED_MODULES[2],
+    REQUIRED_MODULES[3],
+];
+
 fn duumbi_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_duumbi"))
 }
@@ -310,6 +333,106 @@ fn assert_command_success(
         StageFailure::new(module, stage, output_text(&output))
     );
     output
+}
+
+fn node_ref(id: &str) -> Value {
+    json!({ "@id": id })
+}
+
+fn main_id(name: &str) -> String {
+    format!("duumbi:main/main/entry/{name}")
+}
+
+fn write_main_graph(workspace: &Path, graph: Value) {
+    let graph_dir = workspace.join(".duumbi/graph");
+    fs::create_dir_all(&graph_dir).expect("create graph dir");
+    fs::write(
+        graph_dir.join("main.jsonld"),
+        serde_json::to_string_pretty(&graph).expect("serialize graph"),
+    )
+    .expect("write main graph");
+}
+
+fn core_import_build_run_graph() -> Value {
+    json!({
+        "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+        "@type": "duumbi:Module",
+        "@id": "duumbi:main",
+        "duumbi:name": "main",
+        "duumbi:imports": [
+            {
+                "duumbi:module": "math",
+                "duumbi:path": "@duumbi/stdlib-math",
+                "duumbi:functions": ["abs"]
+            },
+            {
+                "duumbi:module": "io",
+                "duumbi:path": "@duumbi/stdlib-io",
+                "duumbi:functions": ["print_i64"]
+            },
+            {
+                "duumbi:module": "lang",
+                "duumbi:path": "@duumbi/stdlib-lang",
+                "duumbi:functions": ["assert_true"]
+            },
+            {
+                "duumbi:module": "string",
+                "duumbi:path": "@duumbi/stdlib-string",
+                "duumbi:functions": ["length"]
+            }
+        ],
+        "duumbi:functions": [{
+            "@type": "duumbi:Function",
+            "@id": "duumbi:main/main",
+            "duumbi:name": "main",
+            "duumbi:returnType": "i64",
+            "duumbi:blocks": [{
+                "@type": "duumbi:Block",
+                "@id": "duumbi:main/main/entry",
+                "duumbi:label": "entry",
+                "duumbi:ops": [
+                    {"@type": "duumbi:Const", "@id": main_id("negative"),
+                     "duumbi:value": -7, "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Call", "@id": main_id("abs"),
+                     "duumbi:module": "math", "duumbi:function": "abs",
+                     "duumbi:args": [node_ref(&main_id("negative"))],
+                     "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Call", "@id": main_id("print_abs"),
+                     "duumbi:module": "io", "duumbi:function": "print_i64",
+                     "duumbi:args": [node_ref(&main_id("abs"))],
+                     "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Const", "@id": main_id("text"),
+                     "duumbi:value": "duumbi", "duumbi:resultType": "string"},
+                    {"@type": "duumbi:Call", "@id": main_id("length"),
+                     "duumbi:module": "string", "duumbi:function": "length",
+                     "duumbi:args": [node_ref(&main_id("text"))],
+                     "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Call", "@id": main_id("print_length"),
+                     "duumbi:module": "io", "duumbi:function": "print_i64",
+                     "duumbi:args": [node_ref(&main_id("length"))],
+                     "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Const", "@id": main_id("truth"),
+                     "duumbi:value": true, "duumbi:resultType": "bool"},
+                    {"@type": "duumbi:Call", "@id": main_id("assert"),
+                     "duumbi:module": "lang", "duumbi:function": "assert_true",
+                     "duumbi:args": [node_ref(&main_id("truth"))],
+                     "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Const", "@id": main_id("zero"),
+                     "duumbi:value": 0, "duumbi:resultType": "i64"},
+                    {"@type": "duumbi:Return", "@id": main_id("return"),
+                     "duumbi:operand": node_ref(&main_id("zero"))}
+                ]
+            }]
+        }]
+    })
+}
+
+fn production_smoke_decision(opt_in: Option<&str>, token: Option<&str>) -> ProductionSmokeDecision {
+    if opt_in == Some("1") && token.is_some_and(|value| !value.trim().is_empty()) {
+        ProductionSmokeDecision::Ready
+    } else {
+        ProductionSmokeDecision::Skipped
+    }
 }
 
 async fn start_embedded_registry() -> EmbeddedRegistry {
@@ -475,20 +598,45 @@ fn assert_installed_metadata(workspace: &Path, module: ModuleSpec) {
     }
 }
 
+async fn seed_registry(registry: &EmbeddedRegistry, modules: &[ModuleSpec]) {
+    for module in modules {
+        publish_module(registry, *module).await;
+    }
+}
+
+fn init_workspace_with_registry(workspace: &Path, registry_url: &str) {
+    let init = run_duumbi(workspace, &["init", workspace.to_str().unwrap()]);
+    assert_command_success("@duumbi/stdlib-string", SmokeStage::Install, init);
+    configure_embedded_registry(workspace, registry_url);
+}
+
+fn deps_add_module(workspace: &Path, module: ModuleSpec) {
+    let specifier = format!("{}@{STDLIB_VERSION}", module.module);
+    let add = run_duumbi(
+        workspace,
+        &["deps", "add", &specifier, "--registry", "local"],
+    );
+    assert_command_success(module.module, SmokeStage::Install, add);
+
+    let cfg = config::load_config(workspace).expect("config should parse");
+    assert!(
+        cfg.dependencies.contains_key(module.module),
+        "{}",
+        StageFailure::new(
+            module.module,
+            SmokeStage::Install,
+            "config dependency was not recorded"
+        )
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn embedded_registry_harness_searches_installs_and_verifies_required_module_metadata() {
     let registry = start_embedded_registry().await;
-    for module in REQUIRED_MODULES {
-        publish_module(&registry, *module).await;
-    }
+    seed_registry(&registry, REQUIRED_MODULES).await;
 
     let workspace = tempfile::TempDir::new().expect("workspace");
-    let init = run_duumbi(
-        workspace.path(),
-        &["init", workspace.path().to_str().unwrap()],
-    );
-    assert_command_success("@duumbi/stdlib-string", SmokeStage::Install, init);
-    configure_embedded_registry(workspace.path(), &registry.url);
+    init_workspace_with_registry(workspace.path(), &registry.url);
 
     let search = assert_command_success(
         "@duumbi/stdlib-string",
@@ -511,25 +659,84 @@ async fn embedded_registry_harness_searches_installs_and_verifies_required_modul
             )
         );
 
-        let specifier = format!("{}@{STDLIB_VERSION}", module.module);
-        let add = run_duumbi(
-            workspace.path(),
-            &["deps", "add", &specifier, "--registry", "local"],
-        );
-        assert_command_success(module.module, SmokeStage::Install, add);
-
-        let cfg = config::load_config(workspace.path()).expect("config should parse");
-        assert!(
-            cfg.dependencies.contains_key(module.module),
-            "{}",
-            StageFailure::new(
-                module.module,
-                SmokeStage::Install,
-                "config dependency was not recorded"
-            )
-        );
+        deps_add_module(workspace.path(), *module);
         assert_installed_metadata(workspace.path(), *module);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_core_modules_import_build_and_run_from_clean_workspace() {
+    let registry = start_embedded_registry().await;
+    seed_registry(&registry, BUILD_RUN_MODULES).await;
+
+    let workspace = tempfile::TempDir::new().expect("workspace");
+    init_workspace_with_registry(workspace.path(), &registry.url);
+    for module in BUILD_RUN_MODULES {
+        deps_add_module(workspace.path(), *module);
+    }
+
+    write_main_graph(workspace.path(), core_import_build_run_graph());
+    assert!(
+        workspace.path().join(".duumbi/graph/main.jsonld").exists(),
+        "{}",
+        StageFailure::new(
+            "@duumbi/stdlib-math",
+            SmokeStage::Import,
+            "main importer graph was not written"
+        )
+    );
+    let output_path = workspace_output_path(workspace.path());
+    build_workspace(workspace.path(), &output_path, false).unwrap_or_else(|error| {
+        panic!(
+            "{}",
+            StageFailure::new("@duumbi/stdlib-math", SmokeStage::Build, error.to_string())
+        )
+    });
+
+    let run = run_workspace_binary(workspace.path(), &[]).unwrap_or_else(|error| {
+        panic!(
+            "{}",
+            StageFailure::new("@duumbi/stdlib-math", SmokeStage::Run, error.to_string())
+        )
+    });
+    assert_eq!(
+        run.exit_code,
+        0,
+        "{}",
+        StageFailure::new(
+            "@duumbi/stdlib-math",
+            SmokeStage::Run,
+            format!("exit={} stderr={}", run.exit_code, run.stderr)
+        )
+    );
+    assert_eq!(run.stdout.trim(), "7\n6");
+    assert_eq!(run.stderr.trim(), "");
+}
+
+#[test]
+fn production_smoke_guard_fails_closed_without_explicit_opt_in() {
+    assert_eq!(
+        production_smoke_decision(None, None),
+        ProductionSmokeDecision::Skipped,
+        "{}",
+        StageFailure::new(
+            "@duumbi/production-registry",
+            SmokeStage::ProductionGuard,
+            "missing opt-in must skip"
+        )
+    );
+    assert_eq!(
+        production_smoke_decision(Some("0"), Some("token")),
+        ProductionSmokeDecision::Skipped
+    );
+    assert_eq!(
+        production_smoke_decision(Some("1"), None),
+        ProductionSmokeDecision::Skipped
+    );
+    assert_eq!(
+        production_smoke_decision(Some("1"), Some("token")),
+        ProductionSmokeDecision::Ready
+    );
 }
 
 #[test]
