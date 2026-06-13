@@ -32,6 +32,8 @@ mod patch;
 // Binary uses query engine through CLI; library exports full API
 mod query;
 mod registry;
+#[allow(dead_code, unused_imports)]
+mod rewrite;
 #[allow(dead_code)] // Binary uses a subset; full API used via lib crate
 mod session;
 mod snapshot;
@@ -211,6 +213,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Describe { .. } => "describe",
         Commands::Add { .. } => "add",
         Commands::Undo => "undo",
+        Commands::Rewrite { .. } => "rewrite",
         Commands::Deps { .. } => "deps",
         Commands::Search { .. } => "search",
         Commands::Intent { .. } => "intent",
@@ -394,6 +397,10 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Commands::Add { request, yes } => success_exit(add(&request, yes).await),
         Commands::Undo => success_exit(undo()),
+        Commands::Rewrite { subcommand } => {
+            let workspace = PathBuf::from(".");
+            success_exit(cli::rewrite::run_rewrite(subcommand, &workspace))
+        }
         Commands::Search { query, registry } => {
             let workspace = PathBuf::from(".");
             success_exit(cli::deps::run_search(&workspace, &query, registry.as_deref()).await)

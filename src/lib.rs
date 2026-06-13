@@ -26,6 +26,7 @@ pub mod parser;
 pub mod patch;
 pub mod query;
 pub mod registry;
+pub mod rewrite;
 pub mod session;
 pub mod snapshot;
 pub mod telemetry;
