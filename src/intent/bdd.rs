@@ -226,7 +226,7 @@ pub fn default_feature_path(slug: &str) -> PathBuf {
 /// Returns the default intent-relative feature reference for a slug.
 #[must_use]
 pub fn default_feature_reference(slug: &str) -> String {
-    default_feature_path(slug).to_string_lossy().into_owned()
+    format!("features/{slug}.feature")
 }
 
 /// Renders a deterministic fallback feature file for an intent.
@@ -984,5 +984,13 @@ mod tests {
         assert!(feature.contains("Given "));
         assert!(feature.contains("When "));
         assert!(feature.contains("Then "));
+    }
+
+    #[test]
+    fn default_feature_reference_uses_portable_forward_slashes() {
+        assert_eq!(
+            default_feature_reference("calculator"),
+            "features/calculator.feature"
+        );
     }
 }
