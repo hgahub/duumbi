@@ -64,6 +64,8 @@ Raw event mode is explicit and bounded:
 - Raw event rows are newest-first and redacted.
 - Raw event rows honor the same provider/model and task-profile filters as
   aggregate rows.
+- Raw event scanning is capped to a bounded tail window. When older log content
+  is outside that window, the response includes a warning.
 
 Unsupported fields and wrong JSON types return validation errors instead of
 falling back to broader data dumps.
@@ -94,6 +96,10 @@ Each tool returns JSON in the MCP text content wrapper:
 
 Rows are deterministic for the same stored data and filters, except
 `generated_at`.
+
+Summary objects include `row_count`, `total_matching_row_count`, and
+`truncated`. When `limit` omits matching aggregate rows, the response sets
+`status` to `partial` and includes a truncation warning.
 
 ## Privacy
 

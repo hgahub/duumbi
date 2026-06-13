@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
@@ -27,6 +27,7 @@ const MAX_STALE_AFTER_HOURS: u64 = 8_760;
 const DEFAULT_LIMIT: usize = 25;
 const MAX_LIMIT: usize = 100;
 const MAX_RAW_LIMIT: usize = 50;
+const MAX_RAW_SCAN_BYTES: u64 = 1_048_576;
 
 /// Summarizes user-level model-access telemetry.
 pub fn model_access_summary(_workspace: &Path, params: &Value) -> Result<Value, String> {
@@ -219,6 +220,8 @@ fn model_access_summary_from_home(home: &Path, query: &Query) -> Result<Value, S
     let path = model_access_current_path_for_home(home);
     let mut warnings = Vec::new();
     let mut rows = Vec::new();
+    let mut total_matching_rows = 0;
+    let mut truncated = false;
     let mut data_status = "absent";
     let mut status = "success";
 
@@ -244,6 +247,8 @@ fn model_access_summary_from_home(home: &Path, query: &Query) -> Result<Value, S
                 data_status = "empty";
             } else {
                 let grouped = group_access_records(db.records.values(), query);
+                total_matching_rows = grouped.len();
+                truncated = total_matching_rows > query.limit;
                 let stale_count = grouped.iter().filter(|row| row.is_stale).count();
                 data_status = if grouped.is_empty() {
                     "empty"
@@ -258,6 +263,16 @@ fn model_access_summary_from_home(home: &Path, query: &Query) -> Result<Value, S
                     warnings.push(
                         "stale model-access evidence is not current access proof".to_string(),
                     );
+                }
+                if truncated {
+                    status = "partial";
+                    if data_status == "present" {
+                        data_status = "partial";
+                    }
+                    warnings.push(format!(
+                        "model-access summary truncated to {} of {total_matching_rows} matching rows",
+                        query.limit
+                    ));
                 }
                 rows = grouped
                     .into_iter()
@@ -279,7 +294,7 @@ fn model_access_summary_from_home(home: &Path, query: &Query) -> Result<Value, S
         data_status,
         scope: "user_home_model_access",
         query,
-        summary: access_summary(&rows),
+        summary: access_summary(&rows, total_matching_rows, truncated),
         rows,
         raw_events,
         warnings,
@@ -293,6 +308,8 @@ fn model_performance_summary_from_workspace(
     let path = model_performance_aggregates_path_for_workspace(workspace);
     let mut warnings = Vec::new();
     let mut rows = Vec::new();
+    let mut total_matching_rows = 0;
+    let mut truncated = false;
     let mut data_status = "absent";
     let mut status = "success";
 
@@ -318,6 +335,8 @@ fn model_performance_summary_from_workspace(
                 data_status = "empty";
             } else {
                 let grouped = parse_performance_rows(&db, query, &mut warnings);
+                total_matching_rows = grouped.len();
+                truncated = total_matching_rows > query.limit;
                 let stale_count = grouped.iter().filter(|row| row.is_stale).count();
                 data_status = if !warnings.is_empty() {
                     status = "partial";
@@ -336,6 +355,16 @@ fn model_performance_summary_from_workspace(
                         "stale model-performance evidence is not current routing evidence"
                             .to_string(),
                     );
+                }
+                if truncated {
+                    status = "partial";
+                    if data_status == "present" {
+                        data_status = "partial";
+                    }
+                    warnings.push(format!(
+                        "model-performance summary truncated to {} of {total_matching_rows} matching rows",
+                        query.limit
+                    ));
                 }
                 rows = grouped
                     .into_iter()
@@ -357,7 +386,7 @@ fn model_performance_summary_from_workspace(
         data_status,
         scope: "workspace_model_performance",
         query,
-        summary: performance_summary(&rows),
+        summary: performance_summary(&rows, total_matching_rows, truncated),
         rows,
         raw_events,
         warnings,
@@ -654,7 +683,7 @@ fn privacy_statement() -> Value {
     })
 }
 
-fn access_summary(rows: &[Value]) -> Value {
+fn access_summary(rows: &[Value], total_matching_rows: usize, truncated: bool) -> Value {
     let mut status_counts = BTreeMap::from([
         ("accessible", 0_u64),
         ("denied", 0),
@@ -674,12 +703,14 @@ fn access_summary(rows: &[Value]) -> Value {
     }
     serde_json::json!({
         "row_count": rows.len(),
+        "total_matching_row_count": total_matching_rows,
+        "truncated": truncated,
         "stale_row_count": stale_rows,
         "status_counts": status_counts,
     })
 }
 
-fn performance_summary(rows: &[Value]) -> Value {
+fn performance_summary(rows: &[Value], total_matching_rows: usize, truncated: bool) -> Value {
     let calls: u64 = rows.iter().filter_map(|row| row["calls"].as_u64()).sum();
     let successes: u64 = rows
         .iter()
@@ -692,6 +723,8 @@ fn performance_summary(rows: &[Value]) -> Value {
         .count();
     serde_json::json!({
         "row_count": rows.len(),
+        "total_matching_row_count": total_matching_rows,
+        "truncated": truncated,
         "stale_row_count": stale_rows,
         "calls": calls,
         "successes": successes,
@@ -774,11 +807,30 @@ where
     T: DeserializeOwned,
     F: FnMut(&T) -> bool,
 {
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         return Vec::new();
     };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return Vec::new();
+    };
+    let start = length.saturating_sub(MAX_RAW_SCAN_BYTES);
+    if start > 0 {
+        warnings.push(format!(
+            "raw event scan is capped to the newest {MAX_RAW_SCAN_BYTES} bytes; older events may be omitted"
+        ));
+    }
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
     let mut rows = VecDeque::with_capacity(limit);
-    for (index, line) in BufReader::new(file).lines().enumerate() {
+    let mut reader = BufReader::new(file);
+    if start > 0 {
+        let mut partial_line = String::new();
+        if reader.read_line(&mut partial_line).is_err() {
+            return Vec::new();
+        }
+    }
+    for (index, line) in reader.lines().enumerate() {
         let Ok(line) = line else {
             warnings.push(format!("event log row {index} is unreadable"));
             continue;
@@ -1107,6 +1159,103 @@ mod tests {
         assert_eq!(response["rows"][0]["success_rate"], 0.7);
         assert_eq!(response["rows"][0]["failure_rate"], 0.3);
         assert_eq!(response["filters"]["task_type"], "create");
+    }
+
+    #[test]
+    fn access_summary_reports_truncation_when_limit_omits_matching_rows() {
+        let temp = TempDir::new().expect("invariant: temp dir");
+        let mut records = HashMap::new();
+        for model in ["model-a", "model-b"] {
+            records.insert(
+                format!("sha256:{model}|minimax|{model}"),
+                ModelAccessRecord {
+                    credential_fingerprint: format!("sha256:{model}"),
+                    provider: "minimax".to_string(),
+                    model: model.to_string(),
+                    status: ModelAccessStatus::Accessible,
+                    reason_code: None,
+                    message: None,
+                    probe_version: MODEL_ACCESS_PROBE_VERSION.to_string(),
+                    last_checked: checked_at(1),
+                    last_success: Some(checked_at(1)),
+                },
+            );
+        }
+        let db = serde_json::to_value(ModelAccessDb { records }).expect("serialize db");
+        write_json(&model_access_current_path_for_home(temp.path()), &db);
+
+        let response = model_access_summary_from_home(
+            temp.path(),
+            &Query::parse(&serde_json::json!({"limit": 1}), QueryKind::Access)
+                .expect("valid query"),
+        )
+        .expect("summary");
+
+        assert_eq!(response["status"], "partial");
+        assert_eq!(response["data_status"], "partial");
+        assert_eq!(response["summary"]["row_count"], 1);
+        assert_eq!(response["summary"]["total_matching_row_count"], 2);
+        assert_eq!(response["summary"]["truncated"], true);
+        assert!(
+            response["warnings"][0]
+                .as_str()
+                .expect("warning")
+                .contains("truncated")
+        );
+    }
+
+    #[test]
+    fn performance_summary_reports_truncation_when_limit_omits_matching_rows() {
+        let temp = TempDir::new().expect("invariant: temp dir");
+        let db = serde_json::json!({
+            "aggregates": {
+                "anthropic|claude-sonnet|coder|create|simple|single|high": {
+                    "calls": 1,
+                    "successes": 1,
+                    "failures": 0,
+                    "ewmaLatencyMs": 120.0,
+                    "ewmaCostUsd": 0.01,
+                    "parseFailures": 0,
+                    "validationFailures": 0,
+                    "retries": 0,
+                    "lastUpdated": Utc::now(),
+                },
+                "minimax|MiniMax-M2.7|coder|create|simple|single|high": {
+                    "calls": 1,
+                    "successes": 1,
+                    "failures": 0,
+                    "ewmaLatencyMs": 100.0,
+                    "ewmaCostUsd": 0.01,
+                    "parseFailures": 0,
+                    "validationFailures": 0,
+                    "retries": 0,
+                    "lastUpdated": Utc::now(),
+                }
+            }
+        });
+        write_json(
+            &model_performance_aggregates_path_for_workspace(temp.path()),
+            &db,
+        );
+
+        let response = model_performance_summary_from_workspace(
+            temp.path(),
+            &Query::parse(&serde_json::json!({"limit": 1}), QueryKind::Performance)
+                .expect("valid query"),
+        )
+        .expect("summary");
+
+        assert_eq!(response["status"], "partial");
+        assert_eq!(response["data_status"], "partial");
+        assert_eq!(response["summary"]["row_count"], 1);
+        assert_eq!(response["summary"]["total_matching_row_count"], 2);
+        assert_eq!(response["summary"]["truncated"], true);
+        assert!(
+            response["warnings"][0]
+                .as_str()
+                .expect("warning")
+                .contains("truncated")
+        );
     }
 
     #[test]
