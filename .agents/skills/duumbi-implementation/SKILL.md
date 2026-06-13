@@ -23,7 +23,7 @@ This skill does not:
 
 - edit files outside `duumbi-ralph-cycle`
 - replace `duumbi-ralph-cycle`
-- run unbounded Ralph cycles beyond the technical spec, resource thresholds, or autonomous batch cap
+- run Ralph cycles beyond the technical spec or the resource gate
 - edit product specs, technical specs, workflow docs, Obsidian Atlas notes, or intake artifacts
 - broaden approved implementation scope, file/module area, resource budget, or check plan
 - merge PRs, mark `Done`, or make final closure decisions
@@ -44,15 +44,16 @@ Stage 9 owns technical spec approval. `duumbi-ralph-cycle` owns per-cycle implem
 
 - Before moving an implementation PR to `In Review`, require Codex self-review
   of the consolidated diff and evidence.
-- Copilot is the default automated PR reviewer to inspect for implementation
-  readiness; a reviewer-request workflow alone is not review evidence.
-- CodeRabbit comments are advisory when present unless branch protection makes
-  them required.
-- Greptile is manual-only and quota-limited. Do not invoke it from Stage 10
-  unless the developer explicitly asks for a deep review. If the implementation
+- Codex review via `@chatgpt-codex-connector` is the required automated
+  reviewer on the final implementation PR; request it when the PR moves to
+  `In Review`. A reviewer-request workflow alone is not review evidence.
+- A quick low-cost review (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot)
+  may be suggested on intermediate PRs; it is advisory only.
+- Greptile is manual-only, quota-limited, and reserved for the final
+  implementation PR. Do not invoke it from Stage 10. If the implementation
   PR meets high-risk criteria from `docs/automation/code-review-policy.md`,
-  record that Greptile is recommended or requested, but do not create a review
-  loop.
+  signal on Slack and in the issue that Greptile is recommended, but do not
+  create a review loop.
 
 ## Language Rules
 
@@ -94,7 +95,7 @@ Load only the context needed to choose the next Stage 10 action.
 Choose exactly one next action:
 
 - `Run Resource-Permitted Cycle`: the next cycle is inside the technical spec and below the resource approval thresholds; hand off to `duumbi-ralph-cycle`.
-- `Request Resource Approval`: the next cycle exceeds USD 2, exceeds 10 planned external LLM calls, changes scope/risk, or needs a product/architecture decision.
+- `Request Resource Approval`: the next cycle will use an external LLM with expected cost above USD 1, changes scope/risk, or needs a product/architecture decision.
 - `Consolidate PR Evidence`: implementation criteria appear met and the PR needs evidence, links, or status cleanup.
 - `Move To In Review`: implementation PR exists, evidence is complete, and product/technical completion criteria appear met.
 - `Report Blocker`: work cannot proceed within approved specs, branch state, dependency state, or cycle budget.
@@ -114,15 +115,14 @@ Branch and PR coordination must not include implementation file edits unless the
 
 ## Resource Gate
 
-Human approval is required before the next Ralph cycle when any of these are true:
+Cycles continue autonomously without an iteration cap. Human approval is required before the next Ralph cycle only when any of these are true:
 
-- planned external LLM usage is estimated above USD 2
-- planned external LLM usage is estimated above 10 calls
+- the cycle will use an external LLM and its expected cost exceeds USD 1
 - the cycle exceeds the approved technical spec, affected file/module scope, dependency boundary, or planned checks
 - the cycle adds risky dependencies, migrations, security-sensitive behavior, irreversible operations, or broad refactors
 - the agent hits a blocker, conflicting requirement, failing check it cannot resolve inside scope, or a product/architecture trade-off
 
-External LLM usage means DUUMBI live provider calls and external model or agent CLI calls. Codex internal reasoning turns are reported as estimates only and are not enforceable exact counters.
+External LLM usage means DUUMBI live provider calls and external model or agent CLI calls. Codex internal reasoning turns are covered by the Codex App subscription, are reported as estimates only, and never trigger the resource gate.
 
 If the resource gate triggers:
 
@@ -135,8 +135,8 @@ If the resource gate triggers:
 If the resource gate does not trigger:
 
 - hand off to `duumbi-ralph-cycle`
-- allow only cycles inside the technical spec, resource thresholds, and autonomous batch cap
-- stop after completion, blocker, threshold breach, scope change, or the batch cap
+- allow only cycles inside the technical spec and the resource gate
+- stop after completion, blocker, gate breach, or scope change — not after a fixed iteration count
 
 ## Coordinator Report Template
 
@@ -181,9 +181,10 @@ When consolidating PR evidence, include:
 - affected files or modules
 - Ralph cycle resource approvals and evidence reports
 - commands/checks and results
-- AI review plan: Codex self-review status, Copilot review state, CodeRabbit
-  advisory state when present, and Greptile status (`not needed`, `recommended
-  for human decision`, `manually requested`, or `completed`)
+- AI review plan: Codex self-review status, `@chatgpt-codex-connector` review
+  state on the final implementation PR, optional quick low-cost review state
+  when present, and Greptile status (`not needed`, `recommended for human
+  decision`, `manually requested`, or `completed`)
 - screenshots/logs when relevant
 - remaining risks and open questions
 - readiness state: `ready for human review` or `blocked`
@@ -263,7 +264,7 @@ Implementation coordination complete:
 - Never treat issue approval as permission to exceed the Ralph Cycle resource gate.
 - Never edit implementation files outside `duumbi-ralph-cycle`.
 - Never exceed the Ralph Cycle resource gate without explicit human approval.
-- Never run unbounded Ralph cycles beyond the technical spec, resource thresholds, or autonomous batch cap.
+- Never run Ralph cycles beyond the technical spec or the resource gate, and never stop them early just because several cycles have already run.
 - Never broaden implementation scope without a revised technical spec or explicit human approval.
 - Never edit product specs, technical specs, workflow docs, Obsidian Atlas notes, or intake artifacts.
 - Never merge PRs or mark the issue `Done`; Stage 11 and Stage 12 own those transitions.

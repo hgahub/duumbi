@@ -196,6 +196,8 @@ jobs:
             const prompt = [
               "Run DUUMBI Stage 12 Closure with duumbi-closure.",
               "",
+              "LLM provider: use DeepSeek for any model-backed closure work.",
+              "",
               `Merged PR or completion evidence: ${pull.html_url || prUrlFor(prNumber)}`,
               issueNumber
                 ? `Linked issue: ${issueUrlFor(issueNumber)}`

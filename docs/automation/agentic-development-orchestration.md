@@ -27,9 +27,10 @@ or source-repo contracts that support it.
 - `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
-  gates while still failing closed on missing required automated review
-  submissions, checks, scope, unresolved findings, or unmerged spec PR
-  readiness. Copilot is the default required reviewer; Greptile is manual-only.
+  gates while still failing closed on missing checks, scope, unresolved
+  findings, or unmerged spec PR readiness. Spec gates have no required
+  automated reviewer by default; Greptile is manual-only and reserved for the
+  final implementation PR.
 - `duumbi-closure` runs after a verified merge or equivalent completion
   evidence to close the loop across GitHub, source surfaces, Inbox notes, and
   durable knowledge sync decisions.
@@ -89,7 +90,7 @@ closed.
 ## Clarification Routing Policy
 
 `clarification-routing.yml` is registered on all created issue comments and
-filters in code. It ignores general `@Codex` and `@Copilot` issue comments. It
+filters in code. It ignores general `@Codex` issue comments. It
 only processes comments whose visible text starts with `@Clarification`, and
 only when the target issue still carries the `needs-human-review` Stage 5 label.
 The workflow calls DeepSeek for a bounded JSON clarification synthesis, writes
@@ -160,22 +161,22 @@ Review service selection is governed by
 
 - Codex self-review is mandatory before agents mark work ready, approve an AI
   gate, or recommend implementation merge readiness.
-- Copilot is the default automated PR reviewer and the default required
-  evidence source for file-based Stage 7 and Stage 9 gates.
-- CodeRabbit is advisory when present; it is not a DUUMBI gate unless branch
-  protection explicitly requires it.
-- Greptile is manual-only, quota-limited, and reserved for stable high-risk
-  implementation PRs or explicitly requested deep review. Do not include
-  Greptile in `DUUMBI_REQUIRED_SPEC_REVIEWERS`.
+- Codex review via `@chatgpt-codex-connector` is the required automated
+  reviewer on the final implementation PR.
+- Quick low-cost reviewers (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot)
+  are optional and advisory on non-final PRs; they are never a DUUMBI gate.
+- Greptile is manual-only, quota-limited, and reserved for the final
+  implementation PR when an explicitly requested deep review is justified. Do
+  not include Greptile in `DUUMBI_REQUIRED_SPEC_REVIEWERS`.
 
 Stage 7 and Stage 9 AI gates may approve only when:
 
 - the PR is spec-only
 - the PR is open, non-draft, and ready for approval merge
-- actual non-dismissed required automated review submissions exist. By
-  default this means `copilot-pull-request-reviewer`; repositories can override
-  the comma-separated low-cost reviewer list with
-  `DUUMBI_REQUIRED_SPEC_REVIEWERS`
+- actual non-dismissed review submissions exist for every configured required
+  reviewer. By default `DUUMBI_REQUIRED_SPEC_REVIEWERS` is empty and no
+  automated reviewer is required; repositories can opt in with a
+  comma-separated low-cost reviewer list
 - reviewer-request workflow success does not count as review evidence
 - automated reviews and human reviews have no blocking `CHANGES_REQUESTED`
   decision
@@ -189,20 +190,20 @@ Stage 7 and Stage 9 AI gates may approve only when:
 Stage 7 and Stage 9 human Slack approvals are merge finalizers for file-based
 specs. The review request workflows send Slack approval cards only after the
 linked PRODUCT.md or TECHNICAL.md PR is review-clean. Review-clean means the
-PR has actual non-dismissed required automated reviewer submissions, green
-checks, no blocking review decisions, and no unresolved review threads. Approval then
+PR has green checks, no blocking review decisions, no unresolved review
+threads, and submissions from any configured required reviewers. Approval then
 revalidates the exact PR, squash-merges the spec artifact with non-closing issue
 references, records the stage decision, and advances the issue to the next
 workflow state. If the PR is draft, dirty, not spec-only, missing required
 reviewer submissions, or has unresolved review threads, the workflow fails
 closed or defers notification.
 
-The Stage 7 approval prompt is intentionally a Stage 8-to-Ready handoff. It
-instructs Codex to draft the technical spec, wait for required automated
-reviewers, fix and resolve review feedback, route to `Technical Spec Review`,
-then run Stage 9 through the configured AI or human gate. Only a satisfied
-Stage 9 gate may merge the technical spec PR, move the issue to `Ready for
-Build`, and send the Stage 10 prompt.
+The Stage 5 approval prompt is intentionally a combined spec handoff: it
+instructs Codex to draft the product spec and the technical spec together,
+without waiting for external review between them, then run the Stage 7 and
+Stage 9 gates, merge the spec-only PR(s), move the issue to `Ready for Build`,
+and send the Stage 10 implementation prompt. The Stage 7 approval prompt
+remains a Stage 8-to-Ready handoff for issues that took the human review path.
 
 `ready-for-build-handoff.yml` is the fallback and retry path for the Stage 10
 Slack handoff. It posts when `tech-spec-approved` is added and also scans for
@@ -215,10 +216,10 @@ or validation failures while preserving GitHub Issues and Project V2 as the
 source of truth.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
-human decision, Stage 11 review artifact, green checks, clean or handled
-Copilot review,
-and an open non-draft implementation PR. It uses squash merge by default and
-emits the Stage 12 closure prompt after merge.
+human decision, Stage 11 review artifact, green checks, a clean or handled
+Codex (`@chatgpt-codex-connector`) review, and an open non-draft implementation
+PR. It uses squash merge by default and emits the Stage 12 closure prompt
+after merge.
 
 ## Metrics And Privacy
 

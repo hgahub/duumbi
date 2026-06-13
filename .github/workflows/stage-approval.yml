@@ -62,7 +62,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_REVIEW_CHANNEL_ID: ${{ secrets.SLACK_REVIEW_CHANNEL_ID }}
           INPUT_SLACK_RESPONSE_URL: ${{ github.event.client_payload.slack_response_url || '' }}
-          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || '' }}
         with:
           script: |
             // ── Inputs ──────────────────────────────────────────────
@@ -291,16 +291,16 @@ jobs:
 
               if (stage === '5') {
                 return [
-                  'Run DUUMBI Stage 6 Product Spec Draft with duumbi-spec-draft.',
+                  'Run DUUMBI combined spec drafting with duumbi-spec-draft and duumbi-tech-spec-draft.',
                   '',
                   `Target issue: ${issueUrl}`,
-                  `Expected artifact: specs/DUUMBI-${issueNumber}/PRODUCT.md, unless the skill determines that an issue-comment spec is sufficient.`,
+                  `Expected artifacts: specs/DUUMBI-${issueNumber}/PRODUCT.md and specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
                   '',
-                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, open a spec PR if file-based, mark it ready for review, run Codex self-review, wait for actual required automated reviewer submissions (Copilot by default), address blocking review feedback until checks and required automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, and move the issue to Spec Review only after it is ready for approval merge. Do not invoke Greptile unless the developer explicitly requests a manual deep review.',
+                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, then immediately draft the agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy. Do not wait for external review between the two specs. Run Codex self-review on both, record Stage 7 and Stage 9 gate decisions when the AI gates are clean, merge the spec-only PR(s), move the issue to Ready for Build, and send the Stage 10 implementation prompt. Optionally request a quick low-cost review on the spec PR (e.g. MiniMax, DeepSeek, Grok Build, Cursor BugBot); it is advisory only. Do not invoke Greptile; Greptile is reserved for the final implementation PR.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
-                  'Do not create technical specs, implementation code, or Ralph cycles.',
+                  'Do not create implementation code or Ralph cycles. Stop with findings if a gate fails or blocking product/architecture questions remain.',
                 ].join('\n');
               }
 
@@ -312,7 +312,7 @@ jobs:
                   `Product spec artifact: ${knownProductSpec}`,
                   `Expected artifact: specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
                   '',
-                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, mark it ready for review, run Codex self-review, wait for actual required automated reviewer submissions (Copilot by default), address blocking review feedback until checks and required automated reviews are clean, resolve review threads after verifying the fixes, link it from the issue, move the issue to Technical Spec Review only after it is ready for approval merge, then record Stage 9 approval through the configured AI or human gate, merge the spec PR, move the issue to Ready for Build, and send the Stage 10 prompt. Do not invoke Greptile unless the developer explicitly requests a manual deep review.',
+                  'Goal: Verify product spec approval, inspect repo AGENTS.md and affected source areas, draft an agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy, open a technical spec PR, run Codex self-review, address blocking findings until checks are clean, link it from the issue, then record Stage 9 approval through the configured AI or human gate, merge the spec PR, move the issue to Ready for Build, and send the Stage 10 prompt. Do not wait for external automated reviewers; a quick low-cost review (e.g. MiniMax, DeepSeek, Grok Build, Cursor BugBot) is optional and advisory. Do not invoke Greptile; it is reserved for the final implementation PR.',
                   '',
                   `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Technical spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
                   '',
@@ -378,10 +378,11 @@ jobs:
               return [...latest.values()];
             };
 
-            // Low-cost required review gate. Keep quota-limited manual reviewers
-            // such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
+            // Spec PRs have no required automated reviewer by default; the gate
+            // relies on Codex self-review plus checks. Keep quota-limited manual
+            // reviewers such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
             const requiredAutomatedReviewers = () =>
-              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer')
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || '')
                 .split(',')
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);
