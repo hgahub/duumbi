@@ -242,7 +242,8 @@ Preview:
 - loads the target JSON-LD graph source;
 - builds semantic graph context for matching;
 - evaluates rule preconditions deterministically;
-- returns zero or more matches with stable match IDs for that invocation;
+- returns zero or more matches with match IDs that are reproducible for an
+  unchanged graph state and can be safely re-identified by a later apply call;
 - shows touched node IDs and a concise explanation for each match;
 - estimates rewrite cost before apply;
 - prepares the candidate patch or candidate graph in memory;
