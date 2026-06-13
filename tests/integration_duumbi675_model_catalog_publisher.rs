@@ -103,7 +103,7 @@ fn duumbi675_model_catalog_publisher_workflow_runs_generator_without_publication
     assert!(workflow.contains("cargo run --bin duumbi-model-catalog-publisher"));
     assert!(workflow.contains("--input tests/fixtures/model_catalog/publisher_valid.json"));
     assert!(workflow.contains("--evidence-out .tmp/model-catalog/run-evidence.json"));
-    assert!(workflow.contains("actions/upload-artifact@v4"));
+    assert!(workflow.contains("actions/upload-artifact@v7"));
     assert!(!workflow.contains("contents: write"));
     assert!(!workflow.contains("duumbi-web"));
 }
