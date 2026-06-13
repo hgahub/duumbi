@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::bdd::load_bdd_report;
 use super::spec::IntentSpec;
 use serde_json::Value;
 
@@ -185,6 +186,30 @@ pub fn run_spec_checks(spec: &IntentSpec) -> IntentPreflightReport {
 #[must_use]
 pub fn run_preflight(spec: &IntentSpec, workspace: &Path) -> IntentPreflightReport {
     let mut issues = collect_spec_issues(spec);
+    let reuse_candidates = collect_workspace_reuse_candidates(spec, workspace, &mut issues);
+    let decomposition_hints = collect_decomposition_hints(spec);
+
+    IntentPreflightReport::from_parts(issues, reuse_candidates, decomposition_hints)
+}
+
+/// Runs deterministic preflight checks for a persisted intent with a known slug.
+///
+/// This includes linked BDD feature-file readiness because intent-relative BDD
+/// paths cannot be resolved safely without the slug.
+#[must_use]
+pub fn run_preflight_for_intent(
+    spec: &IntentSpec,
+    workspace: &Path,
+    slug: &str,
+) -> IntentPreflightReport {
+    let mut issues = collect_spec_issues(spec);
+    let bdd_report = load_bdd_report(spec, workspace, slug);
+    issues.extend(
+        bdd_report
+            .issues
+            .iter()
+            .map(super::bdd::BddIssue::to_preflight_issue),
+    );
     let reuse_candidates = collect_workspace_reuse_candidates(spec, workspace, &mut issues);
     let decomposition_hints = collect_decomposition_hints(spec);
 
@@ -1287,7 +1312,9 @@ fn dedup_preserving_order(values: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::spec::{IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase};
+    use crate::intent::spec::{
+        IntentBdd, IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -1324,6 +1351,7 @@ mod tests {
                 },
             ],
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1343,6 +1371,15 @@ mod tests {
         fs::create_dir_all(path.parent().expect("invariant: graph path has parent"))
             .expect("invariant: graph parent directory is creatable");
         fs::write(path, contents).expect("invariant: graph fixture is writable");
+    }
+
+    fn write_bdd_feature(workspace: &TempDir, slug: &str, relative_path: &str, contents: &str) {
+        let path = crate::intent::intents_dir(workspace.path())
+            .join(slug)
+            .join(relative_path);
+        fs::create_dir_all(path.parent().expect("invariant: feature path has parent"))
+            .expect("invariant: feature parent directory is creatable");
+        fs::write(path, contents).expect("invariant: feature fixture is writable");
     }
 
     fn graph_module_json(module_name: &str, functions: &[&str], exports: &[&str]) -> String {
@@ -1495,6 +1532,50 @@ mod tests {
 
         assert_eq!(report.readiness, IntentPreflightReadiness::Pass);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn slug_preflight_warns_when_bdd_missing() {
+        let workspace = TempDir::new().expect("tempdir");
+
+        let report = run_preflight_for_intent(&strong_spec(), workspace.path(), "calculator");
+
+        assert!(issue_codes(&report).contains(&"W_BDD_MISSING"));
+        assert_ne!(report.readiness, IntentPreflightReadiness::Block);
+    }
+
+    #[test]
+    fn slug_preflight_blocks_missing_linked_bdd() {
+        let workspace = TempDir::new().expect("tempdir");
+        let mut spec = strong_spec();
+        spec.bdd = IntentBdd {
+            feature_files: vec!["features/missing.feature".to_string()],
+        };
+
+        let report = run_preflight_for_intent(&spec, workspace.path(), "calculator");
+
+        assert!(issue_codes(&report).contains(&"E_BDD_FILE_MISSING"));
+        assert_eq!(report.readiness, IntentPreflightReadiness::Block);
+    }
+
+    #[test]
+    fn slug_preflight_accepts_valid_linked_bdd() {
+        let workspace = TempDir::new().expect("tempdir");
+        write_bdd_feature(
+            &workspace,
+            "calculator",
+            "features/calculator.feature",
+            "Feature: Calculator\n\n  Scenario: addition\n    Given add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8\n",
+        );
+        let mut spec = strong_spec();
+        spec.bdd = IntentBdd {
+            feature_files: vec!["features/calculator.feature".to_string()],
+        };
+
+        let report = run_preflight_for_intent(&spec, workspace.path(), "calculator");
+
+        assert!(!issue_codes(&report).contains(&"W_BDD_MISSING"));
+        assert!(!report.is_blocking());
     }
 
     #[test]

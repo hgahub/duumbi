@@ -678,7 +678,7 @@ async fn api_get_intent(
     match duumbi::intent::load_intent(&ws.root, &slug) {
         Ok(spec) => {
             let html = server_fns::render_intent_detail_html(&ws.root, &slug, &spec);
-            let preflight = server_fns::intent_preflight_lines(&ws.root, &spec);
+            let preflight = server_fns::intent_preflight_lines(&ws.root, &slug, &spec);
 
             (
                 [(http::header::CONTENT_TYPE, "application/json")],

@@ -9,8 +9,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::agents::{AgentError, LlmProvider};
-use crate::intent::spec::{IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase};
-use crate::intent::{IntentError, save_intent, slugify, unique_slug};
+use crate::intent::bdd::{default_feature_reference, load_bdd_report, render_default_feature};
+use crate::intent::spec::{
+    IntentBdd, IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase,
+};
+use crate::intent::{intents_dir, save_intent, slugify, unique_slug};
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -37,12 +40,14 @@ Output a JSON object with these fields:
 - modules_modify: list of existing modules to update (always include \"app/main\")
 - test_cases: list of {name, function, args (i64 array), expected_return (i64)}
 - dependencies: list of external module names (usually [])
+- bdd_feature: one plain Gherkin feature string with Feature, Scenario, Given, When, Then
 
 Test case rules:
 - Minimum 2 test cases per function: at least one normal case and one edge case.
 - Edge cases to consider: zero, negative numbers, boundary values, equal inputs.
 - Use descriptive snake_case names like \"gcd_zero\" or \"is_even_negative\".
 - Do NOT create test cases for a function named \"main\".
+- Keep bdd_feature bounded and focused on the same behavior as acceptance_criteria and test_cases.
 
 Respond ONLY with valid JSON, no markdown, no explanation.
 
@@ -190,6 +195,7 @@ impl IntentSpecGenerationSource {
 pub(crate) struct GeneratedIntentSpec {
     pub spec: IntentSpec,
     pub source: IntentSpecGenerationSource,
+    pub bdd_feature: Option<String>,
 }
 
 pub(crate) async fn generate_spec_with_llm_report(
@@ -206,14 +212,15 @@ pub(crate) async fn generate_spec_with_llm_report(
         .await
         .context("LLM intent spec generation failed")?;
 
-    let mut spec = match parse_llm_response(description, &raw) {
-        Ok(spec) => spec,
+    let (mut spec, bdd_feature) = match parse_llm_response_artifacts(description, &raw) {
+        Ok(artifacts) => artifacts,
         Err(error) => return known_benchmark_fallback(description, "parse_failed", error),
     };
     let _ = crate::intent::benchmarks::apply_known_benchmark(description, &mut spec);
     Ok(GeneratedIntentSpec {
         spec,
         source: IntentSpecGenerationSource::Llm,
+        bdd_feature,
     })
 }
 
@@ -231,6 +238,7 @@ fn known_benchmark_fallback(
                 benchmark_id,
                 reason: reason.to_string(),
             },
+            bdd_feature: None,
         });
     }
     Err(error)
@@ -421,6 +429,13 @@ pub(crate) fn extract_json(raw: &str) -> Option<&str> {
 
 /// Parses the LLM's JSON response into an `IntentSpec`.
 pub(crate) fn parse_llm_response(description: &str, raw: &str) -> Result<IntentSpec> {
+    parse_llm_response_artifacts(description, raw).map(|(spec, _)| spec)
+}
+
+fn parse_llm_response_artifacts(
+    description: &str,
+    raw: &str,
+) -> Result<(IntentSpec, Option<String>)> {
     let json_str = extract_json(raw)
         .context("Failed to parse LLM response as JSON: no valid JSON object found")?;
 
@@ -490,24 +505,41 @@ pub(crate) fn parse_llm_response(description: &str, raw: &str) -> Result<IntentS
                 .collect()
         })
         .unwrap_or_default();
+    let bdd_feature = value["bdd_feature"]
+        .as_str()
+        .map(str::trim)
+        .filter(|feature| looks_like_feature(feature))
+        .map(ToString::to_string);
 
     let now = chrono_now();
 
-    Ok(IntentSpec {
-        intent: description.to_string(),
-        version: 1,
-        status: IntentStatus::Pending,
-        acceptance_criteria: criteria,
-        modules: IntentModules {
-            create: modules_create,
-            modify: modules_modify,
+    Ok((
+        IntentSpec {
+            intent: description.to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: criteria,
+            modules: IntentModules {
+                create: modules_create,
+                modify: modules_modify,
+            },
+            test_cases,
+            dependencies,
+            bdd: Default::default(),
+            context: None,
+            created_at: Some(now),
+            execution: None,
         },
-        test_cases,
-        dependencies,
-        context: None,
-        created_at: Some(now),
-        execution: None,
-    })
+        bdd_feature,
+    ))
+}
+
+fn looks_like_feature(feature: &str) -> bool {
+    feature.contains("Feature:")
+        && feature.contains("Scenario:")
+        && feature.contains("Given ")
+        && feature.contains("When ")
+        && feature.contains("Then ")
 }
 
 /// Returns current UTC time as an ISO-8601 string (best-effort). Public for use by execute.rs.
@@ -625,9 +657,28 @@ pub async fn run_create_with_context(
     log.push(generated.source.evidence());
     let mut spec = generated.spec;
     spec.context = context;
+    let base_slug = slugify(description);
+    let slug = unique_slug(workspace, &base_slug);
+    let feature_reference = default_feature_reference(&slug);
+    spec.bdd = IntentBdd {
+        feature_files: vec![feature_reference.clone()],
+    };
+    let feature_text = generated
+        .bdd_feature
+        .as_deref()
+        .filter(|feature| looks_like_feature(feature))
+        .map(ToString::to_string)
+        .unwrap_or_else(|| render_default_feature(&spec, &slug));
 
     // Show preview, including preflight evidence, without changing save semantics.
-    crate::intent::review::format_spec_detail_with_workspace("(preview)", &spec, workspace, log);
+    crate::intent::review::format_spec_detail("(preview)", &spec, log);
+    log.push(format!(
+        "BDD feature preview: .duumbi/intents/{slug}/{feature_reference}"
+    ));
+    log.push(format!(
+        "BDD scenario count: {}",
+        feature_text.matches("Scenario:").count()
+    ));
 
     if !yes {
         eprint!("Save this intent? [Y/n] ");
@@ -643,13 +694,49 @@ pub async fn run_create_with_context(
         }
     }
 
-    let base_slug = slugify(description);
-    let slug = unique_slug(workspace, &base_slug);
-
-    save_intent(workspace, &slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+    let saved_feature = save_feature_file(workspace, &slug, &feature_reference, &feature_text)?;
+    if let Err(e) = save_intent(workspace, &slug, &spec) {
+        let _ = std::fs::remove_file(&saved_feature);
+        return Err(anyhow::anyhow!("{e}"));
+    }
 
     log.push(format!("Intent saved as '.duumbi/intents/{slug}.yaml'"));
+    let bdd_report = load_bdd_report(&spec, workspace, &slug);
+    log.push(format!(
+        "BDD feature saved as '.duumbi/intents/{slug}/{feature_reference}'"
+    ));
+    log.push(format!(
+        "BDD readiness: {} ({} scenario{})",
+        bdd_report.readiness.label(),
+        bdd_report.scenario_count(),
+        if bdd_report.scenario_count() == 1 {
+            ""
+        } else {
+            "s"
+        }
+    ));
     Ok(slug)
+}
+
+fn save_feature_file(
+    workspace: &Path,
+    slug: &str,
+    feature_reference: &str,
+    feature_text: &str,
+) -> Result<std::path::PathBuf> {
+    let path = intents_dir(workspace).join(slug).join(feature_reference);
+    let parent = path
+        .parent()
+        .context("BDD feature path must have a parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "Failed to create BDD feature directory '{}'",
+            parent.display()
+        )
+    })?;
+    std::fs::write(&path, feature_text)
+        .with_context(|| format!("Failed to write BDD feature file '{}'", path.display()))?;
+    Ok(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +809,28 @@ mod tests {
         assert_eq!(spec.acceptance_criteria.len(), 1);
         assert_eq!(spec.modules.create, vec!["calculator/ops"]);
         assert_eq!(spec.test_cases[0].expected_return, 8);
+    }
+
+    #[test]
+    fn parse_llm_response_artifacts_preserves_valid_bdd_feature() {
+        let raw = r#"{
+  "acceptance_criteria": ["add(a, b) returns a+b"],
+  "modules_create": ["calculator/ops"],
+  "modules_modify": ["app/main"],
+  "test_cases": [{"name": "addition", "function": "add", "args": [3, 5], "expected_return": 8}],
+  "dependencies": [],
+  "bdd_feature": "Feature: Calculator\n\n  Scenario: addition\n    Given add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8"
+}"#;
+
+        let (_spec, bdd_feature) =
+            parse_llm_response_artifacts("Build a calculator", raw).expect("must parse");
+
+        assert!(
+            bdd_feature
+                .as_deref()
+                .expect("bdd feature")
+                .contains("Scenario: addition")
+        );
     }
 
     #[test]
@@ -880,9 +989,22 @@ This intent creates an addition function that..."#;
                 .join(".duumbi/intents/weak-generated-intent.yaml")
                 .exists()
         );
+        let feature_path = tmp
+            .path()
+            .join(".duumbi/intents/weak-generated-intent/features/weak-generated-intent.feature");
+        assert!(feature_path.exists());
+        let saved = crate::intent::load_intent(tmp.path(), &slug).expect("saved intent loads");
+        assert_eq!(
+            saved.bdd.feature_files,
+            vec!["features/weak-generated-intent.feature"]
+        );
+        let feature = std::fs::read_to_string(feature_path).expect("feature is readable");
+        assert!(feature.contains("Feature:"));
+        assert!(feature.contains("Scenario:"));
         assert!(log.iter().any(|line| line == "Preflight:"));
         assert!(log.iter().any(|line| line.contains("Preflight: BLOCK")));
         assert!(log.iter().any(|line| line.contains("E_NO_MODULE_TARGETS")));
+        assert!(log.iter().any(|line| line.contains("BDD feature saved")));
         assert!(log.iter().any(|line| {
             line.contains("Intent saved as '.duumbi/intents/weak-generated-intent.yaml'")
         }));

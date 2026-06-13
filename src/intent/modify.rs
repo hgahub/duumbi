@@ -99,6 +99,7 @@ mod tests {
                 expected_return: 8,
             }],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,

@@ -138,6 +138,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,

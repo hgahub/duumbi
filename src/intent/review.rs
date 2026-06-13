@@ -6,7 +6,8 @@ use std::path::Path;
 
 use crate::config::parse_editor_command;
 
-use super::preflight::{render_preflight_report, run_preflight, run_spec_checks};
+use super::bdd::{load_bdd_report, render_bdd_report};
+use super::preflight::{render_preflight_report, run_preflight_for_intent, run_spec_checks};
 use super::spec::{IntentSpec, IntentStatus};
 use super::{IntentError, list_intents, load_intent};
 
@@ -132,10 +133,18 @@ fn print_spec_detail_lines(slug: &str, spec: &IntentSpec, workspace: Option<&Pat
     eprintln!("Preflight:");
     let report = workspace.map_or_else(
         || run_spec_checks(spec),
-        |workspace| run_preflight(spec, workspace),
+        |workspace| run_preflight_for_intent(spec, workspace, slug),
     );
     for line in render_preflight_report(&report) {
         eprintln!("  {line}");
+    }
+    if let Some(workspace) = workspace {
+        eprintln!();
+        eprintln!("BDD:");
+        let bdd_report = load_bdd_report(spec, workspace, slug);
+        for line in render_bdd_report(&bdd_report) {
+            eprintln!("  {line}");
+        }
     }
 
     if let Some(ref exec) = spec.execution {
@@ -240,10 +249,17 @@ fn format_spec_detail_with_preflight(
     log.push("Preflight:".to_string());
     let report = workspace.map_or_else(
         || run_spec_checks(spec),
-        |workspace| run_preflight(spec, workspace),
+        |workspace| run_preflight_for_intent(spec, workspace, slug),
     );
     for line in render_preflight_report(&report) {
         log.push(format!("  {line}"));
+    }
+    if let Some(workspace) = workspace {
+        log.push("BDD:".to_string());
+        let bdd_report = load_bdd_report(spec, workspace, slug);
+        for line in render_bdd_report(&bdd_report) {
+            log.push(format!("  {line}"));
+        }
     }
 }
 
@@ -337,6 +353,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

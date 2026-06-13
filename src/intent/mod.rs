@@ -20,6 +20,8 @@
 
 #![allow(dead_code)] // Progressively integrated as CLI commands are wired
 
+/// BDD/Gherkin companion artifact support for runtime intents.
+pub mod bdd;
 pub mod benchmarks;
 pub mod coordinator;
 pub mod create;
@@ -310,6 +312,7 @@ mod tests {
             },
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,
@@ -346,6 +349,7 @@ mod tests {
             modules: spec::IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -368,6 +372,7 @@ mod tests {
             modules: spec::IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

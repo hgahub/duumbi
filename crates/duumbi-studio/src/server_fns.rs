@@ -1196,9 +1196,10 @@ pub struct IntentExecuteApiResponse {
 #[must_use]
 pub fn intent_preflight_lines(
     workspace: &std::path::Path,
+    slug: &str,
     spec: &duumbi::intent::spec::IntentSpec,
 ) -> Vec<String> {
-    let report = duumbi::intent::preflight::run_preflight(spec, workspace);
+    let report = duumbi::intent::preflight::run_preflight_for_intent(spec, workspace, slug);
     duumbi::intent::preflight::render_preflight_report(&report)
 }
 
@@ -1297,10 +1298,18 @@ pub fn render_intent_detail_html(
         html.push_str("</ul>\n");
     }
 
-    let preflight = intent_preflight_lines(workspace, spec);
+    let preflight = intent_preflight_lines(workspace, slug, spec);
     if !preflight.is_empty() {
         html.push_str("<h2>Preflight</h2>\n<pre>");
         html.push_str(&escape_html(&preflight.join("\n")));
+        html.push_str("</pre>\n");
+    }
+
+    let bdd_report = duumbi::intent::bdd::load_bdd_report(spec, workspace, slug);
+    let bdd_lines = duumbi::intent::bdd::render_bdd_report(&bdd_report);
+    if !bdd_lines.is_empty() {
+        html.push_str("<h2>BDD</h2>\n<pre>");
+        html.push_str(&escape_html(&bdd_lines.join("\n")));
         html.push_str("</pre>\n");
     }
 
@@ -1389,7 +1398,7 @@ pub async fn execute_intent_for_api(
 
     let mut setup_preflight = Vec::new();
     if let Ok(spec) = duumbi::intent::load_intent(workspace, slug) {
-        let report = duumbi::intent::preflight::run_preflight(&spec, workspace);
+        let report = duumbi::intent::preflight::run_preflight_for_intent(&spec, workspace, slug);
         setup_preflight = duumbi::intent::preflight::render_preflight_report(&report);
     }
     let setup_log = setup_preflight.clone();

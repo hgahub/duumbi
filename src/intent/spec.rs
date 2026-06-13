@@ -202,6 +202,22 @@ pub struct IntentContext {
     pub clarification_log: Vec<String>,
 }
 
+/// BDD/Gherkin companion artifacts linked from an intent specification.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IntentBdd {
+    /// Feature files that describe expected behavior for this intent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_files: Vec<String>,
+}
+
+impl IntentBdd {
+    /// Returns `true` when the intent has no linked BDD artifacts.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.feature_files.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Execution metadata (appended on completion)
 // ---------------------------------------------------------------------------
@@ -252,6 +268,10 @@ pub struct IntentSpec {
     /// Names of external dependencies required by this intent.
     #[serde(default)]
     pub dependencies: Vec<String>,
+
+    /// BDD/Gherkin companion artifacts linked to this intent.
+    #[serde(default, skip_serializing_if = "IntentBdd::is_empty")]
+    pub bdd: IntentBdd,
 
     /// Clarified product, integration, and execution context for this intent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
