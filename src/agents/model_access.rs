@@ -416,6 +416,18 @@ pub fn model_access_dir_for_home(home: &Path) -> PathBuf {
     home.join(MODEL_ACCESS_DIR)
 }
 
+/// Returns the current model-access snapshot path for a given home path.
+#[must_use]
+pub fn model_access_current_path_for_home(home: &Path) -> PathBuf {
+    model_access_dir_for_home(home).join(MODEL_ACCESS_FILE)
+}
+
+/// Returns the model-access append-only event log path for a given home path.
+#[must_use]
+pub fn model_access_events_path_for_home(home: &Path) -> PathBuf {
+    model_access_dir_for_home(home).join(MODEL_ACCESS_EVENTS_FILE)
+}
+
 fn duumbi_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
