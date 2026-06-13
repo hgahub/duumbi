@@ -15,9 +15,6 @@ use serde_json::Value;
 /// Minimum score for a passing preflight report when no errors are present.
 pub const PASS_SCORE_THRESHOLD: u8 = 85;
 
-/// Minimum score for a warning preflight report when no errors are present.
-pub const WARN_SCORE_THRESHOLD: u8 = 60;
-
 const ERROR_SCORE_PENALTY: u8 = 45;
 const WARNING_SCORE_PENALTY: u8 = 20;
 const DEFAULT_RENDER_LIMIT: usize = 5;
@@ -30,7 +27,7 @@ pub enum IntentPreflightReadiness {
     Pass,
     /// The spec has no errors but has warnings or a moderate readiness score.
     Warn,
-    /// The spec has an error or scores below the blocking threshold.
+    /// The spec has an error that must stop execution before side effects.
     Block,
 }
 
@@ -1139,7 +1136,7 @@ pub fn calculate_readiness(
     score: u8,
     highest_severity: Option<IntentPreflightSeverity>,
 ) -> IntentPreflightReadiness {
-    if highest_severity == Some(IntentPreflightSeverity::Error) || score < WARN_SCORE_THRESHOLD {
+    if highest_severity == Some(IntentPreflightSeverity::Error) {
         IntentPreflightReadiness::Block
     } else if score >= PASS_SCORE_THRESHOLD {
         IntentPreflightReadiness::Pass
@@ -1589,6 +1586,86 @@ mod tests {
 
         assert!(!issue_codes(&report).contains(&"W_BDD_MISSING"));
         assert!(!report.is_blocking());
+    }
+
+    #[test]
+    fn slug_preflight_warns_not_blocks_calculator_with_single_test_warnings() {
+        let workspace = TempDir::new().expect("tempdir");
+        write_bdd_feature(
+            &workspace,
+            "build-a-calculator-with-add-subtract-mul",
+            "features/build-a-calculator-with-add-subtract-mul.feature",
+            "Feature: Calculator\n\n  Scenario: add three five\n    Given the add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8\n",
+        );
+        let spec = IntentSpec {
+            intent: "Build a calculator with add, subtract, multiply, and divide functions that work on i64 numbers".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec![
+                "add(a, b) returns a + b for i64 values".to_string(),
+                "subtract(a, b) returns a - b for i64 values".to_string(),
+                "multiply(a, b) returns a * b for i64 values".to_string(),
+                "divide(a, b) returns a / b for i64 values".to_string(),
+                "main demonstrates the calculator functions".to_string(),
+            ],
+            modules: IntentModules {
+                create: vec!["calculator/ops".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![
+                TestCase {
+                    name: "add_three_five".to_string(),
+                    function: "add".to_string(),
+                    args: vec![3, 5],
+                    expected_return: 8,
+                },
+                TestCase {
+                    name: "subtract_ten_three".to_string(),
+                    function: "subtract".to_string(),
+                    args: vec![10, 3],
+                    expected_return: 7,
+                },
+                TestCase {
+                    name: "multiply_four_six".to_string(),
+                    function: "multiply".to_string(),
+                    args: vec![4, 6],
+                    expected_return: 24,
+                },
+                TestCase {
+                    name: "divide_ten_two".to_string(),
+                    function: "divide".to_string(),
+                    args: vec![10, 2],
+                    expected_return: 5,
+                },
+                TestCase {
+                    name: "divide_ten_zero".to_string(),
+                    function: "divide".to_string(),
+                    args: vec![10, 0],
+                    expected_return: 0,
+                },
+            ],
+            dependencies: Vec::new(),
+            bdd: IntentBdd {
+                feature_files: vec![
+                    "features/build-a-calculator-with-add-subtract-mul.feature".to_string(),
+                ],
+            },
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let report = run_preflight_for_intent(
+            &spec,
+            workspace.path(),
+            "build-a-calculator-with-add-subtract-mul",
+        );
+
+        assert_eq!(report.readiness, IntentPreflightReadiness::Warn);
+        assert_eq!(report.score, 40);
+        assert!(!report.is_blocking());
+        assert!(issue_codes(&report).contains(&"W_SINGLE_TEST_CASE_FOR_FUNCTION"));
+        assert!(!issue_codes(&report).contains(&"W_BDD_MISSING"));
     }
 
     #[test]
