@@ -100,7 +100,8 @@ Relevant source facts verified for Stage 8:
     context.
 - `src/intent/coordinator.rs`
   - Decomposition is deterministic and uses the existing `IntentSpec` fields.
-  - BDD should influence prompts/evidence, not replace the coordinator in v1.
+  - BDD should influence decomposition, prompts, and evidence through bounded
+    summaries, but should not replace the coordinator in v1.
 - `src/intent/verifier.rs`
   - Verifier tests are i64 function calls and expected i64 returns.
   - BDD scenarios must map to verifier tests only when their observable outcome
@@ -232,7 +233,8 @@ Areas out of Stage 10 scope unless later approved:
 
 - A full Cucumber/Gherkin runtime.
 - Non-i64 verifier payloads.
-- Broad redesign of coordinator decomposition.
+- Broad redesign of coordinator decomposition. A narrow BDD-summary input to
+  task decomposition is in scope.
 - Query mode behavior.
 - DUUMBI internal Stage 6/8 spec workflow.
 
@@ -348,6 +350,7 @@ Rules:
 - Reject absolute paths.
 - Reject paths containing `..`.
 - Reject paths with non-UTF-8 components.
+- Treat files that cannot be read as UTF-8 text as blocking BDD errors.
 - Allow intent-relative `features/*.feature` paths.
 - Allow workspace-relative `.duumbi/intents/<slug>/features/*.feature` paths.
 - Reject paths outside `.duumbi/intents/` in v1.
@@ -453,6 +456,7 @@ Integrate BDD with preflight by:
 - Adding error issues for explicit broken references:
   - `E_BDD_PATH_UNSAFE`
   - `E_BDD_FILE_MISSING`
+  - `E_BDD_FILE_UNREADABLE`
   - `E_BDD_FILE_EMPTY`
   - `E_BDD_NO_FEATURE`
   - `E_BDD_NO_SCENARIOS`
@@ -474,6 +478,23 @@ preflight side effects. Implementation can either:
 
 Keep the implementation simple: a separate `bdd_report` variable in
 `run_execute_with_progress` is acceptable.
+
+Before `coordinator::decompose` builds the execution task plan:
+
+- Provide the coordinator a bounded BDD decomposition context derived from
+  `render_bdd_prompt_context(&report, limit)` or an equivalent structured
+  summary.
+- The summary must include feature names, scenario names, and the first bounded
+  Given/When/Then steps for ready scenarios.
+- Decomposition must be able to create or adjust tasks for scenario-only
+  behavior that is not obvious from `acceptance_criteria` or verifier
+  `test_cases`.
+- The displayed execution plan should reflect materially distinct BDD-driven
+  tasks when scenarios add behavior beyond the YAML intent fields.
+- If BDD context is summarized because of size, the execution log should say
+  the decomposition context was summarized.
+- Do not make the coordinator parse `.feature` text directly; pass pre-parsed,
+  bounded BDD data from the BDD helper layer.
 
 For task prompts:
 
@@ -551,6 +572,8 @@ Add a concise docs/help update that explains:
   intent.
 - Missing BDD on a legacy intent is warning-only.
 - Explicit broken BDD references block execute.
+- Unreadable or non-UTF-8 linked BDD files block execute with
+  `E_BDD_FILE_UNREADABLE`.
 - BDD scenario files are plain UTF-8 `.feature` text.
 - BDD scenarios are not accepted as proof without mapped verifier, graph, build,
   run, manual, or review evidence.
@@ -570,7 +593,9 @@ Add a concise docs/help update that explains:
 | Review an edited feature file | Review test writes an intent and feature file, edits the feature file, runs detail formatting, and asserts current scenario names/readiness/coverage are rendered. |
 | Review a legacy intent without BDD | Legacy YAML deserialization and review-format test asserting load succeeds and `W_BDD_MISSING` or equivalent warning appears without blocking review. |
 | Execute with a missing linked feature file | Execute preflight side-effect test asserting blocked result, unchanged status, no snapshot, no provider call, no graph write, and no learning/archive evidence. |
+| Execute with an unreadable or non-UTF-8 linked feature file | BDD read/preflight test asserting `E_BDD_FILE_UNREADABLE`, blocked execute, and no mutation side effects. |
 | Execute a legacy intent without BDD | Execute preflight test with otherwise valid legacy spec asserting warning output and continuation through provider-backed path when a mock provider is supplied. |
+| Execute with scenario-only behavior | Coordinator/decomposition test asserting bounded BDD summary can create or adjust task plan entries before mutation starts and the displayed plan reflects the scenario-driven behavior. |
 | Builder prompts include relevant scenario context | Unit test for prompt construction or execute prompt helper asserting Given/When/Then context appears alongside acceptance criteria and verifier tests. |
 | Repair prompts include failing scenario context | Unit test for repair prompt helper mapping failed test/function names to relevant scenario context. |
 | Scenario is fully covered by verifier tests | Coverage classifier test using a scenario with callable i64 behavior and matching `TestCase` names/functions; expects `VerifierCovered` and named test cases. |
@@ -713,6 +738,7 @@ Each Stage 10 implementation cycle must:
 6. Integrate execute prompts and evidence.
    - Load BDD report before side effects.
    - Block on explicit broken references.
+   - Pass bounded BDD summary into task decomposition before mutation starts.
    - Add BDD prompt context to task and repair prompts.
    - Log BDD evidence after execute setup.
 
@@ -739,6 +765,7 @@ Focused unit tests:
 - `IntentSpec` with `bdd.feature_files` round-trips.
 - unsafe BDD paths are rejected.
 - missing feature file creates blocking BDD issue.
+- unreadable or non-UTF-8 feature file creates blocking BDD issue.
 - empty feature file creates blocking BDD issue.
 - no `Feature:` creates blocking BDD issue.
 - no `Scenario:` creates blocking BDD issue.
@@ -768,6 +795,8 @@ Focused integration tests:
 - blocked BDD execute writes no graph files.
 - blocked BDD execute appends no learning/archive evidence.
 - legacy no-BDD execute warning path remains non-blocking.
+- task decomposition receives bounded BDD context before mutation starts.
+- displayed execution plan reflects materially distinct BDD-driven tasks.
 - task prompt helper includes BDD context.
 - repair prompt helper includes relevant scenario context.
 - Studio detail HTML includes BDD evidence.
