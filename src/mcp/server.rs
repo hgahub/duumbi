@@ -320,6 +320,61 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            ToolDefinition {
+                name: "model_access_summary".to_string(),
+                description: "Read-only local analytics over the user-level model-access store. \
+                              Summarizes ~/.duumbi/knowledge/model-access/current.json and \
+                              optional bounded redacted events without mutating telemetry, \
+                              credentials, provider config, model catalog, graph files, or intents."
+                    .to_string(),
+                input_schema: model_telemetry_schema(false),
+            },
+            ToolDefinition {
+                name: "model_performance_summary".to_string(),
+                description: "Read-only local analytics over workspace model-performance telemetry. \
+                              Summarizes .duumbi/knowledge/model-performance/aggregates.json and \
+                              optional bounded redacted events without provider calls, routing changes, \
+                              or telemetry writes."
+                    .to_string(),
+                input_schema: model_telemetry_schema(true),
+            },
+            ToolDefinition {
+                name: "model_telemetry_health".to_string(),
+                description: "Read-only local health report for model-access and model-performance \
+                              telemetry stores. Reports absent, empty, stale, partial, malformed, \
+                              or present source state without returning secrets or raw event rows."
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "provider": {
+                            "type": "string",
+                            "description": "Optional provider filter echoed in normalized filters"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model filter echoed in normalized filters"
+                        },
+                        "stale_after_hours": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8760,
+                            "description": "Freshness threshold in hours; defaults to 168"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Normalized row limit echoed in filters; defaults to 25"
+                        },
+                        "include_raw_events": {
+                            "type": "boolean",
+                            "description": "Must remain false for health; raw event rows are not returned"
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
         ]
     }
 
@@ -392,6 +447,13 @@ impl McpServer {
             "deps_install" => tools::deps::deps_install(workspace, args),
             "intent_create" => tools::intent::intent_create(workspace, args),
             "intent_execute" => tools::intent::intent_execute(workspace, args),
+            "model_access_summary" => tools::model_telemetry::model_access_summary(workspace, args),
+            "model_performance_summary" => {
+                tools::model_telemetry::model_performance_summary(workspace, args)
+            }
+            "model_telemetry_health" => {
+                tools::model_telemetry::model_telemetry_health(workspace, args)
+            }
             _ => {
                 return Err(JsonRpcError {
                     code: rpc_codes::METHOD_NOT_FOUND,
@@ -480,6 +542,54 @@ impl McpServer {
     }
 }
 
+fn model_telemetry_schema(include_profile_filters: bool) -> Value {
+    let mut properties = serde_json::json!({
+        "provider": {
+            "type": "string",
+            "description": "Optional provider name filter"
+        },
+        "model": {
+            "type": "string",
+            "description": "Optional model name filter"
+        },
+        "stale_after_hours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8760,
+            "description": "Freshness threshold in hours; defaults to 168"
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Aggregate row limit; defaults to 25. Required and capped at 50 when include_raw_events is true."
+        },
+        "include_raw_events": {
+            "type": "boolean",
+            "description": "Explicit bounded raw mode; defaults to false and requires a limit when true"
+        }
+    });
+    if include_profile_filters {
+        let object = properties
+            .as_object_mut()
+            .expect("invariant: schema properties object");
+        for field in ["agent_role", "task_type", "complexity", "scope", "risk"] {
+            object.insert(
+                field.to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": format!("Optional {field} task-profile filter")
+                }),
+            );
+        }
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": false
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -551,6 +661,9 @@ mod tests {
             "deps_install",
             "intent_create",
             "intent_execute",
+            "model_access_summary",
+            "model_performance_summary",
+            "model_telemetry_health",
         ];
 
         for name in &expected_names {
@@ -579,6 +692,36 @@ mod tests {
                 "tool '{}' inputSchema should have type: object",
                 tool.name
             );
+        }
+    }
+
+    #[test]
+    fn model_telemetry_tool_descriptions_are_read_only() {
+        let dir = TempDir::new().expect("tempdir");
+        let server = server_with_workspace(&dir);
+        let tools = server.list_tools();
+
+        for name in [
+            "model_access_summary",
+            "model_performance_summary",
+            "model_telemetry_health",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("model telemetry tool exists");
+            let description = tool.description.to_lowercase();
+            assert!(
+                description.contains("read-only"),
+                "{name} must identify itself as read-only"
+            );
+            assert!(
+                description.contains("model-access")
+                    || description.contains("model-performance")
+                    || description.contains("telemetry stores"),
+                "{name} must identify the telemetry source"
+            );
+            assert_eq!(tool.input_schema["additionalProperties"], false);
         }
     }
 

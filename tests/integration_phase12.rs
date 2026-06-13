@@ -3,7 +3,10 @@
 //! These tests exercise the five Phase 12 kill criteria without requiring
 //! LLM API keys or network access. All operations are purely in-process.
 
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ---------------------------------------------------------------------------
 // Shared test workspace graph
@@ -58,6 +61,28 @@ fn setup_workspace() -> TempDir {
     )
     .expect("invariant: write config.toml");
     dir
+}
+
+fn read_optional(path: &Path) -> Option<Vec<u8>> {
+    std::fs::read(path).ok()
+}
+
+fn snapshot(paths: &[PathBuf]) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    paths
+        .iter()
+        .map(|path| (path.clone(), read_optional(path)))
+        .collect()
+}
+
+fn assert_snapshot_unchanged(before: &[(PathBuf, Option<Vec<u8>>)]) {
+    for (path, bytes) in before {
+        assert_eq!(
+            read_optional(path),
+            *bytes,
+            "file must be unchanged: {}",
+            path.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +183,163 @@ fn kill_criterion_1e_mcp_graph_mutate_empty_ops() {
     let val = result.unwrap();
     assert_eq!(val["success"], true, "success must be true for empty patch");
     assert_eq!(val["ops_count"], 0, "ops_count must be 0 for empty patch");
+}
+
+/// DUUMBI-682: model telemetry MCP analytics are discoverable, callable, and read-only.
+#[test]
+fn duumbi682_model_telemetry_tools_do_not_mutate_local_state() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    let _guard = ENV_LOCK.lock().expect("invariant: env lock");
+    let original_home = std::env::var_os("HOME");
+    let workspace = setup_workspace();
+    let home = TempDir::new().expect("invariant: temp home");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+
+    let access_dir = home.path().join(".duumbi/knowledge/model-access");
+    std::fs::create_dir_all(&access_dir).expect("create access dir");
+    let access_current = access_dir.join("current.json");
+    let access_events = access_dir.join("events.jsonl");
+    std::fs::write(
+        &access_current,
+        serde_json::json!({
+            "records": {
+                "sha256:secret|minimax|MiniMax-M2.7": {
+                    "credentialFingerprint": "sha256:secret",
+                    "provider": "minimax",
+                    "model": "MiniMax-M2.7",
+                    "status": "accessible",
+                    "reasonCode": null,
+                    "message": "provider message",
+                    "probeVersion": "test",
+                    "lastChecked": "2026-06-13T10:00:00Z",
+                    "lastSuccess": "2026-06-13T10:00:00Z"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write access current");
+    std::fs::write(
+        &access_events,
+        r#"{"credentialFingerprint":"sha256:secret","provider":"minimax","model":"MiniMax-M2.7","status":"accessible","reasonCode":null,"message":"provider message","checkedAt":"2026-06-13T10:00:00Z"}"#,
+    )
+    .expect("write access events");
+
+    let performance_dir = workspace.path().join(".duumbi/knowledge/model-performance");
+    std::fs::create_dir_all(&performance_dir).expect("create performance dir");
+    let performance_aggregates = performance_dir.join("aggregates.json");
+    let performance_events = performance_dir.join("events.jsonl");
+    std::fs::write(
+        &performance_aggregates,
+        serde_json::json!({
+            "aggregates": {
+                "anthropic|claude-sonnet|coder|create|simple|single|high": {
+                    "calls": 2,
+                    "successes": 1,
+                    "failures": 1,
+                    "ewmaLatencyMs": 100.0,
+                    "ewmaCostUsd": 0.01,
+                    "parseFailures": 0,
+                    "validationFailures": 1,
+                    "retries": 1,
+                    "lastUpdated": "2026-06-13T10:00:00Z"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write aggregates");
+    std::fs::write(
+        &performance_events,
+        r#"{"timestamp":"2026-06-13T10:00:00Z","provider":"anthropic","model":"claude-sonnet","agentRole":"coder","templateVersion":"v1","taskType":"create","complexity":"simple","scope":"single","risk":"high","promptTokens":10,"completionTokens":5,"reasoningTokens":null,"latencyMs":100,"firstTokenLatencyMs":25,"costUsd":0.01,"toolParseSuccess":true,"patchCount":1,"validationErrors":[],"retries":0,"outcome":"success"}"#,
+    )
+    .expect("write performance events");
+
+    let intent_dir = workspace.path().join(".duumbi/intents");
+    std::fs::create_dir_all(&intent_dir).expect("create intents dir");
+    let intent_file = intent_dir.join("example.yaml");
+    std::fs::write(&intent_file, "intent: example\n").expect("write intent");
+    let catalog_file = workspace.path().join(".duumbi/model-catalog.json");
+    std::fs::write(&catalog_file, "{}").expect("write catalog");
+    let credentials = home.path().join(".duumbi/credentials.toml");
+    std::fs::write(&credentials, "[registries]\n").expect("write credentials");
+
+    let watched = vec![
+        access_current,
+        access_events,
+        performance_aggregates,
+        performance_events,
+        workspace.path().join(".duumbi/config.toml"),
+        workspace.path().join(".duumbi/graph/main.jsonld"),
+        intent_file,
+        catalog_file,
+        credentials,
+    ];
+    let before = snapshot(&watched);
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let tools_response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "tools/list".to_string(),
+            params: None,
+        })
+        .expect("tools/list response");
+    let tools = tools_response.result.expect("tools result");
+    assert!(
+        tools["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .any(|tool| tool["name"] == "model_access_summary")
+    );
+
+    for (id, name, arguments) in [
+        (
+            2,
+            "model_access_summary",
+            serde_json::json!({"include_raw_events": true, "limit": 1}),
+        ),
+        (
+            3,
+            "model_performance_summary",
+            serde_json::json!({"task_type": "create", "risk": "high", "limit": 10}),
+        ),
+        (4, "model_telemetry_health", serde_json::json!({})),
+    ] {
+        let response = server
+            .handle_request(&JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(id)),
+                method: "tools/call".to_string(),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+            })
+            .expect("tools/call response");
+        assert!(response.error.is_none(), "{name} should succeed");
+        let text = response.result.expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string();
+        assert!(!text.contains("sha256:secret"));
+        assert!(!text.contains("provider message"));
+    }
+
+    assert_snapshot_unchanged(&before);
+
+    unsafe {
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
