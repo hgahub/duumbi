@@ -30,7 +30,11 @@ model catalog state, graph files, intents, or telemetry files.
 - Sources: both model-access and model-performance stores.
 - Reports whether each source is absent, empty, present, stale, partial, or
   malformed.
-- Returns source counts and event-log size metadata without raw event rows.
+- Returns source-specific health metadata without raw event rows:
+  `current_status`, `record_count`, `latest_checked`, and
+  `stale_record_count` for model access; `aggregate_status`,
+  `aggregate_count`, `latest_updated`, and `stale_aggregate_count` for model
+  performance.
 
 ## Inputs
 
@@ -58,6 +62,8 @@ Raw event mode is explicit and bounded:
 - `limit` must be supplied.
 - Raw event `limit` must be at most `50`.
 - Raw event rows are newest-first and redacted.
+- Raw event rows honor the same provider/model and task-profile filters as
+  aggregate rows.
 
 Unsupported fields and wrong JSON types return validation errors instead of
 falling back to broader data dumps.

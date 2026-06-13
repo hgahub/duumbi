@@ -268,7 +268,7 @@ fn model_access_summary_from_home(home: &Path, query: &Query) -> Result<Value, S
     }
 
     let raw_events = if query.include_raw_events {
-        access_raw_events(home, query.limit, &mut warnings)
+        access_raw_events(home, query, &mut warnings)
     } else {
         Value::Null
     };
@@ -346,7 +346,7 @@ fn model_performance_summary_from_workspace(
     }
 
     let raw_events = if query.include_raw_events {
-        performance_raw_events(workspace, query.limit, &mut warnings)
+        performance_raw_events(workspace, query, &mut warnings)
     } else {
         Value::Null
     };
@@ -700,9 +700,12 @@ fn performance_summary(rows: &[Value]) -> Value {
     })
 }
 
-fn access_raw_events(home: &Path, limit: usize, warnings: &mut Vec<String>) -> Value {
+fn access_raw_events(home: &Path, query: &Query, warnings: &mut Vec<String>) -> Value {
     let path = model_access_events_path_for_home(home);
-    let events = read_recent_jsonl::<ModelAccessEvent>(&path, limit, warnings);
+    let events = read_recent_jsonl::<ModelAccessEvent, _>(&path, query.limit, warnings, |event| {
+        matches_filter(&query.provider, &event.provider)
+            && matches_filter(&query.model, &event.model)
+    });
     let rows: Vec<Value> = events
         .into_iter()
         .map(|event| {
@@ -719,9 +722,17 @@ fn access_raw_events(home: &Path, limit: usize, warnings: &mut Vec<String>) -> V
     Value::Array(rows)
 }
 
-fn performance_raw_events(workspace: &Path, limit: usize, warnings: &mut Vec<String>) -> Value {
+fn performance_raw_events(workspace: &Path, query: &Query, warnings: &mut Vec<String>) -> Value {
     let path = model_performance_events_path_for_workspace(workspace);
-    let events = read_recent_jsonl::<ModelCallEvent>(&path, limit, warnings);
+    let events = read_recent_jsonl::<ModelCallEvent, _>(&path, query.limit, warnings, |event| {
+        matches_filter(&query.provider, &event.provider)
+            && matches_filter(&query.model, &event.model)
+            && matches_optional_filter(&query.agent_role, &event.agent_role)
+            && matches_optional_filter(&query.task_type, &event.task_type)
+            && matches_optional_filter(&query.complexity, &event.complexity)
+            && matches_optional_filter(&query.scope, &event.scope)
+            && matches_optional_filter(&query.risk, &event.risk)
+    });
     let rows: Vec<Value> = events
         .into_iter()
         .map(|event| {
@@ -752,11 +763,16 @@ fn performance_raw_events(workspace: &Path, limit: usize, warnings: &mut Vec<Str
     Value::Array(rows)
 }
 
-fn read_recent_jsonl<T: DeserializeOwned>(
+fn read_recent_jsonl<T, F>(
     path: &Path,
     limit: usize,
     warnings: &mut Vec<String>,
-) -> Vec<T> {
+    mut keep: F,
+) -> Vec<T>
+where
+    T: DeserializeOwned,
+    F: FnMut(&T) -> bool,
+{
     let Ok(content) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -767,10 +783,12 @@ fn read_recent_jsonl<T: DeserializeOwned>(
         }
         match serde_json::from_str::<T>(line) {
             Ok(value) => {
-                if rows.len() == limit {
-                    rows.pop_front();
+                if keep(&value) {
+                    if rows.len() == limit {
+                        rows.pop_front();
+                    }
+                    rows.push_back(value);
                 }
-                rows.push_back(value);
             }
             Err(_) => warnings.push(format!("event log row {index} is malformed")),
         }
@@ -782,10 +800,10 @@ fn access_health(home: &Path, stale_after_hours: u64) -> Value {
     let current_path = model_access_current_path_for_home(home);
     let events_path = model_access_events_path_for_home(home);
     match read_json_file::<ModelAccessDb>(&current_path) {
-        StoreRead::Absent => health_json("absent", 0, None, 0, &events_path),
-        StoreRead::Empty => health_json("empty", 0, None, 0, &events_path),
-        StoreRead::Malformed(_) => health_json("malformed", 0, None, 0, &events_path),
-        StoreRead::Unreadable(_) => health_json("partial", 0, None, 0, &events_path),
+        StoreRead::Absent => access_health_json("absent", 0, None, 0, &events_path),
+        StoreRead::Empty => access_health_json("empty", 0, None, 0, &events_path),
+        StoreRead::Malformed(_) => access_health_json("malformed", 0, None, 0, &events_path),
+        StoreRead::Unreadable(_) => access_health_json("unreadable", 0, None, 0, &events_path),
         StoreRead::Present(db) => {
             let latest = db.records.values().map(|record| record.last_checked).max();
             let stale_count = db
@@ -802,7 +820,7 @@ fn access_health(home: &Path, stale_after_hours: u64) -> Value {
             } else {
                 "present"
             };
-            health_json(status, db.records.len(), latest, stale_count, &events_path)
+            access_health_json(status, db.records.len(), latest, stale_count, &events_path)
         }
     }
 }
@@ -811,10 +829,10 @@ fn performance_health(workspace: &Path, stale_after_hours: u64) -> Value {
     let aggregate_path = model_performance_aggregates_path_for_workspace(workspace);
     let events_path = model_performance_events_path_for_workspace(workspace);
     match read_json_file::<ModelPerformanceDb>(&aggregate_path) {
-        StoreRead::Absent => health_json("absent", 0, None, 0, &events_path),
-        StoreRead::Empty => health_json("empty", 0, None, 0, &events_path),
-        StoreRead::Malformed(_) => health_json("malformed", 0, None, 0, &events_path),
-        StoreRead::Unreadable(_) => health_json("partial", 0, None, 0, &events_path),
+        StoreRead::Absent => performance_health_json("absent", 0, None, 0, &events_path),
+        StoreRead::Empty => performance_health_json("empty", 0, None, 0, &events_path),
+        StoreRead::Malformed(_) => performance_health_json("malformed", 0, None, 0, &events_path),
+        StoreRead::Unreadable(_) => performance_health_json("unreadable", 0, None, 0, &events_path),
         StoreRead::Present(db) => {
             let latest = db
                 .aggregates
@@ -840,7 +858,7 @@ fn performance_health(workspace: &Path, stale_after_hours: u64) -> Value {
             } else {
                 "present"
             };
-            health_json(
+            performance_health_json(
                 status,
                 db.aggregates.len(),
                 latest,
@@ -851,7 +869,7 @@ fn performance_health(workspace: &Path, stale_after_hours: u64) -> Value {
     }
 }
 
-fn health_json(
+fn access_health_json(
     status: &str,
     count: usize,
     latest: Option<DateTime<Utc>>,
@@ -859,10 +877,29 @@ fn health_json(
     events_path: &Path,
 ) -> Value {
     serde_json::json!({
-        "status": status,
-        "count": count,
-        "latest_timestamp": latest,
-        "stale_count": stale_count,
+        "scope": "user_home_model_access",
+        "current_status": status,
+        "record_count": count,
+        "latest_checked": latest,
+        "stale_record_count": stale_count,
+        "events_status": file_status(events_path),
+        "event_log_size_bytes": file_size(events_path),
+    })
+}
+
+fn performance_health_json(
+    status: &str,
+    count: usize,
+    latest: Option<DateTime<Utc>>,
+    stale_count: usize,
+    events_path: &Path,
+) -> Value {
+    serde_json::json!({
+        "scope": "workspace_model_performance",
+        "aggregate_status": status,
+        "aggregate_count": count,
+        "latest_updated": latest,
+        "stale_aggregate_count": stale_count,
         "events_status": file_status(events_path),
         "event_log_size_bytes": file_size(events_path),
     })
@@ -871,10 +908,13 @@ fn health_json(
 fn combined_health_status(home: &Path, workspace: &Path, stale_after_hours: u64) -> &'static str {
     let access = access_health(home, stale_after_hours);
     let performance = performance_health(workspace, stale_after_hours);
-    let statuses = [access["status"].as_str(), performance["status"].as_str()];
+    let statuses = [
+        access["current_status"].as_str(),
+        performance["aggregate_status"].as_str(),
+    ];
     if statuses.contains(&Some("malformed")) {
         "malformed"
-    } else if statuses.contains(&Some("partial")) {
+    } else if statuses.contains(&Some("partial")) || statuses.contains(&Some("unreadable")) {
         "partial"
     } else if statuses.contains(&Some("stale")) {
         "stale"
@@ -912,6 +952,7 @@ fn duumbi_home() -> PathBuf {
 mod tests {
     use super::*;
     use crate::agents::model_access::{MODEL_ACCESS_PROBE_VERSION, ModelAccessRecord};
+    use crate::agents::model_performance::ModelCallOutcome;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -1122,6 +1163,191 @@ mod tests {
         assert_eq!(response["raw_events"][0]["model"], "model-11");
         assert!(!text.contains("sha256:secret"));
         assert!(!text.contains("provider message"));
+    }
+
+    #[test]
+    fn raw_access_events_honor_provider_and_model_filters() {
+        let temp = TempDir::new().expect("invariant: temp dir");
+        let events_path = model_access_events_path_for_home(temp.path());
+        fs::create_dir_all(events_path.parent().expect("parent")).expect("create dir");
+        let events = [
+            ModelAccessEvent {
+                credential_fingerprint: "sha256:secret-a".to_string(),
+                provider: "minimax".to_string(),
+                model: "MiniMax-M2.7".to_string(),
+                status: ModelAccessStatus::Accessible,
+                reason_code: None,
+                message: None,
+                checked_at: checked_at(3),
+            },
+            ModelAccessEvent {
+                credential_fingerprint: "sha256:secret-b".to_string(),
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet".to_string(),
+                status: ModelAccessStatus::Accessible,
+                reason_code: None,
+                message: None,
+                checked_at: checked_at(2),
+            },
+            ModelAccessEvent {
+                credential_fingerprint: "sha256:secret-c".to_string(),
+                provider: "minimax".to_string(),
+                model: "MiniMax-M2.7".to_string(),
+                status: ModelAccessStatus::Denied,
+                reason_code: Some("quota".to_string()),
+                message: Some("provider message".to_string()),
+                checked_at: checked_at(1),
+            },
+        ];
+        let lines: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_string(event).expect("serialize event"))
+            .collect();
+        fs::write(&events_path, lines.join("\n")).expect("write events");
+
+        let response = model_access_summary_from_home(
+            temp.path(),
+            &Query::parse(
+                &serde_json::json!({
+                    "provider": "minimax",
+                    "model": "MiniMax-M2.7",
+                    "include_raw_events": true,
+                    "limit": 10
+                }),
+                QueryKind::Access,
+            )
+            .expect("valid query"),
+        )
+        .expect("summary");
+
+        let raw = response["raw_events"].as_array().expect("raw events");
+        assert_eq!(raw.len(), 2);
+        assert!(raw.iter().all(|row| row["provider"] == "minimax"));
+        assert!(raw.iter().all(|row| row["model"] == "MiniMax-M2.7"));
+        assert_eq!(raw[0]["status"], "denied");
+    }
+
+    #[test]
+    fn raw_performance_events_honor_task_profile_filters() {
+        let temp = TempDir::new().expect("invariant: temp dir");
+        let events_path = model_performance_events_path_for_workspace(temp.path());
+        fs::create_dir_all(events_path.parent().expect("parent")).expect("create dir");
+        let event = |provider: &str, task_type: &str, risk: &str, hours_ago| ModelCallEvent {
+            timestamp: checked_at(hours_ago),
+            provider: provider.to_string(),
+            model: "claude-sonnet".to_string(),
+            agent_role: Some("coder".to_string()),
+            template_version: Some("v1".to_string()),
+            task_type: Some(task_type.to_string()),
+            complexity: Some("simple".to_string()),
+            scope: Some("single".to_string()),
+            risk: Some(risk.to_string()),
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            reasoning_tokens: None,
+            latency_ms: Some(100),
+            first_token_latency_ms: Some(20),
+            cost_usd: Some(0.01),
+            tool_parse_success: true,
+            patch_count: 1,
+            validation_errors: vec!["E001".to_string()],
+            retries: 0,
+            outcome: ModelCallOutcome::Success,
+        };
+        let events = [
+            event("anthropic", "create", "high", 3),
+            event("anthropic", "fix", "high", 2),
+            event("minimax", "create", "high", 1),
+        ];
+        let lines: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_string(event).expect("serialize event"))
+            .collect();
+        fs::write(&events_path, lines.join("\n")).expect("write events");
+
+        let response = model_performance_summary_from_workspace(
+            temp.path(),
+            &Query::parse(
+                &serde_json::json!({
+                    "provider": "anthropic",
+                    "task_type": "create",
+                    "risk": "high",
+                    "include_raw_events": true,
+                    "limit": 10
+                }),
+                QueryKind::Performance,
+            )
+            .expect("valid query"),
+        )
+        .expect("summary");
+
+        let raw = response["raw_events"].as_array().expect("raw events");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0]["provider"], "anthropic");
+        assert_eq!(raw[0]["task_type"], "create");
+        assert_eq!(raw[0]["risk"], "high");
+        assert_eq!(raw[0]["validation_error_count"], 1);
+    }
+
+    #[test]
+    fn health_returns_documented_source_specific_fields() {
+        let temp = TempDir::new().expect("invariant: temp dir");
+        let mut access_records = HashMap::new();
+        access_records.insert(
+            "sha256:secret|minimax|MiniMax-M2.7".to_string(),
+            ModelAccessRecord {
+                credential_fingerprint: "sha256:secret".to_string(),
+                provider: "minimax".to_string(),
+                model: "MiniMax-M2.7".to_string(),
+                status: ModelAccessStatus::Accessible,
+                reason_code: None,
+                message: None,
+                probe_version: MODEL_ACCESS_PROBE_VERSION.to_string(),
+                last_checked: checked_at(1),
+                last_success: Some(checked_at(1)),
+            },
+        );
+        write_json(
+            &model_access_current_path_for_home(temp.path()),
+            &serde_json::to_value(ModelAccessDb {
+                records: access_records,
+            })
+            .expect("serialize access db"),
+        );
+
+        let performance = serde_json::json!({
+            "aggregates": {
+                "anthropic|claude-sonnet|coder|create|simple|single|high": {
+                    "calls": 1,
+                    "successes": 1,
+                    "failures": 0,
+                    "ewmaLatencyMs": 100.0,
+                    "ewmaCostUsd": 0.01,
+                    "parseFailures": 0,
+                    "validationFailures": 0,
+                    "retries": 0,
+                    "lastUpdated": Utc::now(),
+                }
+            }
+        });
+        write_json(
+            &model_performance_aggregates_path_for_workspace(temp.path()),
+            &performance,
+        );
+
+        let access = access_health(temp.path(), DEFAULT_STALE_AFTER_HOURS);
+        let performance = performance_health(temp.path(), DEFAULT_STALE_AFTER_HOURS);
+
+        assert_eq!(access["scope"], "user_home_model_access");
+        assert_eq!(access["current_status"], "present");
+        assert_eq!(access["record_count"], 1);
+        assert!(access["latest_checked"].is_string());
+        assert_eq!(access["stale_record_count"], 0);
+        assert_eq!(performance["scope"], "workspace_model_performance");
+        assert_eq!(performance["aggregate_status"], "present");
+        assert_eq!(performance["aggregate_count"], 1);
+        assert!(performance["latest_updated"].is_string());
+        assert_eq!(performance["stale_aggregate_count"], 0);
     }
 
     #[test]
