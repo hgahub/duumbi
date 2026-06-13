@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,24 @@ impl ModelPerformanceStore {
         };
         serde_json::from_str(&content).unwrap_or_default()
     }
+}
+
+/// Returns the workspace model-performance telemetry directory.
+#[must_use]
+pub fn model_performance_dir_for_workspace(workspace: &Path) -> PathBuf {
+    workspace.join(MODEL_PERFORMANCE_DIR)
+}
+
+/// Returns the workspace model-performance aggregate snapshot path.
+#[must_use]
+pub fn model_performance_aggregates_path_for_workspace(workspace: &Path) -> PathBuf {
+    model_performance_dir_for_workspace(workspace).join(AGGREGATES_FILE)
+}
+
+/// Returns the workspace model-performance append-only event log path.
+#[must_use]
+pub fn model_performance_events_path_for_workspace(workspace: &Path) -> PathBuf {
+    model_performance_dir_for_workspace(workspace).join(EVENTS_FILE)
 }
 
 fn aggregate_key(event: &ModelCallEvent) -> String {
