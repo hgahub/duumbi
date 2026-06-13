@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
@@ -773,15 +774,19 @@ where
     T: DeserializeOwned,
     F: FnMut(&T) -> bool,
 {
-    let Ok(content) = fs::read_to_string(path) else {
+    let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
     let mut rows = VecDeque::with_capacity(limit);
-    for (index, line) in content.lines().enumerate() {
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let Ok(line) = line else {
+            warnings.push(format!("event log row {index} is unreadable"));
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<T>(line) {
+        match serde_json::from_str::<T>(&line) {
             Ok(value) => {
                 if keep(&value) {
                     if rows.len() == limit {
