@@ -43,18 +43,16 @@ Before approving through the AI gate, verify all of these facts:
 - the technical spec PR is a spec-only PR and contains no implementation code or test edits
 - the technical spec PR is open, non-draft, review-clean, and ready for approval merge
 - Codex self-review has no blocking finding
-- each required automated reviewer has submitted actual, non-dismissed review
-  evidence; in this repository the default required reviewer is
-  `copilot-pull-request-reviewer` unless repository configuration states
-  otherwise. Greptile is manual-only and must not be treated as required unless
-  a human explicitly configured or requested it for this PR.
-- do not treat a successful review-request check, including `Request Copilot
-  Review`, as completed review evidence
+- any configured required reviewer has submitted actual, non-dismissed review
+  evidence; by default `DUUMBI_REQUIRED_SPEC_REVIEWERS` is empty and no
+  automated reviewer is required. Greptile must never be treated as required
+  and must not run on spec PRs.
+- do not treat a successful review-request check as completed review evidence
 - no latest automated or human review is `CHANGES_REQUESTED`
 - no review thread remains unresolved, including outdated threads after a fix
 - relevant checks are complete and passing, or the PR is documentation-only and checks are explicitly not applicable
 - the technical spec satisfies the Review Checklist below
-- the Ralph Cycle resource policy includes the USD 2, 10 external call, scope-expansion, risky-dependency, migration, security, blocker, and product/architecture decision gates
+- the Ralph Cycle resource policy includes the USD 1 external-LLM-cost, scope-expansion, risky-dependency, migration, security, blocker, and product/architecture decision gates, with no autonomous batch cap
 - no unresolved implementation, scope, architecture, security, migration, cost, or verification question remains
 - the spec stays inside the approved product spec and Stage 5 accepted issue scope
 - the decision will leave a durable `## Stage 9 AI Gate Decision` comment on the issue and a pointer comment on the spec PR
@@ -73,12 +71,11 @@ If any requirement is missing, fail closed: record a review report, route to `Te
 
 - Stage 9 always performs Codex implementability review against the checklist
   below.
-- File-based technical spec PR approval also requires required automated review
-  evidence, Copilot by default.
-- CodeRabbit and Greptile comments are advisory unless branch protection or an
-  explicit human instruction says otherwise.
-- Do not invoke Greptile from Stage 9 by default. Use it only for rare manual
-  escalation on high-risk architecture or implementation-plan questions.
+- There is no required automated reviewer for spec PRs. Quick low-cost
+  reviewer comments (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) are
+  advisory when present.
+- Do not invoke Greptile from Stage 9. Greptile is reserved for the final
+  implementation PR.
 
 ## Language Rules
 
@@ -103,7 +100,7 @@ When the prompt contains an explicit **Approve** decision (e.g. `Human decision:
 
 1. `gh issue view <N> --json number,title,labels,body` — verify `technical-spec-review` label is present
 2. `gh issue view <N> --comments --json comments` — find the Stage 8 Technical Spec Draft artifact link and product spec link from existing comments (search for "Stage 8 Technical Spec Draft" and "Stage 6 Product Spec Draft")
-3. Verify the technical spec PR is open, non-draft, changes only `specs/DUUMBI-<N>/TECHNICAL.md`, has green checks, Codex self-review with no blocking finding, actual non-dismissed required automated reviewer submissions, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
+3. Verify the technical spec PR is open, non-draft, changes only `specs/DUUMBI-<N>/TECHNICAL.md`, has green checks, Codex self-review with no blocking finding, no blocking review decisions, and no unresolved review threads, including outdated unresolved threads
 4. Squash-merge the technical spec PR with non-closing issue references such as `Related to #<N>`; do not close the execution issue
 5. Construct and post the Stage 9 Decision Comment on the issue (use the Decision Comment template below)
 6. Post a short pointer comment on the tech spec PR
@@ -157,8 +154,8 @@ Review the technical spec for:
 - invariants and out-of-bounds areas are explicit
 - BDD-to-test mapping covers every product-spec BDD scenario
 - live E2E plan names the canonical interface, provider path, credentials/env requirements, expected external LLM calls, cost estimate, commands, artifacts, and pass/fail criteria
-- Ralph Cycle Protocol uses the resource gate and permits low-budget autonomous cycles
-- cycle budget is small, bounded, resource-aware, and includes an autonomous batch cap
+- Ralph Cycle Protocol uses the resource gate and permits autonomous cycles without an iteration cap
+- cycle budget is bounded by the USD 1 external-LLM gate, scope, and risk rules rather than an iteration count
 - task breakdown is ordered and suitable for bounded implementation cycles
 - verification plan maps to product-spec `Checks` and technical completion criteria
 - completion criteria define what must be true before PR review
@@ -193,7 +190,7 @@ If no explicit human decision is present, write or return a review report and st
 - BDD-to-test mapping covers product BDD scenarios:
 - Live E2E plan is concrete and feasible:
 - Ralph cycle resource gate is correct:
-- Cycle budget and autonomous batch cap are bounded:
+- Cycle budget is bounded by cost, scope, and risk:
 - Task breakdown supports bounded cycles:
 - Verification plan maps to checks:
 - Completion criteria are clear:
@@ -253,10 +250,10 @@ For file-based technical specs, also comment on the PR with the same decision or
 For `Approve`:
 
 - require explicit human approval or a fully satisfied AI gate
-- require an open non-draft spec-only PR with green checks, Codex self-review with no blocking finding, actual non-dismissed required automated reviewer submissions, no blocking review decisions, and no unresolved review threads
-- fail closed if the only automated-review evidence is a successful reviewer
-  request workflow; the reviewer must have submitted a review or equivalent
-  configured evidence
+- require an open non-draft spec-only PR with green checks, Codex self-review with no blocking finding, no blocking review decisions, and no unresolved review threads
+- when a required reviewer is explicitly configured, fail closed if the only
+  evidence is a successful reviewer-request workflow; the reviewer must have
+  submitted a review or equivalent configured evidence
 - squash-merge the technical spec PR before moving the issue to `Ready for Build`
 - write the decision comment
 - comment on the technical spec PR when available

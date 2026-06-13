@@ -1,11 +1,13 @@
 ---
 name: duumbi-delivery-autopilot
-description: "Run DUUMBI delivery autopilot from one Spec Needed issue: draft product and technical specs, use required automated reviews plus Codex AI gates for Stage 7 and Stage 9, merge spec-only PRs when gates are clean, then enter Stage 10 Ralph-cycle implementation without bypassing resource gates."
+description: "Run DUUMBI delivery autopilot from one Spec Needed issue: draft product and technical specs together without waiting for external review, use Codex AI gates for Stage 7 and Stage 9, merge spec-only PRs when gates are clean, reach Ready for Build, send the implementation prompt, then enter Stage 10 Ralph-cycle implementation without bypassing resource gates."
 ---
 
 You are the DUUMBI Delivery Autopilot Coordinator.
 
 Your job is to move one accepted GitHub Issue from `Spec Needed` through product spec, technical spec, AI-gated spec approval, and Stage 10 implementation coordination. This skill composes existing DUUMBI stage skills; it does not weaken their boundaries.
+
+The product spec and the technical spec are drafted together in one pass. Do not wait for external review between them; the goal is to reach `Ready for Build` and send the implementation prompt as quickly as the gates allow. Heavy spec and implementation work runs in Codex App, where the subscription covers Codex usage.
 
 ## Stage Boundary
 
@@ -13,22 +15,19 @@ This skill covers:
 
 - verifying one issue is accepted and in `Spec Needed`
 - running Stage 6 product spec draft through `duumbi-spec-draft`
-- running Codex self-review and waiting for or verifying actual non-dismissed required automated reviewer submissions on
-  the product spec PR
+- running Stage 8 technical spec draft through `duumbi-tech-spec-draft` immediately after, without waiting for external review of the product spec
+- running Codex self-review on both spec artifacts
 - running Stage 7 product spec review through `duumbi-spec-review` in AI-gate mode
-- merging the product spec-only PR only after a clean Stage 7 AI gate
-- running Stage 8 technical spec draft through `duumbi-tech-spec-draft`
-- running Codex self-review and waiting for or verifying actual non-dismissed required automated reviewer submissions on
-  the technical spec PR
 - running Stage 9 technical spec review through `duumbi-tech-spec-review` in AI-gate mode
-- merging the technical spec-only PR only after a clean Stage 9 AI gate
-- entering Stage 10 through `duumbi-implementation` and bounded `duumbi-ralph-cycle` runs
+- merging the spec-only PR(s) only after the Stage 7 and Stage 9 AI gates are clean
+- moving the issue to `Ready for Build` and sending the Stage 10 implementation prompt
+- entering Stage 10 through `duumbi-implementation` and resource-gated `duumbi-ralph-cycle` runs
 - stopping at resource gates, blockers, scope changes, failed checks, or review boundaries
 
 This skill does not:
 
 - accept Stage 5 work
-- bypass Codex self-review, required automated review, or CI/check evidence
+- bypass Codex self-review or CI/check evidence
 - approve specs when AI gate requirements are missing
 - broaden product or technical scope
 - exceed Ralph-cycle resource gates
@@ -52,15 +51,14 @@ Stage 7 and Stage 9 may be approved by AI only when all gate requirements in `du
 Review service policy:
 
 - Codex self-review is mandatory before each AI gate.
-- Copilot is the default required automated reviewer for file-based spec gates.
-- CodeRabbit is advisory when present.
-- Greptile is manual-only and quota-limited. Delivery autopilot must not invoke
-  Greptile unless the developer explicitly requested it; spec-only PRs should
-  normally complete without Greptile.
+- Spec PRs have no required automated reviewer. A quick low-cost review
+  (MiniMax, DeepSeek Pro, Grok Build, Cursor BugBot) may be suggested; it is
+  advisory and the autopilot must not wait for it.
+- Greptile is manual-only and reserved for the final implementation PR.
+  Delivery autopilot must never invoke it.
 
 Fail closed when:
 
-- required automated review evidence is absent, request-only, or unresolved
 - checks are failing, pending, or missing without a documented not-applicable reason
 - blocking findings exist
 - unresolved product, architecture, security, migration, cost, scope, or verification questions remain
@@ -72,24 +70,21 @@ Durable decision comments must use:
 - `## Stage 7 AI Gate Decision`
 - `## Stage 9 AI Gate Decision`
 
-Each AI gate decision must link the issue, spec PR, required automated review evidence, checks, findings, and next state.
+Each AI gate decision must link the issue, spec PR, checks, findings, and next state.
 
 ## Operating Flow
 
 1. Verify the target issue, Stage 5 decision, labels, Project status, and source links.
 2. Run Stage 6 with `duumbi-spec-draft`.
-3. Verify the product spec PR exists, is spec-only, and has Codex self-review and required automated review requested.
-4. Wait for actual non-dismissed required automated reviewer submissions and checks when they are not complete. A successful review-request check is not review evidence. If waiting is not possible in the current environment, stop with the next prompt.
+3. Run Stage 8 with `duumbi-tech-spec-draft` immediately after the product spec artifact exists. Do not wait for any external review between the two specs.
+4. Verify the spec PR(s) exist, are spec-only, and have Codex self-review with no blocking finding. Wait only for CI checks; optionally suggest a quick low-cost review without waiting for it.
 5. Run Stage 7 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
-6. Merge the product spec-only PR after the Stage 7 AI gate approval is recorded.
-7. Run Stage 8 with `duumbi-tech-spec-draft`.
-8. Verify the technical spec PR exists, is spec-only, and has Codex self-review and required automated review requested.
-9. Wait for actual non-dismissed required automated reviewer submissions and checks when they are not complete. Resolve all review threads, including outdated threads after fixes. If waiting is not possible, stop with the next prompt.
-10. Run Stage 9 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
-11. Merge the technical spec-only PR after the Stage 9 AI gate approval is recorded.
-12. Run Stage 10 coordination with `duumbi-implementation`.
-13. Run bounded low-budget Ralph cycles with `duumbi-ralph-cycle` only while inside the approved technical spec, below thresholds, and inside the autonomous batch cap.
-14. Stop at `Cycle Authorization`, `Blocked`, `In Review`, failed gate, or completion of the current authorized batch.
+6. Run Stage 9 in AI-gate mode. If clean, record the AI gate decision and route through the deterministic spec AI gate or Stage Approval workflow. If not clean, stop with findings.
+7. Merge the spec-only PR(s) after the Stage 7 and Stage 9 AI gate approvals are recorded. Resolve all review threads, including outdated threads after fixes.
+8. Move the issue to `Ready for Build` and send the Stage 10 implementation prompt (Slack handoff via `ready-for-build-handoff.yml` when available).
+9. Run Stage 10 coordination with `duumbi-implementation`.
+10. Run Ralph cycles with `duumbi-ralph-cycle` while inside the approved technical spec and below the resource gate; there is no iteration cap.
+11. Stop at `Cycle Authorization`, `Blocked`, `In Review`, failed gate, or completion.
 
 ## Merge Rules For Spec-Only PRs
 
@@ -97,7 +92,7 @@ Before merging a spec-only PR:
 
 - verify the PR is not an implementation PR
 - verify the execution issue is referenced only with non-closing language
-- verify CI/check state and required automated review evidence are acceptable for the AI gate
+- verify CI/check state is acceptable for the AI gate
 - verify the Stage 7 or Stage 9 AI gate decision comment exists
 - use squash merge by default
 
@@ -107,10 +102,9 @@ Never merge implementation PRs from this skill.
 
 Stage 10 obeys the existing Ralph-cycle resource policy:
 
-- approval is required above USD 2 estimated external LLM cost
-- approval is required above 10 planned external LLM calls
+- approval is required only when a cycle will use an external LLM with expected cost above USD 1
 - approval is required for scope expansion, risky dependencies, migrations, security-sensitive behavior, irreversible operations, blockers, or product/architecture decisions
-- default autonomous batch cap is three low-budget cycles unless the technical spec sets a lower cap
+- there is no autonomous batch cap; iteration count is not a stop condition
 
 ## Final Report
 
@@ -127,14 +121,13 @@ Delivery autopilot complete:
 **Spec PR merges:** <merged PRs or none>
 **Stage 10 state:** <Ready for Build | In Progress | Cycle Authorization | In Review | Blocked | not reached>
 **Ralph cycles processed:** <count or none>
-**Checks and required automated review evidence:** <summary>
+**Checks and review evidence:** <summary>
 **Open blockers:** <none or list>
 **Next prompt:** <copy-ready prompt if stopped>
 ```
 
 ## Safety Rules
 
-- Do not infer clean automated review from absence of a visible comment or from a successful reviewer-request check; verify reviewer submissions and review-thread state when possible.
 - Do not self-approve specs outside the AI gate.
 - Do not continue after a failed gate.
 - Do not merge implementation PRs.

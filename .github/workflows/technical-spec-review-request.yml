@@ -56,7 +56,7 @@ jobs:
           INPUT_ISSUE_URL: ${{ inputs.issue_url || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || '' }}
           INPUT_STATUS: ${{ inputs.status || '' }}
-          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || 'copilot-pull-request-reviewer' }}
+          DUUMBI_REQUIRED_SPEC_REVIEWERS: ${{ vars.DUUMBI_REQUIRED_SPEC_REVIEWERS || '' }}
         with:
           script: |
             const marker = "<!-- duumbi-tech-spec-review-slack-notified -->";
@@ -159,10 +159,11 @@ jobs:
               return [...latest.values()];
             };
 
-            // Low-cost required review gate. Keep quota-limited manual reviewers
-            // such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
+            // Spec PRs have no required automated reviewer by default; the gate
+            // relies on Codex self-review plus checks. Keep quota-limited manual
+            // reviewers such as Greptile out of DUUMBI_REQUIRED_SPEC_REVIEWERS.
             const requiredAutomatedReviewers = () =>
-              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "copilot-pull-request-reviewer")
+              String(process.env.DUUMBI_REQUIRED_SPEC_REVIEWERS || "")
                 .split(",")
                 .map((reviewer) => reviewer.trim())
                 .filter(Boolean);

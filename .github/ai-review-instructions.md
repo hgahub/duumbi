@@ -1,10 +1,12 @@
-# Copilot Review Instructions for DUUMBI
+# AI Review Instructions for DUUMBI
 
 Review pull requests with emphasis on correctness, safety, and docs consistency.
-DUUMBI uses Copilot as the default automated PR reviewer. Codex self-review
-provides stage-aware evidence, and Greptile is manual-only for scarce high-risk
-deep reviews. Do not assume Greptile evidence is required unless a human asked
-for it.
+These instructions apply to any AI reviewer working on this repository: the
+Codex review (`@chatgpt-codex-connector`) required on final implementation PRs,
+optional quick low-cost reviewers (MiniMax, DeepSeek Pro, Grok Build, Cursor
+BugBot) on other PRs, and Greptile when manually requested on a final
+implementation PR. Codex self-review provides stage-aware evidence. Do not
+assume Greptile evidence is required unless a human asked for it.
 
 ## High-priority checks
 

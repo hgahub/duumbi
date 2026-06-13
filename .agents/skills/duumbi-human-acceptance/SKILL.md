@@ -183,7 +183,7 @@ For `Accept`:
 - add existing `accepted` and `needs-spec` labels when available
 - remove existing `needs-human-review` when available
 - do not create a product spec
-- next stage: Stage 6 Spec Preparation
+- next stage: combined spec drafting (Stage 6 product spec immediately followed by Stage 8 technical spec, no review wait between them); the user pastes the generated prompt into Codex App
 
 For `Needs Clarification`:
 
