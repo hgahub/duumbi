@@ -9,7 +9,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::agents::{AgentError, LlmProvider};
-use crate::intent::bdd::{default_feature_reference, load_bdd_report, render_default_feature};
+use crate::intent::bdd::{
+    default_feature_reference, load_bdd_report, render_default_feature, validate_bdd_feature_text,
+};
 use crate::intent::spec::{
     IntentBdd, IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase,
 };
@@ -666,7 +668,7 @@ pub async fn run_create_with_context(
     let feature_text = generated
         .bdd_feature
         .as_deref()
-        .filter(|feature| looks_like_feature(feature))
+        .filter(|feature| generated_bdd_feature_is_usable(&spec, &feature_reference, feature))
         .map(ToString::to_string)
         .unwrap_or_else(|| render_default_feature(&spec, &slug));
 
@@ -696,7 +698,7 @@ pub async fn run_create_with_context(
 
     let saved_feature = save_feature_file(workspace, &slug, &feature_reference, &feature_text)?;
     if let Err(e) = save_intent(workspace, &slug, &spec) {
-        let _ = std::fs::remove_file(&saved_feature);
+        rollback_saved_feature(&saved_feature);
         return Err(anyhow::anyhow!("{e}"));
     }
 
@@ -718,13 +720,30 @@ pub async fn run_create_with_context(
     Ok(slug)
 }
 
+fn generated_bdd_feature_is_usable(
+    spec: &IntentSpec,
+    feature_reference: &str,
+    feature: &str,
+) -> bool {
+    looks_like_feature(feature)
+        && !validate_bdd_feature_text(feature_reference, feature, &spec.test_cases).is_blocking()
+}
+
+struct SavedFeatureFile {
+    path: std::path::PathBuf,
+    slug_dir: std::path::PathBuf,
+    slug_dir_preexisted: bool,
+}
+
 fn save_feature_file(
     workspace: &Path,
     slug: &str,
     feature_reference: &str,
     feature_text: &str,
-) -> Result<std::path::PathBuf> {
-    let path = intents_dir(workspace).join(slug).join(feature_reference);
+) -> Result<SavedFeatureFile> {
+    let slug_dir = intents_dir(workspace).join(slug);
+    let slug_dir_preexisted = slug_dir.exists();
+    let path = slug_dir.join(feature_reference);
     let parent = path
         .parent()
         .context("BDD feature path must have a parent directory")?;
@@ -736,7 +755,19 @@ fn save_feature_file(
     })?;
     std::fs::write(&path, feature_text)
         .with_context(|| format!("Failed to write BDD feature file '{}'", path.display()))?;
-    Ok(path)
+    Ok(SavedFeatureFile {
+        path,
+        slug_dir,
+        slug_dir_preexisted,
+    })
+}
+
+fn rollback_saved_feature(saved: &SavedFeatureFile) {
+    if saved.slug_dir_preexisted {
+        let _ = std::fs::remove_file(&saved.path);
+    } else {
+        let _ = std::fs::remove_dir_all(&saved.slug_dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -830,6 +861,30 @@ mod tests {
                 .as_deref()
                 .expect("bdd feature")
                 .contains("Scenario: addition")
+        );
+    }
+
+    #[test]
+    fn unusable_generated_bdd_feature_is_rejected_before_save() {
+        let raw = r#"{
+  "acceptance_criteria": ["add(a, b) returns a+b"],
+  "modules_create": ["calculator/ops"],
+  "modules_modify": ["app/main"],
+  "test_cases": [{"name": "addition", "function": "add", "args": [3, 5], "expected_return": 8}],
+  "dependencies": [],
+  "bdd_feature": "Feature: Calculator Scenario: incomplete Given add behavior When add is called Then it returns 8"
+}"#;
+        let (spec, bdd_feature) =
+            parse_llm_response_artifacts("Build a calculator", raw).expect("must parse");
+
+        assert!(
+            bdd_feature
+                .as_deref()
+                .is_some_and(|feature| !generated_bdd_feature_is_usable(
+                    &spec,
+                    "features/calculator.feature",
+                    feature
+                ))
         );
     }
 
@@ -1008,6 +1063,24 @@ This intent creates an addition function that..."#;
         assert!(log.iter().any(|line| {
             line.contains("Intent saved as '.duumbi/intents/weak-generated-intent.yaml'")
         }));
+    }
+
+    #[test]
+    fn rollback_saved_feature_removes_new_slug_subtree() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let saved = save_feature_file(
+            tmp.path(),
+            "calculator",
+            "features/calculator.feature",
+            "Feature: Calculator\n\n  Scenario: addition\n    Given add behavior\n    When add is called\n    Then it returns 8\n",
+        )
+        .expect("feature saves");
+
+        assert!(saved.path.exists());
+
+        rollback_saved_feature(&saved);
+
+        assert!(!saved.slug_dir.exists());
     }
 
     #[tokio::test]

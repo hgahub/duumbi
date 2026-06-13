@@ -312,6 +312,46 @@ pub fn load_bdd_report(spec: &IntentSpec, workspace: &Path, slug: &str) -> BddRe
     }
 }
 
+/// Validates generated BDD feature text before it is persisted.
+#[must_use]
+pub fn validate_bdd_feature_text(
+    reference: &str,
+    contents: &str,
+    test_cases: &[TestCase],
+) -> BddReadinessReport {
+    let mut issues = Vec::new();
+    let mut feature_files = Vec::new();
+
+    if contents.trim().is_empty() {
+        issues.push(BddIssue::new(
+            "E_BDD_FILE_EMPTY",
+            IntentPreflightSeverity::Error,
+            "bdd_feature",
+            "generated BDD feature text is empty",
+            "use the deterministic default BDD feature instead",
+        ));
+    } else {
+        let parsed = parse_feature(
+            reference,
+            PathBuf::from(reference),
+            contents,
+            "bdd_feature",
+            &mut issues,
+        );
+        feature_files.push(parsed);
+    }
+
+    let readiness = readiness_from_issues(&issues);
+    let coverage = classify_bdd_coverage(&feature_files, test_cases, readiness);
+
+    BddReadinessReport {
+        readiness,
+        feature_files,
+        issues,
+        coverage,
+    }
+}
+
 /// Converts BDD readiness findings into preflight issues.
 #[must_use]
 pub fn preflight_issues_for_bdd(
@@ -356,6 +396,28 @@ pub fn render_bdd_report(report: &BddReadinessReport) -> Vec<String> {
             lines.push(format!(
                 "  ... {} more scenario(s)",
                 feature_file.scenarios.len() - DEFAULT_BDD_CONTEXT_LIMIT
+            ));
+        }
+    }
+
+    if !report.coverage.is_empty() {
+        lines.push("Coverage:".to_string());
+        for coverage in report.coverage.iter().take(DEFAULT_BDD_CONTEXT_LIMIT) {
+            let tests = if coverage.verifier_tests.is_empty() {
+                "no verifier tests".to_string()
+            } else {
+                format!("verifier tests: {}", coverage.verifier_tests.join(", "))
+            };
+            lines.push(format!(
+                "  {}: {} ({tests})",
+                coverage.scenario,
+                coverage.classification.label()
+            ));
+        }
+        if report.coverage.len() > DEFAULT_BDD_CONTEXT_LIMIT {
+            lines.push(format!(
+                "  ... {} more coverage classification(s)",
+                report.coverage.len() - DEFAULT_BDD_CONTEXT_LIMIT
             ));
         }
     }
@@ -651,6 +713,7 @@ fn finish_scenario(
             ),
             "add Given, When, and Then steps to the scenario",
         ));
+        return;
     }
     scenarios.push(scenario);
 }
@@ -858,6 +921,28 @@ mod tests {
     }
 
     #[test]
+    fn rendered_report_includes_coverage_classification() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        write_feature(
+            tmp.path(),
+            "calculator",
+            "features/calculator.feature",
+            "Feature: Calculator\n\n  Scenario: visible output\n    Given output behavior is required\n    When the program is run\n    Then it prints a result\n",
+        );
+        let spec = spec_with_bdd("features/calculator.feature");
+
+        let report = load_bdd_report(&spec, tmp.path(), "calculator");
+        let lines = render_bdd_report(&report);
+
+        assert!(lines.iter().any(|line| line == "Coverage:"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("broader-evidence-required"))
+        );
+    }
+
+    #[test]
     fn unsafe_path_blocks() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let spec = spec_with_bdd("../outside.feature");
@@ -928,6 +1013,26 @@ mod tests {
         let report = load_bdd_report(&spec, tmp.path(), "calculator");
 
         assert_eq!(report.readiness, BddReadiness::Blocked);
+        assert_eq!(report.scenario_count(), 0);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "E_BDD_SCENARIO_INCOMPLETE")
+        );
+    }
+
+    #[test]
+    fn generated_feature_text_validation_blocks_structurally_invalid_feature() {
+        let spec = spec_with_bdd("features/calculator.feature");
+        let report = validate_bdd_feature_text(
+            "features/calculator.feature",
+            "Feature: Calculator\nScenario: incomplete\nGiven add behavior\n",
+            &spec.test_cases,
+        );
+
+        assert_eq!(report.readiness, BddReadiness::Blocked);
+        assert_eq!(report.scenario_count(), 0);
         assert!(
             report
                 .issues

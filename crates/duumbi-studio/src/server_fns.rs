@@ -1298,14 +1298,15 @@ pub fn render_intent_detail_html(
         html.push_str("</ul>\n");
     }
 
-    let preflight = intent_preflight_lines(workspace, slug, spec);
+    let (preflight_report, bdd_report) =
+        duumbi::intent::preflight::run_preflight_for_intent_with_bdd(spec, workspace, slug);
+    let preflight = duumbi::intent::preflight::render_preflight_report(&preflight_report);
     if !preflight.is_empty() {
         html.push_str("<h2>Preflight</h2>\n<pre>");
         html.push_str(&escape_html(&preflight.join("\n")));
         html.push_str("</pre>\n");
     }
 
-    let bdd_report = duumbi::intent::bdd::load_bdd_report(spec, workspace, slug);
     let bdd_lines = duumbi::intent::bdd::render_bdd_report(&bdd_report);
     if !bdd_lines.is_empty() {
         html.push_str("<h2>BDD</h2>\n<pre>");

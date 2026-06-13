@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::bdd::load_bdd_report;
+use super::bdd::{BddReadinessReport, load_bdd_report};
 use super::spec::IntentSpec;
 use serde_json::Value;
 
@@ -202,6 +202,16 @@ pub fn run_preflight_for_intent(
     workspace: &Path,
     slug: &str,
 ) -> IntentPreflightReport {
+    run_preflight_for_intent_with_bdd(spec, workspace, slug).0
+}
+
+/// Runs slug-aware preflight and returns the BDD report used to build it.
+#[must_use]
+pub fn run_preflight_for_intent_with_bdd(
+    spec: &IntentSpec,
+    workspace: &Path,
+    slug: &str,
+) -> (IntentPreflightReport, BddReadinessReport) {
     let mut issues = collect_spec_issues(spec);
     let bdd_report = load_bdd_report(spec, workspace, slug);
     issues.extend(
@@ -213,7 +223,10 @@ pub fn run_preflight_for_intent(
     let reuse_candidates = collect_workspace_reuse_candidates(spec, workspace, &mut issues);
     let decomposition_hints = collect_decomposition_hints(spec);
 
-    IntentPreflightReport::from_parts(issues, reuse_candidates, decomposition_hints)
+    (
+        IntentPreflightReport::from_parts(issues, reuse_candidates, decomposition_hints),
+        bdd_report,
+    )
 }
 
 fn collect_spec_issues(spec: &IntentSpec) -> Vec<IntentPreflightIssue> {

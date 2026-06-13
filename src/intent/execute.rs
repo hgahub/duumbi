@@ -18,11 +18,11 @@ use crate::agents::assembler;
 use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
 use crate::context;
-use crate::intent::bdd::{
-    DEFAULT_BDD_CONTEXT_LIMIT, load_bdd_report, render_bdd_prompt_context, render_bdd_report,
-};
+use crate::intent::bdd::{DEFAULT_BDD_CONTEXT_LIMIT, render_bdd_prompt_context, render_bdd_report};
 use crate::intent::coordinator;
-use crate::intent::preflight::{render_preflight_report, run_preflight_for_intent};
+use crate::intent::preflight::{
+    render_preflight_report, run_preflight_for_intent, run_preflight_for_intent_with_bdd,
+};
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
@@ -130,7 +130,7 @@ pub async fn run_execute_with_progress(
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    let preflight = run_preflight_for_intent(&spec, workspace, slug);
+    let (preflight, bdd_report) = run_preflight_for_intent_with_bdd(&spec, workspace, slug);
     for line in render_preflight_report(&preflight) {
         emit!(line);
     }
@@ -138,7 +138,6 @@ pub async fn run_execute_with_progress(
         emit!("Preflight blocked execution before mutation side effects.".to_string());
         return Ok(false);
     }
-    let bdd_report = load_bdd_report(&spec, workspace, slug);
     let bdd_prompt_context = render_bdd_prompt_context(&bdd_report, DEFAULT_BDD_CONTEXT_LIMIT);
     for line in render_bdd_report(&bdd_report) {
         emit!(line);
