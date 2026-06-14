@@ -4,10 +4,13 @@
 //! completed intents to `.duumbi/intents/history/`.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::spec::{ExecutionMeta, IntentSpec, IntentStatus};
-use super::{IntentError, history_dir, intent_path, list_intents, load_intent, save_intent};
+use super::{
+    IntentError, history_dir, intent_companion_dir, intent_path, list_intents, load_intent,
+    save_intent,
+};
 
 // ---------------------------------------------------------------------------
 // Status display
@@ -77,7 +80,7 @@ pub fn print_status_detail(workspace: &Path, slug: &str) -> Result<(), IntentErr
 
 /// Archives a completed intent to `.duumbi/intents/history/<slug>.yaml`.
 ///
-/// Appends `execution` metadata to the archived copy and removes the active file.
+/// Appends `execution` metadata to the archived copy and removes active artifacts.
 pub fn archive_intent(
     workspace: &Path,
     slug: &str,
@@ -110,7 +113,32 @@ pub fn archive_intent(
         })?;
     }
 
+    let companion_path = intent_companion_dir(workspace, slug);
+    if companion_path.exists() {
+        let archived_companion_path = unique_archived_companion_path(&hist_dir, slug);
+        fs::rename(&companion_path, &archived_companion_path).map_err(|source| {
+            IntentError::Io {
+                path: companion_path.display().to_string(),
+                source,
+            }
+        })?;
+    }
+
     Ok(())
+}
+
+fn unique_archived_companion_path(hist_dir: &Path, slug: &str) -> PathBuf {
+    let base = hist_dir.join(slug);
+    if !base.exists() {
+        return base;
+    }
+    for counter in 2..=99 {
+        let candidate = hist_dir.join(format!("{slug}-{counter}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    hist_dir.join(format!("{slug}-{}", super::timestamp_suffix()))
 }
 
 /// Marks an intent as `Failed` and saves it in place (not archived).
@@ -128,6 +156,7 @@ pub fn mark_failed(workspace: &Path, slug: &str) -> Result<(), IntentError> {
 mod tests {
     use super::*;
     use crate::intent::spec::{IntentModules, IntentStatus};
+    use crate::intent::{intents_dir, unique_slug};
 
     fn minimal_spec(intent: &str) -> IntentSpec {
         IntentSpec {
@@ -138,6 +167,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,
@@ -161,6 +191,38 @@ mod tests {
         assert!(!intent_path(tmp.path(), "my-intent").exists());
         // History file must exist
         assert!(history_dir(tmp.path()).join("my-intent.yaml").exists());
+    }
+
+    #[test]
+    fn archive_moves_companion_dir_to_history() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        save_intent(tmp.path(), "my-intent", &minimal_spec("Build something")).expect("save");
+        let companion_dir = intents_dir(tmp.path()).join("my-intent");
+        fs::create_dir_all(companion_dir.join("features")).expect("companion dir");
+        fs::write(
+            companion_dir.join("features").join("my-intent.feature"),
+            "Feature: Build something",
+        )
+        .expect("feature");
+
+        let meta = ExecutionMeta {
+            completed_at: "2026-01-02T00:00:00Z".to_string(),
+            tasks_completed: 2,
+            tests_passed: 3,
+            tests_total: 3,
+        };
+        archive_intent(tmp.path(), "my-intent", meta).expect("archive");
+
+        assert!(!intent_path(tmp.path(), "my-intent").exists());
+        assert!(!intents_dir(tmp.path()).join("my-intent").exists());
+        assert!(
+            history_dir(tmp.path())
+                .join("my-intent")
+                .join("features")
+                .join("my-intent.feature")
+                .exists()
+        );
+        assert_eq!(unique_slug(tmp.path(), "my-intent"), "my-intent");
     }
 
     #[test]

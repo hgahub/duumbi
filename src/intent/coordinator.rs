@@ -12,6 +12,7 @@
 //! This gives a reliable, fast execution path that works without an API key.
 //! LLM-based decomposition will be added in a later milestone.
 
+use super::bdd::BDD_CONTEXT_UNAVAILABLE;
 use super::spec::{IntentSpec, Task, TaskKind, TaskStatus};
 
 /// Decomposes an [`IntentSpec`] into an ordered list of [`Task`]s.
@@ -19,8 +20,17 @@ use super::spec::{IntentSpec, Task, TaskKind, TaskStatus};
 /// Tasks are ordered so that dependencies are respected:
 /// modules are created before they are referenced by other tasks.
 pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
+    decompose_with_bdd_context(spec, &[])
+}
+
+/// Decomposes an [`IntentSpec`] with bounded BDD context available to tasks.
+///
+/// This keeps decomposition deterministic while allowing linked scenario-only
+/// behavior to appear in the execution plan before mutation begins.
+pub fn decompose_with_bdd_context(spec: &IntentSpec, bdd_context: &[String]) -> Vec<Task> {
     let mut tasks = Vec::new();
     let mut id = 1;
+    let bdd_hint = bdd_decomposition_hint(bdd_context);
 
     // Build a shared exports hint from all non-main test_case functions.
     // Used in both CreateModule and AddFunction tasks so the LLM is reminded
@@ -57,11 +67,11 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
 
         let description = if criteria_summary.is_empty() {
             format!(
-                "Create module '{module_name}' as described in the intent.{exports_hint}{algo_hint}"
+                "Create module '{module_name}' as described in the intent.{exports_hint}{algo_hint}{bdd_hint}"
             )
         } else {
             format!(
-                "Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}{algo_hint}"
+                "Create module '{module_name}'. Requirements: {criteria_summary}{exports_hint}{algo_hint}{bdd_hint}"
             )
         };
 
@@ -85,7 +95,7 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
 
         let criteria = spec.acceptance_criteria.join("; ");
         let description = format!(
-            "Modify module '{}' to satisfy the acceptance criteria: {}{exports_hint}",
+            "Modify module '{}' to satisfy the acceptance criteria: {}{exports_hint}{bdd_hint}",
             module_name, criteria,
         );
 
@@ -93,7 +103,7 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
             id,
             kind: TaskKind::AddFunction {
                 module_name: module_name.clone(),
-                description: format!("{criteria}{exports_hint}"),
+                description: format!("{criteria}{exports_hint}{bdd_hint}"),
             },
             description,
             status: TaskStatus::Pending,
@@ -141,8 +151,8 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
     let main_desc = if test_summary.is_empty() {
         format!(
             "Update the main function to demonstrate the implementation. Modules: {}. \
-             Demo main must return 0 after printing.",
-            all_modules.join(", ")
+             Demo main must return 0 after printing.{bdd_hint}",
+            all_modules.join(", "),
         )
     } else {
         format!(
@@ -162,7 +172,7 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
                op/2: StringFromI64(op/1)\n\
                op/3: StringConcat(op/0, op/2)\n\
                op/4: PrintString(op/3)\n\
-             This makes the output readable like: \"gcd(48, 18) = 6\"",
+             This makes the output readable like: \"gcd(48, 18) = 6\"{bdd_hint}",
         )
     };
 
@@ -176,6 +186,32 @@ pub fn decompose(spec: &IntentSpec) -> Vec<Task> {
     });
 
     tasks
+}
+
+fn bdd_decomposition_hint(bdd_context: &[String]) -> String {
+    let context = bounded_bdd_context(bdd_context);
+    if context.is_empty() {
+        String::new()
+    } else {
+        format!(" BDD scenario context: {context}")
+    }
+}
+
+fn bounded_bdd_context(bdd_context: &[String]) -> String {
+    if bdd_context.is_empty()
+        || bdd_context
+            .iter()
+            .any(|line| line == BDD_CONTEXT_UNAVAILABLE)
+    {
+        return String::new();
+    }
+    bdd_context
+        .iter()
+        .take(8)
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +368,7 @@ mod tests {
                 expected_return: 8,
             }],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -427,6 +464,7 @@ mod tests {
                 expected_return: 14,
             }],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -472,6 +510,7 @@ mod tests {
                 },
             ],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -515,6 +554,57 @@ mod tests {
     }
 
     #[test]
+    fn decompose_with_bdd_context_includes_scenarios_in_plan() {
+        let spec = sample_spec();
+        let bdd_context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Feature: Calculator".to_string(),
+            "- Scenario: addition with visible output".to_string(),
+            "  Given add behavior".to_string(),
+            "  When add is called".to_string(),
+            "  Then output includes the result".to_string(),
+        ];
+
+        let tasks = decompose_with_bdd_context(&spec, &bdd_context);
+
+        assert!(tasks.iter().any(|task| {
+            task.description.contains("BDD scenario context")
+                && task.description.contains("addition with visible output")
+        }));
+    }
+
+    #[test]
+    fn decompose_keeps_valid_unavailable_word_in_bdd_context() {
+        let spec = sample_spec();
+        let bdd_context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: service unavailable output".to_string(),
+            "  Then the service is unavailable".to_string(),
+        ];
+
+        let tasks = decompose_with_bdd_context(&spec, &bdd_context);
+
+        assert!(tasks.iter().any(|task| {
+            task.description.contains("BDD scenario context")
+                && task.description.contains("service is unavailable")
+        }));
+    }
+
+    #[test]
+    fn decompose_omits_exact_unavailable_bdd_context_sentinel() {
+        let spec = sample_spec();
+        let bdd_context = vec![BDD_CONTEXT_UNAVAILABLE.to_string()];
+
+        let tasks = decompose_with_bdd_context(&spec, &bdd_context);
+
+        assert!(
+            tasks
+                .iter()
+                .all(|task| !task.description.contains("BDD scenario context"))
+        );
+    }
+
+    #[test]
     fn empty_spec_generates_only_modify_main() {
         let spec = IntentSpec {
             intent: "Minimal".to_string(),
@@ -524,6 +614,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

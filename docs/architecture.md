@@ -285,7 +285,21 @@ test_cases:
     function: add
     args: [3, 5]
     expected_return: 8
+bdd:
+  feature_files:
+    - features/build-a-calculator.feature
 ```
+
+**BDD companion artifacts:** New executable intents also link plain-text
+Gherkin-style `.feature` files under `.duumbi/intents/<slug>/features/`. Users
+can inspect or edit these files with normal text editors. `intent review`,
+REPL/TUI, Studio, and `intent execute` recompute readiness from the current
+files. Missing BDD on older intents is warning-only. Broken explicit links,
+unreadable or non-UTF-8 files, empty files, or files without usable
+`Feature`/`Scenario`/`Given`/`When`/`Then` structure block execute before
+provider calls, status changes, snapshots, graph writes, learning, or archive
+side effects. BDD scenarios guide decomposition, prompts, repair context, and
+evidence mapping; they do not introduce Cucumber or replace i64 verifier tests.
 
 **Coordinator task order:** CreateModule → AddFunction (non-main) → ModifyMain
 

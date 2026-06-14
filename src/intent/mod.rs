@@ -20,6 +20,8 @@
 
 #![allow(dead_code)] // Progressively integrated as CLI commands are wired
 
+/// BDD/Gherkin companion artifact support for runtime intents.
+pub mod bdd;
 pub mod benchmarks;
 pub mod coordinator;
 pub mod create;
@@ -128,6 +130,11 @@ pub fn intent_path(workspace: &Path, slug: &str) -> PathBuf {
     intents_dir(workspace).join(format!("{slug}.yaml"))
 }
 
+/// Returns the path to an active intent companion artifact directory.
+pub(crate) fn intent_companion_dir(workspace: &Path, slug: &str) -> PathBuf {
+    intents_dir(workspace).join(slug)
+}
+
 /// Loads an intent spec by slug from `.duumbi/intents/<slug>.yaml`.
 #[must_use = "intent load errors should be handled"]
 pub fn load_intent(workspace: &Path, slug: &str) -> Result<IntentSpec, IntentError> {
@@ -179,10 +186,14 @@ pub fn delete_intent(workspace: &Path, slug: &str) -> Result<PathBuf, IntentErro
         source,
     })?;
 
-    let mut deleted_path = dir.join(format!("{slug}-{}.yaml", timestamp_suffix()));
+    let mut suffix = timestamp_suffix().to_string();
+    let mut deleted_path = dir.join(format!("{slug}-{suffix}.yaml"));
+    let mut deleted_companion_path = dir.join(format!("{slug}-{suffix}"));
     let mut counter = 2;
-    while deleted_path.exists() {
-        deleted_path = dir.join(format!("{slug}-{}-{counter}.yaml", timestamp_suffix()));
+    while deleted_path.exists() || deleted_companion_path.exists() {
+        suffix = format!("{}-{counter}", timestamp_suffix());
+        deleted_path = dir.join(format!("{slug}-{suffix}.yaml"));
+        deleted_companion_path = dir.join(format!("{slug}-{suffix}"));
         counter += 1;
     }
 
@@ -190,6 +201,15 @@ pub fn delete_intent(workspace: &Path, slug: &str) -> Result<PathBuf, IntentErro
         path: active_path.display().to_string(),
         source,
     })?;
+
+    let companion_path = intent_companion_dir(workspace, slug);
+    if companion_path.exists() {
+        fs::rename(&companion_path, &deleted_companion_path).map_err(|source| IntentError::Io {
+            path: companion_path.display().to_string(),
+            source,
+        })?;
+    }
+
     Ok(deleted_path)
 }
 
@@ -252,17 +272,20 @@ pub fn slugify(intent: &str) -> String {
 
 /// Makes a slug unique within `.duumbi/intents/` by appending a counter if needed.
 pub fn unique_slug(workspace: &Path, base_slug: &str) -> String {
-    let path = intent_path(workspace, base_slug);
-    if !path.exists() {
+    if !intent_artifact_exists(workspace, base_slug) {
         return base_slug.to_string();
     }
     for i in 2..=99 {
         let candidate = format!("{base_slug}-{i}");
-        if !intent_path(workspace, &candidate).exists() {
+        if !intent_artifact_exists(workspace, &candidate) {
             return candidate;
         }
     }
     format!("{base_slug}-{}", timestamp_suffix())
+}
+
+fn intent_artifact_exists(workspace: &Path, slug: &str) -> bool {
+    intent_path(workspace, slug).exists() || intent_companion_dir(workspace, slug).exists()
 }
 
 fn timestamp_suffix() -> u64 {
@@ -310,6 +333,7 @@ mod tests {
             },
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: Some("2026-01-01T00:00:00Z".to_string()),
             execution: None,
@@ -346,6 +370,7 @@ mod tests {
             modules: spec::IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -368,6 +393,7 @@ mod tests {
             modules: spec::IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -383,9 +409,59 @@ mod tests {
     }
 
     #[test]
+    fn delete_intent_moves_companion_dir_to_deleted_dir() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let spec = IntentSpec {
+            intent: "Delete me".to_string(),
+            version: 1,
+            status: spec::IntentStatus::Pending,
+            acceptance_criteria: vec![],
+            modules: spec::IntentModules::default(),
+            test_cases: vec![],
+            dependencies: vec![],
+            bdd: Default::default(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        save_intent(tmp.path(), "delete-me", &spec).expect("save");
+        let companion_dir = intent_companion_dir(tmp.path(), "delete-me");
+        fs::create_dir_all(companion_dir.join("features")).expect("companion dir");
+        fs::write(
+            companion_dir.join("features").join("delete-me.feature"),
+            "Feature: Delete me",
+        )
+        .expect("feature");
+
+        let deleted_path = delete_intent(tmp.path(), "delete-me").expect("delete");
+        let deleted_companion = deleted_path.with_extension("");
+
+        assert!(!intent_path(tmp.path(), "delete-me").exists());
+        assert!(!intent_companion_dir(tmp.path(), "delete-me").exists());
+        assert!(
+            deleted_companion
+                .join("features")
+                .join("delete-me.feature")
+                .exists()
+        );
+        assert_eq!(unique_slug(tmp.path(), "delete-me"), "delete-me");
+    }
+
+    #[test]
     fn unique_slug_no_conflict() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let slug = unique_slug(tmp.path(), "my-intent");
         assert_eq!(slug, "my-intent");
+    }
+
+    #[test]
+    fn unique_slug_conflicts_with_companion_directory() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let companion_dir = intents_dir(tmp.path()).join("my-intent");
+        fs::create_dir_all(companion_dir).expect("companion dir");
+
+        let slug = unique_slug(tmp.path(), "my-intent");
+
+        assert_eq!(slug, "my-intent-2");
     }
 }

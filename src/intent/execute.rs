@@ -18,8 +18,14 @@ use crate::agents::assembler;
 use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
 use crate::context;
+use crate::intent::bdd::{
+    BDD_CONTEXT_UNAVAILABLE, DEFAULT_BDD_CONTEXT_LIMIT, render_bdd_prompt_context,
+    render_bdd_report,
+};
 use crate::intent::coordinator;
-use crate::intent::preflight::{render_preflight_report, run_preflight};
+use crate::intent::preflight::{
+    render_preflight_report, run_preflight_for_intent, run_preflight_for_intent_with_bdd,
+};
 use crate::intent::spec::{ExecutionMeta, IntentSpec, IntentStatus, TaskKind, TaskStatus};
 use crate::intent::verifier;
 use crate::intent::{IntentError, load_intent, save_intent};
@@ -90,7 +96,7 @@ pub fn run_execute_blocking_preflight_with_progress(
     }
 
     let spec = load_intent(workspace, slug).map_err(anyhow::Error::new)?;
-    let preflight = run_preflight(&spec, workspace);
+    let preflight = run_preflight_for_intent(&spec, workspace, slug);
     if !preflight.is_blocking() {
         return Ok(false);
     }
@@ -127,13 +133,17 @@ pub async fn run_execute_with_progress(
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    let preflight = run_preflight(&spec, workspace);
+    let (preflight, bdd_report) = run_preflight_for_intent_with_bdd(&spec, workspace, slug);
     for line in render_preflight_report(&preflight) {
         emit!(line);
     }
     if preflight.is_blocking() {
         emit!("Preflight blocked execution before mutation side effects.".to_string());
         return Ok(false);
+    }
+    let bdd_prompt_context = render_bdd_prompt_context(&bdd_report, DEFAULT_BDD_CONTEXT_LIMIT);
+    for line in render_bdd_report(&bdd_report) {
+        emit!(line);
     }
 
     let provider_kind = crate::config::ProviderKind::from_provider_name(client.name());
@@ -168,7 +178,7 @@ pub async fn run_execute_with_progress(
         team.agents, team.strategy
     ));
 
-    let mut tasks = coordinator::decompose(&spec);
+    let mut tasks = coordinator::decompose_with_bdd_context(&spec, &bdd_prompt_context);
     let total = tasks.len();
     emit!(format!(
         "Plan ({total} task{}):",
@@ -203,7 +213,11 @@ pub async fn run_execute_with_progress(
             }
         };
 
-        let mut prompt = build_task_prompt(&spec, task.mutation_prompt().as_str());
+        let mut prompt = build_task_prompt_with_bdd_context(
+            &spec,
+            task.mutation_prompt().as_str(),
+            &bdd_prompt_context,
+        );
         // Intent execution is always multi-module: skip intra-module Call
         // validation for all tasks. Cross-module call resolution is handled
         // by Program::load and the verifier, not the single-module builder.
@@ -504,7 +518,8 @@ pub async fn run_execute_with_progress(
         ));
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
-        let repair_prompt = build_repair_prompt(&spec, &failed_details);
+        let repair_prompt =
+            build_repair_prompt_with_bdd_context(&spec, &failed_details, &bdd_prompt_context);
 
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
@@ -1003,6 +1018,14 @@ fn record_intent_failure(
 
 /// Builds the full mutation prompt for a task, including the intent context.
 fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
+    build_task_prompt_with_bdd_context(spec, task_prompt, &[])
+}
+
+fn build_task_prompt_with_bdd_context(
+    spec: &IntentSpec,
+    task_prompt: &str,
+    bdd_context: &[String],
+) -> String {
     let criteria = spec
         .acceptance_criteria
         .iter()
@@ -1017,16 +1040,26 @@ fn build_task_prompt(spec: &IntentSpec, task_prompt: &str) -> String {
         .unwrap_or_else(|| "No additional clarified context.".to_string());
     let benchmark_guidance =
         benchmark_guidance_section(&spec.intent, "Benchmark-specific guidance");
+    let bdd_section = bdd_prompt_section(bdd_context);
 
     format!(
-        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}{}\n\nCurrent task:\n{}",
-        spec.intent, context, criteria, benchmark_guidance, task_prompt
+        "Intent: \"{}\"\n\nClarified context:\n{}\n\nAcceptance criteria:\n{}{}{}\n\nCurrent task:\n{}",
+        spec.intent, context, criteria, benchmark_guidance, bdd_section, task_prompt
     )
 }
 
 fn build_repair_prompt(spec: &IntentSpec, failed_details: &[String]) -> String {
+    build_repair_prompt_with_bdd_context(spec, failed_details, &[])
+}
+
+fn build_repair_prompt_with_bdd_context(
+    spec: &IntentSpec,
+    failed_details: &[String],
+    bdd_context: &[String],
+) -> String {
     let benchmark_guidance =
         benchmark_guidance_section(&spec.intent, "Benchmark-specific repair guidance");
+    let bdd_section = bdd_prompt_section(bdd_context);
     format!(
         "REVIEW FIRST: Before making changes, inspect the semantic graph and identify \
          type errors, missing return ops, orphan references, unexported functions, \
@@ -1034,6 +1067,7 @@ fn build_repair_prompt(spec: &IntentSpec, failed_details: &[String]) -> String {
          The following test cases FAILED after intent execution. \
          Fix the graph so ALL tests pass.\n\n\
          Failed tests:\n{}\n\n\
+         Relevant BDD scenario context:\n{}\n\n\
          Common fixes:\n\
          - E010 (unresolved reference): add missing function name to duumbi:exports array\n\
          - Wrong return value: check the algorithm logic in the function's blocks\n\
@@ -1041,8 +1075,24 @@ fn build_repair_prompt(spec: &IntentSpec, failed_details: &[String]) -> String {
          Do NOT recreate functions that already work — only fix the broken behavior. \
          Use replace_block to rewrite blocks that produce wrong results.",
         failed_details.join("\n"),
+        if bdd_section.is_empty() {
+            "No direct BDD scenario context was available.".to_string()
+        } else {
+            bdd_section
+        },
         benchmark_guidance
     )
+}
+
+fn bdd_prompt_section(bdd_context: &[String]) -> String {
+    if bdd_context.is_empty()
+        || bdd_context
+            .iter()
+            .any(|line| line == BDD_CONTEXT_UNAVAILABLE)
+    {
+        return String::new();
+    }
+    format!("\n\n{}", bdd_context.join("\n"))
 }
 
 fn benchmark_guidance_section(intent: &str, heading: &str) -> String {
@@ -1217,6 +1267,7 @@ mod tests {
                 expected_return: 8,
             }],
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1240,6 +1291,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1290,6 +1342,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1367,6 +1420,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1387,6 +1441,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1410,6 +1465,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1422,6 +1478,50 @@ mod tests {
     }
 
     #[test]
+    fn build_task_prompt_includes_bdd_context() {
+        let spec = executable_spec();
+        let context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: addition".to_string(),
+            "  Given add behavior".to_string(),
+            "  When add is called".to_string(),
+            "  Then it returns 8".to_string(),
+        ];
+
+        let prompt = build_task_prompt_with_bdd_context(&spec, "Create module ops", &context);
+
+        assert!(prompt.contains("BDD scenario contract"));
+        assert!(prompt.contains("Scenario: addition"));
+        assert!(prompt.contains("Then it returns 8"));
+    }
+
+    #[test]
+    fn build_task_prompt_keeps_valid_unavailable_word_in_bdd_context() {
+        let spec = executable_spec();
+        let context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: service unavailable output".to_string(),
+            "  Then the service is unavailable".to_string(),
+        ];
+
+        let prompt = build_task_prompt_with_bdd_context(&spec, "Create module ops", &context);
+
+        assert!(prompt.contains("BDD scenario contract"));
+        assert!(prompt.contains("service is unavailable"));
+    }
+
+    #[test]
+    fn build_task_prompt_omits_exact_unavailable_bdd_context_sentinel() {
+        let spec = executable_spec();
+        let context = vec![BDD_CONTEXT_UNAVAILABLE.to_string()];
+
+        let prompt = build_task_prompt_with_bdd_context(&spec, "Create module ops", &context);
+
+        assert!(!prompt.contains(BDD_CONTEXT_UNAVAILABLE));
+        assert!(!prompt.contains("BDD scenario contract"));
+    }
+
+    #[test]
     fn repair_prompt_includes_string_utils_benchmark_guidance() {
         let spec = IntentSpec {
             intent: "Create a string utility library with functions: reverse a string, count vowels, check if palindrome. Demo all three in main.".to_string(),
@@ -1431,6 +1531,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: vec![],
             dependencies: vec![],
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1442,6 +1543,23 @@ mod tests {
         assert!(prompt.contains("Benchmark-specific repair guidance"));
         assert!(prompt.contains("Return ConstI64(0)"));
         assert!(prompt.contains("Do NOT recreate functions"));
+    }
+
+    #[test]
+    fn repair_prompt_includes_bdd_context() {
+        let spec = executable_spec();
+        let failed = vec!["- addition: add(3, 5) = 7 (expected 8)".to_string()];
+        let context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: addition".to_string(),
+            "  Then it returns 8".to_string(),
+        ];
+
+        let prompt = build_repair_prompt_with_bdd_context(&spec, &failed, &context);
+
+        assert!(prompt.contains("Relevant BDD scenario context"));
+        assert!(prompt.contains("Scenario: addition"));
+        assert!(prompt.contains("Then it returns 8"));
     }
 
     #[test]
@@ -1634,6 +1752,7 @@ mod tests {
             },
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1658,6 +1777,7 @@ mod tests {
                 expected_return: 0,
             }],
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1690,6 +1810,7 @@ mod tests {
                 expected_return: 0,
             }],
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

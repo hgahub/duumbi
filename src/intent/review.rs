@@ -6,7 +6,10 @@ use std::path::Path;
 
 use crate::config::parse_editor_command;
 
-use super::preflight::{render_preflight_report, run_preflight, run_spec_checks};
+use super::bdd::render_bdd_report;
+use super::preflight::{
+    render_preflight_report, run_preflight_for_intent_with_bdd, run_spec_checks,
+};
 use super::spec::{IntentSpec, IntentStatus};
 use super::{IntentError, list_intents, load_intent};
 
@@ -130,12 +133,21 @@ fn print_spec_detail_lines(slug: &str, spec: &IntentSpec, workspace: Option<&Pat
 
     eprintln!();
     eprintln!("Preflight:");
-    let report = workspace.map_or_else(
-        || run_spec_checks(spec),
-        |workspace| run_preflight(spec, workspace),
-    );
+    let (report, bdd_report) = if let Some(workspace) = workspace {
+        let (report, bdd_report) = run_preflight_for_intent_with_bdd(spec, workspace, slug);
+        (report, Some(bdd_report))
+    } else {
+        (run_spec_checks(spec), None)
+    };
     for line in render_preflight_report(&report) {
         eprintln!("  {line}");
+    }
+    if let Some(bdd_report) = bdd_report {
+        eprintln!();
+        eprintln!("BDD:");
+        for line in render_bdd_report(&bdd_report) {
+            eprintln!("  {line}");
+        }
     }
 
     if let Some(ref exec) = spec.execution {
@@ -238,12 +250,20 @@ fn format_spec_detail_with_preflight(
     }
 
     log.push("Preflight:".to_string());
-    let report = workspace.map_or_else(
-        || run_spec_checks(spec),
-        |workspace| run_preflight(spec, workspace),
-    );
+    let (report, bdd_report) = if let Some(workspace) = workspace {
+        let (report, bdd_report) = run_preflight_for_intent_with_bdd(spec, workspace, slug);
+        (report, Some(bdd_report))
+    } else {
+        (run_spec_checks(spec), None)
+    };
     for line in render_preflight_report(&report) {
         log.push(format!("  {line}"));
+    }
+    if let Some(bdd_report) = bdd_report {
+        log.push("BDD:".to_string());
+        for line in render_bdd_report(&bdd_report) {
+            log.push(format!("  {line}"));
+        }
     }
 }
 
@@ -337,6 +357,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

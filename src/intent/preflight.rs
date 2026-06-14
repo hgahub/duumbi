@@ -8,14 +8,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::bdd::{BddReadinessReport, load_bdd_report};
 use super::spec::IntentSpec;
 use serde_json::Value;
 
 /// Minimum score for a passing preflight report when no errors are present.
 pub const PASS_SCORE_THRESHOLD: u8 = 85;
-
-/// Minimum score for a warning preflight report when no errors are present.
-pub const WARN_SCORE_THRESHOLD: u8 = 60;
 
 const ERROR_SCORE_PENALTY: u8 = 45;
 const WARNING_SCORE_PENALTY: u8 = 20;
@@ -29,7 +27,7 @@ pub enum IntentPreflightReadiness {
     Pass,
     /// The spec has no errors but has warnings or a moderate readiness score.
     Warn,
-    /// The spec has an error or scores below the blocking threshold.
+    /// The spec has an error that must stop execution before side effects.
     Block,
 }
 
@@ -189,6 +187,43 @@ pub fn run_preflight(spec: &IntentSpec, workspace: &Path) -> IntentPreflightRepo
     let decomposition_hints = collect_decomposition_hints(spec);
 
     IntentPreflightReport::from_parts(issues, reuse_candidates, decomposition_hints)
+}
+
+/// Runs deterministic preflight checks for a persisted intent with a known slug.
+///
+/// This includes linked BDD feature-file readiness because intent-relative BDD
+/// paths cannot be resolved safely without the slug.
+#[must_use]
+pub fn run_preflight_for_intent(
+    spec: &IntentSpec,
+    workspace: &Path,
+    slug: &str,
+) -> IntentPreflightReport {
+    run_preflight_for_intent_with_bdd(spec, workspace, slug).0
+}
+
+/// Runs slug-aware preflight and returns the BDD report used to build it.
+#[must_use]
+pub fn run_preflight_for_intent_with_bdd(
+    spec: &IntentSpec,
+    workspace: &Path,
+    slug: &str,
+) -> (IntentPreflightReport, BddReadinessReport) {
+    let mut issues = collect_spec_issues(spec);
+    let bdd_report = load_bdd_report(spec, workspace, slug);
+    issues.extend(
+        bdd_report
+            .issues
+            .iter()
+            .map(super::bdd::BddIssue::to_preflight_issue),
+    );
+    let reuse_candidates = collect_workspace_reuse_candidates(spec, workspace, &mut issues);
+    let decomposition_hints = collect_decomposition_hints(spec);
+
+    (
+        IntentPreflightReport::from_parts(issues, reuse_candidates, decomposition_hints),
+        bdd_report,
+    )
 }
 
 fn collect_spec_issues(spec: &IntentSpec) -> Vec<IntentPreflightIssue> {
@@ -1101,7 +1136,7 @@ pub fn calculate_readiness(
     score: u8,
     highest_severity: Option<IntentPreflightSeverity>,
 ) -> IntentPreflightReadiness {
-    if highest_severity == Some(IntentPreflightSeverity::Error) || score < WARN_SCORE_THRESHOLD {
+    if highest_severity == Some(IntentPreflightSeverity::Error) {
         IntentPreflightReadiness::Block
     } else if score >= PASS_SCORE_THRESHOLD {
         IntentPreflightReadiness::Pass
@@ -1287,7 +1322,9 @@ fn dedup_preserving_order(values: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::spec::{IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase};
+    use crate::intent::spec::{
+        IntentBdd, IntentContext, IntentModules, IntentSpec, IntentStatus, TestCase,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -1324,6 +1361,7 @@ mod tests {
                 },
             ],
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,
@@ -1343,6 +1381,15 @@ mod tests {
         fs::create_dir_all(path.parent().expect("invariant: graph path has parent"))
             .expect("invariant: graph parent directory is creatable");
         fs::write(path, contents).expect("invariant: graph fixture is writable");
+    }
+
+    fn write_bdd_feature(workspace: &TempDir, slug: &str, relative_path: &str, contents: &str) {
+        let path = crate::intent::intents_dir(workspace.path())
+            .join(slug)
+            .join(relative_path);
+        fs::create_dir_all(path.parent().expect("invariant: feature path has parent"))
+            .expect("invariant: feature parent directory is creatable");
+        fs::write(path, contents).expect("invariant: feature fixture is writable");
     }
 
     fn graph_module_json(module_name: &str, functions: &[&str], exports: &[&str]) -> String {
@@ -1495,6 +1542,130 @@ mod tests {
 
         assert_eq!(report.readiness, IntentPreflightReadiness::Pass);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn slug_preflight_warns_when_bdd_missing() {
+        let workspace = TempDir::new().expect("tempdir");
+
+        let report = run_preflight_for_intent(&strong_spec(), workspace.path(), "calculator");
+
+        assert!(issue_codes(&report).contains(&"W_BDD_MISSING"));
+        assert_ne!(report.readiness, IntentPreflightReadiness::Block);
+    }
+
+    #[test]
+    fn slug_preflight_blocks_missing_linked_bdd() {
+        let workspace = TempDir::new().expect("tempdir");
+        let mut spec = strong_spec();
+        spec.bdd = IntentBdd {
+            feature_files: vec!["features/missing.feature".to_string()],
+        };
+
+        let report = run_preflight_for_intent(&spec, workspace.path(), "calculator");
+
+        assert!(issue_codes(&report).contains(&"E_BDD_FILE_MISSING"));
+        assert_eq!(report.readiness, IntentPreflightReadiness::Block);
+    }
+
+    #[test]
+    fn slug_preflight_accepts_valid_linked_bdd() {
+        let workspace = TempDir::new().expect("tempdir");
+        write_bdd_feature(
+            &workspace,
+            "calculator",
+            "features/calculator.feature",
+            "Feature: Calculator\n\n  Scenario: addition\n    Given add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8\n",
+        );
+        let mut spec = strong_spec();
+        spec.bdd = IntentBdd {
+            feature_files: vec!["features/calculator.feature".to_string()],
+        };
+
+        let report = run_preflight_for_intent(&spec, workspace.path(), "calculator");
+
+        assert!(!issue_codes(&report).contains(&"W_BDD_MISSING"));
+        assert!(!report.is_blocking());
+    }
+
+    #[test]
+    fn slug_preflight_warns_not_blocks_calculator_with_single_test_warnings() {
+        let workspace = TempDir::new().expect("tempdir");
+        write_bdd_feature(
+            &workspace,
+            "build-a-calculator-with-add-subtract-mul",
+            "features/build-a-calculator-with-add-subtract-mul.feature",
+            "Feature: Calculator\n\n  Scenario: add three five\n    Given the add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8\n",
+        );
+        let spec = IntentSpec {
+            intent: "Build a calculator with add, subtract, multiply, and divide functions that work on i64 numbers".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: vec![
+                "add(a, b) returns a + b for i64 values".to_string(),
+                "subtract(a, b) returns a - b for i64 values".to_string(),
+                "multiply(a, b) returns a * b for i64 values".to_string(),
+                "divide(a, b) returns a / b for i64 values".to_string(),
+                "main demonstrates the calculator functions".to_string(),
+            ],
+            modules: IntentModules {
+                create: vec!["calculator/ops".to_string()],
+                modify: vec!["app/main".to_string()],
+            },
+            test_cases: vec![
+                TestCase {
+                    name: "add_three_five".to_string(),
+                    function: "add".to_string(),
+                    args: vec![3, 5],
+                    expected_return: 8,
+                },
+                TestCase {
+                    name: "subtract_ten_three".to_string(),
+                    function: "subtract".to_string(),
+                    args: vec![10, 3],
+                    expected_return: 7,
+                },
+                TestCase {
+                    name: "multiply_four_six".to_string(),
+                    function: "multiply".to_string(),
+                    args: vec![4, 6],
+                    expected_return: 24,
+                },
+                TestCase {
+                    name: "divide_ten_two".to_string(),
+                    function: "divide".to_string(),
+                    args: vec![10, 2],
+                    expected_return: 5,
+                },
+                TestCase {
+                    name: "divide_ten_zero".to_string(),
+                    function: "divide".to_string(),
+                    args: vec![10, 0],
+                    expected_return: 0,
+                },
+            ],
+            dependencies: Vec::new(),
+            bdd: IntentBdd {
+                feature_files: vec![
+                    "features/build-a-calculator-with-add-subtract-mul.feature".to_string(),
+                ],
+            },
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+
+        let report = run_preflight_for_intent(
+            &spec,
+            workspace.path(),
+            "build-a-calculator-with-add-subtract-mul",
+        );
+
+        assert_eq!(report.readiness, IntentPreflightReadiness::Warn);
+        assert_eq!(report.score, 40);
+        assert!(!report.is_blocking());
+        assert!(issue_codes(&report).contains(&"W_SINGLE_TEST_CASE_FOR_FUNCTION"));
+        assert!(!issue_codes(&report).contains(&"W_BDD_MISSING"));
     }
 
     #[test]

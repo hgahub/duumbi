@@ -304,6 +304,7 @@ mod tests {
             modules: IntentModules::default(),
             test_cases: Vec::new(),
             dependencies: Vec::new(),
+            bdd: Default::default(),
             context: None,
             created_at: None,
             execution: None,

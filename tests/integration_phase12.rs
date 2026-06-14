@@ -388,6 +388,7 @@ fn kill_criterion_2_dynamic_assembly_multi_module() {
             },
         ],
         dependencies: vec![],
+        bdd: Default::default(),
         context: None,
         created_at: None,
         execution: None,

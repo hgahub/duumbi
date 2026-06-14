@@ -216,6 +216,7 @@ async fn studio_execute_api_blocked_preflight_does_not_need_provider() {
         modules: IntentModules::default(),
         test_cases: Vec::new(),
         dependencies: Vec::new(),
+        bdd: Default::default(),
         context: None,
         created_at: None,
         execution: None,
@@ -256,6 +257,7 @@ fn studio_intent_detail_html_includes_preflight_report() {
         modules: IntentModules::default(),
         test_cases: Vec::new(),
         dependencies: Vec::new(),
+        bdd: Default::default(),
         context: None,
         created_at: None,
         execution: None,
@@ -267,6 +269,48 @@ fn studio_intent_detail_html_includes_preflight_report() {
     assert!(html.contains("Preflight: BLOCK"));
     assert!(html.contains("E_NO_MODULE_TARGETS"));
     assert!(html.contains("window.__studio.executeIntent(&quot;weak&quot;)"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "ssr")]
+#[test]
+fn studio_intent_detail_html_includes_bdd_evidence() {
+    use duumbi::intent::spec::{IntentBdd, IntentModules, IntentSpec, IntentStatus};
+
+    let root = unique_temp_dir("duumbi-studio-bdd-detail");
+    let feature_path = root.join(".duumbi/intents/calculator/features/calculator.feature");
+    std::fs::create_dir_all(feature_path.parent().expect("feature parent")).expect("feature dir");
+    std::fs::write(
+        &feature_path,
+        "Feature: Calculator\n\n  Scenario: addition\n    Given add behavior\n    When add is called\n    Then it returns a sum\n",
+    )
+    .expect("write feature");
+    let spec = IntentSpec {
+        intent: "Build calculator".to_string(),
+        version: 1,
+        status: IntentStatus::Pending,
+        acceptance_criteria: vec!["add returns sums".to_string()],
+        modules: IntentModules {
+            create: vec!["calculator/ops".to_string()],
+            modify: vec!["app/main".to_string()],
+        },
+        test_cases: Vec::new(),
+        dependencies: Vec::new(),
+        bdd: IntentBdd {
+            feature_files: vec!["features/calculator.feature".to_string()],
+        },
+        context: None,
+        created_at: None,
+        execution: None,
+    };
+
+    let html = duumbi_studio::server_fns::render_intent_detail_html(&root, "calculator", &spec);
+
+    assert!(html.contains("<h2>BDD</h2>"));
+    assert!(html.contains("BDD readiness: READY"));
+    assert!(html.contains("features/calculator.feature"));
+    assert!(html.contains("Scenario: addition"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -285,6 +329,7 @@ fn studio_intent_detail_html_escapes_execute_slug_for_js_context() {
         modules: IntentModules::default(),
         test_cases: Vec::new(),
         dependencies: Vec::new(),
+        bdd: Default::default(),
         context: None,
         created_at: None,
         execution: None,
