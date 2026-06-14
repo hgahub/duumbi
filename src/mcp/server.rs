@@ -375,6 +375,81 @@ impl McpServer {
                     "additionalProperties": false
                 }),
             },
+            ToolDefinition {
+                name: "rewrite_list_rules".to_string(),
+                description: "Read-only semantic rewrite rule discovery. Does not read or write graph files, snapshots, config, credentials, registry cache, intents, or telemetry."
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "include_experimental": {
+                            "type": "boolean",
+                            "description": "Include preview-only experimental rules; defaults to true"
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
+                name: "rewrite_preview".to_string(),
+                description: "Read-only semantic rewrite preview for one rule and module. Parses, builds, validates, and matches without writing graph files or snapshots."
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["rule_id"],
+                    "properties": {
+                        "rule_id": {
+                            "type": "string",
+                            "description": "Stable rewrite rule ID"
+                        },
+                        "module": {
+                            "type": "string",
+                            "description": "Module name such as 'main', or a path to a .jsonld file; defaults to main"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Maximum matches to return, bounded by engine limits"
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            ToolDefinition {
+                name: "rewrite_apply".to_string(),
+                description: "Write-capable semantic rewrite apply. Reruns matching and validation, saves an undo snapshot, then writes only after the candidate graph validates."
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["rule_id"],
+                    "properties": {
+                        "rule_id": {
+                            "type": "string",
+                            "description": "Stable rewrite rule ID"
+                        },
+                        "module": {
+                            "type": "string",
+                            "description": "Module name such as 'main', or a path to a .jsonld file; defaults to main"
+                        },
+                        "match_id": {
+                            "type": "string",
+                            "description": "Selected match ID from rewrite_preview"
+                        },
+                        "all": {
+                            "type": "boolean",
+                            "description": "Apply all matches within the bounded max_matches setting"
+                        },
+                        "max_matches": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "description": "Maximum matches for all=true"
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            },
         ]
     }
 
@@ -454,6 +529,9 @@ impl McpServer {
             "model_telemetry_health" => {
                 tools::model_telemetry::model_telemetry_health(workspace, args)
             }
+            "rewrite_list_rules" => tools::rewrite::rewrite_list_rules(workspace, args),
+            "rewrite_preview" => tools::rewrite::rewrite_preview(workspace, args),
+            "rewrite_apply" => tools::rewrite::rewrite_apply(workspace, args),
             _ => {
                 return Err(JsonRpcError {
                     code: rpc_codes::METHOD_NOT_FOUND,
@@ -664,6 +742,9 @@ mod tests {
             "model_access_summary",
             "model_performance_summary",
             "model_telemetry_health",
+            "rewrite_list_rules",
+            "rewrite_preview",
+            "rewrite_apply",
         ];
 
         for name in &expected_names {
