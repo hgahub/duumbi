@@ -35,6 +35,13 @@ Download the archive for your platform from the
 [`v0.4.0-preview` release](https://github.com/hgahub/duumbi/releases/tag/v0.4.0-preview)
 and verify it with the published checksum file:
 
+For the archive install, Rust is not required to install DUUMBI itself. The
+smoke test below runs `duumbi build` and `duumbi run`, so it still needs the
+native build/link tools used when compiling DUUMBI programs: Xcode Command Line
+Tools or an equivalent C compiler/linker on macOS, and `build-essential` or an
+equivalent C compiler/linker on Linux. Linux systems also need the runtime
+linker dependencies used by the DUUMBI C runtime, including libcurl.
+
 ```bash
 DUUMBI_VERSION=v0.4.0-preview
 DUUMBI_TARGET=<target>
