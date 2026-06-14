@@ -46,11 +46,11 @@ jobs:
 
       # Build duumbi CLI (release)
       - name: Build duumbi CLI
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       # Build studio binary (release, SSR feature)
       - name: Build duumbi-studio
-        run: cargo build --release --target ${{ matrix.target }} -p duumbi-studio --features ssr
+        run: cargo build --locked --release --target ${{ matrix.target }} -p duumbi-studio --features ssr
 
       # Package the release archive
       - name: Package
@@ -70,6 +70,25 @@ jobs:
           tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
           echo "ARCHIVE=${ARCHIVE}.tar.gz" >> $GITHUB_ENV
 
+      - name: Validate archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="${ARCHIVE:?}"
+          ARCHIVE_DIR="${ARCHIVE%.tar.gz}"
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "${TMP_DIR}"' EXIT
+
+          test -s "${ARCHIVE}"
+          tar xzf "${ARCHIVE}" -C "${TMP_DIR}"
+          test -x "${TMP_DIR}/${ARCHIVE_DIR}/duumbi"
+          test -x "${TMP_DIR}/${ARCHIVE_DIR}/studio"
+          test -f "${TMP_DIR}/${ARCHIVE_DIR}/runtime/duumbi_runtime.c"
+          test -f "${TMP_DIR}/${ARCHIVE_DIR}/runtime/third_party/sqlite/sqlite3.c"
+          test -f "${TMP_DIR}/${ARCHIVE_DIR}/runtime/third_party/sqlite/sqlite3.h"
+          test -f "${TMP_DIR}/${ARCHIVE_DIR}/README.md"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -88,23 +107,49 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          archives=(duumbi-${GITHUB_REF_NAME}-*.tar.gz)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "No release archives found for ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+          sha256sum "${archives[@]}" > checksums.txt
+          cat checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
-          files: artifacts/*.tar.gz
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums.txt
           body: |
             ## DUUMBI ${{ github.ref_name }}
 
+            Developer preview release for early CLI and Studio testing.
+
             ### Installation
 
-            Download the archive for your platform, extract, and add to PATH:
+            Download the archive for your platform and verify it against `checksums.txt`:
 
             ```bash
+            shasum -a 256 --ignore-missing -c checksums.txt
             tar xzf duumbi-${{ github.ref_name }}-<target>.tar.gz
-            sudo cp duumbi-${{ github.ref_name }}-<target>/duumbi /usr/local/bin/
-            sudo cp duumbi-${{ github.ref_name }}-<target>/studio /usr/local/bin/
+            export PATH="$PWD/duumbi-${{ github.ref_name }}-<target>:$PATH"
+            duumbi --version
             ```
+
+            Keep the extracted release directory together. The CLI expects the packaged
+            `runtime/` tree beside the executable when linking native DUUMBI programs.
 
             ### What's included
 
@@ -115,9 +160,9 @@ jobs:
 
             ### Platforms
 
-            | Archive | Platform |
-            |---------|----------|
-            | `*-aarch64-apple-darwin.tar.gz` | macOS ARM (M1/M2/M3/M4) |
-            | `*-x86_64-apple-darwin.tar.gz` | macOS Intel |
-            | `*-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 |
-            | `*-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 |
+            | Archive | Platform | Status |
+            |---------|----------|--------|
+            | `*-aarch64-apple-darwin.tar.gz` | macOS ARM (M1/M2/M3/M4) | Required preview target |
+            | `*-x86_64-apple-darwin.tar.gz` | macOS Intel | Required preview target |
+            | `*-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 | Required preview target |
+            | `*-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 | Extra preview target |

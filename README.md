@@ -20,6 +20,44 @@ Traditional compilers transform text → AST → machine code. DUUMBI skips the 
 
 ## Install
 
+### Developer preview release
+
+DUUMBI `v0.4.0-preview` is distributed as prebuilt GitHub Release archives for:
+
+| Platform | Target | Status |
+|----------|--------|--------|
+| macOS Apple Silicon | `aarch64-apple-darwin` | Required preview target |
+| macOS Intel | `x86_64-apple-darwin` | Required preview target |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | Required preview target |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | Extra preview target |
+
+Download the archive for your platform from the
+[`v0.4.0-preview` release](https://github.com/hgahub/duumbi/releases/tag/v0.4.0-preview)
+and verify it with the published checksum file:
+
+```bash
+DUUMBI_VERSION=v0.4.0-preview
+DUUMBI_TARGET=<target>
+
+curl -LO "https://github.com/hgahub/duumbi/releases/download/${DUUMBI_VERSION}/duumbi-${DUUMBI_VERSION}-${DUUMBI_TARGET}.tar.gz"
+curl -LO "https://github.com/hgahub/duumbi/releases/download/${DUUMBI_VERSION}/checksums.txt"
+shasum -a 256 --ignore-missing -c checksums.txt
+
+tar xzf "duumbi-${DUUMBI_VERSION}-${DUUMBI_TARGET}.tar.gz"
+export PATH="$PWD/duumbi-${DUUMBI_VERSION}-${DUUMBI_TARGET}:$PATH"
+
+duumbi --version
+duumbi init smoke
+cd smoke
+duumbi build
+duumbi run
+```
+
+Keep the extracted release directory together. The CLI expects the packaged
+`runtime/` tree beside the executable when linking native DUUMBI programs.
+
+### Build from source
+
 **Requirements:**
 
 - Rust stable 1.80+ through `rustup`.
