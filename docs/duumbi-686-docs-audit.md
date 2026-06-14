@@ -14,7 +14,7 @@ in the canonical docs site.
 Canonical docs implementation evidence:
 
 - `hgahub/duumbi-web` main commit
-  `13446d30ab7d23f2ba7cd368e6912e707289be67`
+  `265195bd8b778409a5fafa199cac9da017a44d3d`
 - `npm run build` from `/Users/heizergabor/space/hgahub/duumbi-web/docs`
   succeeded after the docs updates.
 
@@ -86,8 +86,10 @@ Canonical docs implementation evidence:
 ## Deletion Preconditions
 
 - Useful mdbook content is represented in canonical Starlight docs.
-- Provider catalog, Query-first guidance, installation constraints, and
-  community/support paths are present in `duumbi-web/docs`.
+- Provider catalog, provider setup examples using the current `provider` field
+  and explicit `duumbi provider add <type> <api_key_env>` syntax, Query-first
+  guidance, installation constraints, and community/support paths are present
+  in `duumbi-web/docs`.
 - Active source-repo references no longer tell contributors to update
   `sites/docs/src/`.
 - Search checks are recorded in implementation evidence.
