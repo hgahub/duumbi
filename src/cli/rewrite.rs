@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -148,13 +149,15 @@ fn run_apply(
         }
     }
 
-    let snapshot_path = snapshot::save_snapshot(workspace, &source_str)
-        .context("Failed to save rewrite undo snapshot")?;
     let patched_str = serde_json::to_string_pretty(&outcome.candidate_source)
         .context("Failed to serialize rewritten graph")?;
-    fs::write(&module_path, patched_str).with_context(|| {
+    let temp_path = write_temp_candidate(&module_path, &patched_str)?;
+    let snapshot_path = snapshot::save_snapshot(workspace, &source_str)
+        .context("Failed to save rewrite undo snapshot")?;
+    fs::rename(&temp_path, &module_path).with_context(|| {
+        let _ = fs::remove_file(&temp_path);
         format!(
-            "Failed to write rewritten graph '{}'",
+            "Failed to replace rewritten graph '{}'",
             module_path.display()
         )
     })?;
@@ -194,6 +197,39 @@ fn read_module_source(path: &Path) -> Result<(String, serde_json::Value)> {
     let source = serde_json::from_str(&source_str)
         .with_context(|| format!("Failed to parse module '{}' as JSON", path.display()))?;
     Ok((source_str, source))
+}
+
+fn write_temp_candidate(module_path: &Path, contents: &str) -> Result<PathBuf> {
+    let parent = module_path.parent().with_context(|| {
+        format!(
+            "Module path '{}' has no parent directory",
+            module_path.display()
+        )
+    })?;
+    let file_name = module_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| {
+            format!(
+                "Module path '{}' has no valid file name",
+                module_path.display()
+            )
+        })?;
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("System clock error while creating rewrite temp file")?
+        .as_nanos();
+    let temp_path = parent.join(format!(".{file_name}.{unique}.tmp"));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .with_context(|| format!("Failed to create temp file '{}'", temp_path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("Failed to write temp file '{}'", temp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to sync temp file '{}'", temp_path.display()))?;
+    Ok(temp_path)
 }
 
 fn print_preview(preview: &RewritePreview) {

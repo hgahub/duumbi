@@ -258,13 +258,22 @@ fn rewrite_mcp_tools_are_discoverable_with_safety_descriptions() {
         .iter()
         .find(|tool| tool.name == "rewrite_preview")
         .expect("rewrite_preview must be listed");
+    let list = tools
+        .iter()
+        .find(|tool| tool.name == "rewrite_list_rules")
+        .expect("rewrite_list_rules must be listed");
     let apply = tools
         .iter()
         .find(|tool| tool.name == "rewrite_apply")
         .expect("rewrite_apply must be listed");
 
+    assert!(list.description.contains("Read-only"));
     assert!(preview.description.contains("Read-only"));
     assert!(apply.description.contains("Write-capable"));
+    assert_eq!(
+        list.input_schema["additionalProperties"],
+        serde_json::json!(false)
+    );
     assert_eq!(
         preview.input_schema["additionalProperties"],
         serde_json::json!(false)
@@ -298,6 +307,71 @@ fn rewrite_mcp_preview_is_read_only() {
         before
     );
     assert!(!tmp.path().join(".duumbi").join("history").exists());
+}
+
+#[test]
+fn rewrite_mcp_rejects_outside_workspace_module_paths() {
+    use duumbi::mcp::tools::rewrite;
+
+    let tmp = setup_workspace();
+    let outside = TempDir::new().expect("invariant: outside temp dir must be created");
+    let outside_graph = outside.path().join("outside.jsonld");
+    fs::write(&outside_graph, source_fixture().to_string())
+        .expect("invariant: outside graph must be written");
+    let outside_graph_arg = outside_graph
+        .to_str()
+        .expect("invariant: outside graph path is UTF-8");
+
+    let preview_err = rewrite::rewrite_preview(
+        tmp.path(),
+        &serde_json::json!({
+            "rule_id": "i64-add-zero-right",
+            "module": outside_graph_arg
+        }),
+    )
+    .expect_err("outside preview path must be rejected");
+    assert!(preview_err.contains("must stay inside workspace"));
+
+    let apply_err = rewrite::rewrite_apply(
+        tmp.path(),
+        &serde_json::json!({
+            "rule_id": "i64-add-zero-right",
+            "module": outside_graph_arg,
+            "match_id": "i64-add-zero-right:rewrite:duumbi:rewrite/main/entry/add:0"
+        }),
+    )
+    .expect_err("outside apply path must be rejected");
+    assert!(apply_err.contains("must stay inside workspace"));
+    assert!(!tmp.path().join(".duumbi").join("history").exists());
+}
+
+#[test]
+fn rewrite_mcp_rejects_workspace_relative_traversal_paths() {
+    use duumbi::mcp::tools::rewrite;
+
+    let tmp = setup_workspace();
+    let outside = TempDir::new().expect("invariant: outside temp dir must be created");
+    let outside_graph = outside.path().join("outside.jsonld");
+    fs::write(&outside_graph, source_fixture().to_string())
+        .expect("invariant: outside graph must be written");
+    let traversal = format!(
+        "../{}/outside.jsonld",
+        outside
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("invariant: temp dir name is UTF-8")
+    );
+
+    let err = rewrite::rewrite_preview(
+        tmp.path(),
+        &serde_json::json!({
+            "rule_id": "i64-add-zero-right",
+            "module": traversal
+        }),
+    )
+    .expect_err("workspace-relative traversal must be rejected");
+    assert!(err.contains("must stay inside workspace"));
 }
 
 #[test]

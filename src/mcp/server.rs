@@ -742,6 +742,9 @@ mod tests {
             "model_access_summary",
             "model_performance_summary",
             "model_telemetry_health",
+            "rewrite_list_rules",
+            "rewrite_preview",
+            "rewrite_apply",
         ];
 
         for name in &expected_names {
