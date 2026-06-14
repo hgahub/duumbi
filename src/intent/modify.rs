@@ -69,6 +69,7 @@ pub async fn modify_intent_with_llm(
     modified.status = current_spec.status.clone();
     modified.execution = current_spec.execution.clone();
     modified.context = current_spec.context.clone();
+    modified.bdd = current_spec.bdd.clone();
 
     Ok(modified)
 }
@@ -79,7 +80,47 @@ pub async fn modify_intent_with_llm(
 
 #[cfg(test)]
 mod tests {
-    use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TestCase};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use crate::agents::{AgentError, LlmProvider};
+    use crate::intent::spec::{IntentBdd, IntentModules, IntentSpec, IntentStatus, TestCase};
+    use crate::patch::PatchOp;
+
+    struct PlainMockProvider {
+        answer_text: &'static str,
+    }
+
+    impl LlmProvider for PlainMockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn call_with_tools<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn call_with_tools_streaming<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+            _on_text: &'a (dyn Fn(&str) + Send + Sync),
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
+            Box::pin(async { Err(AgentError::NoToolCalls) })
+        }
+
+        fn answer<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _user_message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
+            Box::pin(async move { Ok(self.answer_text.to_string()) })
+        }
+    }
 
     /// Builds a minimal spec for testing.
     fn sample_spec() -> IntentSpec {
@@ -131,5 +172,32 @@ mod tests {
         assert_eq!(spec.intent, "Build a calculator");
         assert_eq!(spec.test_cases.len(), 2);
         assert_eq!(spec.acceptance_criteria.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn modify_intent_with_llm_preserves_existing_bdd_links() {
+        let mut current = sample_spec();
+        current.bdd = IntentBdd {
+            feature_files: vec!["features/build-a-calculator.feature".to_string()],
+        };
+        let provider = PlainMockProvider {
+            answer_text: r#"{
+                "acceptance_criteria": ["add works", "sub works"],
+                "modules_create": ["calculator/ops"],
+                "modules_modify": ["app/main"],
+                "test_cases": [
+                    {"name": "add_test", "function": "add", "args": [1,2], "expected_return": 3},
+                    {"name": "sub_test", "function": "sub", "args": [5,3], "expected_return": 2}
+                ],
+                "dependencies": []
+            }"#,
+        };
+
+        let modified = super::modify_intent_with_llm(&provider, &current, "Add subtraction")
+            .await
+            .expect("modify intent");
+
+        assert_eq!(modified.bdd, current.bdd);
+        assert_eq!(modified.test_cases.len(), 2);
     }
 }
