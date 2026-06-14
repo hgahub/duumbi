@@ -27,7 +27,8 @@ Describe what changed and why.
 ## Docs Impact
 
 - [ ] No docs update needed
-- [ ] Updated docs under `sites/docs/src/`
+- [ ] Updated canonical public docs under `hgahub/duumbi-web/docs/src/content/docs/`
+- [ ] Updated source-repo internal docs under `docs/`
 - [ ] Docs follow-up issue created
 
 ## Notes for Reviewers

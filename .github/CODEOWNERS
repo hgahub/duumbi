@@ -14,7 +14,6 @@
 /src/agents/ @hgahub
 
 # Documentation
-/sites/docs/ @hgahub
 /docs/ @hgahub
 
 # GitHub workflows and policy

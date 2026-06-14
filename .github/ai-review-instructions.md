@@ -31,7 +31,10 @@ assume Greptile evidence is required unless a human asked for it.
 
 When PR changes CLI behavior, JSON-LD schema/types/ops, module/dependency behavior, or architecture:
 
-- Confirm docs are updated under `sites/docs/src/`.
+- Confirm canonical public docs are updated under
+  `hgahub/duumbi-web/docs/src/content/docs/` when user-facing behavior changes.
+- Confirm source-repo internal docs under `docs/` are updated when contributor,
+  automation, architecture, or testing guidance changes.
 - If docs are missing, request concrete doc updates and list target files.
 
 ## Review style
