@@ -254,17 +254,20 @@ pub fn slugify(intent: &str) -> String {
 
 /// Makes a slug unique within `.duumbi/intents/` by appending a counter if needed.
 pub fn unique_slug(workspace: &Path, base_slug: &str) -> String {
-    let path = intent_path(workspace, base_slug);
-    if !path.exists() {
+    if !intent_artifact_exists(workspace, base_slug) {
         return base_slug.to_string();
     }
     for i in 2..=99 {
         let candidate = format!("{base_slug}-{i}");
-        if !intent_path(workspace, &candidate).exists() {
+        if !intent_artifact_exists(workspace, &candidate) {
             return candidate;
         }
     }
     format!("{base_slug}-{}", timestamp_suffix())
+}
+
+fn intent_artifact_exists(workspace: &Path, slug: &str) -> bool {
+    intent_path(workspace, slug).exists() || intents_dir(workspace).join(slug).exists()
 }
 
 fn timestamp_suffix() -> u64 {
@@ -392,5 +395,16 @@ mod tests {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let slug = unique_slug(tmp.path(), "my-intent");
         assert_eq!(slug, "my-intent");
+    }
+
+    #[test]
+    fn unique_slug_conflicts_with_companion_directory() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let companion_dir = intents_dir(tmp.path()).join("my-intent");
+        fs::create_dir_all(companion_dir).expect("companion dir");
+
+        let slug = unique_slug(tmp.path(), "my-intent");
+
+        assert_eq!(slug, "my-intent-2");
     }
 }

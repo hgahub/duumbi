@@ -1065,6 +1065,51 @@ This intent creates an addition function that..."#;
         }));
     }
 
+    #[tokio::test]
+    async fn run_create_does_not_reuse_existing_companion_slug_directory() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let existing_feature = tmp
+            .path()
+            .join(".duumbi/intents/reused-description/features/reused-description.feature");
+        std::fs::create_dir_all(existing_feature.parent().expect("feature parent"))
+            .expect("create existing companion directory");
+        std::fs::write(&existing_feature, "old feature evidence")
+            .expect("write existing feature evidence");
+        let provider = PlainMockProvider {
+            answer_text: Some(
+                r#"{
+  "acceptance_criteria": ["add(a, b) returns a+b"],
+  "modules_create": ["calculator/ops"],
+  "modules_modify": ["app/main"],
+  "test_cases": [{"name": "addition", "function": "add", "args": [3, 5], "expected_return": 8}],
+  "dependencies": []
+}"#,
+            ),
+            tool_text: "",
+        };
+        let mut log = Vec::new();
+
+        let slug = run_create(&provider, tmp.path(), "Reused description", true, &mut log)
+            .await
+            .expect("create saves using a unique slug");
+
+        assert_eq!(slug, "reused-description-2");
+        assert_eq!(
+            std::fs::read_to_string(&existing_feature).expect("old feature remains readable"),
+            "old feature evidence"
+        );
+        assert!(
+            tmp.path()
+                .join(".duumbi/intents/reused-description-2.yaml")
+                .exists()
+        );
+        assert!(
+            tmp.path()
+                .join(".duumbi/intents/reused-description-2/features/reused-description-2.feature")
+                .exists()
+        );
+    }
+
     #[test]
     fn rollback_saved_feature_removes_new_slug_subtree() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
