@@ -92,6 +92,10 @@ duumbi check      # validate without compiling
 duumbi describe   # human-readable pseudo-code
 ```
 
+For a runnable reference program that combines HTTP, SQLite, and JSON, see
+[`examples/flagship-http-sqlite-json/`](examples/flagship-http-sqlite-json/)
+and the [examples guide](docs/examples.md).
+
 ---
 
 ## Query First

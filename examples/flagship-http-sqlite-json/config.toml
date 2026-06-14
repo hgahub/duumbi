@@ -1,0 +1,12 @@
+[workspace]
+name = "flagship-http-sqlite-json"
+namespace = "flagship"
+default-registry = "duumbi"
+
+[registries]
+duumbi = "https://registry.duumbi.dev"
+
+[dependencies]
+"@duumbi/stdlib-json" = "1.0.0"
+"@duumbi/stdlib-db" = "1.0.0"
+"@duumbi/stdlib-server" = "1.0.0"
