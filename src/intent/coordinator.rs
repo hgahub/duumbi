@@ -12,6 +12,7 @@
 //! This gives a reliable, fast execution path that works without an API key.
 //! LLM-based decomposition will be added in a later milestone.
 
+use super::bdd::BDD_CONTEXT_UNAVAILABLE;
 use super::spec::{IntentSpec, Task, TaskKind, TaskStatus};
 
 /// Decomposes an [`IntentSpec`] into an ordered list of [`Task`]s.
@@ -197,7 +198,11 @@ fn bdd_decomposition_hint(bdd_context: &[String]) -> String {
 }
 
 fn bounded_bdd_context(bdd_context: &[String]) -> String {
-    if bdd_context.is_empty() || bdd_context.iter().any(|line| line.contains("unavailable")) {
+    if bdd_context.is_empty()
+        || bdd_context
+            .iter()
+            .any(|line| line == BDD_CONTEXT_UNAVAILABLE)
+    {
         return String::new();
     }
     bdd_context
@@ -566,6 +571,37 @@ mod tests {
             task.description.contains("BDD scenario context")
                 && task.description.contains("addition with visible output")
         }));
+    }
+
+    #[test]
+    fn decompose_keeps_valid_unavailable_word_in_bdd_context() {
+        let spec = sample_spec();
+        let bdd_context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: service unavailable output".to_string(),
+            "  Then the service is unavailable".to_string(),
+        ];
+
+        let tasks = decompose_with_bdd_context(&spec, &bdd_context);
+
+        assert!(tasks.iter().any(|task| {
+            task.description.contains("BDD scenario context")
+                && task.description.contains("service is unavailable")
+        }));
+    }
+
+    #[test]
+    fn decompose_omits_exact_unavailable_bdd_context_sentinel() {
+        let spec = sample_spec();
+        let bdd_context = vec![BDD_CONTEXT_UNAVAILABLE.to_string()];
+
+        let tasks = decompose_with_bdd_context(&spec, &bdd_context);
+
+        assert!(
+            tasks
+                .iter()
+                .all(|task| !task.description.contains("BDD scenario context"))
+        );
     }
 
     #[test]

@@ -15,6 +15,9 @@ use super::spec::{IntentSpec, TestCase};
 /// Default prompt/rendering limit for BDD scenario context.
 pub const DEFAULT_BDD_CONTEXT_LIMIT: usize = 5;
 
+/// Exact sentinel emitted when no BDD prompt context is available.
+pub const BDD_CONTEXT_UNAVAILABLE: &str = "BDD scenario contract: unavailable";
+
 /// Readiness state for linked BDD artifacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BddReadiness {
@@ -245,10 +248,10 @@ pub fn render_default_feature(spec: &IntentSpec, slug: &str) -> String {
         return lines.join("\n") + "\n";
     }
 
-    for test_case in &spec.test_cases {
+    for (index, test_case) in spec.test_cases.iter().enumerate() {
         lines.push(format!(
             "  Scenario: {}",
-            humanize_identifier(&test_case.name)
+            test_case_scenario_title(test_case, index)
         ));
         lines.push(format!(
             "    Given the {} behavior is required",
@@ -440,7 +443,7 @@ pub fn render_bdd_report(report: &BddReadinessReport) -> Vec<String> {
 #[must_use]
 pub fn render_bdd_prompt_context(report: &BddReadinessReport, limit: usize) -> Vec<String> {
     if report.feature_files.is_empty() {
-        return vec!["BDD scenario contract: unavailable".to_string()];
+        return vec![BDD_CONTEXT_UNAVAILABLE.to_string()];
     }
 
     let limit = limit.max(1);
@@ -882,6 +885,20 @@ fn humanize_identifier(value: &str) -> String {
         .join(" ")
 }
 
+fn test_case_scenario_title(test_case: &TestCase, index: usize) -> String {
+    let name = humanize_identifier(&test_case.name);
+    if !name.is_empty() {
+        return name;
+    }
+
+    let function = humanize_identifier(&test_case.function);
+    if !function.is_empty() {
+        return format!("{function} behavior");
+    }
+
+    format!("Verifier case {}", index + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1152,6 +1169,31 @@ mod tests {
         assert!(feature.contains("Given "));
         assert!(feature.contains("When "));
         assert!(feature.contains("Then "));
+    }
+
+    #[test]
+    fn default_feature_uses_non_empty_scenario_title_for_separator_names() {
+        let mut spec = spec_with_bdd("features/calculator.feature");
+        spec.test_cases = vec![
+            TestCase {
+                name: "_-_".to_string(),
+                function: "add".to_string(),
+                args: vec![3, 5],
+                expected_return: 8,
+            },
+            TestCase {
+                name: "---".to_string(),
+                function: String::new(),
+                args: Vec::new(),
+                expected_return: 0,
+            },
+        ];
+
+        let feature = render_default_feature(&spec, "calculator");
+
+        assert!(feature.contains("Scenario: add behavior"));
+        assert!(feature.contains("Scenario: Verifier case 2"));
+        assert!(!feature.contains("Scenario: \n"));
     }
 
     #[test]

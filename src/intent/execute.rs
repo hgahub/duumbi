@@ -18,7 +18,10 @@ use crate::agents::assembler;
 use crate::agents::template::TemplateStore;
 use crate::agents::{LlmProvider, orchestrator};
 use crate::context;
-use crate::intent::bdd::{DEFAULT_BDD_CONTEXT_LIMIT, render_bdd_prompt_context, render_bdd_report};
+use crate::intent::bdd::{
+    BDD_CONTEXT_UNAVAILABLE, DEFAULT_BDD_CONTEXT_LIMIT, render_bdd_prompt_context,
+    render_bdd_report,
+};
 use crate::intent::coordinator;
 use crate::intent::preflight::{
     render_preflight_report, run_preflight_for_intent, run_preflight_for_intent_with_bdd,
@@ -1082,7 +1085,11 @@ fn build_repair_prompt_with_bdd_context(
 }
 
 fn bdd_prompt_section(bdd_context: &[String]) -> String {
-    if bdd_context.is_empty() || bdd_context.iter().any(|line| line.contains("unavailable")) {
+    if bdd_context.is_empty()
+        || bdd_context
+            .iter()
+            .any(|line| line == BDD_CONTEXT_UNAVAILABLE)
+    {
         return String::new();
     }
     format!("\n\n{}", bdd_context.join("\n"))
@@ -1486,6 +1493,32 @@ mod tests {
         assert!(prompt.contains("BDD scenario contract"));
         assert!(prompt.contains("Scenario: addition"));
         assert!(prompt.contains("Then it returns 8"));
+    }
+
+    #[test]
+    fn build_task_prompt_keeps_valid_unavailable_word_in_bdd_context() {
+        let spec = executable_spec();
+        let context = vec![
+            "BDD scenario contract:".to_string(),
+            "- Scenario: service unavailable output".to_string(),
+            "  Then the service is unavailable".to_string(),
+        ];
+
+        let prompt = build_task_prompt_with_bdd_context(&spec, "Create module ops", &context);
+
+        assert!(prompt.contains("BDD scenario contract"));
+        assert!(prompt.contains("service is unavailable"));
+    }
+
+    #[test]
+    fn build_task_prompt_omits_exact_unavailable_bdd_context_sentinel() {
+        let spec = executable_spec();
+        let context = vec![BDD_CONTEXT_UNAVAILABLE.to_string()];
+
+        let prompt = build_task_prompt_with_bdd_context(&spec, "Create module ops", &context);
+
+        assert!(!prompt.contains(BDD_CONTEXT_UNAVAILABLE));
+        assert!(!prompt.contains("BDD scenario contract"));
     }
 
     #[test]
