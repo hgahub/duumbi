@@ -291,6 +291,7 @@ pub fn load_bdd_report(spec: &IntentSpec, workspace: &Path, slug: &str) -> BddRe
         let field_path = format!("bdd.feature_files[{index}]");
         match resolve_feature_path(workspace, slug, reference, &field_path) {
             Ok(path) => load_feature_file(
+                workspace,
                 reference,
                 path,
                 &field_path,
@@ -515,6 +516,7 @@ fn resolve_feature_path(
 }
 
 fn load_feature_file(
+    workspace: &Path,
     reference: &str,
     path: PathBuf,
     field_path: &str,
@@ -533,6 +535,36 @@ fn load_feature_file(
             "create the linked .feature file or remove the broken reference",
         ));
         return;
+    }
+
+    match resolved_path_stays_under_intents(workspace, &path) {
+        Ok(true) => {}
+        Ok(false) => {
+            issues.push(BddIssue::new(
+                "E_BDD_PATH_UNSAFE",
+                IntentPreflightSeverity::Error,
+                field_path,
+                format!(
+                    "BDD feature path '{}' resolves outside .duumbi/intents/",
+                    path.display()
+                ),
+                "keep BDD files under .duumbi/intents/",
+            ));
+            return;
+        }
+        Err(_) => {
+            issues.push(BddIssue::new(
+                "E_BDD_FILE_UNREADABLE",
+                IntentPreflightSeverity::Error,
+                field_path,
+                format!(
+                    "linked BDD feature file '{}' could not be resolved",
+                    path.display()
+                ),
+                "make the .feature file readable under .duumbi/intents/",
+            ));
+            return;
+        }
     }
 
     let contents = match fs::read_to_string(&path) {
@@ -824,6 +856,12 @@ fn path_stays_under_intents(workspace: &Path, path: &Path) -> bool {
     path.starts_with(intents)
 }
 
+fn resolved_path_stays_under_intents(workspace: &Path, path: &Path) -> std::io::Result<bool> {
+    let intents = fs::canonicalize(intents_dir(workspace))?;
+    let resolved = fs::canonicalize(path)?;
+    Ok(resolved.starts_with(intents))
+}
+
 fn sentence_case_title(intent: &str, slug: &str) -> String {
     let trimmed = intent.trim();
     if trimmed.is_empty() {
@@ -946,6 +984,31 @@ mod tests {
     fn unsafe_path_blocks() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let spec = spec_with_bdd("../outside.feature");
+
+        let report = load_bdd_report(&spec, tmp.path(), "calculator");
+
+        assert_eq!(report.readiness, BddReadiness::Blocked);
+        assert_eq!(report.issues[0].code, "E_BDD_PATH_UNSAFE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_feature_resolving_outside_intents_blocks() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let outside = tmp.path().join("outside.feature");
+        fs::write(
+            &outside,
+            "Feature: Calculator\n\n  Scenario: addition\n    Given the add behavior is required\n    When add is called with [3, 5]\n    Then it returns 8\n",
+        )
+        .expect("outside feature");
+        let link = intents_dir(tmp.path())
+            .join("calculator")
+            .join("features")
+            .join("calculator.feature");
+        fs::create_dir_all(link.parent().expect("invariant: feature has parent"))
+            .expect("feature dir");
+        std::os::unix::fs::symlink(&outside, &link).expect("feature symlink");
+        let spec = spec_with_bdd("features/calculator.feature");
 
         let report = load_bdd_report(&spec, tmp.path(), "calculator");
 
