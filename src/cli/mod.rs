@@ -17,6 +17,7 @@ pub mod provider_startup;
 pub mod publish;
 pub mod registry;
 pub mod repl;
+pub mod rewrite;
 pub mod theme;
 pub mod upgrade;
 pub mod yank;
@@ -168,6 +169,13 @@ pub enum Commands {
 
     /// Undo the last AI mutation (restores from snapshot in `.duumbi/history/`).
     Undo,
+
+    /// Discover, preview, and explicitly apply semantic rewrite rules.
+    Rewrite {
+        /// Rewrite subcommand.
+        #[command(subcommand)]
+        subcommand: RewriteSubcommand,
+    },
 
     /// Manage local path dependencies declared in `.duumbi/config.toml`.
     Deps {
@@ -404,6 +412,58 @@ pub enum TelemetrySubcommand {
         /// Optional path for writing the repair validation evidence JSON.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+}
+
+/// Subcommands for `duumbi rewrite`.
+#[derive(Subcommand, Debug)]
+pub enum RewriteSubcommand {
+    /// List available rewrite rules.
+    List {
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Preview a rewrite rule without mutating the graph.
+    Preview {
+        /// Module name such as `main`, or a path to a `.jsonld` file.
+        #[arg(long)]
+        module: Option<String>,
+        /// Rewrite rule ID.
+        #[arg(long)]
+        rule: String,
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+        /// Maximum matches to return, bounded by rewrite limits.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Apply one selected rewrite match or bounded all-matches request.
+    Apply {
+        /// Module name such as `main`, or a path to a `.jsonld` file.
+        #[arg(long)]
+        module: Option<String>,
+        /// Rewrite rule ID.
+        #[arg(long)]
+        rule: String,
+        /// Selected match ID from preview.
+        #[arg(long = "match")]
+        match_id: Option<String>,
+        /// Apply all matches within the configured bound.
+        #[arg(long)]
+        all: bool,
+        /// Maximum matches for `--all`, bounded by rewrite limits.
+        #[arg(long)]
+        max_matches: Option<usize>,
+        /// Apply immediately without confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -806,6 +866,74 @@ mod tests {
             cli.command,
             Commands::Telemetry {
                 subcommand: TelemetrySubcommand::RepairValidate { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn rewrite_list_parses() {
+        let cli =
+            Cli::try_parse_from(["duumbi", "rewrite", "list", "--json"]).expect("CLI must parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Rewrite {
+                subcommand: RewriteSubcommand::List { json: true }
+            }
+        ));
+    }
+
+    #[test]
+    fn rewrite_preview_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "rewrite",
+            "preview",
+            "--module",
+            "main",
+            "--rule",
+            "i64-add-zero-right",
+            "--limit",
+            "5",
+            "--json",
+        ])
+        .expect("CLI must parse rewrite preview");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Rewrite {
+                subcommand: RewriteSubcommand::Preview {
+                    module: Some(_),
+                    rule,
+                    json: true,
+                    limit: Some(5),
+                }
+            } if rule == "i64-add-zero-right"
+        ));
+    }
+
+    #[test]
+    fn rewrite_apply_match_parses() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "rewrite",
+            "apply",
+            "--rule",
+            "i64-add-zero-right",
+            "--match",
+            "m1",
+            "--yes",
+        ])
+        .expect("CLI must parse rewrite apply");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Rewrite {
+                subcommand: RewriteSubcommand::Apply {
+                    match_id: Some(_),
+                    yes: true,
+                    ..
+                }
             }
         ));
     }
