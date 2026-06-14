@@ -11,18 +11,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-targets:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.targets.outputs.include }}
+    steps:
+      - id: targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_NAME}" = "v0.4.0-preview" ]; then
+            echo 'include=[{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"},{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'include=[{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-apple-darwin","os":"macos-13"},{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"},{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest"}]' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: release-targets
     strategy:
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-13
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+        include: ${{ fromJSON(needs.release-targets.outputs.include) }}
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -123,6 +132,61 @@ jobs:
           sha256sum "${archives[@]}" > checksums.txt
           cat checksums.txt
 
+      - name: Generate release body
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > artifacts/release-body.md <<'BODY'
+          ## DUUMBI ${{ github.ref_name }}
+
+          Developer preview release for early CLI and Studio testing.
+
+          ### Installation
+
+          Download the archive for your platform and verify it against `checksums.txt`:
+
+          ```bash
+          shasum -a 256 --ignore-missing -c checksums.txt
+          tar xzf duumbi-${{ github.ref_name }}-<target>.tar.gz
+          export PATH="$PWD/duumbi-${{ github.ref_name }}-<target>:$PATH"
+          duumbi --version
+          ```
+
+          Keep the extracted release directory together. The CLI expects the packaged
+          `runtime/` tree beside the executable when linking native DUUMBI programs.
+
+          ### What's included
+
+          - `duumbi` — CLI compiler, AI mutation, intent system, MCP server
+          - `studio` — Browser-based Studio (run with `duumbi studio`)
+          - `runtime/duumbi_runtime.c` — C runtime for linking compiled binaries
+          - `runtime/third_party/` — vendored native runtime sources required by the C runtime
+
+          ### Platforms
+
+          | Archive | Platform | Status |
+          |---------|----------|--------|
+          | `*-aarch64-apple-darwin.tar.gz` | macOS ARM (M1/M2/M3/M4) | Required preview target |
+          BODY
+
+          if [ "${GITHUB_REF_NAME}" != "v0.4.0-preview" ]; then
+            echo '| `*-x86_64-apple-darwin.tar.gz` | macOS Intel | Required target |' >> artifacts/release-body.md
+          fi
+
+          cat >> artifacts/release-body.md <<'BODY'
+          | `*-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 | Required preview target |
+          | `*-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 | Extra preview target |
+          BODY
+
+          if [ "${GITHUB_REF_NAME}" = "v0.4.0-preview" ]; then
+            cat >> artifacts/release-body.md <<'BODY'
+
+          macOS Intel (`x86_64-apple-darwin`) is not included in this
+          developer preview. Build from source on Intel Macs if needed.
+          BODY
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -132,37 +196,4 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
-          body: |
-            ## DUUMBI ${{ github.ref_name }}
-
-            Developer preview release for early CLI and Studio testing.
-
-            ### Installation
-
-            Download the archive for your platform and verify it against `checksums.txt`:
-
-            ```bash
-            shasum -a 256 --ignore-missing -c checksums.txt
-            tar xzf duumbi-${{ github.ref_name }}-<target>.tar.gz
-            export PATH="$PWD/duumbi-${{ github.ref_name }}-<target>:$PATH"
-            duumbi --version
-            ```
-
-            Keep the extracted release directory together. The CLI expects the packaged
-            `runtime/` tree beside the executable when linking native DUUMBI programs.
-
-            ### What's included
-
-            - `duumbi` — CLI compiler, AI mutation, intent system, MCP server
-            - `studio` — Browser-based Studio (run with `duumbi studio`)
-            - `runtime/duumbi_runtime.c` — C runtime for linking compiled binaries
-            - `runtime/third_party/` — vendored native runtime sources required by the C runtime
-
-            ### Platforms
-
-            | Archive | Platform | Status |
-            |---------|----------|--------|
-            | `*-aarch64-apple-darwin.tar.gz` | macOS ARM (M1/M2/M3/M4) | Required preview target |
-            | `*-x86_64-apple-darwin.tar.gz` | macOS Intel | Required preview target |
-            | `*-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 | Required preview target |
-            | `*-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 | Extra preview target |
+          body_path: artifacts/release-body.md
