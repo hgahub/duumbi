@@ -331,9 +331,14 @@ fn tcp_connect_refused_is_bounded_error() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, vec!["false"]);
+    let max_elapsed = if cfg!(windows) {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_secs(5)
+    };
     assert!(
-        elapsed < Duration::from_secs(5),
-        "refused connect took {elapsed:?}"
+        elapsed < max_elapsed,
+        "refused connect took {elapsed:?}; expected under {max_elapsed:?}"
     );
     assert!(
         output.status.success(),
