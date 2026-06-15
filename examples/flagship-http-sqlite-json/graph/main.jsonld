@@ -1,0 +1,572 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/ns/core#"
+  },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:main",
+  "duumbi:name": "main",
+  "duumbi:imports": [
+    {
+      "duumbi:module": "json",
+      "duumbi:path": "@duumbi/stdlib-json",
+      "duumbi:functions": [
+        "parse"
+      ]
+    },
+    {
+      "duumbi:module": "db",
+      "duumbi:path": "@duumbi/stdlib-db",
+      "duumbi:functions": [
+        "db_open",
+        "db_execute",
+        "db_query",
+        "db_rows_len",
+        "db_row_get",
+        "db_rows_free",
+        "db_close"
+      ]
+    },
+    {
+      "duumbi:module": "server",
+      "duumbi:path": "@duumbi/stdlib-server",
+      "duumbi:functions": [
+        "server_new",
+        "route_add_static",
+        "server_start",
+        "server_close"
+      ]
+    }
+  ],
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:main/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:main/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/db_path",
+              "duumbi:value": ":memory:",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/db_open_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_open",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/db_path"
+                }
+              ],
+              "duumbi:resultType": "result<db_connection,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/db_conn",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/db_open_result"
+              },
+              "duumbi:resultType": "db_connection"
+            },
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:main/main/entry/create_params",
+              "duumbi:resultType": "array<string>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/create_sql",
+              "duumbi:value": "create table facts(name text not null)",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/create_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_execute",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/db_conn"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/create_sql"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/create_params"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/create_changed",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/create_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:main/main/entry/insert_params",
+              "duumbi:resultType": "array<string>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/fact_value",
+              "duumbi:value": "Ada Lovelace",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:main/main/entry/insert_param_push",
+              "duumbi:array": {
+                "@id": "duumbi:main/main/entry/insert_params"
+              },
+              "duumbi:element": {
+                "@id": "duumbi:main/main/entry/fact_value"
+              }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/insert_sql",
+              "duumbi:value": "insert into facts(name) values (?)",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/insert_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_execute",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/db_conn"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/insert_sql"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/insert_params"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/insert_changed",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/insert_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:main/main/entry/select_params",
+              "duumbi:resultType": "array<string>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/select_sql",
+              "duumbi:value": "select name from facts order by rowid",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/select_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_query",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/db_conn"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/select_sql"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/select_params"
+                }
+              ],
+              "duumbi:resultType": "result<db_rows,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/rows",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/select_result"
+              },
+              "duumbi:resultType": "db_rows"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/rows_len_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_rows_len",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/rows"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/rows_len",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/rows_len_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/row_index",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/name_column",
+              "duumbi:value": "name",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/row_value_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_row_get",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/rows"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/row_index"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/name_column"
+                }
+              ],
+              "duumbi:resultType": "result<string,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/first_fact",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/row_value_result"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/rows_free_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_rows_free",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/rows"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/rows_free_code",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/rows_free_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/db_close_result",
+              "duumbi:module": "db",
+              "duumbi:function": "db_close",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/db_conn"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/db_close_code",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/db_close_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:StringFromI64",
+              "@id": "duumbi:main/main/entry/rows_len_text",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/rows_len"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/body_prefix",
+              "duumbi:value": "{\"service\":\"flagship-http-sqlite-json\",\"route\":\"/facts\",\"count\":",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:StringConcat",
+              "@id": "duumbi:main/main/entry/body_with_count",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/body_prefix"
+              },
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/rows_len_text"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/body_middle",
+              "duumbi:value": ",\"first_fact\":\"",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:StringConcat",
+              "@id": "duumbi:main/main/entry/body_before_fact",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/body_with_count"
+              },
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/body_middle"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:StringConcat",
+              "@id": "duumbi:main/main/entry/body_with_fact",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/body_before_fact"
+              },
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/first_fact"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/body_suffix",
+              "duumbi:value": "\",\"storage\":\"sqlite-memory\"}",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:StringConcat",
+              "@id": "duumbi:main/main/entry/body",
+              "duumbi:left": {
+                "@id": "duumbi:main/main/entry/body_with_fact"
+              },
+              "duumbi:right": {
+                "@id": "duumbi:main/main/entry/body_suffix"
+              },
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/host",
+              "duumbi:value": "127.0.0.1",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/port",
+              "duumbi:value": 39388,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/server_init_timeout",
+              "duumbi:value": 1000,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/server_new_result",
+              "duumbi:module": "server",
+              "duumbi:function": "server_new",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/host"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/port"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/server_init_timeout"
+                }
+              ],
+              "duumbi:resultType": "result<http_server,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/server",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/server_new_result"
+              },
+              "duumbi:resultType": "http_server"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/method",
+              "duumbi:value": "GET",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/path",
+              "duumbi:value": "/facts",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/status",
+              "duumbi:value": 200,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/headers_text",
+              "duumbi:value": "{\"Content-Type\":\"application/json\"}",
+              "duumbi:resultType": "string"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/headers_result",
+              "duumbi:module": "json",
+              "duumbi:function": "parse",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/headers_text"
+                }
+              ],
+              "duumbi:resultType": "result<json,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/headers",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/headers_result"
+              },
+              "duumbi:resultType": "json"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/route_result",
+              "duumbi:module": "server",
+              "duumbi:function": "route_add_static",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/server"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/method"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/path"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/status"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/headers"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/body"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/route_code",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/route_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/max_requests",
+              "duumbi:value": 1,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/serve_timeout",
+              "duumbi:value": 5000,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/start_result",
+              "duumbi:module": "server",
+              "duumbi:function": "server_start",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/server"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/max_requests"
+                },
+                {
+                  "@id": "duumbi:main/main/entry/serve_timeout"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/start_code",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/start_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Call",
+              "@id": "duumbi:main/main/entry/server_close_result",
+              "duumbi:module": "server",
+              "duumbi:function": "server_close",
+              "duumbi:args": [
+                {
+                  "@id": "duumbi:main/main/entry/server"
+                }
+              ],
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:ResultUnwrap",
+              "@id": "duumbi:main/main/entry/server_close_code",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/server_close_result"
+              },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:main/main/entry/return_zero",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:main/main/entry/return",
+              "duumbi:operand": {
+                "@id": "duumbi:main/main/entry/return_zero"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
