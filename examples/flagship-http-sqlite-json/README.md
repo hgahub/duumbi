@@ -44,7 +44,20 @@ cd workspace
 
 ../../../target/debug/duumbi run > /tmp/duumbi-flagship-example.log 2>&1 &
 server_pid=$!
-curl --max-time 2 http://127.0.0.1:39388/facts
+
+for attempt in $(seq 1 50); do
+  if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:39388/facts; then
+    break
+  fi
+  if [ "$attempt" -eq 50 ]; then
+    echo "server did not become ready" >&2
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" || true
+    exit 1
+  fi
+  sleep 0.1
+done
+
 wait "$server_pid"
 cat /tmp/duumbi-flagship-example.log
 ```

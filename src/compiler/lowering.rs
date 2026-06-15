@@ -613,6 +613,7 @@ fn make_func_signature(
 /// Returns the raw bytes of the native object file (Mach-O on macOS, ELF on
 /// Linux, COFF on Windows).
 /// For multi-module programs use [`compile_program`] instead.
+#[allow(dead_code)] // Public library API; the CLI uses compile_to_object_with_telemetry.
 #[must_use = "compilation errors should be handled"]
 pub fn compile_to_object(graph: &SemanticGraph) -> Result<Vec<u8>, CompileError> {
     compile_to_object_with_telemetry(graph, TelemetryBuildMode::Off)
