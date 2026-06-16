@@ -6,6 +6,7 @@
 use owo_colors::OwoColorize;
 use petgraph::visit::EdgeRef;
 
+use crate::contracts::EffectClass;
 use crate::graph::{GraphEdge, SemanticGraph};
 use crate::types::Op;
 
@@ -28,6 +29,17 @@ pub fn describe(graph: &SemanticGraph) {
             "->".cyan().bold(),
             func.return_type
         );
+        if !func.contracts.is_empty() {
+            println!(
+                "  {} effect={}, preconditions={}, postconditions={}, invariants={} {}",
+                "contracts:".cyan().bold(),
+                effect_label(&func.contracts.effect),
+                func.contracts.preconditions.len(),
+                func.contracts.postconditions.len(),
+                func.contracts.invariants.len(),
+                "(property evidence, not proof)".dimmed()
+            );
+        }
 
         for block in &func.blocks {
             println!("  {}{}", block.label.cyan().bold(), ":".cyan().bold(),);
@@ -170,6 +182,15 @@ fn describe_op(
         }
         // Phase 9a+ ops — use Display impl with magenta op name
         other => format!("{}", other.to_string().magenta()),
+    }
+}
+
+fn effect_label(effect: &EffectClass) -> &'static str {
+    match effect {
+        EffectClass::Unspecified => "unspecified",
+        EffectClass::Pure => "pure",
+        EffectClass::ReadOnlyDeterministic => "read_only_deterministic",
+        EffectClass::Effectful => "effectful",
     }
 }
 
@@ -382,5 +403,52 @@ mod tests {
             !out.contains('\u{1b}'),
             "plain output must not contain ANSI escapes"
         );
+    }
+
+    #[test]
+    fn describe_to_string_shows_contract_summary_without_proof_claim() {
+        let graph = make_graph(
+            r#"{
+                "@context": {"duumbi": "https://duumbi.dev/ns/core#"},
+                "@type": "duumbi:Module",
+                "@id": "duumbi:test",
+                "duumbi:name": "test",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:test/main",
+                    "duumbi:name": "main",
+                    "duumbi:returnType": "i64",
+                    "duumbi:contracts": {
+                        "duumbi:effect": "pure",
+                        "duumbi:postconditions": [{
+                            "duumbi:id": "result-nonnegative",
+                            "duumbi:expr": {
+                                "duumbi:op": ">=",
+                                "duumbi:left": {"duumbi:var": "result"},
+                                "duumbi:right": {"duumbi:const": 0}
+                            }
+                        }]
+                    },
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block",
+                        "@id": "duumbi:test/main/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:test/main/entry/0",
+                             "duumbi:value": 0, "duumbi:resultType": "i64"},
+                            {"@type": "duumbi:Return", "@id": "duumbi:test/main/entry/1",
+                             "duumbi:operand": {"@id": "duumbi:test/main/entry/0"}}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+        let out = describe_to_string(&graph);
+
+        assert!(
+            out.contains("contracts: effect=pure, preconditions=0, postconditions=1, invariants=0")
+        );
+        assert!(out.contains("property evidence, not proof"));
+        assert!(!out.contains("formally proved"));
     }
 }
