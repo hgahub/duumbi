@@ -6,10 +6,12 @@
 //! regression detection.
 
 use duumbi::bench::report::{
-    BenchmarkReport, BenchmarkResult, ErrorCategory, ProviderStats, ShowcaseSummary,
-    categorize_error, check_kill_criterion, detect_regressions,
+    BenchmarkReport, BenchmarkResult, ErrorCategory, ProviderStats, ProviderUsageSummary,
+    ShowcaseSummary, categorize_error, check_kill_criterion, detect_regressions,
 };
-use duumbi::bench::showcases::{self, ALL_SHOWCASES, parse_showcase};
+use duumbi::bench::showcases::{
+    self, ALL_SHOWCASES, SCALED_SHOWCASES, ShowcaseSuite, parse_showcase,
+};
 
 // ---------------------------------------------------------------------------
 // Showcase YAML parsing
@@ -134,6 +136,45 @@ fn filter_showcases_returns_empty_for_unknown_name() {
     assert!(filtered.is_empty());
 }
 
+#[test]
+fn scaled_showcases_parse_and_cover_required_features() {
+    assert!(
+        SCALED_SHOWCASES.len() >= 5,
+        "expected at least five scaled showcases"
+    );
+
+    let mut has_multi_function = false;
+    let mut has_cross_module = false;
+    let mut has_http_sqlite_json = false;
+
+    for showcase in SCALED_SHOWCASES {
+        let spec = parse_showcase(showcase)
+            .unwrap_or_else(|e| panic!("showcase '{}' failed to parse: {e}", showcase.name));
+        assert_eq!(showcase.suite, ShowcaseSuite::Scaled);
+        assert!(!spec.intent.is_empty());
+        has_multi_function |= showcase.tags.contains(&"multi_function");
+        has_cross_module |= showcase.tags.contains(&"cross_module");
+        has_http_sqlite_json |= showcase.tags.contains(&"http")
+            && showcase.tags.contains(&"sqlite")
+            && showcase.tags.contains(&"json");
+    }
+
+    assert!(has_multi_function);
+    assert!(has_cross_module);
+    assert!(has_http_sqlite_json);
+}
+
+#[test]
+fn scaled_smoke_subset_is_low_budget_and_includes_process_evidence() {
+    let smoke = showcases::filter_showcases_with_options(None, Some(ShowcaseSuite::Scaled), true);
+    let names: Vec<&str> = smoke.iter().map(|showcase| showcase.name).collect();
+
+    assert!(names.contains(&"scaled_math_pipeline"));
+    assert!(names.contains(&"scaled_cross_module_stats"));
+    assert!(names.contains(&"scaled_http_sqlite_json"));
+    assert!(smoke.iter().all(|showcase| showcase.smoke));
+}
+
 // ---------------------------------------------------------------------------
 // Error categorization
 // ---------------------------------------------------------------------------
@@ -253,9 +294,15 @@ fn categorize_error_logic_default() {
 fn make_result(showcase: &str, provider: &str, attempt: u32, success: bool) -> BenchmarkResult {
     BenchmarkResult {
         showcase: showcase.to_string(),
+        task_id: Some(showcase.to_string()),
+        suite: Some("core".to_string()),
+        tags: Vec::new(),
         provider: provider.to_string(),
         attempt,
         success,
+        first_pass_success: Some(success),
+        repair_attempted: false,
+        repair_success: None,
         error_category: if success {
             None
         } else {
@@ -266,6 +313,12 @@ fn make_result(showcase: &str, provider: &str, attempt: u32, success: bool) -> B
         } else {
             Some("test failed".to_string())
         },
+        dominant_error_code: None,
+        mutation_retry_count: None,
+        repair_retry_count: None,
+        total_retry_count: Some(0),
+        provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
+        evidence: None,
         tests_passed: if success { 4 } else { 2 },
         tests_total: 4,
         duration_secs: 3.5,
@@ -293,6 +346,11 @@ fn report_from_results_aggregates_correctly() {
     assert_eq!(calc.name, "calculator");
     assert_eq!(calc.total_attempts, 4);
     assert_eq!(calc.successes, 3);
+    assert_eq!(report.summary.total_results, 4);
+    assert_eq!(report.summary.successes, 3);
+    assert_eq!(report.summary.first_pass_attempts, 4);
+    assert_eq!(report.summary.first_pass_successes, 3);
+    assert_eq!(report.summary.usage_unavailable, 4);
 
     // Anthropic: 2/2 = 100%
     let anthropic = calc
@@ -311,6 +369,58 @@ fn report_from_results_aggregates_correctly() {
         .expect("openai");
     assert_eq!(openai.successes, 1);
     assert!((openai.success_rate - 0.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn report_summary_tracks_repair_usage_and_failure_patterns() {
+    let mut first_pass = make_result("scaled_math_pipeline", "minimax", 1, true);
+    first_pass.suite = Some("scaled".to_string());
+    first_pass.first_pass_success = Some(true);
+
+    let mut repaired = make_result("scaled_cross_module_stats", "minimax", 1, true);
+    repaired.suite = Some("scaled".to_string());
+    repaired.first_pass_success = Some(false);
+    repaired.repair_attempted = true;
+    repaired.repair_success = Some(true);
+    repaired.total_retry_count = Some(2);
+    repaired.provider_usage = ProviderUsageSummary {
+        available: true,
+        request_count: Some(3),
+        prompt_tokens: Some(1000),
+        completion_tokens: Some(250),
+        total_tokens: Some(1250),
+        estimated_cost_usd: Some(0.02),
+        unavailable_reason: None,
+    };
+
+    let mut failed = make_result("scaled_http_sqlite_json", "minimax", 1, false);
+    failed.suite = Some("scaled".to_string());
+    failed.error_category = Some(ErrorCategory::EvidenceRequired);
+    failed.dominant_error_code = Some("broader_evidence_required".to_string());
+
+    let report = BenchmarkReport::from_results(
+        vec![first_pass, repaired, failed],
+        1,
+        "2026-06-16T00:00:00Z".to_string(),
+        "2026-06-16T00:01:00Z".to_string(),
+    );
+
+    assert_eq!(report.summary.total_results, 3);
+    assert_eq!(report.summary.first_pass_successes, 1);
+    assert_eq!(report.summary.repair_attempts, 1);
+    assert_eq!(report.summary.repair_successes, 1);
+    assert_eq!(report.summary.total_retry_count, 2);
+    assert_eq!(report.summary.usage_available, 1);
+    assert_eq!(report.summary.usage_unavailable, 2);
+    assert_eq!(report.summary.total_estimated_cost_usd, Some(0.02));
+    assert_eq!(
+        report.summary.dominant_error_codes["broader_evidence_required"],
+        1
+    );
+    assert_eq!(
+        report.summary.top_failure_patterns[0].pattern,
+        "broader_evidence_required"
+    );
 }
 
 #[test]
@@ -579,6 +689,9 @@ fn error_category_serializes_as_snake_case() {
 
     let json = serde_json::to_string(&ErrorCategory::MutationFailed).expect("serialize");
     assert_eq!(json, "\"mutation_failed\"");
+
+    let json = serde_json::to_string(&ErrorCategory::EvidenceRequired).expect("serialize");
+    assert_eq!(json, "\"evidence_required\"");
 }
 
 #[test]
@@ -590,6 +703,7 @@ fn error_category_roundtrip() {
         ErrorCategory::Crash,
         ErrorCategory::ProviderError,
         ErrorCategory::MutationFailed,
+        ErrorCategory::EvidenceRequired,
     ] {
         let json = serde_json::to_string(&cat).expect("serialize");
         let parsed: ErrorCategory = serde_json::from_str(&json).expect("deserialize");

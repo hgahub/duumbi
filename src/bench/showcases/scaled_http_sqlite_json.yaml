@@ -1,0 +1,19 @@
+intent: "Build a bounded loopback HTTP JSON facts endpoint backed by in-memory SQLite using the accepted DUUMBI stdlib HTTP, DB, and JSON modules"
+version: 1
+status: pending
+acceptance_criteria:
+  - "The program binds only to loopback"
+  - "The program uses in-memory SQLite to store a deterministic fact"
+  - "The program returns JSON with service, route, count, first_fact, and storage fields"
+  - "The program serves one bounded request on /facts"
+  - "The eval report records process evidence or an explicit verification gap until HTTP JSON verification is automated"
+modules:
+  create:
+    - "services/facts"
+  modify:
+    - "app/main"
+test_cases: []
+dependencies:
+  - "@duumbi/stdlib-db"
+  - "@duumbi/stdlib-json"
+  - "@duumbi/stdlib-server"

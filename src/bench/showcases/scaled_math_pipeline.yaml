@@ -1,0 +1,27 @@
+intent: "Build a score pipeline module with normalize_delta, weighted_score, and final_score functions on i64 values"
+version: 1
+status: pending
+acceptance_criteria:
+  - "normalize_delta(current, previous) returns current - previous"
+  - "weighted_score(delta, weight) returns delta * weight"
+  - "final_score(current, previous, weight, offset) returns weighted_score(normalize_delta(current, previous), weight) + offset"
+  - "The functions are implemented as separate callable functions in one module"
+modules:
+  create:
+    - "metrics/pipeline"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "positive_delta"
+    function: "final_score"
+    args: [15, 10, 3, 2]
+    expected_return: 17
+  - name: "negative_delta"
+    function: "final_score"
+    args: [7, 12, 2, 4]
+    expected_return: -6
+  - name: "zero_delta"
+    function: "final_score"
+    args: [9, 9, 5, 11]
+    expected_return: 11
+dependencies: []

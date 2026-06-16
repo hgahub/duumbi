@@ -15,8 +15,10 @@ use std::time::Instant;
 
 use crate::agents::LlmProvider;
 use crate::agents::factory;
-use crate::bench::report::{BenchmarkResult, ErrorCategory, categorize_error};
-use crate::bench::showcases::{self, Showcase};
+use crate::bench::report::{
+    BenchmarkEvidence, BenchmarkResult, ErrorCategory, ProviderUsageSummary, categorize_error,
+};
+use crate::bench::showcases::{self, Showcase, ShowcaseSuite, ShowcaseVerification};
 use crate::config::ProviderConfig;
 use crate::intent;
 use crate::intent::spec::IntentStatus;
@@ -32,6 +34,10 @@ pub struct BenchmarkConfig {
     pub showcase_filter: Option<Vec<String>>,
     /// Optional provider name filter.
     pub provider_filter: Option<Vec<String>>,
+    /// Optional benchmark suite filter.
+    pub suite_filter: Option<ShowcaseSuite>,
+    /// Whether to run only the selected suite's low-budget smoke subset.
+    pub smoke: bool,
 }
 
 /// Runs the full benchmark suite.
@@ -53,8 +59,15 @@ pub async fn run_benchmark<F>(
 where
     F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync + 'static,
 {
-    let showcase_refs: Vec<&Showcase> =
-        showcases::filter_showcases(config.showcase_filter.as_deref());
+    let showcase_refs: Vec<&Showcase> = if config.suite_filter.is_none() && !config.smoke {
+        showcases::filter_showcases(config.showcase_filter.as_deref())
+    } else {
+        showcases::filter_showcases_with_options(
+            config.showcase_filter.as_deref(),
+            config.suite_filter,
+            config.smoke,
+        )
+    };
 
     if showcase_refs.is_empty() {
         return Err("no showcases match the given filter".to_string());
@@ -81,7 +94,7 @@ where
 
     let mut all_results: Vec<BenchmarkResult> = Vec::with_capacity(total_runs);
 
-    for showcase in &showcase_refs {
+    for showcase in showcase_refs {
         let spec =
             showcases::parse_showcase(showcase).map_err(|e| format!("invalid showcase: {e}"))?;
 
@@ -110,7 +123,7 @@ where
                     eprintln!("  [{showcase_name} / {prov_name}] attempt {attempt}/{attempts}",);
 
                     let result = run_single(
-                        showcase_name,
+                        showcase,
                         provider.as_ref(),
                         &spec_clone,
                         attempt,
@@ -164,7 +177,7 @@ where
 
 /// Runs a single benchmark attempt in an isolated temp workspace.
 async fn run_single<F>(
-    showcase_name: &str,
+    showcase: &Showcase,
     provider: &dyn LlmProvider,
     spec: &crate::intent::spec::IntentSpec,
     attempt: u32,
@@ -175,39 +188,115 @@ where
 {
     let start = Instant::now();
 
+    if let ShowcaseVerification::ProcessEvidence {
+        evidence_kind,
+        expected_route,
+        expected_json_fields,
+        verification_gap,
+    } = showcase.verification
+    {
+        return BenchmarkResult {
+            showcase: showcase.name.to_string(),
+            task_id: Some(showcase.name.to_string()),
+            suite: Some(showcase.suite.as_str().to_string()),
+            tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
+            provider: provider.name().to_string(),
+            attempt,
+            success: false,
+            first_pass_success: Some(false),
+            repair_attempted: false,
+            repair_success: None,
+            error_category: Some(ErrorCategory::EvidenceRequired),
+            error_message: Some(verification_gap.to_string()),
+            dominant_error_code: Some("broader_evidence_required".to_string()),
+            mutation_retry_count: None,
+            repair_retry_count: None,
+            total_retry_count: None,
+            provider_usage: ProviderUsageSummary::unavailable("process_evidence_not_executed"),
+            evidence: Some(BenchmarkEvidence {
+                kind: evidence_kind.to_string(),
+                status: "broader_evidence_required".to_string(),
+                detail: verification_gap.to_string(),
+                command: None,
+                expected_route: Some(expected_route.to_string()),
+                expected_json_fields: expected_json_fields
+                    .iter()
+                    .map(|field| (*field).to_string())
+                    .collect(),
+                verification_gap: Some(verification_gap.to_string()),
+                artifact_path: None,
+            }),
+            tests_passed: 0,
+            tests_total: spec.test_cases.len(),
+            duration_secs: start.elapsed().as_secs_f64(),
+        };
+    }
+
     let result = run_in_temp_workspace(provider, spec, init_workspace).await;
 
     let duration_secs = start.elapsed().as_secs_f64();
 
     match result {
-        Ok((tests_passed, tests_total)) => BenchmarkResult {
-            showcase: showcase_name.to_string(),
+        Ok(outcome) => BenchmarkResult {
+            showcase: showcase.name.to_string(),
+            task_id: Some(showcase.name.to_string()),
+            suite: Some(showcase.suite.as_str().to_string()),
+            tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
             provider: provider.name().to_string(),
             attempt,
-            success: tests_passed == tests_total,
-            error_category: if tests_passed < tests_total {
+            success: outcome.tests_passed == outcome.tests_total,
+            first_pass_success: Some(outcome.first_pass_success),
+            repair_attempted: outcome.repair_attempted,
+            repair_success: outcome.repair_success,
+            error_category: if outcome.tests_passed < outcome.tests_total {
                 Some(ErrorCategory::LogicError)
             } else {
                 None
             },
-            error_message: if tests_passed < tests_total {
-                Some(format!("only {tests_passed}/{tests_total} tests passed"))
+            error_message: if outcome.tests_passed < outcome.tests_total {
+                Some(format!(
+                    "only {}/{} tests passed",
+                    outcome.tests_passed, outcome.tests_total
+                ))
             } else {
                 None
             },
-            tests_passed,
-            tests_total,
+            dominant_error_code: outcome.dominant_error_code,
+            mutation_retry_count: outcome.mutation_retry_count,
+            repair_retry_count: outcome.repair_retry_count,
+            total_retry_count: outcome.total_retry_count,
+            provider_usage: ProviderUsageSummary::unavailable(
+                "provider_response_did_not_expose_usage",
+            ),
+            evidence: None,
+            tests_passed: outcome.tests_passed,
+            tests_total: outcome.tests_total,
             duration_secs,
         },
         Err(msg) => {
             let category = categorize_error(&msg);
+            let error_codes = extract_error_codes(&msg);
             BenchmarkResult {
-                showcase: showcase_name.to_string(),
+                showcase: showcase.name.to_string(),
+                task_id: Some(showcase.name.to_string()),
+                suite: Some(showcase.suite.as_str().to_string()),
+                tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
                 provider: provider.name().to_string(),
                 attempt,
                 success: false,
+                first_pass_success: Some(false),
+                repair_attempted: msg.contains("[Repair] Attempting repair"),
+                repair_success: None,
                 error_category: Some(category),
                 error_message: Some(msg),
+                dominant_error_code: error_codes.first().cloned(),
+                mutation_retry_count: None,
+                repair_retry_count: None,
+                total_retry_count: None,
+                provider_usage: ProviderUsageSummary::unavailable(
+                    "provider_response_did_not_expose_usage",
+                ),
+                evidence: None,
                 tests_passed: 0,
                 tests_total: spec.test_cases.len(),
                 duration_secs,
@@ -218,12 +307,12 @@ where
 
 /// Creates an isolated workspace, saves the intent, and runs `run_execute`.
 ///
-/// Returns `(tests_passed, tests_total)` on success.
+/// Returns structured test and repair metrics on success.
 async fn run_in_temp_workspace<F>(
     provider: &dyn LlmProvider,
     spec: &crate::intent::spec::IntentSpec,
     init_workspace: &F,
-) -> Result<(usize, usize), String>
+) -> Result<IntentExecutionMetrics, String>
 where
     F: Fn(&Path) -> Result<(), anyhow::Error>,
 {
@@ -253,15 +342,67 @@ where
 
     let tests_total = spec.test_cases.len();
     let tests_passed = final_spec.execution.as_ref().map_or(0, |e| e.tests_passed);
+    let repair_attempted = log
+        .iter()
+        .any(|line| line.contains("[Repair] Attempting repair"));
+    let error_codes = extract_error_codes(&log.join("\n"));
 
     if ok {
-        Ok((tests_passed, tests_total))
+        Ok(IntentExecutionMetrics {
+            tests_passed,
+            tests_total,
+            first_pass_success: !repair_attempted,
+            repair_attempted,
+            repair_success: repair_attempted.then_some(true),
+            dominant_error_code: error_codes.first().cloned(),
+            mutation_retry_count: None,
+            repair_retry_count: None,
+            total_retry_count: None,
+        })
     } else {
         // The intent pipeline returned false (failure)
         Err(format!(
             "intent execution failed: {tests_passed}/{tests_total} tests passed"
         ))
     }
+}
+
+/// Metrics inferred from an intent execution run.
+struct IntentExecutionMetrics {
+    /// Number of verifier tests that passed.
+    tests_passed: usize,
+    /// Number of verifier tests selected.
+    tests_total: usize,
+    /// Whether verification passed before any repair cycle.
+    first_pass_success: bool,
+    /// Whether a repair cycle was attempted.
+    repair_attempted: bool,
+    /// Whether repair converted the run into a success.
+    repair_success: Option<bool>,
+    /// Dominant DUUMBI error code, when one is visible in logs.
+    dominant_error_code: Option<String>,
+    /// Mutation retry count, when exposed by the execute path.
+    mutation_retry_count: Option<u32>,
+    /// Repair retry count, when exposed by the execute path.
+    repair_retry_count: Option<u32>,
+    /// Total retry count, when exposed by the execute path.
+    total_retry_count: Option<u32>,
+}
+
+fn extract_error_codes(text: &str) -> Vec<String> {
+    let mut codes: Vec<String> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| {
+            word.len() == 4
+                && word.starts_with('E')
+                && word[1..].chars().all(|c| c.is_ascii_digit())
+        })
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    codes.sort();
+    codes
 }
 
 /// Tries to load an archived intent (moved to history/ after execution).

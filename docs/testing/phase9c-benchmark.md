@@ -87,7 +87,7 @@ api_key_env = "OPENAI_API_KEY"
 
 | # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
 |---|-------|-----------------|-----|------------|
-| 1.1 | `$DUUMBI benchmark --help` | Help szöveg megjelenik az összes opcióval (--showcase, --provider, --attempts, --output, --ci, --baseline) | | |
+| 1.1 | `$DUUMBI benchmark --help` | Help szöveg megjelenik az összes opcióval (--suite, --smoke, --showcase, --provider, --attempts, --output, --ci, --baseline) | | |
 | 1.2 | `$DUUMBI benchmark --attempts 0` | Hiba: no .duumbi/config.toml (nincs workspace) | | |
 | 1.3 | (workspace-ből) `$DUUMBI benchmark --showcase nonexistent --attempts 1` | Hiba: "no showcases match the given filter" | | |
 | 1.4 | (workspace-ből) `$DUUMBI benchmark --provider nonexistent --attempts 1` | Hiba: "no providers match the given filter" | | |
@@ -227,21 +227,43 @@ api_key_env = "OPENAI_API_KEY"
 
 ---
 
+## T11 — Scaled Smoke Evidence (#689)
+
+> Futtatás helye: **`/tmp/duumbi-test/`**
+> **Figyelem:** Provider-backed run, API költséggel jár. A smoke subset
+> célja az alacsony költségű, őszinte preview evidence, nem success badge.
+
+| # | Lépés | Elvárt eredmény | ✓/✗ | Megjegyzés |
+|---|-------|-----------------|-----|------------|
+| 11.1 | `$DUUMBI benchmark --suite scaled --smoke --provider minimax:auto:primary:MINIMAX_API_KEY --attempts 1 --output scaled-smoke.json` | A scaled smoke subset fut: `scaled_math_pipeline`, `scaled_cross_module_stats`, `scaled_http_sqlite_json` | | |
+| 11.2 | `cat scaled-smoke.json \| jq .summary` | Summary tartalmaz first-pass, repair, retry, usage, dominant error, top failure pattern mezőket | | |
+| 11.3 | `cat scaled-smoke.json \| jq '.results[] | {task_id,success,first_pass_success,repair_attempted,error_category,provider_usage,evidence}'` | Minden task-nál látszik a pass/fail, repair és usage evidence | | |
+| 11.4 | HTTP/SQLite/JSON sor | `error_category == "evidence_required"` amíg nincs automatizált process evidence checker | | |
+
+Current committed #689 evidence:
+
+- `docs/e2e/results/duumbi-689-scaled-smoke-20260616.md`
+- `docs/e2e/duumbi-689-known-limitations.md`
+
+---
+
 ## Automated Test Verification (reference)
 
 A következő tesztek API key nélkül futnak CI-ben (repo gyökerében):
 
 ```bash
-cargo test bench::              # 14 unit test (showcases, report)
-cargo test integration_phase9c  # 26 integration test
+cargo test bench::              # unit tests for showcases and report aggregation
+cargo test --test integration_phase9c
 ```
 
-Összesen 40 automatizált teszt fedi le:
+Az automatizált tesztek lefedik:
 - ✅ Mind a 6 YAML parse-olható valid IntentSpec-be
+- ✅ Scaled corpus parse és feature coverage (#689)
+- ✅ Scaled smoke selection
 - ✅ Showcase szűrés (filter_showcases)
-- ✅ Report aggregáció (per-showcase, per-provider)
+- ✅ Report aggregáció (per-showcase, per-provider, first-pass, repair, usage, failure patterns)
 - ✅ Kill criterion: true (5/6 × 2 provider), false (4/6 vagy 1 provider)
-- ✅ Error kategorizálás (6 kategória × több minta)
+- ✅ Error kategorizálás (schema, type, provider, mutation, crash, logic, evidence-required)
 - ✅ JSON szerializáció/deszializáció roundtrip
 - ✅ Regresszió detektálás (threshold felett/alatt)
 - ✅ ErrorCategory serde snake_case
