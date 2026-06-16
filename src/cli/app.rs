@@ -363,9 +363,50 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let candidates: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+    let mut errors = Vec::new();
+    for &(program, args) in candidates {
+        match write_clipboard_command(program, args, text) {
+            Ok(()) => return Ok(()),
+            Err(e) => errors.push(format!("{program}: {e}")),
+        }
+    }
+    Err(format!(
+        "no Linux clipboard helper succeeded; install wl-clipboard, xclip, or xsel ({})",
+        errors.join("; ")
+    ))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn write_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "clipboard stdin closed".to_string())?;
+    std::io::Write::write_all(&mut stdin, text.as_bytes()).map_err(|e| e.to_string())?;
+    drop(stdin);
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(status.to_string())
+    }
+}
+
+#[cfg(not(any(unix, target_os = "macos")))]
 fn copy_text_to_clipboard(_text: &str) -> Result<(), String> {
-    Err("Clipboard shortcut integration is only available on macOS.".to_string())
+    Err("Clipboard shortcut integration is not available on this platform.".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -379,9 +420,32 @@ fn read_text_from_clipboard() -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| e.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn read_text_from_clipboard() -> Result<String, String> {
-    Err("Clipboard shortcut integration is only available on macOS.".to_string())
+    let candidates: &[(&str, &[&str])] = &[
+        ("wl-paste", &["--no-newline"]),
+        ("xclip", &["-selection", "clipboard", "-out"]),
+        ("xsel", &["--clipboard", "--output"]),
+    ];
+    let mut errors = Vec::new();
+    for &(program, args) in candidates {
+        match std::process::Command::new(program).args(args).output() {
+            Ok(output) if output.status.success() => {
+                return String::from_utf8(output.stdout).map_err(|e| e.to_string());
+            }
+            Ok(output) => errors.push(format!("{program}: {}", output.status)),
+            Err(e) => errors.push(format!("{program}: {e}")),
+        }
+    }
+    Err(format!(
+        "no Linux clipboard helper succeeded; install wl-clipboard, xclip, or xsel ({})",
+        errors.join("; ")
+    ))
+}
+
+#[cfg(not(any(unix, target_os = "macos")))]
+fn read_text_from_clipboard() -> Result<String, String> {
+    Err("Clipboard shortcut integration is not available on this platform.".to_string())
 }
 
 fn is_clipboard_shortcut(modifiers: KeyModifiers) -> bool {

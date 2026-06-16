@@ -11,6 +11,9 @@ use crate::errors::codes;
 
 use super::CompileError;
 
+const SQLITE3_C_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.c");
+const SQLITE3_H_SOURCE: &str = include_str!("../../runtime/third_party/sqlite/sqlite3.h");
+
 #[cfg(test)]
 static RUNTIME_COMPILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -103,11 +106,12 @@ fn ensure_runtime_deps_present(runtime_c: &Path) -> Result<(), CompileError> {
         .join("sqlite");
     let source_c = source_dir.join("sqlite3.c");
     let source_h = source_dir.join("sqlite3.h");
+    fs::create_dir_all(&sqlite_dir).map_err(|e| CompileError::LinkFailed {
+        code: codes::E008_LINK_FAILED,
+        message: format!("Failed to create temp SQLite runtime directory: {e}"),
+    })?;
+
     if source_dir != sqlite_dir && source_c.exists() && source_h.exists() {
-        fs::create_dir_all(&sqlite_dir).map_err(|e| CompileError::LinkFailed {
-            code: codes::E008_LINK_FAILED,
-            message: format!("Failed to create temp SQLite runtime directory: {e}"),
-        })?;
         fs::copy(&source_c, &sqlite_c).map_err(|e| CompileError::LinkFailed {
             code: codes::E008_LINK_FAILED,
             message: format!("Failed to copy vendored SQLite source: {e}"),
@@ -119,15 +123,15 @@ fn ensure_runtime_deps_present(runtime_c: &Path) -> Result<(), CompileError> {
         return Ok(());
     }
 
-    Err(CompileError::LinkFailed {
+    fs::write(&sqlite_c, SQLITE3_C_SOURCE).map_err(|e| CompileError::LinkFailed {
         code: codes::E008_LINK_FAILED,
-        message: format!(
-            "Vendored SQLite runtime sources are missing beside '{}'; expected '{}' and '{}'",
-            runtime_c.display(),
-            sqlite_c.display(),
-            sqlite_h.display()
-        ),
-    })
+        message: format!("Failed to write embedded SQLite source: {e}"),
+    })?;
+    fs::write(&sqlite_h, SQLITE3_H_SOURCE).map_err(|e| CompileError::LinkFailed {
+        code: codes::E008_LINK_FAILED,
+        message: format!("Failed to write embedded SQLite header: {e}"),
+    })?;
+    Ok(())
 }
 
 /// Compiles the C runtime shim to an object file.

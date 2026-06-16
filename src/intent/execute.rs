@@ -5,6 +5,7 @@
 //! with 3-step retry, then verifies test cases with the Verifier Agent.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
@@ -106,6 +107,26 @@ pub fn run_execute_blocking_preflight_with_progress(
     }
     emit!("Preflight blocked execution before mutation side effects.".to_string());
     Ok(true)
+}
+
+fn capture_stream_chunk(
+    chunks: &Arc<Mutex<Vec<String>>>,
+    on_progress: &(dyn Fn(&str) + Send + Sync),
+    text: &str,
+) {
+    on_progress(text);
+    chunks
+        .lock()
+        .expect("invariant: mutex not poisoned")
+        .push(text.to_string());
+}
+
+fn drain_stream_chunks(log: &mut Vec<String>, chunks: &Arc<Mutex<Vec<String>>>) {
+    if let Ok(chunks) = chunks.lock()
+        && !chunks.is_empty()
+    {
+        log.push(chunks.concat());
+    }
 }
 
 /// Like [`run_execute`] but with a real-time progress callback.
@@ -261,14 +282,15 @@ pub async fn run_execute_with_progress(
             }
         }
 
-        // Streaming callback collects LLM text chunks into the log buffer.
+        // Streaming callback emits LLM text chunks immediately and collects
+        // them into the log buffer for the final execution transcript.
         // AI-AGENT: Arc<Mutex<>> is intentional here — the closure passed to
-        // mutate_streaming() must be 'static + Send + Sync, so we cannot borrow
-        // `log` directly. The Mutex guards the chunk buffer; it is drained once
-        // after the await returns. Do NOT replace with a channel: we need the
-        // chunks collected in order AND accessible after the future completes.
-        let log_clone = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // mutate_streaming() runs while the LLM future is active, so we cannot
+        // borrow `log` directly. The Mutex guards the chunk buffer; it is
+        // drained once after the await returns.
+        let log_clone = Arc::new(Mutex::new(Vec::<String>::new()));
         let log_tx = log_clone.clone();
+        let progress = on_progress;
         let result = orchestrator::mutate_streaming_with_timeout(
             client,
             &source,
@@ -277,20 +299,12 @@ pub async fn run_execute_with_progress(
             agent_policy.mutation_timeout_secs,
             skip_call_validation,
             move |text| {
-                log_tx
-                    .lock()
-                    .expect("invariant: mutex not poisoned")
-                    .push(text.to_string());
+                capture_stream_chunk(&log_tx, progress, text);
             },
         )
         .await;
 
-        // Drain streamed chunks into log.
-        if let Ok(chunks) = log_clone.lock()
-            && !chunks.is_empty()
-        {
-            emit!(chunks.concat());
-        }
+        drain_stream_chunks(log, &log_clone);
 
         match result {
             Ok(orchestrator::MutationOutcome::NeedsClarification(question)) => {
@@ -343,9 +357,9 @@ pub async fn run_execute_with_progress(
                             prompt,
                             missing.join(", ")
                         );
-                        let retry_log =
-                            std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                        let retry_log = Arc::new(Mutex::new(Vec::<String>::new()));
                         let retry_tx = retry_log.clone();
+                        let progress = on_progress;
                         let retry_result = orchestrator::mutate_streaming_with_timeout(
                             client,
                             &mutation_result.patched,
@@ -354,19 +368,12 @@ pub async fn run_execute_with_progress(
                             agent_policy.mutation_timeout_secs,
                             skip_call_validation,
                             move |text| {
-                                retry_tx
-                                    .lock()
-                                    .expect("invariant: mutex not poisoned")
-                                    .push(text.to_string());
+                                capture_stream_chunk(&retry_tx, progress, text);
                             },
                         )
                         .await;
 
-                        if let Ok(chunks) = retry_log.lock()
-                            && !chunks.is_empty()
-                        {
-                            emit!(chunks.concat());
-                        }
+                        drain_stream_chunks(log, &retry_log);
 
                         if let Ok(orchestrator::MutationOutcome::Success(mut retry_mr)) =
                             retry_result
@@ -529,8 +536,9 @@ pub async fn run_execute_with_progress(
                     .context("Failed to parse module for repair")?;
 
             // AI-AGENT: Same Arc<Mutex> pattern as the main streaming callback above.
-            let repair_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let repair_log = Arc::new(Mutex::new(Vec::<String>::new()));
             let repair_tx = repair_log.clone();
+            let progress = on_progress;
             let repair_result = orchestrator::mutate_streaming_with_timeout(
                 client,
                 &module_source,
@@ -539,19 +547,12 @@ pub async fn run_execute_with_progress(
                 agent_policy.mutation_timeout_secs,
                 true, // skip call validation
                 move |text| {
-                    repair_tx
-                        .lock()
-                        .expect("invariant: mutex not poisoned")
-                        .push(text.to_string());
+                    capture_stream_chunk(&repair_tx, progress, text);
                 },
             )
             .await;
 
-            if let Ok(chunks) = repair_log.lock()
-                && !chunks.is_empty()
-            {
-                emit!(chunks.concat());
-            }
+            drain_stream_chunks(log, &repair_log);
 
             if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
                 cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path, &spec);
@@ -1210,7 +1211,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -1248,6 +1249,32 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err(AgentError::NoToolCalls) })
         }
+    }
+
+    #[test]
+    fn streamed_chunks_emit_progress_immediately_and_log_once() {
+        let chunks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let progress_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let progress_sink = progress_lines.clone();
+        let on_progress = move |line: &str| {
+            progress_sink
+                .lock()
+                .expect("progress mutex")
+                .push(line.to_string());
+        };
+
+        capture_stream_chunk(&chunks, &on_progress, "chunk one");
+        capture_stream_chunk(&chunks, &on_progress, "chunk two");
+
+        assert_eq!(
+            progress_lines.lock().expect("progress mutex").as_slice(),
+            ["chunk one", "chunk two"]
+        );
+
+        let mut log = Vec::new();
+        drain_stream_chunks(&mut log, &chunks);
+
+        assert_eq!(log, vec!["chunk onechunk two".to_string()]);
     }
 
     fn executable_spec() -> IntentSpec {
