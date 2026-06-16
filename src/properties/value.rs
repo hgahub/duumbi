@@ -2,8 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+
 /// A generated value used by property checks.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PropertyValue {
     /// Signed 64-bit integer.
     I64(i64),
