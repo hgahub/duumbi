@@ -371,7 +371,7 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
         ("xsel", &["--clipboard", "--input"]),
     ];
     let mut errors = Vec::new();
-    for (program, args) in candidates {
+    for &(program, args) in candidates {
         match write_clipboard_command(program, args, text) {
             Ok(()) => return Ok(()),
             Err(e) => errors.push(format!("{program}: {e}")),
@@ -427,7 +427,7 @@ fn read_text_from_clipboard() -> Result<String, String> {
         ("xsel", &["--clipboard", "--output"]),
     ];
     let mut errors = Vec::new();
-    for (program, args) in candidates {
+    for &(program, args) in candidates {
         match std::process::Command::new(program).args(args).output() {
             Ok(output) if output.status.success() => {
                 return String::from_utf8(output.stdout).map_err(|e| e.to_string());
