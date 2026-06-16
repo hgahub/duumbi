@@ -23,6 +23,7 @@ use super::evidence::{
 };
 use super::generator::{GeneratorSettings, generate_values};
 use super::predicate::{PredicateContext, eval_predicate};
+use super::shrink::shrink_candidates;
 use super::value::PropertyValue;
 
 const DEFAULT_MAX_ARRAY_LEN: usize = 8;
@@ -312,6 +313,10 @@ fn execute_i64_function(
                     )
                 })?;
             if !passed {
+                let (shrunk_counterexample, shrink_status) =
+                    shrink_failure(graph, graph_input, function, clause, &inputs);
+                let shrunk_counterexample =
+                    (shrink_status == "shrunk").then_some(shrunk_counterexample);
                 evidence.status = FunctionEvidenceStatus::Failed;
                 evidence.failure = Some(FailureEvidence {
                     seed: options.seed,
@@ -319,8 +324,8 @@ fn execute_i64_function(
                     contract_id: clause.id.clone().or_else(|| clause.label.clone()),
                     actual: format!("result={result}"),
                     counterexample: inputs.clone(),
-                    shrunk_counterexample: None,
-                    shrink_status: "not_attempted".to_string(),
+                    shrunk_counterexample,
+                    shrink_status,
                 });
                 return Ok(evidence);
             }
@@ -365,6 +370,51 @@ fn evaluate_postcondition(
 ) -> std::result::Result<bool, String> {
     let context = bind_inputs(function, inputs).with_result(PropertyValue::I64(result));
     eval_predicate(&clause.expr, &context).map_err(|err| err.detail)
+}
+
+fn shrink_failure(
+    graph: &SemanticGraph,
+    graph_input: &Path,
+    function: &FunctionInfo,
+    failed_clause: &ContractClause,
+    original: &[PropertyValue],
+) -> (Vec<PropertyValue>, String) {
+    let mut current = original.to_vec();
+    let mut shrunk = false;
+
+    loop {
+        let mut improved = false;
+        'candidate: for idx in 0..current.len() {
+            for candidate in shrink_candidates(&current[idx]) {
+                if candidate == current[idx] {
+                    continue;
+                }
+                let mut trial = current.clone();
+                trial[idx] = candidate;
+                let Ok(true) = evaluate_preconditions(function, &trial) else {
+                    continue;
+                };
+                let Ok(result) = run_native_i64_case(graph, graph_input, function, &trial) else {
+                    continue;
+                };
+                if evaluate_postcondition(function, failed_clause, &trial, result) == Ok(false) {
+                    current = trial;
+                    improved = true;
+                    shrunk = true;
+                    break 'candidate;
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+
+    if shrunk {
+        (current, "shrunk".to_string())
+    } else {
+        (current, "minimal".to_string())
+    }
 }
 
 fn bind_inputs(function: &FunctionInfo, inputs: &[PropertyValue]) -> PredicateContext {
