@@ -56,7 +56,14 @@ fn describe_op_plain(
         Op::ConstF64(v) => format!("ConstF64({v})"),
         Op::ConstBool(v) => format!("ConstBool({v})"),
         Op::ConstString(s) => format!("ConstString(\"{s}\")"),
-        Op::Add | Op::Sub | Op::Mul | Op::Div => {
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::AddChecked
+        | Op::SubChecked
+        | Op::MulChecked
+        | Op::DivChecked => {
             let mut left = String::from("?");
             let mut right = String::from("?");
             for e in &incoming {

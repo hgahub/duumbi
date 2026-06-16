@@ -76,7 +76,14 @@ fn describe_op(
                 format!("\"{s}\"").green()
             )
         }
-        Op::Add | Op::Sub | Op::Mul | Op::Div => {
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::AddChecked
+        | Op::SubChecked
+        | Op::MulChecked
+        | Op::DivChecked => {
             let mut left = String::from("?");
             let mut right = String::from("?");
             for e in &incoming {

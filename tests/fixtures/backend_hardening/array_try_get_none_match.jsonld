@@ -1,0 +1,96 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:backend_hardening",
+  "duumbi:name": "backend_hardening",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:backend_hardening/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:backend_hardening/main/entry/array",
+              "duumbi:resultType": "array<i64>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/value",
+              "duumbi:value": 42,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:backend_hardening/main/entry/push",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:element": { "@id": "duumbi:backend_hardening/main/entry/value" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/oob_index",
+              "duumbi:value": 3,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayTryGet",
+              "@id": "duumbi:backend_hardening/main/entry/array_try_get_none",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:index": { "@id": "duumbi:backend_hardening/main/entry/oob_index" },
+              "duumbi:resultType": "option<i64>"
+            },
+            {
+              "@type": "duumbi:Match",
+              "@id": "duumbi:backend_hardening/main/entry/match_try_get",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/entry/array_try_get_none" },
+              "duumbi:okBlock": "some",
+              "duumbi:errBlock": "none"
+            }
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/some",
+          "duumbi:label": "some",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/some/result",
+              "duumbi:value": 11,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/some/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/some/result" }
+            }
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/none",
+          "duumbi:label": "none",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/none/result",
+              "duumbi:value": 22,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/none/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/none/result" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

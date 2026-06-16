@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, TrapCode, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{self, Context, isa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -73,6 +73,10 @@ struct RuntimeFuncs {
     result_unwrap: FuncId,
     result_unwrap_err: FuncId,
     result_free: FuncId,
+    checked_add: FuncId,
+    checked_sub: FuncId,
+    checked_mul: FuncId,
+    checked_div: FuncId,
 
     // Option functions (Phase 9a-3)
     option_new_some: FuncId,
@@ -141,6 +145,8 @@ struct RuntimeFuncs {
     db_connection_free: FuncId,
     db_rows_free: FuncId,
 
+    panic_at: FuncId,
+
     trace: Option<RuntimeTraceFuncs>,
 }
 
@@ -162,6 +168,24 @@ struct RuntimeTraceRefs {
     block_exit: cranelift_codegen::ir::FuncRef,
     #[allow(dead_code)] // See RuntimeTraceFuncs::panic.
     panic: cranelift_codegen::ir::FuncRef,
+}
+
+struct NodePanicContext<'a> {
+    obj_module: &'a mut ObjectModule,
+    string_data: &'a HashMap<String, DataId>,
+    panic_at_ref: cranelift_codegen::ir::FuncRef,
+}
+
+#[derive(Debug, Clone)]
+struct StructLayout {
+    offsets: HashMap<String, i64>,
+    total_size: i64,
+}
+
+#[derive(Debug, Default)]
+struct StructLayoutBuilder {
+    fields: Vec<String>,
+    field_types: HashMap<String, DuumbiType>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +347,10 @@ fn declare_all_runtime_fns(
             &[i64t],
         )?,
         result_free: declare_runtime_fn(module, "duumbi_result_free", &[i64t], &[])?,
+        checked_add: declare_runtime_fn(module, "duumbi_i64_add_checked", &[i64t, i64t], &[i64t])?,
+        checked_sub: declare_runtime_fn(module, "duumbi_i64_sub_checked", &[i64t, i64t], &[i64t])?,
+        checked_mul: declare_runtime_fn(module, "duumbi_i64_mul_checked", &[i64t, i64t], &[i64t])?,
+        checked_div: declare_runtime_fn(module, "duumbi_i64_div_checked", &[i64t, i64t], &[i64t])?,
 
         // Option functions (Phase 9a-3)
         option_new_some: declare_runtime_fn(module, "duumbi_option_new_some", &[i64t], &[i64t])?,
@@ -435,6 +463,7 @@ fn declare_all_runtime_fns(
         db_rows_close: declare_runtime_fn(module, "duumbi_db_rows_close", &[i64t], &[i64t])?,
         db_connection_free: declare_runtime_fn(module, "duumbi_db_connection_free", &[i64t], &[])?,
         db_rows_free: declare_runtime_fn(module, "duumbi_db_rows_free", &[i64t], &[])?,
+        panic_at: declare_runtime_fn(module, "duumbi_panic_at", &[i64t, i64t], &[])?,
         trace,
     })
 }
@@ -755,6 +784,7 @@ fn compile_to_object_impl(
 
     // Collect and embed string constants as data sections
     let string_data = embed_string_constants(graph, &mut obj_module)?;
+    let struct_layouts = build_struct_layouts(graph)?;
 
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     let mut func_sigs: HashMap<String, cranelift_codegen::ir::Signature> = HashMap::new();
@@ -829,7 +859,10 @@ fn compile_to_object_impl(
             &unqualified_imports,
             &runtime,
             &string_data,
+            &struct_layouts,
         )?;
+
+        verify_compiled_function(&ctx, &obj_module, func_info)?;
 
         obj_module
             .define_function(func_id, &mut ctx)
@@ -847,6 +880,21 @@ fn compile_to_object_impl(
     Ok(bytes)
 }
 
+fn verify_compiled_function(
+    ctx: &Context,
+    obj_module: &ObjectModule,
+    func_info: &FunctionInfo,
+) -> Result<(), CompileError> {
+    cranelift_codegen::verify_function(&ctx.func, obj_module.isa().flags()).map_err(|errors| {
+        CompileError::Cranelift {
+            message: format!(
+                "Cranelift verifier failed for function '{}': {errors}",
+                func_info.name
+            ),
+        }
+    })
+}
+
 /// Collects all string constants from the graph and embeds them as data sections.
 ///
 /// Returns a map from the string literal content to its [`DataId`], so the
@@ -858,34 +906,156 @@ fn embed_string_constants(
     let mut string_data: HashMap<String, DataId> = HashMap::new();
     let mut counter = 0u32;
 
+    insert_c_string_constant(
+        obj_module,
+        &mut string_data,
+        &mut counter,
+        "division by zero",
+    )?;
+    insert_c_string_constant(
+        obj_module,
+        &mut string_data,
+        &mut counter,
+        "array index out of bounds",
+    )?;
+
     for node in graph.graph.node_weights() {
         if let Op::ConstString(ref s) = node.op {
-            if string_data.contains_key(s) {
-                continue; // deduplicate
-            }
-            let data_name = format!(".str.{counter}");
-            counter += 1;
+            insert_c_string_constant(obj_module, &mut string_data, &mut counter, s)?;
+        }
 
-            let data_id = obj_module
-                .declare_data(&data_name, Linkage::Local, false, false)
-                .map_err(|e| CompileError::Cranelift {
-                    message: format!("Failed to declare string data '{data_name}': {e}"),
-                })?;
-
-            let mut desc = DataDescription::new();
-            desc.define(s.as_bytes().to_vec().into_boxed_slice());
-
-            obj_module
-                .define_data(data_id, &desc)
-                .map_err(|e| CompileError::Cranelift {
-                    message: format!("Failed to define string data '{data_name}': {e}"),
-                })?;
-
-            string_data.insert(s.clone(), data_id);
+        if matches!(node.op, Op::Div | Op::ArrayGet | Op::ArraySet) {
+            insert_c_string_constant(
+                obj_module,
+                &mut string_data,
+                &mut counter,
+                node.id.0.as_str(),
+            )?;
         }
     }
 
     Ok(string_data)
+}
+
+fn insert_c_string_constant(
+    obj_module: &mut ObjectModule,
+    string_data: &mut HashMap<String, DataId>,
+    counter: &mut u32,
+    value: &str,
+) -> Result<(), CompileError> {
+    if string_data.contains_key(value) {
+        return Ok(());
+    }
+
+    let data_name = format!(".str.{}", *counter);
+    *counter += 1;
+
+    let data_id = obj_module
+        .declare_data(&data_name, Linkage::Local, false, false)
+        .map_err(|e| CompileError::Cranelift {
+            message: format!("Failed to declare string data '{data_name}': {e}"),
+        })?;
+
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(0);
+
+    let mut desc = DataDescription::new();
+    desc.define(bytes.into_boxed_slice());
+
+    obj_module
+        .define_data(data_id, &desc)
+        .map_err(|e| CompileError::Cranelift {
+            message: format!("Failed to define string data '{data_name}': {e}"),
+        })?;
+
+    string_data.insert(value.to_string(), data_id);
+    Ok(())
+}
+
+fn build_struct_layouts(
+    graph: &SemanticGraph,
+) -> Result<HashMap<String, StructLayout>, CompileError> {
+    let mut builders: HashMap<String, StructLayoutBuilder> = HashMap::new();
+
+    for node_idx in graph.graph.node_indices() {
+        let node = &graph.graph[node_idx];
+        match &node.op {
+            Op::StructNew { struct_name } => {
+                builders.entry(struct_name.clone()).or_default();
+            }
+            Op::FieldGet { field_name } => {
+                let struct_name = struct_operand_name(graph, node_idx)?;
+                let field_type = node.result_type.clone();
+                record_struct_field(
+                    &mut builders,
+                    &struct_name,
+                    field_name,
+                    field_type,
+                    &node.id,
+                )?;
+            }
+            Op::FieldSet { field_name } => {
+                let struct_name = struct_operand_name(graph, node_idx)?;
+                let field_type = get_right_operand_type(graph, node_idx);
+                record_struct_field(
+                    &mut builders,
+                    &struct_name,
+                    field_name,
+                    field_type,
+                    &node.id,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    let mut layouts = HashMap::new();
+    for (struct_name, builder) in builders {
+        let mut offsets = HashMap::new();
+        for (idx, field_name) in builder.fields.iter().enumerate() {
+            offsets.insert(field_name.clone(), idx as i64 * 8);
+        }
+        let total_size = std::cmp::max(builder.fields.len(), 1) as i64 * 8;
+        layouts.insert(
+            struct_name,
+            StructLayout {
+                offsets,
+                total_size,
+            },
+        );
+    }
+
+    Ok(layouts)
+}
+
+fn record_struct_field(
+    builders: &mut HashMap<String, StructLayoutBuilder>,
+    struct_name: &str,
+    field_name: &str,
+    field_type: Option<DuumbiType>,
+    node_id: &NodeId,
+) -> Result<(), CompileError> {
+    let builder = builders.entry(struct_name.to_string()).or_default();
+    if !builder.fields.iter().any(|field| field == field_name) {
+        builder.fields.push(field_name.to_string());
+    }
+    if let Some(field_type) = field_type {
+        if let Some(existing) = builder.field_types.get(field_name) {
+            if existing != &field_type {
+                return Err(CompileError::Cranelift {
+                    message: format!(
+                        "Conflicting type evidence for struct '{struct_name}' field \
+                         '{field_name}' at node '{node_id}': '{existing}' vs '{field_type}'"
+                    ),
+                });
+            }
+        } else {
+            builder
+                .field_types
+                .insert(field_name.to_string(), field_type);
+        }
+    }
+    Ok(())
 }
 
 /// Compiles a single function into Cranelift IR.
@@ -901,6 +1071,7 @@ fn compile_function(
     unqualified_imports: &HashMap<String, String>,
     runtime: &RuntimeFuncs,
     string_data: &HashMap<String, DataId>,
+    struct_layouts: &HashMap<String, StructLayout>,
 ) -> Result<(), CompileError> {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fn_builder_ctx);
 
@@ -949,6 +1120,10 @@ fn compile_function(
     let result_unwrap_err_ref =
         obj_module.declare_func_in_func(runtime.result_unwrap_err, builder.func);
     let result_free_ref = obj_module.declare_func_in_func(runtime.result_free, builder.func);
+    let checked_add_ref = obj_module.declare_func_in_func(runtime.checked_add, builder.func);
+    let checked_sub_ref = obj_module.declare_func_in_func(runtime.checked_sub, builder.func);
+    let checked_mul_ref = obj_module.declare_func_in_func(runtime.checked_mul, builder.func);
+    let checked_div_ref = obj_module.declare_func_in_func(runtime.checked_div, builder.func);
     let option_new_some_ref =
         obj_module.declare_func_in_func(runtime.option_new_some, builder.func);
     let option_new_none_ref =
@@ -1015,6 +1190,7 @@ fn compile_function(
     let db_connection_free_ref =
         obj_module.declare_func_in_func(runtime.db_connection_free, builder.func);
     let db_rows_free_ref = obj_module.declare_func_in_func(runtime.db_rows_free, builder.func);
+    let panic_at_ref = obj_module.declare_func_in_func(runtime.panic_at, builder.func);
     let trace_refs = runtime.trace.as_ref().map(|trace| RuntimeTraceRefs {
         init: obj_module.declare_func_in_func(trace.init, builder.func),
         function_enter: obj_module.declare_func_in_func(trace.function_enter, builder.func),
@@ -1059,9 +1235,6 @@ fn compile_function(
 
     // Variable map for Load/Store and function params
     let mut var_map: HashMap<String, Variable> = HashMap::new();
-
-    // Struct field offset map: field_name → byte offset (sequential, 8 bytes each)
-    let mut field_offsets: HashMap<String, i64> = HashMap::new();
 
     // Track heap-allocated values for automatic Drop insertion at scope exits.
     // Ordered Vec for deterministic LIFO (last-allocated freed first) ordering.
@@ -1138,10 +1311,45 @@ fn compile_function(
                             Op::Add => builder.ins().iadd(left_val, right_val),
                             Op::Sub => builder.ins().isub(left_val, right_val),
                             Op::Mul => builder.ins().imul(left_val, right_val),
-                            Op::Div => builder.ins().sdiv(left_val, right_val),
+                            Op::Div => emit_guarded_integer_div(
+                                &mut builder,
+                                obj_module,
+                                string_data,
+                                panic_at_ref,
+                                left_val,
+                                right_val,
+                                &node.id,
+                            )?,
                             _ => unreachable!(),
                         }
                     };
+                    value_map.insert(node.id.clone(), result);
+                }
+                Op::AddChecked | Op::SubChecked | Op::MulChecked | Op::DivChecked => {
+                    if node.result_type
+                        != Some(DuumbiType::Result(
+                            Box::new(DuumbiType::I64),
+                            Box::new(DuumbiType::String),
+                        ))
+                    {
+                        return Err(CompileError::Cranelift {
+                            message: format!(
+                                "{} requires result<i64,string> result type at node '{}'",
+                                node.op, node.id
+                            ),
+                        });
+                    }
+
+                    let (left_val, right_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let runtime_ref = match &node.op {
+                        Op::AddChecked => checked_add_ref,
+                        Op::SubChecked => checked_sub_ref,
+                        Op::MulChecked => checked_mul_ref,
+                        Op::DivChecked => checked_div_ref,
+                        _ => unreachable!(),
+                    };
+                    let call = builder.ins().call(runtime_ref, &[left_val, right_val]);
+                    let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::Compare(cmp_op) => {
@@ -1583,26 +1791,61 @@ fn compile_function(
                 }
                 Op::ArrayGet => {
                     let (arr_val, idx_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let mut panic_context = NodePanicContext {
+                        obj_module,
+                        string_data,
+                        panic_at_ref,
+                    };
+                    emit_array_bounds_guard(
+                        &mut builder,
+                        &mut panic_context,
+                        array_len_ref,
+                        arr_val,
+                        idx_val,
+                        &node.id,
+                    )?;
                     let call = builder.ins().call(array_get_ref, &[arr_val, idx_val]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::ArrayTryGet => {
-                    // ArrayTryGet requires Option<T> return type (Phase 9a-3).
-                    // Until then, report as unimplemented rather than silently
-                    // panicking like ArrayGet on out-of-bounds access.
-                    return Err(CompileError::Cranelift {
-                        message: format!(
-                            "ArrayTryGet requires Option<T> type (Phase 9a-3), \
-                             use ArrayGet for now — node '{}'",
-                            node.id
-                        ),
-                    });
+                    if !matches!(node.result_type, Some(DuumbiType::Option(_))) {
+                        return Err(CompileError::Cranelift {
+                            message: format!(
+                                "ArrayTryGet requires Option<T> result type at node '{}'",
+                                node.id
+                            ),
+                        });
+                    }
+                    let (arr_val, idx_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let result = emit_array_try_get(
+                        &mut builder,
+                        array_len_ref,
+                        array_get_ref,
+                        option_new_some_ref,
+                        option_new_none_ref,
+                        arr_val,
+                        idx_val,
+                    );
+                    value_map.insert(node.id.clone(), result);
                 }
                 Op::ArraySet => {
                     // operand = array, left = index, right = value
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let (idx_val, elem_val) = get_binary_operands(graph, node_idx, &value_map)?;
+                    let mut panic_context = NodePanicContext {
+                        obj_module,
+                        string_data,
+                        panic_at_ref,
+                    };
+                    emit_array_bounds_guard(
+                        &mut builder,
+                        &mut panic_context,
+                        array_len_ref,
+                        operand_val,
+                        idx_val,
+                        &node.id,
+                    )?;
                     builder
                         .ins()
                         .call(array_set_ref, &[operand_val, idx_val, elem_val]);
@@ -1615,33 +1858,41 @@ fn compile_function(
                 }
 
                 // -- Phase 9a-1: Struct ops --
-                Op::StructNew { .. } => {
-                    // Allocate enough space for fields. We use a generous default
-                    // since proper struct layout requires a struct registry (Phase 9a-2).
-                    // 8 fields × 8 bytes = 64 bytes covers most simple structs.
-                    let total_size = builder.ins().iconst(types::I64, 64);
+                Op::StructNew { struct_name } => {
+                    let layout =
+                        struct_layouts
+                            .get(struct_name)
+                            .ok_or_else(|| CompileError::Cranelift {
+                                message: format!("Struct layout '{struct_name}' not found"),
+                            })?;
+                    let total_size = builder.ins().iconst(types::I64, layout.total_size);
                     let call = builder.ins().call(struct_new_ref, &[total_size]);
                     let result = builder.inst_results(call)[0];
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::FieldGet { field_name } => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
-                    let offset_val = field_name_to_offset(field_name, &mut field_offsets);
+                    let offset_val =
+                        resolve_struct_field_offset(graph, node_idx, struct_layouts, field_name)?;
                     let offset = builder.ins().iconst(types::I64, offset_val);
                     let call = builder
                         .ins()
                         .call(struct_field_get_ref, &[operand_val, offset]);
-                    let result = builder.inst_results(call)[0];
+                    let field_value = builder.inst_results(call)[0];
+                    let result =
+                        coerce_struct_field_load(&mut builder, field_value, &node.result_type);
                     value_map.insert(node.id.clone(), result);
                 }
                 Op::FieldSet { field_name } => {
                     let operand_val = get_unary_operand(graph, node_idx, &value_map)?;
                     let value_val = get_right_operand(graph, node_idx, &value_map)?;
-                    let offset_val = field_name_to_offset(field_name, &mut field_offsets);
+                    let stored_value = coerce_struct_field_store(&mut builder, value_val);
+                    let offset_val =
+                        resolve_struct_field_offset(graph, node_idx, struct_layouts, field_name)?;
                     let offset = builder.ins().iconst(types::I64, offset_val);
                     builder
                         .ins()
-                        .call(struct_field_set_ref, &[operand_val, offset, value_val]);
+                        .call(struct_field_set_ref, &[operand_val, offset, stored_value]);
                 }
                 // -- Ownership ops (Phase 9a-2) --
                 Op::Alloc { alloc_type } => {
@@ -2263,6 +2514,142 @@ fn emit_trace_event_call(
     builder.ins().call(func_ref, &[trace_id_value]);
 }
 
+fn emit_guarded_integer_div(
+    builder: &mut FunctionBuilder<'_>,
+    obj_module: &mut ObjectModule,
+    string_data: &HashMap<String, DataId>,
+    panic_at_ref: cranelift_codegen::ir::FuncRef,
+    left_val: Value,
+    right_val: Value,
+    node_id: &NodeId,
+) -> Result<Value, CompileError> {
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_zero = builder.ins().icmp(IntCC::Equal, right_val, zero);
+    emit_node_panic_guard(
+        builder,
+        obj_module,
+        string_data,
+        panic_at_ref,
+        is_zero,
+        "division by zero",
+        node_id,
+    )?;
+    Ok(builder.ins().sdiv(left_val, right_val))
+}
+
+fn emit_array_bounds_guard(
+    builder: &mut FunctionBuilder<'_>,
+    panic_context: &mut NodePanicContext<'_>,
+    array_len_ref: cranelift_codegen::ir::FuncRef,
+    arr_val: Value,
+    idx_val: Value,
+    node_id: &NodeId,
+) -> Result<(), CompileError> {
+    let len_call = builder.ins().call(array_len_ref, &[arr_val]);
+    let len_val = builder.inst_results(len_call)[0];
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_negative = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
+    let is_too_large = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len_val);
+    let out_of_bounds = builder.ins().bor(is_negative, is_too_large);
+    emit_node_panic_guard(
+        builder,
+        panic_context.obj_module,
+        panic_context.string_data,
+        panic_context.panic_at_ref,
+        out_of_bounds,
+        "array index out of bounds",
+        node_id,
+    )
+}
+
+fn emit_array_try_get(
+    builder: &mut FunctionBuilder<'_>,
+    array_len_ref: cranelift_codegen::ir::FuncRef,
+    array_get_ref: cranelift_codegen::ir::FuncRef,
+    option_new_some_ref: cranelift_codegen::ir::FuncRef,
+    option_new_none_ref: cranelift_codegen::ir::FuncRef,
+    arr_val: Value,
+    idx_val: Value,
+) -> Value {
+    let len_call = builder.ins().call(array_len_ref, &[arr_val]);
+    let len_val = builder.inst_results(len_call)[0];
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_negative = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
+    let is_too_large = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len_val);
+    let out_of_bounds = builder.ins().bor(is_negative, is_too_large);
+
+    let none_block = builder.create_block();
+    let some_block = builder.create_block();
+    let continue_block = builder.create_block();
+    builder.append_block_param(continue_block, types::I64);
+
+    builder
+        .ins()
+        .brif(out_of_bounds, none_block, &[], some_block, &[]);
+
+    builder.switch_to_block(some_block);
+    let get_call = builder.ins().call(array_get_ref, &[arr_val, idx_val]);
+    let item_val = builder.inst_results(get_call)[0];
+    let some_call = builder.ins().call(option_new_some_ref, &[item_val]);
+    let some_val = builder.inst_results(some_call)[0];
+    builder.ins().jump(continue_block, &[some_val.into()]);
+
+    builder.switch_to_block(none_block);
+    let none_call = builder.ins().call(option_new_none_ref, &[]);
+    let none_val = builder.inst_results(none_call)[0];
+    builder.ins().jump(continue_block, &[none_val.into()]);
+
+    builder.switch_to_block(continue_block);
+    builder.block_params(continue_block)[0]
+}
+
+fn emit_node_panic_guard(
+    builder: &mut FunctionBuilder<'_>,
+    obj_module: &mut ObjectModule,
+    string_data: &HashMap<String, DataId>,
+    panic_at_ref: cranelift_codegen::ir::FuncRef,
+    should_panic: Value,
+    message: &str,
+    node_id: &NodeId,
+) -> Result<(), CompileError> {
+    let panic_block = builder.create_block();
+    let continue_block = builder.create_block();
+
+    builder
+        .ins()
+        .brif(should_panic, panic_block, &[], continue_block, &[]);
+
+    builder.switch_to_block(panic_block);
+    let message_ptr = c_string_ptr(builder, obj_module, string_data, message)?;
+    let node_id_ptr = c_string_ptr(builder, obj_module, string_data, node_id.0.as_str())?;
+    builder
+        .ins()
+        .call(panic_at_ref, &[message_ptr, node_id_ptr]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.switch_to_block(continue_block);
+    Ok(())
+}
+
+fn c_string_ptr(
+    builder: &mut FunctionBuilder<'_>,
+    obj_module: &mut ObjectModule,
+    string_data: &HashMap<String, DataId>,
+    value: &str,
+) -> Result<Value, CompileError> {
+    let data_id = string_data
+        .get(value)
+        .ok_or_else(|| CompileError::Cranelift {
+            message: format!("C string data not found for '{value}'"),
+        })?;
+    let gv = obj_module.declare_data_in_func(*data_id, builder.func);
+    Ok(builder.ins().global_value(types::I64, gv))
+}
+
 fn trace_id_for_function(
     graph: &SemanticGraph,
     func_info: &FunctionInfo,
@@ -2534,19 +2921,83 @@ fn coerce_string_concat_operand(
     }
 }
 
+fn coerce_struct_field_store(builder: &mut FunctionBuilder<'_>, value: Value) -> Value {
+    match builder.func.dfg.value_type(value) {
+        types::I8 => builder.ins().uextend(types::I64, value),
+        types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), value),
+        _ => value,
+    }
+}
+
+fn coerce_struct_field_load(
+    builder: &mut FunctionBuilder<'_>,
+    value: Value,
+    result_type: &Option<DuumbiType>,
+) -> Value {
+    match result_type {
+        Some(DuumbiType::Bool) => builder.ins().ireduce(types::I8, value),
+        Some(DuumbiType::F64) => builder.ins().bitcast(types::F64, MemFlags::new(), value),
+        _ => value,
+    }
+}
+
 /// Resolves the output type of a graph node for lowering decisions.
 fn resolve_node_output_type(node: &crate::graph::GraphNode) -> Option<DuumbiType> {
     node.op.output_type(&node.result_type)
 }
 
-/// Assigns sequential byte offsets to struct field names (8 bytes per field).
-///
-/// Each unique field name gets the next available offset. This is a simplified
-/// layout scheme — Phase 9a-2 will introduce a proper struct registry with
-/// type-aware field sizes and alignment.
-fn field_name_to_offset(field_name: &str, offsets: &mut HashMap<String, i64>) -> i64 {
-    let next_offset = offsets.len() as i64 * 8;
-    *offsets.entry(field_name.to_string()).or_insert(next_offset)
+fn resolve_struct_field_offset(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+    struct_layouts: &HashMap<String, StructLayout>,
+    field_name: &str,
+) -> Result<i64, CompileError> {
+    let struct_name = struct_operand_name(graph, node_idx)?;
+    let layout = struct_layouts
+        .get(&struct_name)
+        .ok_or_else(|| CompileError::Cranelift {
+            message: format!("Struct layout '{struct_name}' not found"),
+        })?;
+    layout
+        .offsets
+        .get(field_name)
+        .copied()
+        .ok_or_else(|| CompileError::Cranelift {
+            message: format!("Struct '{struct_name}' field '{field_name}' has no layout offset"),
+        })
+}
+
+fn struct_operand_name(
+    graph: &SemanticGraph,
+    node_idx: petgraph::stable_graph::NodeIndex,
+) -> Result<String, CompileError> {
+    for edge_ref in graph
+        .graph
+        .edges_directed(node_idx, petgraph::Direction::Incoming)
+    {
+        if matches!(edge_ref.weight(), GraphEdge::Operand) {
+            let source_node = &graph.graph[edge_ref.source()];
+            if let Op::StructNew { struct_name } = &source_node.op {
+                return Ok(struct_name.clone());
+            }
+            if let Some(DuumbiType::Struct(struct_name)) = resolve_node_output_type(source_node) {
+                return Ok(struct_name);
+            }
+            return Err(CompileError::Cranelift {
+                message: format!(
+                    "Struct field op '{}' operand '{}' is not a struct value",
+                    graph.graph[node_idx].id, source_node.id
+                ),
+            });
+        }
+    }
+
+    Err(CompileError::Cranelift {
+        message: format!(
+            "Struct field op '{}' is missing struct operand",
+            graph.graph[node_idx].id
+        ),
+    })
 }
 
 /// Returns the size in bytes for a DuumbiType (for array element sizing).

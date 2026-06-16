@@ -159,7 +159,15 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
     for node_idx in graph.graph.node_indices() {
         let node = &graph.graph[node_idx];
         match &node.op {
-            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Compare(_) => {
+            Op::Add
+            | Op::Sub
+            | Op::Mul
+            | Op::Div
+            | Op::AddChecked
+            | Op::SubChecked
+            | Op::MulChecked
+            | Op::DivChecked
+            | Op::Compare(_) => {
                 let mut left_type: Option<DuumbiType> = None;
                 let mut right_type: Option<DuumbiType> = None;
 

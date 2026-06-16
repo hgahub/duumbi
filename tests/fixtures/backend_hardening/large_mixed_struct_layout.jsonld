@@ -1,0 +1,75 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:backend_hardening",
+  "duumbi:name": "backend_hardening",
+  "duumbi:functions": [{
+    "@type": "duumbi:Function",
+    "@id": "duumbi:backend_hardening/main",
+    "duumbi:name": "main",
+    "duumbi:returnType": "i64",
+    "duumbi:blocks": [
+      {
+        "@type": "duumbi:Block",
+        "@id": "duumbi:backend_hardening/main/entry",
+        "duumbi:label": "entry",
+        "duumbi:ops": [
+          {"@type":"duumbi:StructNew","@id":"duumbi:backend_hardening/main/entry/struct","duumbi:structName":"LargeMixed","duumbi:resultType":"struct<LargeMixed>"},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v0","duumbi:value":1,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f0","duumbi:fieldName":"f0","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v0"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v1","duumbi:value":true,"duumbi:resultType":"bool"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f1","duumbi:fieldName":"f1","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v1"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v2","duumbi:value":"slot-2","duumbi:resultType":"string"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f2","duumbi:fieldName":"f2","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v2"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v3","duumbi:value":4,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f3","duumbi:fieldName":"f3","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v3"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v4","duumbi:value":false,"duumbi:resultType":"bool"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f4","duumbi:fieldName":"f4","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v4"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v5","duumbi:value":"slot-5","duumbi:resultType":"string"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f5","duumbi:fieldName":"f5","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v5"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v6","duumbi:value":7,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f6","duumbi:fieldName":"f6","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v6"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v7","duumbi:value":8.5,"duumbi:resultType":"f64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f7","duumbi:fieldName":"f7","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v7"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v8","duumbi:value":9,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f8","duumbi:fieldName":"f8","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v8"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v9","duumbi:value":10,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f9","duumbi:fieldName":"f9","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v9"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v10","duumbi:value":11,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f10","duumbi:fieldName":"f10","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v10"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v11","duumbi:value":12,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f11","duumbi:fieldName":"f11","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v11"}},
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/entry/v12","duumbi:value":13,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldSet","@id":"duumbi:backend_hardening/main/entry/set_f12","duumbi:fieldName":"f12","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:value":{"@id":"duumbi:backend_hardening/main/entry/v12"}},
+          {"@type":"duumbi:FieldGet","@id":"duumbi:backend_hardening/main/entry/get_f1","duumbi:fieldName":"f1","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:resultType":"bool"},
+          {"@type":"duumbi:Branch","@id":"duumbi:backend_hardening/main/entry/branch","duumbi:condition":{"@id":"duumbi:backend_hardening/main/entry/get_f1"},"duumbi:trueBlock":"read_fields","duumbi:falseBlock":"failed_bool"}
+        ]
+      },
+      {
+        "@type": "duumbi:Block",
+        "@id": "duumbi:backend_hardening/main/read_fields",
+        "duumbi:label": "read_fields",
+        "duumbi:ops": [
+          {"@type":"duumbi:FieldGet","@id":"duumbi:backend_hardening/main/read_fields/get_f0","duumbi:fieldName":"f0","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldGet","@id":"duumbi:backend_hardening/main/read_fields/get_f6","duumbi:fieldName":"f6","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldGet","@id":"duumbi:backend_hardening/main/read_fields/get_f7","duumbi:fieldName":"f7","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:resultType":"f64"},
+          {"@type":"duumbi:CastF64ToI64","@id":"duumbi:backend_hardening/main/read_fields/f7_as_i64","duumbi:operand":{"@id":"duumbi:backend_hardening/main/read_fields/get_f7"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:FieldGet","@id":"duumbi:backend_hardening/main/read_fields/get_f12","duumbi:fieldName":"f12","duumbi:operand":{"@id":"duumbi:backend_hardening/main/entry/struct"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:Add","@id":"duumbi:backend_hardening/main/read_fields/add_early_mid","duumbi:left":{"@id":"duumbi:backend_hardening/main/read_fields/get_f0"},"duumbi:right":{"@id":"duumbi:backend_hardening/main/read_fields/get_f6"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:Add","@id":"duumbi:backend_hardening/main/read_fields/add_f64_slot","duumbi:left":{"@id":"duumbi:backend_hardening/main/read_fields/add_early_mid"},"duumbi:right":{"@id":"duumbi:backend_hardening/main/read_fields/f7_as_i64"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:Add","@id":"duumbi:backend_hardening/main/read_fields/add_late","duumbi:left":{"@id":"duumbi:backend_hardening/main/read_fields/add_f64_slot"},"duumbi:right":{"@id":"duumbi:backend_hardening/main/read_fields/get_f12"},"duumbi:resultType":"i64"},
+          {"@type":"duumbi:Return","@id":"duumbi:backend_hardening/main/read_fields/return","duumbi:operand":{"@id":"duumbi:backend_hardening/main/read_fields/add_late"}}
+        ]
+      },
+      {
+        "@type": "duumbi:Block",
+        "@id": "duumbi:backend_hardening/main/failed_bool",
+        "duumbi:label": "failed_bool",
+        "duumbi:ops": [
+          {"@type":"duumbi:Const","@id":"duumbi:backend_hardening/main/failed_bool/result","duumbi:value":99,"duumbi:resultType":"i64"},
+          {"@type":"duumbi:Return","@id":"duumbi:backend_hardening/main/failed_bool/return","duumbi:operand":{"@id":"duumbi:backend_hardening/main/failed_bool/result"}}
+        ]
+      }
+    ]
+  }]
+}

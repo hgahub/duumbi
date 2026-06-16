@@ -1,0 +1,85 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:backend_hardening",
+  "duumbi:name": "backend_hardening",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:backend_hardening/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/large",
+              "duumbi:value": 9223372036854775807,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/two",
+              "duumbi:value": 2,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:MulChecked",
+              "@id": "duumbi:backend_hardening/main/entry/mul_checked_overflow",
+              "duumbi:left": { "@id": "duumbi:backend_hardening/main/entry/large" },
+              "duumbi:right": { "@id": "duumbi:backend_hardening/main/entry/two" },
+              "duumbi:resultType": "result<i64,string>"
+            },
+            {
+              "@type": "duumbi:Match",
+              "@id": "duumbi:backend_hardening/main/entry/match_checked_mul",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/entry/mul_checked_overflow" },
+              "duumbi:okBlock": "ok",
+              "duumbi:errBlock": "err"
+            }
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/ok",
+          "duumbi:label": "ok",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/ok/result",
+              "duumbi:value": 44,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/ok/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/ok/result" }
+            }
+          ]
+        },
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/err",
+          "duumbi:label": "err",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/err/result",
+              "duumbi:value": 33,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/err/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/err/result" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

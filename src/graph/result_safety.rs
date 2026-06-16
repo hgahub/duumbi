@@ -26,6 +26,10 @@ pub fn has_result_option_ops(graph: &SemanticGraph) -> bool {
                 | Op::ResultIsOk
                 | Op::ResultUnwrap
                 | Op::ResultUnwrapErr
+                | Op::AddChecked
+                | Op::SubChecked
+                | Op::MulChecked
+                | Op::DivChecked
                 | Op::OptionSome
                 | Op::OptionNone
                 | Op::OptionIsSome

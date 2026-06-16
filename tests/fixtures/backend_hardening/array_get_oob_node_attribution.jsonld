@@ -1,0 +1,58 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:backend_hardening",
+  "duumbi:name": "backend_hardening",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:backend_hardening/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:backend_hardening/main/entry/array",
+              "duumbi:resultType": "array<i64>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/value",
+              "duumbi:value": 7,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:backend_hardening/main/entry/push",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:element": { "@id": "duumbi:backend_hardening/main/entry/value" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/oob_index",
+              "duumbi:value": 4,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayGet",
+              "@id": "duumbi:backend_hardening/main/entry/array_get_oob",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:index": { "@id": "duumbi:backend_hardening/main/entry/oob_index" },
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/entry/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/entry/array_get_oob" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
