@@ -4,6 +4,10 @@
 //! generation, execution, shrinking, and evidence writing live in later
 //! property-checking modules.
 
+use std::collections::{HashMap, HashSet};
+
+use crate::errors::codes;
+use crate::types::DuumbiType;
 use serde_json::Value;
 
 /// Function effect classification used to decide property-test eligibility.
@@ -138,6 +142,377 @@ pub enum ContractOperator {
     Rem,
     /// Bounded length operation.
     Length,
+}
+
+/// A validation issue found in parsed contract metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractValidationIssue {
+    /// DUUMBI diagnostic code.
+    pub code: &'static str,
+    /// Human-readable validation message.
+    pub message: String,
+    /// Optional clause id associated with the issue.
+    pub clause_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClauseKind {
+    Precondition,
+    Postcondition,
+    Invariant,
+}
+
+impl ClauseKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClauseKind::Precondition => "precondition",
+            ClauseKind::Postcondition => "postcondition",
+            ClauseKind::Invariant => "invariant",
+        }
+    }
+
+    fn allows_result(self) -> bool {
+        matches!(self, ClauseKind::Postcondition)
+    }
+}
+
+/// Validates parameter references, result usage, duplicate ids, and expression
+/// type compatibility for one function's contract set.
+#[must_use]
+pub fn validate_contract_set(
+    contracts: &ContractSet,
+    params: &[(String, DuumbiType)],
+    return_type: &DuumbiType,
+) -> Vec<ContractValidationIssue> {
+    let mut issues = Vec::new();
+    let param_types: HashMap<&str, &DuumbiType> = params
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty))
+        .collect();
+
+    check_duplicate_clause_ids(contracts, &mut issues);
+
+    for clause in &contracts.preconditions {
+        validate_clause(
+            clause,
+            ClauseKind::Precondition,
+            &param_types,
+            return_type,
+            &mut issues,
+        );
+    }
+    for clause in &contracts.postconditions {
+        validate_clause(
+            clause,
+            ClauseKind::Postcondition,
+            &param_types,
+            return_type,
+            &mut issues,
+        );
+    }
+    for clause in &contracts.invariants {
+        validate_clause(
+            clause,
+            ClauseKind::Invariant,
+            &param_types,
+            return_type,
+            &mut issues,
+        );
+    }
+
+    issues
+}
+
+fn check_duplicate_clause_ids(contracts: &ContractSet, issues: &mut Vec<ContractValidationIssue>) {
+    let mut seen = HashSet::new();
+    for clause in contracts
+        .preconditions
+        .iter()
+        .chain(contracts.postconditions.iter())
+        .chain(contracts.invariants.iter())
+    {
+        let Some(id) = &clause.id else {
+            continue;
+        };
+        if !seen.insert(id.as_str()) {
+            issues.push(ContractValidationIssue {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("Duplicate contract id '{id}'"),
+                clause_id: Some(id.clone()),
+            });
+        }
+    }
+}
+
+fn validate_clause(
+    clause: &ContractClause,
+    kind: ClauseKind,
+    param_types: &HashMap<&str, &DuumbiType>,
+    return_type: &DuumbiType,
+    issues: &mut Vec<ContractValidationIssue>,
+) {
+    let Some(expr_type) = infer_expr_type(&clause.expr, kind, param_types, return_type, issues)
+    else {
+        return;
+    };
+    if expr_type != DuumbiType::Bool {
+        issues.push(ContractValidationIssue {
+            code: codes::E001_TYPE_MISMATCH,
+            message: format!(
+                "Contract {} must evaluate to bool, found {}",
+                kind.as_str(),
+                expr_type
+            ),
+            clause_id: clause.id.clone(),
+        });
+    }
+}
+
+fn infer_expr_type(
+    expr: &ContractExpr,
+    kind: ClauseKind,
+    param_types: &HashMap<&str, &DuumbiType>,
+    return_type: &DuumbiType,
+    issues: &mut Vec<ContractValidationIssue>,
+) -> Option<DuumbiType> {
+    match expr {
+        ContractExpr::Var(name) if name == "result" => {
+            if kind.allows_result() {
+                Some(return_type.clone())
+            } else {
+                issues.push(ContractValidationIssue {
+                    code: codes::E009_SCHEMA_INVALID,
+                    message: format!(
+                        "`result` may only be referenced from postconditions, not {}s",
+                        kind.as_str()
+                    ),
+                    clause_id: None,
+                });
+                None
+            }
+        }
+        ContractExpr::Var(name) => match param_types.get(name.as_str()) {
+            Some(ty) => Some((*ty).clone()),
+            None => {
+                issues.push(ContractValidationIssue {
+                    code: codes::E009_SCHEMA_INVALID,
+                    message: format!("Unknown contract variable '{name}' in {}", kind.as_str()),
+                    clause_id: None,
+                });
+                None
+            }
+        },
+        ContractExpr::Const(literal) => Some(literal_type(literal)),
+        ContractExpr::Unary { op, expr } => {
+            infer_unary_type(*op, expr, kind, param_types, return_type, issues)
+        }
+        ContractExpr::Binary { op, left, right } => {
+            infer_binary_type(*op, left, right, kind, param_types, return_type, issues)
+        }
+        ContractExpr::Nary { op, args } => {
+            infer_nary_type(*op, args, kind, param_types, return_type, issues)
+        }
+    }
+}
+
+fn infer_unary_type(
+    op: ContractOperator,
+    expr: &ContractExpr,
+    kind: ClauseKind,
+    param_types: &HashMap<&str, &DuumbiType>,
+    return_type: &DuumbiType,
+    issues: &mut Vec<ContractValidationIssue>,
+) -> Option<DuumbiType> {
+    let operand = infer_expr_type(expr, kind, param_types, return_type, issues)?;
+    match op {
+        ContractOperator::Not if operand == DuumbiType::Bool => Some(DuumbiType::Bool),
+        ContractOperator::Not => {
+            push_type_issue(
+                issues,
+                "not operand must be bool",
+                &DuumbiType::Bool,
+                &operand,
+            );
+            None
+        }
+        ContractOperator::Length if supports_length(&operand) => Some(DuumbiType::I64),
+        ContractOperator::Length => {
+            issues.push(ContractValidationIssue {
+                code: codes::E001_TYPE_MISMATCH,
+                message: format!("length operand must be string, json, or array; found {operand}"),
+                clause_id: None,
+            });
+            None
+        }
+        other => {
+            issues.push(ContractValidationIssue {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("Operator '{other:?}' is not a unary contract operator"),
+                clause_id: None,
+            });
+            None
+        }
+    }
+}
+
+fn infer_binary_type(
+    op: ContractOperator,
+    left: &ContractExpr,
+    right: &ContractExpr,
+    kind: ClauseKind,
+    param_types: &HashMap<&str, &DuumbiType>,
+    return_type: &DuumbiType,
+    issues: &mut Vec<ContractValidationIssue>,
+) -> Option<DuumbiType> {
+    let left_type = infer_expr_type(left, kind, param_types, return_type, issues)?;
+    let right_type = infer_expr_type(right, kind, param_types, return_type, issues)?;
+    match op {
+        ContractOperator::Eq | ContractOperator::Ne => {
+            if types_compatible_for_equality(&left_type, &right_type) {
+                Some(DuumbiType::Bool)
+            } else {
+                push_type_issue(
+                    issues,
+                    "equality operands must have compatible types",
+                    &left_type,
+                    &right_type,
+                );
+                None
+            }
+        }
+        ContractOperator::Lt
+        | ContractOperator::Le
+        | ContractOperator::Gt
+        | ContractOperator::Ge => {
+            if numeric_pair(&left_type, &right_type) {
+                Some(DuumbiType::Bool)
+            } else {
+                issues.push(ContractValidationIssue {
+                    code: codes::E001_TYPE_MISMATCH,
+                    message: format!(
+                        "ordered comparison operands must be numeric; found {left_type} and {right_type}"
+                    ),
+                    clause_id: None,
+                });
+                None
+            }
+        }
+        ContractOperator::Add
+        | ContractOperator::Sub
+        | ContractOperator::Mul
+        | ContractOperator::Div
+        | ContractOperator::Rem => {
+            if numeric_pair(&left_type, &right_type) {
+                if left_type == DuumbiType::F64 || right_type == DuumbiType::F64 {
+                    Some(DuumbiType::F64)
+                } else {
+                    Some(DuumbiType::I64)
+                }
+            } else {
+                issues.push(ContractValidationIssue {
+                    code: codes::E001_TYPE_MISMATCH,
+                    message: format!(
+                        "arithmetic operands must be numeric; found {left_type} and {right_type}"
+                    ),
+                    clause_id: None,
+                });
+                None
+            }
+        }
+        other => {
+            issues.push(ContractValidationIssue {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("Operator '{other:?}' is not a binary contract operator"),
+                clause_id: None,
+            });
+            None
+        }
+    }
+}
+
+fn infer_nary_type(
+    op: ContractOperator,
+    args: &[ContractExpr],
+    kind: ClauseKind,
+    param_types: &HashMap<&str, &DuumbiType>,
+    return_type: &DuumbiType,
+    issues: &mut Vec<ContractValidationIssue>,
+) -> Option<DuumbiType> {
+    match op {
+        ContractOperator::And | ContractOperator::Or => {
+            if args.is_empty() {
+                issues.push(ContractValidationIssue {
+                    code: codes::E009_SCHEMA_INVALID,
+                    message: format!("Operator '{op:?}' requires at least one argument"),
+                    clause_id: None,
+                });
+                return None;
+            }
+            for arg in args {
+                let Some(arg_type) = infer_expr_type(arg, kind, param_types, return_type, issues)
+                else {
+                    continue;
+                };
+                if arg_type != DuumbiType::Bool {
+                    push_type_issue(
+                        issues,
+                        "boolean operator operands must be bool",
+                        &DuumbiType::Bool,
+                        &arg_type,
+                    );
+                    return None;
+                }
+            }
+            Some(DuumbiType::Bool)
+        }
+        other => {
+            issues.push(ContractValidationIssue {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("Operator '{other:?}' is not a variadic contract operator"),
+                clause_id: None,
+            });
+            None
+        }
+    }
+}
+
+fn literal_type(literal: &ContractLiteral) -> DuumbiType {
+    match literal {
+        ContractLiteral::Bool(_) => DuumbiType::Bool,
+        ContractLiteral::I64(_) => DuumbiType::I64,
+        ContractLiteral::F64(_) => DuumbiType::F64,
+        ContractLiteral::String(_) => DuumbiType::String,
+        ContractLiteral::Json(_) | ContractLiteral::Null => DuumbiType::Json,
+    }
+}
+
+fn numeric_pair(left: &DuumbiType, right: &DuumbiType) -> bool {
+    matches!(left, DuumbiType::I64 | DuumbiType::F64)
+        && matches!(right, DuumbiType::I64 | DuumbiType::F64)
+}
+
+fn supports_length(ty: &DuumbiType) -> bool {
+    matches!(
+        ty,
+        DuumbiType::String | DuumbiType::Json | DuumbiType::Array(_)
+    )
+}
+
+fn types_compatible_for_equality(left: &DuumbiType, right: &DuumbiType) -> bool {
+    left == right || numeric_pair(left, right)
+}
+
+fn push_type_issue(
+    issues: &mut Vec<ContractValidationIssue>,
+    message: impl Into<String>,
+    expected: &DuumbiType,
+    found: &DuumbiType,
+) {
+    issues.push(ContractValidationIssue {
+        code: codes::E001_TYPE_MISMATCH,
+        message: format!("{}; expected {}, found {}", message.into(), expected, found),
+        clause_id: None,
+    });
 }
 
 /// Parses a JSON-LD `duumbi:contracts` value into typed metadata.

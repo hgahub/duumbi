@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use petgraph::algo::is_cyclic_directed;
 use petgraph::visit::EdgeRef;
 
+use crate::contracts::validate_contract_set;
 use crate::errors::Diagnostic;
 use crate::errors::codes;
 use crate::types::{DuumbiType, NodeId, Op};
@@ -31,6 +32,7 @@ pub fn validate(graph: &SemanticGraph) -> Vec<Diagnostic> {
     check_types(graph, &mut diagnostics);
     check_return_types(graph, &mut diagnostics);
     check_branch_conditions(graph, &mut diagnostics);
+    check_contracts(graph, &mut diagnostics);
     check_ssa_dominance(graph, &mut diagnostics);
     check_branch_targets(graph, &mut diagnostics);
 
@@ -1036,6 +1038,34 @@ fn check_branch_conditions(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnost
     }
 }
 
+/// Checks function-level contract references and predicate expression types.
+fn check_contracts(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for func_info in &graph.functions {
+        let params: Vec<(String, DuumbiType)> = func_info
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), param.param_type.clone()))
+            .collect();
+        for issue in validate_contract_set(&func_info.contracts, &params, &func_info.return_type) {
+            let mut details = HashMap::new();
+            details.insert("function".to_string(), func_info.name.to_string());
+            if let Some(clause_id) = issue.clause_id {
+                details.insert("contract_id".to_string(), clause_id);
+            }
+            diagnostics.push(
+                Diagnostic::error(
+                    issue.code,
+                    format!(
+                        "Contract validation failed in '{}': {}",
+                        func_info.name, issue.message
+                    ),
+                )
+                .with_details(details),
+            );
+        }
+    }
+}
+
 /// Rule A2: SSA Dominance Check.
 ///
 /// Within a block, an op at index N may only reference ops at index 0..N-1 in
@@ -1264,6 +1294,150 @@ mod tests {
             .expect("server stdlib graph must build");
         let diags = validate(&sg);
         assert!(diags.is_empty(), "Expected no errors, got: {diags:?}");
+    }
+
+    fn validate_contract_json(function_contracts: &str, params: &str) -> Vec<Diagnostic> {
+        let json = format!(
+            r#"{{
+                "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+                "duumbi:functions": [{{
+                    "@type": "duumbi:Function",
+                    "@id": "duumbi:t/main",
+                    "duumbi:name": "main",
+                    "duumbi:returnType": "i64",
+                    "duumbi:params": {params},
+                    "duumbi:contracts": {function_contracts},
+                    "duumbi:blocks": [{{
+                        "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {{"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"}},
+                            {{"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {{"@id": "duumbi:t/main/e/0"}}}}
+                        ]
+                    }}]
+                }}]
+            }}"#
+        );
+        let module = parse_jsonld(&json).expect("contract fixture should parse");
+        let graph = build_graph(&module).expect("contract fixture should build");
+        validate(&graph)
+    }
+
+    #[test]
+    fn valid_contract_references_pass_validation() {
+        let diags = validate_contract_json(
+            r#"{
+                "duumbi:effect": "pure",
+                "duumbi:preconditions": [{
+                    "duumbi:id": "input-nonnegative",
+                    "duumbi:expr": {
+                        "duumbi:op": ">=",
+                        "duumbi:left": {"duumbi:var": "n"},
+                        "duumbi:right": {"duumbi:const": 0}
+                    }
+                }],
+                "duumbi:postconditions": [{
+                    "duumbi:id": "result-nonnegative",
+                    "duumbi:expr": {
+                        "duumbi:op": ">=",
+                        "duumbi:left": {"duumbi:var": "result"},
+                        "duumbi:right": {"duumbi:const": 0}
+                    }
+                }]
+            }"#,
+            r#"[{"duumbi:name": "n", "duumbi:paramType": "i64"}]"#,
+        );
+        assert!(diags.is_empty(), "Expected no errors, got: {diags:?}");
+    }
+
+    #[test]
+    fn contract_unknown_parameter_reference_is_schema_error() {
+        let diags = validate_contract_json(
+            r#"{
+                "duumbi:preconditions": [{
+                    "duumbi:id": "bad-ref",
+                    "duumbi:expr": {
+                        "duumbi:op": ">=",
+                        "duumbi:left": {"duumbi:var": "missing"},
+                        "duumbi:right": {"duumbi:const": 0}
+                    }
+                }]
+            }"#,
+            "[]",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("Unknown contract variable 'missing'")),
+            "Expected unknown contract variable diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn contract_result_reference_in_precondition_is_schema_error() {
+        let diags = validate_contract_json(
+            r#"{
+                "duumbi:preconditions": [{
+                    "duumbi:id": "bad-result-ref",
+                    "duumbi:expr": {
+                        "duumbi:op": ">=",
+                        "duumbi:left": {"duumbi:var": "result"},
+                        "duumbi:right": {"duumbi:const": 0}
+                    }
+                }]
+            }"#,
+            "[]",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message
+                    .contains("`result` may only be referenced from postconditions")),
+            "Expected precondition result-reference diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn contract_duplicate_ids_are_schema_errors() {
+        let diags = validate_contract_json(
+            r#"{
+                "duumbi:preconditions": [{
+                    "duumbi:id": "same",
+                    "duumbi:expr": {"duumbi:const": true}
+                }],
+                "duumbi:postconditions": [{
+                    "duumbi:id": "same",
+                    "duumbi:expr": {"duumbi:const": true}
+                }]
+            }"#,
+            "[]",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == codes::E009_SCHEMA_INVALID
+                && d.message.contains("Duplicate contract id 'same'")),
+            "Expected duplicate contract id diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn contract_expression_type_mismatch_is_type_error() {
+        let diags = validate_contract_json(
+            r#"{
+                "duumbi:postconditions": [{
+                    "duumbi:id": "bad-type",
+                    "duumbi:expr": {
+                        "duumbi:op": "==",
+                        "duumbi:left": {"duumbi:var": "result"},
+                        "duumbi:right": {"duumbi:const": true}
+                    }
+                }]
+            }"#,
+            "[]",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == codes::E001_TYPE_MISMATCH
+                && d.message
+                    .contains("equality operands must have compatible types")),
+            "Expected contract type mismatch diagnostic, got: {diags:?}"
+        );
     }
 
     #[test]
