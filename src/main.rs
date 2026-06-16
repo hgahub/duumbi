@@ -197,7 +197,9 @@ fn logging_workspace_root(command: &Commands) -> PathBuf {
         Commands::Build {
             input: Some(input), ..
         }
-        | Commands::Check { input: Some(input) }
+        | Commands::Check {
+            input: Some(input), ..
+        }
         | Commands::Describe { input: Some(input) } => {
             cli::commands::workspace_root_for_graph_input(input)
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -389,9 +391,27 @@ async fn run(cli: Cli) -> Result<i32> {
                 .with_context(|| format!("Failed to run binary '{}'", output_path.display()))?;
             Ok(status.code().unwrap_or(-1))
         }
-        Commands::Check { input } => {
+        Commands::Check {
+            input,
+            properties,
+            seed,
+            cases,
+            property_output,
+        } => {
             let input_path = resolve_input(input.as_deref())?;
-            success_exit(cli::commands::check(&input_path))
+            if properties {
+                success_exit(cli::commands::check_with_properties(
+                    &input_path,
+                    properties::PropertyRunOptions {
+                        seed,
+                        cases,
+                        output_path: property_output,
+                        ..Default::default()
+                    },
+                ))
+            } else {
+                success_exit(cli::commands::check(&input_path))
+            }
         }
         Commands::Describe { input } => {
             let input_path = resolve_input(input.as_deref())?;
