@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
@@ -433,15 +432,16 @@ fn run_native_i64_case(
     function: &FunctionInfo,
     inputs: &[PropertyValue],
 ) -> std::result::Result<i64, UnsupportedEvidence> {
-    let workspace_root = create_temp_workspace().map_err(|source| {
-        unsupported(
-            "native_workspace_create_failed",
-            format!("failed to create temp property workspace: {source}"),
-        )
-    })?;
-    let result = run_native_i64_case_inner(&workspace_root, graph, graph_input, function, inputs);
-    let _ = fs::remove_dir_all(&workspace_root);
-    result
+    let workspace = tempfile::Builder::new()
+        .prefix("duumbi_property_")
+        .tempdir()
+        .map_err(|source| {
+            unsupported(
+                "native_workspace_create_failed",
+                format!("failed to create temp property workspace: {source}"),
+            )
+        })?;
+    run_native_i64_case_inner(workspace.path(), graph, graph_input, function, inputs)
 }
 
 fn run_native_i64_case_inner(
@@ -607,16 +607,6 @@ fn parse_i64_stdout(output: &BinaryRunOutput) -> std::result::Result<i64, Unsupp
             ),
         )
     })
-}
-
-fn create_temp_workspace() -> std::result::Result<PathBuf, std::io::Error> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let path =
-        std::env::temp_dir().join(format!("duumbi_property_{}_{}", std::process::id(), unique));
-    fs::create_dir_all(&path)?;
-    Ok(path)
 }
 
 fn unsupported(reason: impl Into<String>, detail: impl Into<String>) -> UnsupportedEvidence {
