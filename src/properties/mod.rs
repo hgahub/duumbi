@@ -7,7 +7,9 @@
 #![allow(dead_code, unused_imports)] // Consumed by later DUUMBI-717 property-runner cycles.
 
 pub mod generator;
+pub mod predicate;
 pub mod value;
 
 pub use generator::{GeneratorSettings, UnsupportedGenerator, generate_values};
+pub use predicate::{PredicateContext, PredicateEvalError, eval_predicate};
 pub use value::PropertyValue;
