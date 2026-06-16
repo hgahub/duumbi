@@ -8,8 +8,10 @@
 
 pub mod generator;
 pub mod predicate;
+pub mod shrink;
 pub mod value;
 
 pub use generator::{GeneratorSettings, UnsupportedGenerator, generate_values};
 pub use predicate::{PredicateContext, PredicateEvalError, eval_predicate};
+pub use shrink::shrink_candidates;
 pub use value::PropertyValue;
