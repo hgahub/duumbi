@@ -239,6 +239,7 @@ pub struct BenchmarkReport {
     /// Per-showcase aggregated stats.
     pub showcases: Vec<ShowcaseSummary>,
     /// Scaled-eval summary across all raw results.
+    #[serde(default)]
     pub summary: BenchmarkSummary,
     /// Raw result entries.
     pub results: Vec<BenchmarkResult>,
@@ -894,6 +895,63 @@ mod tests {
         assert_eq!(parsed.showcases.len(), 1);
         assert_eq!(parsed.results.len(), 1);
         assert!(parsed.results[0].success);
+    }
+
+    #[test]
+    fn old_baseline_without_summary_loads() {
+        let old_report_json = r#"{
+          "started_at": "2026-03-18T00:00:00Z",
+          "finished_at": "2026-03-18T00:01:00Z",
+          "duumbi_version": "0.4.0-preview",
+          "attempts_per_run": 1,
+          "showcases": [
+            {
+              "name": "calculator",
+              "total_attempts": 1,
+              "successes": 1,
+              "success_rate": 1.0,
+              "providers": [
+                {
+                  "name": "anthropic",
+                  "attempts": 1,
+                  "successes": 1,
+                  "success_rate": 1.0,
+                  "error_categories": {}
+                }
+              ]
+            }
+          ],
+          "results": [
+            {
+              "showcase": "calculator",
+              "provider": "anthropic",
+              "attempt": 1,
+              "success": true,
+              "error_category": null,
+              "error_message": null,
+              "tests_passed": 4,
+              "tests_total": 4,
+              "duration_secs": 5.0
+            }
+          ],
+          "kill_criterion_met": false
+        }"#;
+        let path = std::env::temp_dir().join(format!(
+            "duumbi-old-baseline-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, old_report_json).expect("failed to write old baseline fixture");
+
+        let report = load_baseline(&path).expect("old baseline should load");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(report.showcases.len(), 1);
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.summary.total_results, 0);
     }
 
     #[test]
