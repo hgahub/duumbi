@@ -889,6 +889,54 @@ where
     result
 }
 
+async fn run_with_pending_status_and_progress<T, F>(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut ReplApp,
+    textarea: &mut TextArea<'_>,
+    pending_label: &str,
+    progress_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    operation: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    let was_working = app.working;
+    app.working = true;
+    app.push_output(pending_status_text(pending_label, 0), OutputStyle::Dim);
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+
+    tokio::pin!(operation);
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(280));
+    let mut frame = 1usize;
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            Some(line) = progress_rx.recv() => {
+                app.pop_last_output_line();
+                app.push_output(line, OutputStyle::Normal);
+                app.push_output(pending_status_text(pending_label, frame), OutputStyle::Dim);
+                let _ = terminal.draw(|frame| app.render(frame, textarea));
+            }
+            _ = tick.tick() => {
+                app.replace_last_output_line(
+                    pending_status_text(pending_label, frame),
+                    OutputStyle::Dim,
+                );
+                let _ = terminal.draw(|frame| app.render(frame, textarea));
+                frame = frame.wrapping_add(1);
+            }
+        }
+    };
+
+    app.pop_last_output_line();
+    while let Ok(line) = progress_rx.try_recv() {
+        app.push_output(line, OutputStyle::Normal);
+    }
+    app.working = was_working;
+    let _ = terminal.draw(|frame| app.render(frame, textarea));
+    result
+}
+
 fn pending_agent_label(
     role: AgentRole,
     client: &dyn crate::agents::LlmProvider,
@@ -1657,14 +1705,29 @@ async fn handle_intent_execute(
     app.push_output(format!("Executing intent '{slug}'…"), OutputStyle::Dim);
 
     let mut log = Vec::new();
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let progress = move |line: &str| {
+        let _ = progress_tx.send(line.to_string());
+    };
     let pending_label = pending_agent_label(agent_role, client.as_ref(), "is executing the intent");
-    let result = run_with_pending_status(terminal, app, textarea, &pending_label, async {
-        intent::execute::run_execute(client.as_ref(), &workspace, slug, &mut log).await
-    })
+    let result = run_with_pending_status_and_progress(
+        terminal,
+        app,
+        textarea,
+        &pending_label,
+        &mut progress_rx,
+        async {
+            intent::execute::run_execute_with_progress(
+                client.as_ref(),
+                &workspace,
+                slug,
+                &mut log,
+                &progress,
+            )
+            .await
+        },
+    )
     .await;
-    for line in &log {
-        app.push_output(line, OutputStyle::Normal);
-    }
 
     finish_intent_execute(app, slug, result);
 }
