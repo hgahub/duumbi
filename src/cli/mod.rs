@@ -101,6 +101,15 @@ pub enum CliLogMode {
     Rewrite,
 }
 
+/// Benchmark suite selected by `duumbi benchmark`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BenchmarkSuiteArg {
+    /// Existing six-showcase benchmark suite.
+    Core,
+    /// Scaled intent-execute suite for multi-function and multi-module evidence.
+    Scaled,
+}
+
 impl From<CliLogMode> for crate::config::LogMode {
     fn from(value: CliLogMode) -> Self {
         match value {
@@ -248,6 +257,14 @@ pub enum Commands {
 
     /// Run benchmark showcases against configured LLM providers.
     Benchmark {
+        /// Benchmark suite to run. Defaults to the existing core suite.
+        #[arg(long, value_enum)]
+        suite: Option<BenchmarkSuiteArg>,
+
+        /// Run only the low-budget smoke subset of the selected suite.
+        #[arg(long)]
+        smoke: bool,
+
         /// Run only the named showcase(s) (comma-separated).
         #[arg(long, value_delimiter = ',')]
         showcase: Option<Vec<String>>,

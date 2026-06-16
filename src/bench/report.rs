@@ -21,24 +21,123 @@ use serde::{Deserialize, Serialize};
 pub struct BenchmarkResult {
     /// Showcase name (e.g. `"calculator"`).
     pub showcase: String,
+    /// Stable task id. Defaults to the showcase name for new reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Benchmark suite, such as `"core"` or `"scaled"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite: Option<String>,
+    /// Feature tags for filtering and failure-pattern summaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     /// Provider name (e.g. `"anthropic"`).
     pub provider: String,
     /// Attempt number (1-based).
     pub attempt: u32,
     /// Whether all tests passed.
     pub success: bool,
+    /// Whether verification passed before any repair cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_pass_success: Option<bool>,
+    /// Whether a repair cycle was attempted.
+    #[serde(default)]
+    pub repair_attempted: bool,
+    /// Whether repair converted the run into a success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_success: Option<bool>,
     /// Categorized failure reason (if `!success`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<ErrorCategory>,
     /// Raw error message (if `!success`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Dominant DUUMBI error code or failure signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dominant_error_code: Option<String>,
+    /// Mutation retry count, when exposed by the execute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_retry_count: Option<u32>,
+    /// Repair retry count, when exposed by the execute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_retry_count: Option<u32>,
+    /// Total retry count, when exposed by the execute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_retry_count: Option<u32>,
+    /// Provider usage and cost summary.
+    #[serde(default)]
+    pub provider_usage: ProviderUsageSummary,
+    /// Additional evidence for non-i64 or process-level checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<BenchmarkEvidence>,
     /// Number of test cases that passed.
     pub tests_passed: usize,
     /// Total number of test cases.
     pub tests_total: usize,
     /// Wall-clock duration in seconds.
     pub duration_secs: f64,
+}
+
+/// Provider usage and cost summary for one benchmark run.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderUsageSummary {
+    /// Whether usage data is available.
+    pub available: bool,
+    /// Number of provider requests, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_count: Option<u32>,
+    /// Prompt/input tokens, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+    /// Completion/output tokens, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<u64>,
+    /// Total tokens, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    /// Estimated cost in USD, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    /// Specific reason usage data is unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+impl ProviderUsageSummary {
+    /// Creates an unavailable usage summary with a stable reason.
+    #[must_use]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            unavailable_reason: Some(reason.into()),
+            ..Self::default()
+        }
+    }
+}
+
+/// Additional benchmark evidence for checks outside the current i64 verifier.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BenchmarkEvidence {
+    /// Evidence kind, such as `loopback_http_sqlite_json`.
+    pub kind: String,
+    /// Evidence status, such as `passed`, `failed`, or `broader_evidence_required`.
+    pub status: String,
+    /// Human-readable evidence detail.
+    pub detail: String,
+    /// Command used to gather evidence, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Expected HTTP route, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_route: Option<String>,
+    /// Expected JSON fields, when applicable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_json_fields: Vec<String>,
+    /// Current verification gap, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_gap: Option<String>,
+    /// Path to retained evidence artifact, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
 }
 
 /// Broad failure category for error breakdown.
@@ -57,6 +156,8 @@ pub enum ErrorCategory {
     ProviderError,
     /// Mutation pipeline failed (patch rejected, retry exhausted).
     MutationFailed,
+    /// The task requires broader evidence than the current verifier provides.
+    EvidenceRequired,
 }
 
 impl fmt::Display for ErrorCategory {
@@ -68,6 +169,7 @@ impl fmt::Display for ErrorCategory {
             Self::Crash => write!(f, "crash"),
             Self::ProviderError => write!(f, "provider_error"),
             Self::MutationFailed => write!(f, "mutation_failed"),
+            Self::EvidenceRequired => write!(f, "evidence_required"),
         }
     }
 }
@@ -111,6 +213,8 @@ pub fn categorize_error(msg: &str) -> ErrorCategory {
         || lower.contains("no such file or directory")
     {
         ErrorCategory::Crash
+    } else if lower.contains("broader evidence") || lower.contains("evidence required") {
+        ErrorCategory::EvidenceRequired
     } else {
         // Default: if the run produced wrong output it's a logic error.
         ErrorCategory::LogicError
@@ -134,10 +238,56 @@ pub struct BenchmarkReport {
     pub attempts_per_run: u32,
     /// Per-showcase aggregated stats.
     pub showcases: Vec<ShowcaseSummary>,
+    /// Scaled-eval summary across all raw results.
+    #[serde(default)]
+    pub summary: BenchmarkSummary,
     /// Raw result entries.
     pub results: Vec<BenchmarkResult>,
     /// Whether the kill criterion is met.
     pub kill_criterion_met: bool,
+}
+
+/// Cross-result summary for first-pass, repair, usage, and failure patterns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BenchmarkSummary {
+    /// Number of raw result entries.
+    pub total_results: u32,
+    /// Number of successful raw result entries.
+    pub successes: u32,
+    /// Number of raw entries with known first-pass status.
+    pub first_pass_attempts: u32,
+    /// Number of entries that passed before repair.
+    pub first_pass_successes: u32,
+    /// Number of entries where repair was attempted.
+    pub repair_attempts: u32,
+    /// Number of entries where repair converted the run into success.
+    pub repair_successes: u32,
+    /// Number of unrecovered failures.
+    pub unrecovered_failures: u32,
+    /// Sum of known retry counts.
+    pub total_retry_count: u32,
+    /// Entries with provider usage data.
+    pub usage_available: u32,
+    /// Entries without provider usage data.
+    pub usage_unavailable: u32,
+    /// Unavailable usage reasons and counts.
+    pub usage_unavailable_reasons: BTreeMap<String, u32>,
+    /// Total estimated cost when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_estimated_cost_usd: Option<f64>,
+    /// Dominant error codes or failure signals.
+    pub dominant_error_codes: BTreeMap<String, u32>,
+    /// Top failure patterns from this report.
+    pub top_failure_patterns: Vec<FailurePatternSummary>,
+}
+
+/// Aggregated failure pattern summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailurePatternSummary {
+    /// Pattern label.
+    pub pattern: String,
+    /// Number of occurrences.
+    pub count: u32,
 }
 
 /// Per-showcase summary across all providers.
@@ -195,6 +345,7 @@ impl BenchmarkReport {
         finished_at: String,
     ) -> Self {
         let showcases = aggregate_showcases(&results);
+        let summary = aggregate_summary(&results);
         let kill_criterion_met = check_kill_criterion(&showcases);
 
         Self {
@@ -203,6 +354,7 @@ impl BenchmarkReport {
             duumbi_version: env!("CARGO_PKG_VERSION").to_string(),
             attempts_per_run,
             showcases,
+            summary,
             results,
             kill_criterion_met,
         }
@@ -466,6 +618,89 @@ fn aggregate_showcases(results: &[BenchmarkResult]) -> Vec<ShowcaseSummary> {
         .collect()
 }
 
+fn aggregate_summary(results: &[BenchmarkResult]) -> BenchmarkSummary {
+    let total_results = results.len() as u32;
+    let successes = results.iter().filter(|r| r.success).count() as u32;
+    let first_pass_attempts = results
+        .iter()
+        .filter(|r| r.first_pass_success.is_some())
+        .count() as u32;
+    let first_pass_successes = results
+        .iter()
+        .filter(|r| r.first_pass_success == Some(true))
+        .count() as u32;
+    let repair_attempts = results.iter().filter(|r| r.repair_attempted).count() as u32;
+    let repair_successes = results
+        .iter()
+        .filter(|r| r.repair_success == Some(true))
+        .count() as u32;
+    let unrecovered_failures = results.iter().filter(|r| !r.success).count() as u32;
+    let total_retry_count = results.iter().filter_map(|r| r.total_retry_count).sum();
+    let usage_available = results
+        .iter()
+        .filter(|r| r.provider_usage.available)
+        .count() as u32;
+    let usage_unavailable = total_results.saturating_sub(usage_available);
+    let mut usage_unavailable_reasons = BTreeMap::new();
+    let mut total_cost = 0.0;
+    let mut cost_seen = false;
+    let mut dominant_error_codes = BTreeMap::new();
+    let mut failure_patterns = BTreeMap::new();
+
+    for result in results {
+        if !result.provider_usage.available
+            && let Some(reason) = result.provider_usage.unavailable_reason.as_deref()
+        {
+            *usage_unavailable_reasons
+                .entry(reason.to_string())
+                .or_insert(0) += 1;
+        }
+        if let Some(cost) = result.provider_usage.estimated_cost_usd {
+            total_cost += cost;
+            cost_seen = true;
+        }
+        if let Some(code) = result.dominant_error_code.as_deref() {
+            *dominant_error_codes.entry(code.to_string()).or_insert(0) += 1;
+        }
+        if !result.success {
+            let pattern = result
+                .dominant_error_code
+                .clone()
+                .or_else(|| result.error_category.as_ref().map(ToString::to_string))
+                .unwrap_or_else(|| "unknown_failure".to_string());
+            *failure_patterns.entry(pattern).or_insert(0) += 1;
+        }
+    }
+
+    let mut top_failure_patterns: Vec<FailurePatternSummary> = failure_patterns
+        .into_iter()
+        .map(|(pattern, count)| FailurePatternSummary { pattern, count })
+        .collect();
+    top_failure_patterns.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.pattern.cmp(&b.pattern))
+    });
+    top_failure_patterns.truncate(3);
+
+    BenchmarkSummary {
+        total_results,
+        successes,
+        first_pass_attempts,
+        first_pass_successes,
+        repair_attempts,
+        repair_successes,
+        unrecovered_failures,
+        total_retry_count,
+        usage_available,
+        usage_unavailable,
+        usage_unavailable_reasons,
+        total_estimated_cost_usd: cost_seen.then_some(total_cost),
+        dominant_error_codes,
+        top_failure_patterns,
+    }
+}
+
 /// Truncates a string to `max_len`, appending `…` if needed.
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -494,9 +729,15 @@ mod tests {
     fn make_result(showcase: &str, provider: &str, success: bool) -> BenchmarkResult {
         BenchmarkResult {
             showcase: showcase.to_string(),
+            task_id: Some(showcase.to_string()),
+            suite: Some("core".to_string()),
+            tags: Vec::new(),
             provider: provider.to_string(),
             attempt: 1,
             success,
+            first_pass_success: Some(success),
+            repair_attempted: false,
+            repair_success: None,
             error_category: if success {
                 None
             } else {
@@ -507,6 +748,14 @@ mod tests {
             } else {
                 Some("wrong output".to_string())
             },
+            dominant_error_code: None,
+            mutation_retry_count: None,
+            repair_retry_count: None,
+            total_retry_count: Some(0),
+            provider_usage: ProviderUsageSummary::unavailable(
+                "provider_response_did_not_expose_usage",
+            ),
+            evidence: None,
             tests_passed: if success { 4 } else { 2 },
             tests_total: 4,
             duration_secs: 5.0,
@@ -646,6 +895,63 @@ mod tests {
         assert_eq!(parsed.showcases.len(), 1);
         assert_eq!(parsed.results.len(), 1);
         assert!(parsed.results[0].success);
+    }
+
+    #[test]
+    fn old_baseline_without_summary_loads() {
+        let old_report_json = r#"{
+          "started_at": "2026-03-18T00:00:00Z",
+          "finished_at": "2026-03-18T00:01:00Z",
+          "duumbi_version": "0.4.0-preview",
+          "attempts_per_run": 1,
+          "showcases": [
+            {
+              "name": "calculator",
+              "total_attempts": 1,
+              "successes": 1,
+              "success_rate": 1.0,
+              "providers": [
+                {
+                  "name": "anthropic",
+                  "attempts": 1,
+                  "successes": 1,
+                  "success_rate": 1.0,
+                  "error_categories": {}
+                }
+              ]
+            }
+          ],
+          "results": [
+            {
+              "showcase": "calculator",
+              "provider": "anthropic",
+              "attempt": 1,
+              "success": true,
+              "error_category": null,
+              "error_message": null,
+              "tests_passed": 4,
+              "tests_total": 4,
+              "duration_secs": 5.0
+            }
+          ],
+          "kill_criterion_met": false
+        }"#;
+        let path = std::env::temp_dir().join(format!(
+            "duumbi-old-baseline-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, old_report_json).expect("failed to write old baseline fixture");
+
+        let report = load_baseline(&path).expect("old baseline should load");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(report.showcases.len(), 1);
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.summary.total_results, 0);
     }
 
     #[test]

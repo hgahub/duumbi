@@ -33,6 +33,10 @@ DUUMBI `v0.4.0-preview` is distributed as prebuilt GitHub Release archives for:
 macOS Intel (`x86_64-apple-darwin`) is not included in this developer preview.
 Build from source on Intel Macs if needed.
 
+Preview write-path evidence is intentionally limited. The current scaled
+intent-execute smoke notes are tracked in
+[`docs/e2e/duumbi-689-known-limitations.md`](docs/e2e/duumbi-689-known-limitations.md).
+
 Download the archive for your platform from the
 [`v0.4.0-preview` release](https://github.com/hgahub/duumbi/releases/tag/v0.4.0-preview)
 and verify it with the published checksum file:

@@ -471,13 +471,27 @@ async fn run(cli: Cli) -> Result<i32> {
             success_exit(run_knowledge(subcommand, workspace))
         }
         Commands::Benchmark {
+            suite,
+            smoke,
             showcase,
             provider,
             attempts,
             output,
             ci,
             baseline,
-        } => run_benchmark(showcase, provider, attempts, output, ci, baseline).await,
+        } => {
+            run_benchmark(BenchmarkRunArgs {
+                suite,
+                smoke,
+                showcase,
+                provider_filter: provider,
+                attempts,
+                output,
+                ci,
+                baseline,
+            })
+            .await
+        }
         Commands::Phase15E2e {
             task,
             provider,
@@ -1082,14 +1096,28 @@ async fn studio(port: u16, _dev: bool) -> Result<i32> {
 }
 
 /// Runs the benchmark suite against configured LLM providers.
-async fn run_benchmark(
+struct BenchmarkRunArgs {
+    suite: Option<cli::BenchmarkSuiteArg>,
+    smoke: bool,
     showcase: Option<Vec<String>>,
     provider_filter: Option<Vec<String>>,
-    explicit_attempts: Option<u32>,
+    attempts: Option<u32>,
     output: Option<PathBuf>,
     ci: bool,
     baseline: Option<PathBuf>,
-) -> Result<i32> {
+}
+
+async fn run_benchmark(args: BenchmarkRunArgs) -> Result<i32> {
+    let BenchmarkRunArgs {
+        suite,
+        smoke,
+        showcase,
+        provider_filter,
+        attempts: explicit_attempts,
+        output,
+        ci,
+        baseline,
+    } = args;
     let workspace = PathBuf::from(".");
     let cfg = config::load_effective_config(&workspace)?.config;
 
@@ -1108,6 +1136,11 @@ async fn run_benchmark(
         providers,
         showcase_filter: showcase,
         provider_filter,
+        suite_filter: suite.map(|suite| match suite {
+            cli::BenchmarkSuiteArg::Core => bench::showcases::ShowcaseSuite::Core,
+            cli::BenchmarkSuiteArg::Scaled => bench::showcases::ShowcaseSuite::Scaled,
+        }),
+        smoke,
     };
 
     let started_at = iso8601_now();

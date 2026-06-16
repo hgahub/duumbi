@@ -1,0 +1,28 @@
+intent: "Build a cross-module stats program where stats/core exports sum3 and average3 and stats/report computes spread_score using those exported helpers"
+version: 1
+status: pending
+acceptance_criteria:
+  - "stats/core defines sum3(a, b, c) and average3(a, b, c)"
+  - "stats/report defines spread_score(a, b, c) using stats/core helpers"
+  - "spread_score(a, b, c) returns sum3(a, b, c) - average3(a, b, c)"
+  - "The report module calls exported functions from the core module instead of duplicating them"
+modules:
+  create:
+    - "stats/core"
+    - "stats/report"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "balanced_values"
+    function: "spread_score"
+    args: [3, 6, 9]
+    expected_return: 12
+  - name: "small_values"
+    function: "spread_score"
+    args: [1, 2, 3]
+    expected_return: 4
+  - name: "mixed_values"
+    function: "spread_score"
+    args: [10, 5, 0]
+    expected_return: 10
+dependencies: []

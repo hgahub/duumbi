@@ -1,0 +1,28 @@
+intent: "Build a branch-heavy recurrence module with tribonacci(n) returning the nth tribonacci number for i64 input"
+version: 1
+status: pending
+acceptance_criteria:
+  - "tribonacci(0) returns 0"
+  - "tribonacci(1) returns 1"
+  - "tribonacci(2) returns 1"
+  - "tribonacci(n) returns tribonacci(n-1) + tribonacci(n-2) + tribonacci(n-3) for n >= 3"
+  - "The implementation handles multiple branch base cases"
+modules:
+  create:
+    - "math/tribonacci"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "base_zero"
+    function: "tribonacci"
+    args: [0]
+    expected_return: 0
+  - name: "base_two"
+    function: "tribonacci"
+    args: [2]
+    expected_return: 1
+  - name: "six"
+    function: "tribonacci"
+    args: [6]
+    expected_return: 13
+dependencies: []

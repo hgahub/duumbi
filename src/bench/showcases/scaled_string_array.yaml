@@ -1,0 +1,27 @@
+intent: "Build a small utility module with constant string and array-like aggregate functions that return i64 evidence values"
+version: 1
+status: pending
+acceptance_criteria:
+  - "hello_world_length() returns the length of the concatenated string 'hello' + 'world'"
+  - "fixed_window_total() returns the sum of a fixed three-value window 4 + 5 + 6"
+  - "combined_text_and_window_score() returns hello_world_length() + fixed_window_total()"
+  - "The functions are separate and reusable inside one module"
+modules:
+  create:
+    - "util/scaled"
+  modify:
+    - "app/main"
+test_cases:
+  - name: "hello_world_length"
+    function: "hello_world_length"
+    args: []
+    expected_return: 10
+  - name: "fixed_window_total"
+    function: "fixed_window_total"
+    args: []
+    expected_return: 15
+  - name: "combined_score"
+    function: "combined_text_and_window_score"
+    args: []
+    expected_return: 25
+dependencies: []
