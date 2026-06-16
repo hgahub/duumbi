@@ -390,11 +390,12 @@ fn write_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<(
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let stdin = child
+    let mut stdin = child
         .stdin
-        .as_mut()
+        .take()
         .ok_or_else(|| "clipboard stdin closed".to_string())?;
-    std::io::Write::write_all(stdin, text.as_bytes()).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut stdin, text.as_bytes()).map_err(|e| e.to_string())?;
+    drop(stdin);
     let status = child.wait().map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
