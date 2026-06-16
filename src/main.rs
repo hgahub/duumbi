@@ -29,6 +29,7 @@ mod manifest;
 mod mcp;
 mod parser;
 mod patch;
+mod properties;
 #[allow(dead_code, unused_imports)]
 // Binary uses query engine through CLI; library exports full API
 mod query;

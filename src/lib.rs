@@ -25,6 +25,7 @@ pub mod manifest;
 pub mod mcp;
 pub mod parser;
 pub mod patch;
+pub mod properties;
 pub mod query;
 pub mod registry;
 pub mod rewrite;
