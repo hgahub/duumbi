@@ -147,6 +147,7 @@ fn build_graph_impl(
             params,
             blocks: block_infos,
             lifetime_params: func_ast.lifetime_params.clone(),
+            contracts: func_ast.contracts.clone(),
         });
     }
 
@@ -316,6 +317,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -372,6 +374,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -416,6 +419,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/helper/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -455,6 +459,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockAst {
                     id: NodeId("duumbi:test/main/entry".to_string()),
                     label: BlockLabel("entry".to_string()),
@@ -509,6 +514,51 @@ mod tests {
         assert_eq!(sg.functions[0].params.len(), 1);
         assert_eq!(sg.functions[0].params[0].name, "n");
         assert_eq!(sg.functions[0].params[0].param_type, DuumbiType::I64);
+    }
+
+    #[test]
+    fn function_contracts_preserved() {
+        use crate::contracts::{ContractExpr, ContractLiteral, ContractOperator, EffectClass};
+
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:contracts": {
+                    "duumbi:effect": "pure",
+                    "duumbi:postconditions": [{
+                        "duumbi:id": "result-nonnegative",
+                        "duumbi:expr": {
+                            "duumbi:op": ">=",
+                            "duumbi:left": {"duumbi:var": "result"},
+                            "duumbi:right": {"duumbi:const": 0}
+                        }
+                    }]
+                },
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let sg = build_graph(&module).expect("build should succeed");
+        assert_eq!(sg.functions[0].contracts.effect, EffectClass::Pure);
+        assert_eq!(sg.functions[0].contracts.postconditions.len(), 1);
+        assert_eq!(
+            sg.functions[0].contracts.postconditions[0].expr,
+            ContractExpr::Binary {
+                op: ContractOperator::Ge,
+                left: Box::new(ContractExpr::Var("result".to_string())),
+                right: Box::new(ContractExpr::Const(ContractLiteral::I64(0))),
+            }
+        );
     }
 
     #[test]

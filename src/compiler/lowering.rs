@@ -3134,6 +3134,7 @@ int main(void) {{
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c, r],
@@ -3340,6 +3341,7 @@ int main(void) {{
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes,
@@ -3446,6 +3448,7 @@ int main(void) {{
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c, print, zero, r],

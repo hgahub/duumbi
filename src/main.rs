@@ -13,6 +13,7 @@ mod compiler;
 mod config;
 #[allow(dead_code)] // Used indirectly via intent::execute context enrichment
 mod context;
+mod contracts;
 mod credentials;
 mod deps;
 mod errors;

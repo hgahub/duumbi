@@ -1236,6 +1236,7 @@ mod tests {
                 return_type: DuumbiType::Void,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: node_indices,
@@ -1513,6 +1514,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![NodeIndex::new(0), NodeIndex::new(1)],
@@ -1620,6 +1622,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![], // no blocks!
             }],
             branch_targets: std::collections::HashMap::new(),
@@ -1646,6 +1649,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![], // no ops!
@@ -1686,6 +1690,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![c], // Const only, no Return!
@@ -1735,6 +1740,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![ret, extra], // Return before Const — invalid!
@@ -1869,6 +1875,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: ordered,
@@ -1956,6 +1963,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![
                     BlockInfo {
                         label: BlockLabel("entry".to_string()),
@@ -2023,6 +2031,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![
                     BlockInfo {
                         label: BlockLabel("entry".to_string()),
@@ -2088,6 +2097,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![cond, branch],
@@ -2145,6 +2155,7 @@ mod tests {
                 return_type: DuumbiType::I64,
                 params: vec![],
                 lifetime_params: Vec::new(),
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: vec![cond, branch],

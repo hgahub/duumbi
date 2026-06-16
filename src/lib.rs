@@ -10,6 +10,7 @@ pub mod bench;
 pub mod compiler;
 pub mod config;
 pub mod context;
+pub mod contracts;
 pub mod credentials;
 pub mod deps;
 pub mod errors;
