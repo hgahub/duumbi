@@ -1,27 +1,32 @@
 //! Property evidence runner surface for `duumbi check --properties`.
 //!
-//! This cycle wires contract discovery and evidence writing. Native invocation
-//! is intentionally reported as unsupported until the execution harness is
-//! implemented, so property runs do not create false pass/fail confidence.
+//! This runner wires contract discovery, evidence writing, and the first native
+//! generated-case execution path for pure non-main `i64` functions.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
+use serde_json::json;
 
 use crate::contracts::{ContractClause, ContractSet, EffectClass};
 use crate::graph::{FunctionInfo, SemanticGraph};
+use crate::telemetry::BuildOptions;
+use crate::types::DuumbiType;
+use crate::workspace::{self, BinaryRunOutput};
 
 use super::evidence::{
-    FunctionEvidence, FunctionEvidenceStatus, PropertyEvidence, PropertyEvidenceSettings,
-    PropertyEvidenceSummary, UnsupportedEvidence,
+    FailureEvidence, FunctionEvidence, FunctionEvidenceStatus, PropertyEvidence,
+    PropertyEvidenceSettings, PropertyEvidenceSummary, UnsupportedEvidence,
 };
 use super::generator::{GeneratorSettings, generate_values};
+use super::predicate::{PredicateContext, eval_predicate};
+use super::value::PropertyValue;
 
 const DEFAULT_MAX_ARRAY_LEN: usize = 8;
 const DEFAULT_MAX_PRECONDITION_REJECTIONS: u32 = 256;
-const NATIVE_HARNESS_MISSING: &str = "native_execution_harness_missing";
 
 /// Options for one property run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +88,7 @@ pub fn run_properties(
         settings,
     );
 
-    let functions = discover_functions(graph, &options);
+    let functions = discover_functions(graph, graph_input, &options);
     evidence.summary = summarize(&functions);
     evidence.functions = functions;
     evidence.finished_at = now_rfc3339();
@@ -115,24 +120,40 @@ pub fn run_properties(
 
 fn discover_functions(
     graph: &SemanticGraph,
+    graph_input: &Path,
     options: &PropertyRunOptions,
 ) -> Vec<FunctionEvidence> {
     let mut functions: Vec<_> = graph
         .functions
         .iter()
         .filter(|function| !function.contracts.is_empty())
-        .map(|function| unsupported_function(graph, function, options))
+        .map(|function| run_function(graph, graph_input, function, options))
         .collect();
     functions.sort_by(|left, right| left.function_id.cmp(&right.function_id));
     functions
 }
 
-fn unsupported_function(
+fn run_function(
     graph: &SemanticGraph,
+    graph_input: &Path,
     function: &FunctionInfo,
     options: &PropertyRunOptions,
 ) -> FunctionEvidence {
-    let unsupported = classify_unsupported(function, options);
+    if let Some(unsupported) = classify_unsupported(function, options) {
+        return unsupported_function(graph, function, unsupported);
+    }
+
+    match execute_i64_function(graph, graph_input, function, options) {
+        Ok(evidence) => evidence,
+        Err(unsupported) => unsupported_function(graph, function, unsupported),
+    }
+}
+
+fn unsupported_function(
+    graph: &SemanticGraph,
+    function: &FunctionInfo,
+    unsupported: UnsupportedEvidence,
+) -> FunctionEvidence {
     FunctionEvidence {
         function_id: function_id(graph, function),
         function_name: function.name.0.clone(),
@@ -151,29 +172,39 @@ fn unsupported_function(
 fn classify_unsupported(
     function: &FunctionInfo,
     options: &PropertyRunOptions,
-) -> UnsupportedEvidence {
+) -> Option<UnsupportedEvidence> {
     match function.contracts.effect {
         EffectClass::Effectful => {
-            return unsupported(
+            return Some(unsupported(
                 "unsupported_effectful_function",
                 "effectful functions need an approved effect model before property execution",
-            );
+            ));
         }
         EffectClass::ReadOnlyDeterministic | EffectClass::Pure | EffectClass::Unspecified => {}
     }
 
+    if function.return_type != DuumbiType::I64 {
+        return Some(unsupported(
+            "unsupported_return_type",
+            format!(
+                "native property execution currently supports i64 returns, found {}",
+                function.return_type
+            ),
+        ));
+    }
+
     if !function.contracts.invariants.is_empty() {
-        return unsupported(
+        return Some(unsupported(
             "unsupported_invariant_execution_missing",
             "invariants are parsed and preserved but not executed by the v1 property runner",
-        );
+        ));
     }
 
     if function.contracts.postconditions.is_empty() {
-        return unsupported(
+        return Some(unsupported(
             "unsupported_no_postconditions",
             "property execution needs at least one postcondition to check",
-        );
+        ));
     }
 
     let generator_settings = GeneratorSettings {
@@ -183,20 +214,359 @@ fn classify_unsupported(
     };
     for param in &function.params {
         if let Err(err) = generate_values(&param.param_type, &generator_settings) {
-            return unsupported(
+            return Some(unsupported(
                 err.reason,
                 format!(
                     "parameter '{}' of type {} cannot be generated in v1",
                     param.name, err.ty
                 ),
-            );
+            ));
+        }
+        if param.param_type != DuumbiType::I64 {
+            return Some(unsupported(
+                "unsupported_parameter_type",
+                format!(
+                    "native property execution currently supports i64 parameters, found {} for '{}'",
+                    param.param_type, param.name
+                ),
+            ));
         }
     }
 
-    unsupported(
-        NATIVE_HARNESS_MISSING,
-        "native generated-case execution is not wired yet; no cases were executed",
+    if function.name.0 == "main" {
+        return Some(unsupported(
+            "unsupported_main_function_invocation",
+            "property execution currently wraps non-main functions to avoid replacing the target function",
+        ));
+    }
+
+    None
+}
+
+fn execute_i64_function(
+    graph: &SemanticGraph,
+    graph_input: &Path,
+    function: &FunctionInfo,
+    options: &PropertyRunOptions,
+) -> std::result::Result<FunctionEvidence, UnsupportedEvidence> {
+    let generator_settings = GeneratorSettings {
+        seed: options.seed,
+        cases: options.cases,
+        max_array_len: options.max_array_len,
+    };
+    let param_values = function
+        .params
+        .iter()
+        .map(|param| generate_values(&param.param_type, &generator_settings))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| {
+            unsupported(
+                err.reason,
+                format!("type {} cannot be generated in v1", err.ty),
+            )
+        })?;
+
+    let mut evidence = FunctionEvidence {
+        function_id: function_id(graph, function),
+        function_name: function.name.0.clone(),
+        effect: effect_label(&function.contracts.effect).to_string(),
+        contract_ids: contract_ids(&function.contracts),
+        status: FunctionEvidenceStatus::Passed,
+        cases_generated: options.cases,
+        cases_executed: 0,
+        cases_rejected: 0,
+        postconditions_checked: 0,
+        unsupported: None,
+        failure: None,
+    };
+
+    for case_index in 0..options.cases {
+        let inputs = case_inputs(&param_values, case_index);
+        let precondition = evaluate_preconditions(function, &inputs).map_err(|detail| {
+            unsupported(
+                "precondition_evaluation_error",
+                format!("failed to evaluate preconditions: {detail}"),
+            )
+        })?;
+        if !precondition {
+            evidence.cases_rejected += 1;
+            if evidence.cases_rejected > options.max_precondition_rejections {
+                return Err(unsupported(
+                    "precondition_rejection_budget_exhausted",
+                    "preconditions rejected more generated inputs than the configured budget",
+                ));
+            }
+            continue;
+        }
+
+        let result = run_native_i64_case(graph, graph_input, function, &inputs)?;
+        evidence.cases_executed += 1;
+
+        for clause in &function.contracts.postconditions {
+            evidence.postconditions_checked += 1;
+            let passed =
+                evaluate_postcondition(function, clause, &inputs, result).map_err(|detail| {
+                    unsupported(
+                        "postcondition_evaluation_error",
+                        format!("failed to evaluate postcondition: {detail}"),
+                    )
+                })?;
+            if !passed {
+                evidence.status = FunctionEvidenceStatus::Failed;
+                evidence.failure = Some(FailureEvidence {
+                    seed: options.seed,
+                    case_index,
+                    contract_id: clause.id.clone().or_else(|| clause.label.clone()),
+                    actual: format!("result={result}"),
+                    counterexample: inputs.clone(),
+                    shrunk_counterexample: None,
+                    shrink_status: "not_attempted".to_string(),
+                });
+                return Ok(evidence);
+            }
+        }
+    }
+
+    if evidence.cases_executed == 0 {
+        return Err(unsupported(
+            "no_precondition_satisfying_cases",
+            "no generated inputs satisfied the function preconditions",
+        ));
+    }
+
+    Ok(evidence)
+}
+
+fn case_inputs(param_values: &[Vec<PropertyValue>], case_index: u32) -> Vec<PropertyValue> {
+    param_values
+        .iter()
+        .map(|values| values[case_index as usize % values.len()].clone())
+        .collect()
+}
+
+fn evaluate_preconditions(
+    function: &FunctionInfo,
+    inputs: &[PropertyValue],
+) -> std::result::Result<bool, String> {
+    let context = bind_inputs(function, inputs);
+    for clause in &function.contracts.preconditions {
+        if !eval_predicate(&clause.expr, &context).map_err(|err| err.detail)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn evaluate_postcondition(
+    function: &FunctionInfo,
+    clause: &ContractClause,
+    inputs: &[PropertyValue],
+    result: i64,
+) -> std::result::Result<bool, String> {
+    let context = bind_inputs(function, inputs).with_result(PropertyValue::I64(result));
+    eval_predicate(&clause.expr, &context).map_err(|err| err.detail)
+}
+
+fn bind_inputs(function: &FunctionInfo, inputs: &[PropertyValue]) -> PredicateContext {
+    function
+        .params
+        .iter()
+        .zip(inputs)
+        .fold(PredicateContext::default(), |context, (param, value)| {
+            context.with_binding(param.name.clone(), value.clone())
+        })
+}
+
+fn run_native_i64_case(
+    graph: &SemanticGraph,
+    graph_input: &Path,
+    function: &FunctionInfo,
+    inputs: &[PropertyValue],
+) -> std::result::Result<i64, UnsupportedEvidence> {
+    let workspace_root = create_temp_workspace().map_err(|source| {
+        unsupported(
+            "native_workspace_create_failed",
+            format!("failed to create temp property workspace: {source}"),
+        )
+    })?;
+    let result = run_native_i64_case_inner(&workspace_root, graph, graph_input, function, inputs);
+    let _ = fs::remove_dir_all(&workspace_root);
+    result
+}
+
+fn run_native_i64_case_inner(
+    workspace_root: &Path,
+    graph: &SemanticGraph,
+    graph_input: &Path,
+    function: &FunctionInfo,
+    inputs: &[PropertyValue],
+) -> std::result::Result<i64, UnsupportedEvidence> {
+    let graph_dir = workspace_root.join(".duumbi").join("graph");
+    fs::create_dir_all(&graph_dir).map_err(|source| {
+        unsupported(
+            "native_workspace_create_failed",
+            format!("failed to create '{}': {source}", graph_dir.display()),
+        )
+    })?;
+
+    let wrapped = wrapped_source_module(graph, graph_input, function, inputs)?;
+    let wrapped_source = serde_json::to_string_pretty(&wrapped).map_err(|source| {
+        unsupported(
+            "native_wrapper_serialize_failed",
+            format!("failed to serialize wrapper module: {source}"),
+        )
+    })?;
+    fs::write(graph_dir.join("main.jsonld"), wrapped_source).map_err(|source| {
+        unsupported(
+            "native_wrapper_write_failed",
+            format!("failed to write wrapper module: {source}"),
+        )
+    })?;
+
+    let output_path = workspace::workspace_output_path(workspace_root);
+    workspace::build_workspace_with_options(
+        workspace_root,
+        &output_path,
+        BuildOptions::offline(true),
     )
+    .map_err(|source| {
+        unsupported(
+            "native_build_failed",
+            format!("failed to build generated property wrapper: {source}"),
+        )
+    })?;
+    let output = workspace::run_workspace_binary(workspace_root, &[]).map_err(|source| {
+        unsupported(
+            "native_run_failed",
+            format!("failed to run generated property wrapper: {source}"),
+        )
+    })?;
+    parse_i64_stdout(&output)
+}
+
+fn wrapped_source_module(
+    graph: &SemanticGraph,
+    graph_input: &Path,
+    function: &FunctionInfo,
+    inputs: &[PropertyValue],
+) -> std::result::Result<serde_json::Value, UnsupportedEvidence> {
+    let source = fs::read_to_string(graph_input).map_err(|source| {
+        unsupported(
+            "native_source_read_failed",
+            format!(
+                "failed to read source graph '{}': {source}",
+                graph_input.display()
+            ),
+        )
+    })?;
+    let mut module: serde_json::Value = serde_json::from_str(&source).map_err(|source| {
+        unsupported(
+            "native_source_parse_failed",
+            format!(
+                "failed to parse source graph '{}': {source}",
+                graph_input.display()
+            ),
+        )
+    })?;
+    let wrapper = wrapper_main_function(graph, function, inputs)?;
+    let functions = module
+        .get_mut("duumbi:functions")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            unsupported(
+                "native_wrapper_shape_invalid",
+                "source module has no duumbi:functions array",
+            )
+        })?;
+    if let Some(idx) = functions.iter().position(|item| {
+        item.get("duumbi:name").and_then(serde_json::Value::as_str) == Some("main")
+    }) {
+        functions[idx] = wrapper;
+    } else {
+        functions.push(wrapper);
+    }
+    Ok(module)
+}
+
+fn wrapper_main_function(
+    graph: &SemanticGraph,
+    function: &FunctionInfo,
+    inputs: &[PropertyValue],
+) -> std::result::Result<serde_json::Value, UnsupportedEvidence> {
+    let id_module = graph.module_name.0.trim_start_matches("duumbi:");
+    let mut ops = Vec::new();
+    let mut arg_ids = Vec::new();
+    for (idx, input) in inputs.iter().enumerate() {
+        let PropertyValue::I64(value) = input else {
+            return Err(unsupported(
+                "unsupported_runtime_value",
+                format!("native i64 harness cannot execute {}", input.type_label()),
+            ));
+        };
+        let id = format!("duumbi:{id_module}/main/entry/arg{idx}");
+        ops.push(json!({
+            "@type": "duumbi:Const",
+            "@id": id,
+            "duumbi:value": value,
+            "duumbi:resultType": "i64",
+        }));
+        arg_ids.push(json!({ "@id": id }));
+    }
+    let call_id = format!("duumbi:{id_module}/main/entry/call");
+    ops.push(json!({
+        "@type": "duumbi:Call",
+        "@id": call_id,
+        "duumbi:function": function.name.0,
+        "duumbi:args": arg_ids,
+        "duumbi:resultType": function.return_type.to_string(),
+    }));
+    let print_id = format!("duumbi:{id_module}/main/entry/print");
+    ops.push(json!({
+        "@type": "duumbi:Print",
+        "@id": print_id,
+        "duumbi:operand": { "@id": call_id },
+    }));
+    let return_id = format!("duumbi:{id_module}/main/entry/return");
+    ops.push(json!({
+        "@type": "duumbi:Return",
+        "@id": return_id,
+        "duumbi:operand": { "@id": call_id },
+    }));
+    Ok(json!({
+        "@type": "duumbi:Function",
+        "@id": format!("duumbi:{id_module}/main"),
+        "duumbi:name": "main",
+        "duumbi:returnType": function.return_type.to_string(),
+        "duumbi:blocks": [{
+            "@type": "duumbi:Block",
+            "@id": format!("duumbi:{id_module}/main/entry"),
+            "duumbi:label": "entry",
+            "duumbi:ops": ops,
+        }],
+    }))
+}
+
+fn parse_i64_stdout(output: &BinaryRunOutput) -> std::result::Result<i64, UnsupportedEvidence> {
+    let last_line = output.stdout.lines().last().unwrap_or("").trim();
+    last_line.parse::<i64>().map_err(|source| {
+        unsupported(
+            "native_output_parse_failed",
+            format!(
+                "failed to parse property wrapper stdout '{last_line}' as i64: {source}; stderr: {}",
+                output.stderr.trim()
+            ),
+        )
+    })
+}
+
+fn create_temp_workspace() -> std::result::Result<PathBuf, std::io::Error> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let path =
+        std::env::temp_dir().join(format!("duumbi_property_{}_{}", std::process::id(), unique));
+    fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 fn unsupported(reason: impl Into<String>, detail: impl Into<String>) -> UnsupportedEvidence {
@@ -211,7 +581,12 @@ fn summarize(functions: &[FunctionEvidence]) -> PropertyEvidenceSummary {
         functions_discovered: functions.len() as u32,
         functions_checked: functions
             .iter()
-            .filter(|function| function.status == FunctionEvidenceStatus::Passed)
+            .filter(|function| {
+                matches!(
+                    function.status,
+                    FunctionEvidenceStatus::Passed | FunctionEvidenceStatus::Failed
+                )
+            })
             .count() as u32,
         functions_unsupported: functions
             .iter()
@@ -331,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_functions_write_unsupported_harness_evidence() {
+    fn main_contract_functions_write_unsupported_invocation_evidence() {
         let graph = graph_from_contracts(
             r#"{
                 "duumbi:effect": "pure",
@@ -370,7 +745,7 @@ mod tests {
         assert_eq!(function.contract_ids, vec!["result-nonnegative"]);
         assert_eq!(
             function.unsupported.as_ref().expect("unsupported").reason,
-            NATIVE_HARNESS_MISSING
+            "unsupported_main_function_invocation"
         );
         let written = fs::read_to_string(&report.evidence_path).expect("evidence written");
         assert!(written.contains("\"schema_version\":\"duumbi.property_evidence.v1\""));
