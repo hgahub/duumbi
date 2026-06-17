@@ -342,6 +342,422 @@ fn duumbi682_model_telemetry_tools_do_not_mutate_local_state() {
     }
 }
 
+/// DUUMBI-719 Cycle 1: MCP exposes agent-facing capability metadata and status.
+#[test]
+fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    let workspace = setup_workspace();
+    let watched = vec![
+        workspace.path().join(".duumbi/config.toml"),
+        workspace.path().join(".duumbi/graph/main.jsonld"),
+    ];
+    let before = snapshot(&watched);
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let init = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "initialize".to_string(),
+            params: None,
+        })
+        .expect("initialize response");
+    assert!(init.error.is_none(), "initialize must succeed");
+    assert_eq!(
+        init.result.expect("initialize result")["serverInfo"]["name"],
+        "duumbi-mcp"
+    );
+
+    let tools_response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(2)),
+            method: "tools/list".to_string(),
+            params: None,
+        })
+        .expect("tools/list response");
+    assert!(tools_response.error.is_none(), "tools/list must succeed");
+    let tools = tools_response.result.expect("tools result");
+    let tool_values = tools["tools"].as_array().expect("tools array");
+    for expected in [
+        "mcp_capability_status",
+        "mcp_evidence_status",
+        "query_ask",
+        "graph_patch_preview",
+        "graph_patch_request_approval",
+        "approval_status",
+        "approval_decide",
+        "graph_patch_apply_approval",
+        "graph_query",
+        "graph_mutate",
+        "graph_validate",
+        "build_compile",
+        "build_run",
+        "intent_create",
+        "intent_execute",
+        "rewrite_preview",
+        "rewrite_apply",
+    ] {
+        assert!(
+            tool_values.iter().any(|tool| tool["name"] == expected),
+            "{expected} must be discoverable"
+        );
+    }
+    assert!(
+        tool_values
+            .iter()
+            .any(|tool| tool["name"] == "graph_query" && tool["duumbi"]["safety"] == "read_only"),
+        "tools/list must include read-only DUUMBI metadata"
+    );
+    assert!(
+        tool_values.iter().any(|tool| tool["name"] == "graph_mutate"
+            && tool["duumbi"]["safety"] == "trusted_immediate_write"),
+        "legacy immediate write tools must be clearly labeled"
+    );
+
+    let status_response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(3)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mcp_capability_status",
+                "arguments": {},
+            })),
+        })
+        .expect("status response");
+    assert!(status_response.error.is_none(), "status tool must succeed");
+    let status_text = status_response.result.expect("status result")["content"][0]["text"]
+        .as_str()
+        .expect("status text")
+        .to_string();
+    let status: serde_json::Value = serde_json::from_str(&status_text).expect("status JSON");
+    assert_eq!(status["workspace"]["duumbiInitialized"], true);
+    assert_eq!(status["workspace"]["mainGraphPresent"], true);
+    assert_eq!(status["capabilities"]["buildRunAvailable"], true);
+    assert_eq!(status["capabilities"]["evidenceRetrievalAvailable"], true);
+    assert!(
+        !status["capabilities"]["unavailableTools"]
+            .as_array()
+            .expect("unavailable tools")
+            .iter()
+            .any(|tool| tool["name"] == "build_compile" || tool["name"] == "build_run"),
+        "build/run tools must no longer expose structured unavailable state"
+    );
+
+    assert_snapshot_unchanged(&before);
+}
+
+/// DUUMBI-719 Cycle 6: MCP evidence status returns bounded read-only local evidence metadata.
+#[test]
+fn duumbi719_mcp_evidence_status_is_bounded_and_read_only() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    let workspace = setup_workspace();
+    let session_dir = workspace.path().join(".duumbi/session");
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
+    std::fs::write(
+        session_dir.join("current.json"),
+        serde_json::json!({
+            "session_id": "session-integration",
+            "started_at": "2026-06-17T00:00:00Z",
+            "turns": [{
+                "request": "raw request should stay private",
+                "summary": "summary",
+                "timestamp": "2026-06-17T00:00:01Z",
+                "task_type": "Query"
+            }],
+            "usage_stats": {"llm_calls": 0}
+        })
+        .to_string(),
+    )
+    .expect("write session");
+    let graph_path = workspace.path().join(".duumbi/graph/main.jsonld");
+    let session_path = session_dir.join("current.json");
+    let before = snapshot(&[graph_path, session_path]);
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mcp_evidence_status",
+                "arguments": { "limit": 5 },
+            })),
+        })
+        .expect("evidence response");
+    assert!(
+        response.error.is_none(),
+        "evidence tool should succeed: {:?}",
+        response.error
+    );
+    let text = response.result.expect("result")["content"][0]["text"]
+        .as_str()
+        .expect("text content")
+        .to_string();
+    let evidence: serde_json::Value = serde_json::from_str(&text).expect("evidence JSON");
+
+    assert_eq!(evidence["status"], "success");
+    assert_eq!(evidence["readOnly"], true);
+    assert_eq!(evidence["session"]["sessionId"], "session-integration");
+    assert_eq!(evidence["session"]["turnCount"], 1);
+    assert_eq!(evidence["privacy"]["rawLogsIncluded"], false);
+    assert!(
+        !text.contains("raw request should stay private"),
+        "raw session turns must not be returned"
+    );
+    assert!(
+        evidence["roots"]
+            .as_array()
+            .expect("roots")
+            .iter()
+            .any(|root| root["name"] == "approvals")
+    );
+
+    assert_snapshot_unchanged(&before);
+}
+
+/// DUUMBI-719 Cycle 3: approval-gated graph patch flow works through MCP dispatch.
+#[test]
+fn duumbi719_mcp_graph_patch_approval_applies_exact_candidate() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    fn call_tool(
+        server: &McpServer,
+        id: u64,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = server
+            .handle_request(&JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(id)),
+                method: "tools/call".to_string(),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+            })
+            .expect("tools/call response");
+        assert!(
+            response.error.is_none(),
+            "{name} should succeed: {:?}",
+            response.error
+        );
+        let text = response.result.expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string();
+        serde_json::from_str(&text).expect("tool JSON")
+    }
+
+    let workspace = setup_workspace();
+    let graph_path = workspace.path().join(".duumbi/graph/main.jsonld");
+    let before = std::fs::read_to_string(&graph_path).expect("read graph before");
+    let server = McpServer::new(workspace.path().to_path_buf());
+    let ops = serde_json::json!([{
+        "kind": "modify_op",
+        "node_id": "duumbi:main/main/entry/0",
+        "field": "duumbi:value",
+        "value": 9
+    }]);
+
+    let preview = call_tool(
+        &server,
+        1,
+        "graph_patch_preview",
+        serde_json::json!({ "ops": ops.clone() }),
+    );
+    assert_eq!(preview["read_only"], true);
+    assert_eq!(
+        std::fs::read_to_string(&graph_path).expect("read graph after preview"),
+        before,
+        "preview must not write graph"
+    );
+
+    let requested = call_tool(
+        &server,
+        2,
+        "graph_patch_request_approval",
+        serde_json::json!({
+            "ops": ops,
+            "summary": "Change main return value to nine"
+        }),
+    );
+    let approval_id = requested["approval"]["id"]
+        .as_str()
+        .expect("approval id")
+        .to_string();
+    assert_eq!(requested["approval"]["status"], "pending");
+    assert_eq!(
+        std::fs::read_to_string(&graph_path).expect("read graph after request"),
+        before,
+        "approval request must not write graph"
+    );
+
+    let approved = call_tool(
+        &server,
+        3,
+        "approval_decide",
+        serde_json::json!({
+            "id": approval_id,
+            "decision": "approve",
+            "decision_source": "integration_test"
+        }),
+    );
+    assert_eq!(approved["approval"]["status"], "approved");
+
+    let applied = call_tool(
+        &server,
+        4,
+        "graph_patch_apply_approval",
+        serde_json::json!({ "id": approval_id }),
+    );
+    assert_eq!(applied["approval"]["status"], "applied");
+    let after = std::fs::read_to_string(&graph_path).expect("read graph after apply");
+    assert!(after.contains("\"duumbi:value\": 9"));
+}
+
+/// DUUMBI-719 Cycle 5: MCP build/run uses the shared backend and returns process evidence.
+#[test]
+fn duumbi719_mcp_build_run_returns_captured_evidence() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    fn call_tool(
+        server: &McpServer,
+        id: u64,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = server
+            .handle_request(&JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(id)),
+                method: "tools/call".to_string(),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+            })
+            .expect("tools/call response");
+        assert!(
+            response.error.is_none(),
+            "{name} should succeed: {:?}",
+            response.error
+        );
+        let text = response.result.expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string();
+        serde_json::from_str(&text).expect("tool JSON")
+    }
+
+    let workspace = setup_workspace();
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let build = call_tool(
+        &server,
+        1,
+        "build_compile",
+        serde_json::json!({ "offline": true }),
+    );
+    assert_eq!(build["status"], "success");
+    let output_path = build["outputPath"].as_str().expect("output path");
+    assert!(PathBuf::from(output_path).is_file());
+
+    let run = call_tool(
+        &server,
+        2,
+        "build_run",
+        serde_json::json!({ "offline": true, "build": false, "timeout_secs": 5 }),
+    );
+    assert_eq!(run["scope"], "build_run");
+    assert_eq!(run["ok"], true);
+    assert_eq!(run["exitCode"], 0);
+    assert_eq!(run["timedOut"], false);
+    assert_eq!(run["timeoutSecs"], 5);
+    assert!(run["stdout"].is_string());
+    assert!(run["stderr"].is_string());
+    assert!(
+        run["evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .any(|item| item["kind"] == "build_output")
+    );
+}
+
+/// DUUMBI-719 Cycle 4: agent-facing docs match the implemented MCP surface and workflow rules.
+#[test]
+fn duumbi719_agent_docs_cover_current_mcp_surface() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let docs = [
+        repo.join("docs/agents/mcp-workflow-audit.md"),
+        repo.join("docs/agents/mcp-error-contract.md"),
+        repo.join("docs/agents/mcp-agent-guide.md"),
+        repo.join("docs/e2e/duumbi-719-mcp-agent-benchmark.md"),
+        repo.join("docs/agents/claude-code-duumbi-skill/SKILL.md"),
+    ];
+
+    let mut combined = String::new();
+    for doc in docs {
+        assert!(
+            doc.exists(),
+            "required DUUMBI-719 doc missing: {}",
+            doc.display()
+        );
+        let contents = std::fs::read_to_string(&doc)
+            .unwrap_or_else(|err| panic!("read {}: {err}", doc.display()));
+        assert!(
+            contents.contains("Related to #719") || contents.contains("duumbi-mcp-agent"),
+            "doc must use non-closing issue context or skill metadata: {}",
+            doc.display()
+        );
+        combined.push_str(&contents);
+        combined.push('\n');
+    }
+
+    for required in [
+        "target/debug/duumbi mcp",
+        "mcp_capability_status",
+        "mcp_evidence_status",
+        "query_ask",
+        "graph_patch_preview",
+        "graph_patch_request_approval",
+        "approval_status",
+        "approval_decide",
+        "graph_patch_apply_approval",
+        "error.data",
+        "provider_unavailable",
+        "approval_stale",
+        "examples/flagship-http-sqlite-json",
+    ] {
+        assert!(
+            combined.contains(required),
+            "DUUMBI-719 docs must mention {required}"
+        );
+    }
+
+    let lower = combined.to_lowercase();
+    for forbidden in [
+        "closes #719",
+        "fixes #719",
+        "resolves #719",
+        "api_key =",
+        "authorization: bearer",
+        "password =",
+        "greptile",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "DUUMBI-719 docs must not contain forbidden text: {forbidden}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Kill Criterion 2 — Dynamic agent assembly
 // ---------------------------------------------------------------------------

@@ -4,8 +4,11 @@
 //! browser-facing surfaces do not need to shell out through `cargo run`.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Output};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use thiserror::Error;
@@ -90,6 +93,9 @@ pub struct BinaryRunOutput {
     pub stdout: String,
     /// Captured stderr.
     pub stderr: String,
+    /// Whether DUUMBI terminated the process after a configured timeout.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// Returns the default native binary path for a workspace build.
@@ -220,6 +226,33 @@ pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<Bi
     run_workspace_binary_inner(workspace_root, args, BinaryStdin::Inherit)
 }
 
+/// Runs a compiled workspace binary with a timeout, capturing stdout and stderr.
+#[allow(dead_code)] // Public lib API retained for callers that do not need stdin control.
+#[must_use = "the captured process output should be inspected"]
+pub fn run_workspace_binary_with_timeout(
+    workspace_root: &Path,
+    args: &[String],
+    timeout: Duration,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner_with_timeout(workspace_root, args, BinaryStdin::Inherit, timeout)
+}
+
+/// Runs a compiled workspace binary with supplied stdin and timeout, capturing stdout and stderr.
+#[must_use = "the captured process output should be inspected"]
+pub fn run_workspace_binary_with_stdin_and_timeout(
+    workspace_root: &Path,
+    args: &[String],
+    stdin: &str,
+    timeout: Duration,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner_with_timeout(
+        workspace_root,
+        args,
+        BinaryStdin::Bytes(stdin),
+        timeout,
+    )
+}
+
 /// Runs a compiled workspace binary with supplied stdin, capturing stdout and stderr.
 #[allow(dead_code)] // Public lib API used by integration tests; binary target uses inherited stdin.
 #[must_use = "the captured process output should be inspected"]
@@ -241,6 +274,15 @@ fn run_workspace_binary_inner(
     workspace_root: &Path,
     args: &[String],
     stdin: BinaryStdin<'_>,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner_with_timeout(workspace_root, args, stdin, Duration::ZERO)
+}
+
+fn run_workspace_binary_inner_with_timeout(
+    workspace_root: &Path,
+    args: &[String],
+    stdin: BinaryStdin<'_>,
+    timeout: Duration,
 ) -> Result<BinaryRunOutput> {
     let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
@@ -276,25 +318,104 @@ fn run_workspace_binary_inner(
         .spawn()
         .with_context(|| format!("Failed to execute '{}'", output_path.display()))?;
 
-    if let BinaryStdin::Bytes(input) = stdin {
-        if !input.is_empty() {
-            let child_stdin = child.stdin.as_mut().context("Failed to open child stdin")?;
-            child_stdin
-                .write_all(input.as_bytes())
-                .context("Failed to write child stdin")?;
+    let stdin_writer = match stdin {
+        BinaryStdin::Inherit => None,
+        BinaryStdin::Bytes(input) => {
+            let child_stdin = child.stdin.take().context("Failed to open child stdin")?;
+            Some(stdin_writer(child_stdin, input.as_bytes().to_vec()))
         }
-        drop(child.stdin.take());
-    }
+    };
 
-    let output = child
-        .wait_with_output()
+    let (output, timed_out) = wait_with_optional_timeout(child, timeout)
         .with_context(|| format!("Failed to wait for '{}'", output_path.display()))?;
+    if let Some(handle) = stdin_writer {
+        join_stdin_writer(handle, timed_out)?;
+    }
 
     Ok(BinaryRunOutput {
         exit_code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        timed_out,
     })
+}
+
+fn stdin_writer(
+    mut writer: std::process::ChildStdin,
+    input: Vec<u8>,
+) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || {
+        if !input.is_empty() {
+            writer
+                .write_all(&input)
+                .context("Failed to write child stdin")?;
+        }
+        Ok(())
+    })
+}
+
+fn join_stdin_writer(handle: thread::JoinHandle<Result<()>>, timed_out: bool) -> Result<()> {
+    if timed_out {
+        return Ok(());
+    }
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Child stdin writer thread panicked"))?
+}
+
+fn wait_with_optional_timeout(mut child: Child, timeout: Duration) -> Result<(Output, bool)> {
+    if timeout.is_zero() {
+        return child
+            .wait_with_output()
+            .map(|output| (output, false))
+            .map_err(Into::into);
+    }
+
+    let stdout_reader = pipe_reader(child.stdout.take(), "stdout");
+    let stderr_reader = pipe_reader(child.stderr.take(), "stderr");
+    let deadline = Instant::now() + timeout;
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait()? {
+            break (status, false);
+        };
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break (child.wait()?, true);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    let stdout = join_reader(stdout_reader, "stdout")?;
+    let stderr = join_reader(stderr_reader, "stderr")?;
+    Ok((
+        Output {
+            status,
+            stdout,
+            stderr,
+        },
+        timed_out,
+    ))
+}
+
+fn pipe_reader<R: Read + Send + 'static>(
+    reader: Option<R>,
+    label: &'static str,
+) -> thread::JoinHandle<Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut reader) = reader {
+            reader
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("Failed to read child {label}"))?;
+        }
+        Ok(bytes)
+    })
+}
+
+fn join_reader(handle: thread::JoinHandle<Result<Vec<u8>>>, label: &str) -> Result<Vec<u8>> {
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Child {label} reader thread panicked"))?
 }
 
 fn workspace_runtime_telemetry_dir(workspace_root: &Path) -> Option<PathBuf> {
@@ -358,5 +479,86 @@ mod tests {
             format!("{}|hello", tmp.path().display()),
             "runner must set DUUMBI_WORKSPACE_ROOT and pass stdin"
         );
+    }
+
+    #[test]
+    fn run_workspace_binary_with_timeout_uses_explicit_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let output_path = workspace_output_path(tmp.path());
+        fs::create_dir_all(output_path.parent().expect("output parent")).expect("build dir");
+        fs::write(
+            &output_path,
+            b"#!/bin/sh\nIFS= read -r line || line=''\nprintf '%s' \"$line\"\n",
+        )
+        .expect("write script");
+        let mut permissions = fs::metadata(&output_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&output_path, permissions).expect("chmod");
+
+        let output = run_workspace_binary_with_stdin_and_timeout(
+            tmp.path(),
+            &[],
+            "mcp-input\n",
+            Duration::from_secs(1),
+        )
+        .expect("run binary");
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, "mcp-input");
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn run_workspace_binary_with_timeout_drains_large_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let output_path = workspace_output_path(tmp.path());
+        fs::create_dir_all(output_path.parent().expect("output parent")).expect("build dir");
+        fs::write(
+            &output_path,
+            b"#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 200000 ]; do printf x; i=$((i + 1)); done\n",
+        )
+        .expect("write script");
+        let mut permissions = fs::metadata(&output_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&output_path, permissions).expect("chmod");
+
+        let output = run_workspace_binary_with_stdin_and_timeout(
+            tmp.path(),
+            &[],
+            "",
+            Duration::from_secs(5),
+        )
+        .expect("run binary");
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout.len(), 200_000);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn run_workspace_binary_with_timeout_does_not_block_on_unread_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let output_path = workspace_output_path(tmp.path());
+        fs::create_dir_all(output_path.parent().expect("output parent")).expect("build dir");
+        fs::write(&output_path, b"#!/bin/sh\nexec sleep 10\n").expect("write script");
+        let mut permissions = fs::metadata(&output_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&output_path, permissions).expect("chmod");
+
+        let output = run_workspace_binary_with_stdin_and_timeout(
+            tmp.path(),
+            &[],
+            &"x".repeat(64 * 1024),
+            Duration::from_secs(1),
+        )
+        .expect("run binary");
+
+        assert!(output.timed_out);
     }
 }

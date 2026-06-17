@@ -60,6 +60,8 @@ pub struct RunWorkflowResult {
     pub stdout: String,
     /// Captured stderr.
     pub stderr: String,
+    /// Whether DUUMBI terminated the process after a configured timeout.
+    pub timed_out: bool,
 }
 
 /// Creates and saves an intent through the shared workflow service.
@@ -138,12 +140,14 @@ pub fn run_workspace(workspace: &Path) -> RunWorkflowResult {
             exit_code: output.exit_code,
             stdout: output.stdout,
             stderr: output.stderr,
+            timed_out: output.timed_out,
         },
         Err(e) => RunWorkflowResult {
             ok: false,
             exit_code: -1,
             stdout: String::new(),
             stderr: format!("{e:#}"),
+            timed_out: false,
         },
     }
 }

@@ -21,6 +21,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::capability::{self, ToolDefinition};
+use super::error::McpToolError;
 use super::tools;
 
 // ---------------------------------------------------------------------------
@@ -84,18 +86,6 @@ pub mod rpc_codes {
     pub const INTERNAL_ERROR: i32 = -32603;
 }
 
-/// MCP tool definition returned in `tools/list` responses.
-#[derive(Debug, Serialize)]
-pub struct ToolDefinition {
-    /// Unique tool name (used as `name` in `tools/call`).
-    pub name: String,
-    /// Human-readable description shown to the LLM.
-    pub description: String,
-    /// JSON Schema object describing the tool's input parameters.
-    #[serde(rename = "inputSchema")]
-    pub input_schema: Value,
-}
-
 // ---------------------------------------------------------------------------
 // MCP server
 // ---------------------------------------------------------------------------
@@ -148,309 +138,7 @@ impl McpServer {
     /// Return the list of available MCP tools with their JSON Schema definitions.
     #[must_use]
     pub fn list_tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: "graph_query".to_string(),
-                description: "Query the DUUMBI semantic graph by node ID, @type, or name pattern. \
-                              Returns matching nodes from all .jsonld files in the workspace."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "node_id": {
-                            "type": "string",
-                            "description": "Exact @id to look up (e.g. 'duumbi:main/main/entry/0')"
-                        },
-                        "type_filter": {
-                            "type": "string",
-                            "description": "Match nodes by @type (e.g. 'duumbi:Add', 'duumbi:Function')"
-                        },
-                        "name_pattern": {
-                            "type": "string",
-                            "description": "Substring match against duumbi:name field"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "graph_mutate".to_string(),
-                description: "Apply atomic patch operations to the workspace graph. \
-                              Validates the result before writing to disk. \
-                              All operations succeed or none are applied."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["ops"],
-                    "properties": {
-                        "ops": {
-                            "type": "array",
-                            "description": "Array of GraphPatch operations with 'kind' tag",
-                            "items": {
-                                "type": "object",
-                                "required": ["kind"],
-                                "properties": {
-                                    "kind": {
-                                        "type": "string",
-                                        "enum": [
-                                            "add_function", "add_block", "add_op",
-                                            "modify_op", "replace_block", "remove_node", "set_edge"
-                                        ]
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "graph_validate".to_string(),
-                description: "Validate the workspace graph without modifying it. \
-                              Runs the full parse → build → validate pipeline and \
-                              returns all diagnostics."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "graph_describe".to_string(),
-                description: "Describe the workspace graph as human-readable pseudo-code. \
-                              Useful for understanding the current state of the program."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "build_compile".to_string(),
-                description: "Compile the workspace graph to a native binary. \
-                              NOTE: Requires full CLI pipeline — use `duumbi build`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "build_run".to_string(),
-                description: "Compile and run the workspace binary. \
-                              NOTE: Requires full CLI pipeline — use `duumbi run`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "deps_search".to_string(),
-                description: "Search registries for available DUUMBI modules. \
-                              NOTE: Requires async HTTP — use `duumbi search <query>`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["query"],
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search terms to look for in the registry"
-                        },
-                        "registry": {
-                            "type": "string",
-                            "description": "Limit search to this named registry (optional)"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "deps_install".to_string(),
-                description: "Install all declared dependencies into the local cache. \
-                              NOTE: Requires async HTTP — use `duumbi deps install`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "frozen": {
-                            "type": "boolean",
-                            "description": "Fail if the lockfile would change (CI reproducibility)"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "intent_create".to_string(),
-                description: "Create an intent spec from a natural language description. \
-                              NOTE: Requires async LLM call — use `duumbi intent create`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["description"],
-                    "properties": {
-                        "description": {
-                            "type": "string",
-                            "description": "Natural language description of what to build"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "intent_execute".to_string(),
-                description: "Execute an intent: decompose → mutate graph → verify tests. \
-                              NOTE: Requires async LLM — use `duumbi intent execute <name>`."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Intent slug/name to execute"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "model_access_summary".to_string(),
-                description: "Read-only local analytics over the user-level model-access store. \
-                              Summarizes ~/.duumbi/knowledge/model-access/current.json and \
-                              optional bounded redacted events without mutating telemetry, \
-                              credentials, provider config, model catalog, graph files, or intents."
-                    .to_string(),
-                input_schema: model_telemetry_schema(false),
-            },
-            ToolDefinition {
-                name: "model_performance_summary".to_string(),
-                description: "Read-only local analytics over workspace model-performance telemetry. \
-                              Summarizes .duumbi/knowledge/model-performance/aggregates.json and \
-                              optional bounded redacted events without provider calls, routing changes, \
-                              or telemetry writes."
-                    .to_string(),
-                input_schema: model_telemetry_schema(true),
-            },
-            ToolDefinition {
-                name: "model_telemetry_health".to_string(),
-                description: "Read-only local health report for model-access and model-performance \
-                              telemetry stores. Reports absent, empty, stale, partial, malformed, \
-                              or present source state without returning secrets or raw event rows."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "provider": {
-                            "type": "string",
-                            "description": "Optional provider filter echoed in normalized filters"
-                        },
-                        "model": {
-                            "type": "string",
-                            "description": "Optional model filter echoed in normalized filters"
-                        },
-                        "stale_after_hours": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 8760,
-                            "description": "Freshness threshold in hours; defaults to 168"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 100,
-                            "description": "Normalized row limit echoed in filters; defaults to 25"
-                        },
-                        "include_raw_events": {
-                            "type": "boolean",
-                            "description": "Must remain false for health; raw event rows are not returned"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "rewrite_list_rules".to_string(),
-                description: "Read-only semantic rewrite rule discovery. Does not read or write graph files, snapshots, config, credentials, registry cache, intents, or telemetry."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "include_experimental": {
-                            "type": "boolean",
-                            "description": "Include preview-only experimental rules; defaults to true"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "rewrite_preview".to_string(),
-                description: "Read-only semantic rewrite preview for one rule and module. Parses, builds, validates, and matches without writing graph files or snapshots."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["rule_id"],
-                    "properties": {
-                        "rule_id": {
-                            "type": "string",
-                            "description": "Stable rewrite rule ID"
-                        },
-                        "module": {
-                            "type": "string",
-                            "description": "Module name such as 'main', or a path to a .jsonld file; defaults to main"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 100,
-                            "description": "Maximum matches to return, bounded by engine limits"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            ToolDefinition {
-                name: "rewrite_apply".to_string(),
-                description: "Write-capable semantic rewrite apply. Reruns matching and validation, saves an undo snapshot, then writes only after the candidate graph validates."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["rule_id"],
-                    "properties": {
-                        "rule_id": {
-                            "type": "string",
-                            "description": "Stable rewrite rule ID"
-                        },
-                        "module": {
-                            "type": "string",
-                            "description": "Module name such as 'main', or a path to a .jsonld file; defaults to main"
-                        },
-                        "match_id": {
-                            "type": "string",
-                            "description": "Selected match ID from rewrite_preview"
-                        },
-                        "all": {
-                            "type": "boolean",
-                            "description": "Apply all matches within the bounded max_matches setting"
-                        },
-                        "max_matches": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                            "description": "Maximum matches for all=true"
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            },
-        ]
+        capability::tool_definitions()
     }
 
     /// Run the server loop reading from stdin, writing to stdout.
@@ -512,6 +200,18 @@ impl McpServer {
         let workspace = self.workspace.as_ref();
 
         let tool_result = match tool_name {
+            "mcp_capability_status" => tools::status::mcp_capability_status(workspace, args),
+            "mcp_evidence_status" => tools::evidence::mcp_evidence_status(workspace, args),
+            "query_ask" => tools::query::query_ask(workspace, args),
+            "graph_patch_preview" => tools::approval::graph_patch_preview(workspace, args),
+            "graph_patch_request_approval" => {
+                tools::approval::graph_patch_request_approval(workspace, args)
+            }
+            "approval_status" => tools::approval::approval_status(workspace, args),
+            "approval_decide" => tools::approval::approval_decide(workspace, args),
+            "graph_patch_apply_approval" => {
+                tools::approval::graph_patch_apply_approval(workspace, args)
+            }
             "graph_query" => tools::graph::graph_query(workspace, args),
             "graph_mutate" => tools::graph::graph_mutate(workspace, args),
             "graph_validate" => tools::graph::graph_validate(workspace, args),
@@ -543,8 +243,8 @@ impl McpServer {
 
         tool_result.map_err(|msg| JsonRpcError {
             code: rpc_codes::INTERNAL_ERROR,
-            message: msg,
-            data: None,
+            message: msg.clone(),
+            data: Some(McpToolError::from_tool_message(tool_name, msg).to_value()),
         })
     }
 
@@ -620,54 +320,6 @@ impl McpServer {
     }
 }
 
-fn model_telemetry_schema(include_profile_filters: bool) -> Value {
-    let mut properties = serde_json::json!({
-        "provider": {
-            "type": "string",
-            "description": "Optional provider name filter"
-        },
-        "model": {
-            "type": "string",
-            "description": "Optional model name filter"
-        },
-        "stale_after_hours": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8760,
-            "description": "Freshness threshold in hours; defaults to 168"
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "description": "Aggregate row limit; defaults to 25. Required and capped at 50 when include_raw_events is true."
-        },
-        "include_raw_events": {
-            "type": "boolean",
-            "description": "Explicit bounded raw mode; defaults to false and requires a limit when true"
-        }
-    });
-    if include_profile_filters {
-        let object = properties
-            .as_object_mut()
-            .expect("invariant: schema properties object");
-        for field in ["agent_role", "task_type", "complexity", "scope", "risk"] {
-            object.insert(
-                field.to_string(),
-                serde_json::json!({
-                    "type": "string",
-                    "description": format!("Optional {field} task-profile filter")
-                }),
-            );
-        }
-    }
-    serde_json::json!({
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": false
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -729,6 +381,14 @@ mod tests {
         let tools = result["tools"].as_array().expect("tools array");
 
         let expected_names = [
+            "mcp_capability_status",
+            "mcp_evidence_status",
+            "query_ask",
+            "graph_patch_preview",
+            "graph_patch_request_approval",
+            "approval_status",
+            "approval_decide",
+            "graph_patch_apply_approval",
             "graph_query",
             "graph_mutate",
             "graph_validate",
@@ -753,6 +413,76 @@ mod tests {
                 "tool '{name}' should be in the list"
             );
         }
+    }
+
+    #[test]
+    fn tools_list_includes_duumbi_safety_metadata() {
+        let dir = TempDir::new().expect("tempdir");
+        let server = server_with_workspace(&dir);
+        let tools = server.list_tools();
+
+        let status = tools
+            .iter()
+            .find(|tool| tool.name == "mcp_capability_status")
+            .expect("status tool exists");
+        assert_eq!(status.metadata.safety, capability::ToolSafety::ReadOnly);
+        assert!(!status.metadata.approval_required);
+        assert_eq!(status.input_schema["additionalProperties"], false);
+
+        let evidence = tools
+            .iter()
+            .find(|tool| tool.name == "mcp_evidence_status")
+            .expect("evidence tool exists");
+        assert_eq!(evidence.metadata.safety, capability::ToolSafety::ReadOnly);
+        assert!(!evidence.metadata.provider_required);
+        assert!(!evidence.metadata.network_required);
+
+        let query = tools
+            .iter()
+            .find(|tool| tool.name == "query_ask")
+            .expect("query_ask exists");
+        assert_eq!(query.metadata.safety, capability::ToolSafety::ReadOnly);
+        assert!(query.metadata.provider_required);
+        assert!(!query.metadata.network_required);
+
+        let graph_mutate = tools
+            .iter()
+            .find(|tool| tool.name == "graph_mutate")
+            .expect("graph_mutate exists");
+        assert_eq!(
+            graph_mutate.metadata.safety,
+            capability::ToolSafety::TrustedImmediateWrite
+        );
+        assert!(
+            graph_mutate
+                .metadata
+                .writes
+                .iter()
+                .any(|path| path == ".duumbi/graph/main.jsonld")
+        );
+
+        let apply_approval = tools
+            .iter()
+            .find(|tool| tool.name == "graph_patch_apply_approval")
+            .expect("approval apply exists");
+        assert_eq!(
+            apply_approval.metadata.safety,
+            capability::ToolSafety::WriteCapable
+        );
+        assert!(apply_approval.metadata.approval_required);
+
+        let build_compile = tools
+            .iter()
+            .find(|tool| tool.name == "build_compile")
+            .expect("build_compile exists");
+        assert_eq!(build_compile.metadata.unavailable_reason, None);
+        assert!(
+            build_compile
+                .metadata
+                .writes
+                .contains(&".duumbi/build".to_string()),
+            "build_compile must declare build output writes"
+        );
     }
 
     #[test]
@@ -854,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_build_compile_returns_error_content() {
+    fn tools_call_build_compile_failure_returns_structured_error() {
         let dir = TempDir::new().expect("tempdir");
         let server = server_with_workspace(&dir);
         let req = make_request(
@@ -864,10 +594,73 @@ mod tests {
         );
 
         let resp = server.handle_request(&req).expect("response");
-        // build_compile is a stub that returns an error via JsonRpcError
         assert!(
             resp.error.is_some(),
-            "build_compile stub should return an RPC error"
+            "build_compile should return an RPC error for an empty workspace"
+        );
+        let err = resp.error.expect("error");
+        let data = err.data.expect("structured error data");
+        assert_eq!(data["code"], "mcp.build");
+        assert_eq!(data["category"], "build");
+        assert_eq!(data["source"]["tool"], "build_compile");
+        assert!(
+            data["suggestedRepairs"]
+                .as_array()
+                .expect("repair categories")
+                .iter()
+                .any(|repair| repair == "build")
+        );
+    }
+
+    #[test]
+    fn tools_call_capability_status_is_read_only_and_agent_facing() {
+        let (dir, server) = server_with_graph();
+        let graph_path = dir.path().join(".duumbi/graph/main.jsonld");
+        let before = std::fs::read(&graph_path).expect("read graph before");
+        let req = make_request(
+            "tools/call",
+            serde_json::json!(10),
+            Some(serde_json::json!({
+                "name": "mcp_capability_status",
+                "arguments": {}
+            })),
+        );
+
+        let resp = server.handle_request(&req).expect("response");
+        assert!(
+            resp.error.is_none(),
+            "mcp_capability_status should succeed: {:?}",
+            resp.error
+        );
+        assert_eq!(
+            std::fs::read(&graph_path).expect("read graph after"),
+            before,
+            "status tool must not mutate graph"
+        );
+        let result = resp.result.expect("result");
+        let text = result["content"][0]["text"].as_str().expect("text content");
+        let status: Value = serde_json::from_str(text).expect("status JSON");
+        assert_eq!(status["status"], "success");
+        assert_eq!(status["workspace"]["duumbiInitialized"], true);
+        assert!(
+            status["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool["name"] == "mcp_capability_status"
+                    && tool["duumbi"]["safety"] == "read_only")
+        );
+        assert_eq!(status["capabilities"]["queryToolAvailable"], true);
+        assert_eq!(status["capabilities"]["approvalFlowAvailable"], true);
+        assert_eq!(status["capabilities"]["buildRunAvailable"], true);
+        assert_eq!(status["capabilities"]["evidenceRetrievalAvailable"], true);
+        assert!(
+            !status["capabilities"]["unavailableTools"]
+                .as_array()
+                .expect("unavailable tools")
+                .iter()
+                .any(|tool| tool["name"] == "build_compile"),
+            "build_compile must not be reported as unavailable"
         );
     }
 
