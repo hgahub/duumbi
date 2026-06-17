@@ -52,13 +52,44 @@ editing or generating raw Rust directly. Record:
 
 ## Current Evidence
 
-Current status: partial. MCP build/run and bounded evidence status tooling are
-implemented; the live flagship transcript is still pending.
+Current status: partial, source-recorded on 2026-06-17.
+
+Implemented and verified:
+
+- `mcp_capability_status` reports build/run and evidence retrieval available.
+- `mcp_evidence_status` returns bounded read-only local evidence metadata.
+- `build_compile` and `build_run` execute through the shared workspace backend
+  and report output path, stdout, stderr, exit code, and timeout state.
+- Provider-free stdio smoke through `target/debug/duumbi mcp` passed:
+  `initialize`, `tools/list`, `mcp_capability_status`, and
+  `mcp_evidence_status`.
+- Automated checks passed:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `cargo test --all`
+  - focused MCP tests for server dispatch, query, approval, build/run,
+    evidence status, and DUUMBI-719 integration coverage.
+
+Structured blockers and limitations:
+
+- Full MCP-only flagship transcript remains partial because dependency/vendor
+  MCP tools still report structured unavailable state. The current accepted
+  path can report that blocker through `mcp_capability_status`, but cannot yet
+  materialize the flagship dependency state entirely through MCP.
+- Low-cost live external-agent E2E was not run in this Stage 10 pass. No
+  external agent/provider call was invoked, external cost was USD 0, and the
+  run should be treated as blocked pending a separately routed live-agent
+  exercise or an explicit decision that the structured MCP smoke is sufficient
+  for Stage 11 review.
+- Raw Rust baseline is unavailable in this Stage 10 pass because no comparable
+  external agent was run against the raw Rust target. Token, cost, elapsed time,
+  turns, and provider telemetry are therefore unavailable rather than measured.
 
 Automated source evidence already present:
 
 - `tests/integration_duumbi688_flagship_example.rs`
 - `examples/flagship-http-sqlite-json/README.md`
 
-The final Stage 10 implementation PR must replace this current-status section
-with either live benchmark evidence or a structured blocked report.
+The final Stage 10 implementation PR must carry this partial evidence honestly.
+Do not claim MCP-only benchmark success or raw Rust superiority until a live
+transcript and comparable baseline are recorded.
