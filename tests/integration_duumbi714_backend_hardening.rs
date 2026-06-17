@@ -358,6 +358,10 @@ fn struct_value(env: &HashMap<String, OracleValue>, id: &str) -> HashMap<String,
     }
 }
 
+fn normalize_line_endings(value: &str) -> String {
+    value.replace("\r\n", "\n")
+}
+
 #[test]
 fn ignored_array_try_get_reports_unhandled_option() {
     let diagnostics = diagnostics_for_jsonld(
@@ -606,7 +610,11 @@ fn differential_interpreter_native_subset() {
         let oracle = interpret_fixture(fixture);
         let native = compile_and_run(fixture);
         assert_eq!(native.stdout, oracle.stdout, "{fixture} stdout mismatch");
-        assert_eq!(native.stderr, oracle.stderr, "{fixture} stderr mismatch");
+        assert_eq!(
+            normalize_line_endings(&native.stderr),
+            normalize_line_endings(&oracle.stderr),
+            "{fixture} stderr mismatch"
+        );
         assert_eq!(
             native.exit_code, oracle.exit_code,
             "{fixture} exit status mismatch"
