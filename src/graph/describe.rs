@@ -2,6 +2,7 @@
 
 use petgraph::visit::EdgeRef;
 
+use crate::contracts::EffectClass;
 use crate::graph::{GraphEdge, SemanticGraph};
 use crate::types::Op;
 
@@ -21,6 +22,15 @@ pub fn describe_to_string(graph: &SemanticGraph) -> String {
             params.join(", "),
             func.return_type
         ));
+        if !func.contracts.is_empty() {
+            lines.push(format!(
+                "  contracts: effect={}, preconditions={}, postconditions={}, invariants={} (property evidence, not proof)",
+                effect_label(&func.contracts.effect),
+                func.contracts.preconditions.len(),
+                func.contracts.postconditions.len(),
+                func.contracts.invariants.len()
+            ));
+        }
 
         for block in &func.blocks {
             lines.push(format!("  {}:", block.label));
@@ -139,5 +149,14 @@ fn describe_op_plain(
             format!("Return({val})")
         }
         other => other.to_string(),
+    }
+}
+
+fn effect_label(effect: &EffectClass) -> &'static str {
+    match effect {
+        EffectClass::Unspecified => "unspecified",
+        EffectClass::Pure => "pure",
+        EffectClass::ReadOnlyDeterministic => "read_only_deterministic",
+        EffectClass::Effectful => "effectful",
     }
 }

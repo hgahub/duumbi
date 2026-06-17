@@ -532,6 +532,7 @@ mod tests {
                 return_type: DuumbiType::Void,
                 params: vec![],
                 lifetime_params: vec![],
+                contracts: Default::default(),
                 blocks: vec![BlockInfo {
                     label: BlockLabel("entry".to_string()),
                     nodes: block_nodes,
@@ -789,6 +790,7 @@ mod tests {
                 return_type: DuumbiType::Void,
                 params: vec![],
                 lifetime_params: vec![],
+                contracts: Default::default(),
                 blocks: vec![
                     BlockInfo {
                         label: BlockLabel("entry".to_string()),

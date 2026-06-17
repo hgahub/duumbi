@@ -4,6 +4,7 @@
 //! safety. They are the intermediate representation between raw JSON
 //! and the semantic graph.
 
+use crate::contracts::ContractSet;
 use crate::types::{BlockLabel, DuumbiType, FunctionName, ModuleName, NodeId, Op};
 
 /// A reference to another node by its `@id`.
@@ -78,6 +79,8 @@ pub struct FunctionAst {
     pub blocks: Vec<BlockAst>,
     /// Lifetime parameters declared on this function (e.g. `["'a", "'b"]`).
     pub lifetime_params: Vec<String>,
+    /// Function-level contracts for property checks and future verification.
+    pub contracts: ContractSet,
 }
 
 /// A parsed import declaration on a `duumbi:Module` node.

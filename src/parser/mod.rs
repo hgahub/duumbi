@@ -9,6 +9,7 @@ pub mod ast;
 use ast::{BlockAst, FunctionAst, ImportAst, ModuleAst, NodeRef, OpAst, ParamAst};
 use thiserror::Error;
 
+use crate::contracts::parse_contract_set;
 use crate::errors::codes;
 use crate::types::{BlockLabel, CompareOp, DuumbiType, FunctionName, ModuleName, NodeId, Op};
 
@@ -344,7 +345,10 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
             }
             params
         } else {
-            Vec::new()
+            return Err(ParseError::SchemaInvalid {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("duumbi:params on {node_id_str} must be an array"),
+            });
         }
     } else {
         Vec::new()
@@ -364,6 +368,16 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
         Vec::new()
     };
 
+    let contracts = value
+        .get("duumbi:contracts")
+        .map(parse_contract_set)
+        .transpose()
+        .map_err(|message| ParseError::SchemaInvalid {
+            code: codes::E009_SCHEMA_INVALID,
+            message,
+        })?
+        .unwrap_or_default();
+
     let mut blocks = Vec::with_capacity(blocks_arr.len());
     for block_val in blocks_arr {
         blocks.push(parse_block(block_val)?);
@@ -376,6 +390,7 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
         params,
         blocks,
         lifetime_params,
+        contracts,
     })
 }
 
@@ -1617,6 +1632,131 @@ mod tests {
         assert_eq!(func.params.len(), 1);
         assert_eq!(func.params[0].name, "n");
         assert_eq!(func.params[0].param_type, DuumbiType::I64);
+    }
+
+    #[test]
+    fn malformed_function_params_fails_schema_validation() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:params": {"duumbi:name": "n", "duumbi:paramType": "i64"},
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let err = parse_jsonld(json).unwrap_err();
+        assert!(matches!(
+            err,
+            ParseError::SchemaInvalid { message, .. }
+                if message.contains("duumbi:params") && message.contains("must be an array")
+        ));
+    }
+
+    #[test]
+    fn parse_function_contracts() {
+        use crate::contracts::{ContractExpr, ContractLiteral, ContractOperator, EffectClass};
+
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": "duumbi:t/abs",
+                "duumbi:name": "abs",
+                "duumbi:returnType": "i64",
+                "duumbi:params": [
+                    {"duumbi:name": "n", "duumbi:paramType": "i64"}
+                ],
+                "duumbi:contracts": {
+                    "duumbi:effect": "pure",
+                    "duumbi:preconditions": [{
+                        "duumbi:id": "input-bounded",
+                        "duumbi:expr": {
+                            "duumbi:op": ">=",
+                            "duumbi:left": {"duumbi:var": "n"},
+                            "duumbi:right": {"duumbi:const": -100}
+                        }
+                    }],
+                    "duumbi:postconditions": [{
+                        "duumbi:id": "result-nonnegative",
+                        "duumbi:expr": {
+                            "duumbi:op": ">=",
+                            "duumbi:left": {"duumbi:var": "result"},
+                            "duumbi:right": {"duumbi:const": 0}
+                        }
+                    }],
+                    "duumbi:invariants": []
+                },
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/abs/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/abs/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/abs/e/1", "duumbi:operand": {"@id": "duumbi:t/abs/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let module = parse_jsonld(json).expect("parse should succeed");
+        let contracts = &module.functions[0].contracts;
+        assert_eq!(contracts.effect, EffectClass::Pure);
+        assert_eq!(contracts.preconditions.len(), 1);
+        assert_eq!(contracts.postconditions.len(), 1);
+        assert_eq!(
+            contracts.postconditions[0].expr,
+            ContractExpr::Binary {
+                op: ContractOperator::Ge,
+                left: Box::new(ContractExpr::Var("result".to_string())),
+                right: Box::new(ContractExpr::Const(ContractLiteral::I64(0))),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_function_contract_fails_schema_validation() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function",
+                "@id": "duumbi:t/main",
+                "duumbi:name": "main",
+                "duumbi:returnType": "i64",
+                "duumbi:contracts": {
+                    "duumbi:postconditions": [{
+                        "duumbi:id": "bad-op",
+                        "duumbi:expr": {
+                            "duumbi:op": "exec",
+                            "duumbi:left": {"duumbi:var": "result"},
+                            "duumbi:right": {"duumbi:const": 0}
+                        }
+                    }]
+                },
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let err = parse_jsonld(json).unwrap_err();
+        assert!(matches!(
+            err,
+            ParseError::SchemaInvalid { message, .. }
+                if message.contains("unknown contract operator")
+        ));
     }
 
     // -------------------------------------------------------------------------

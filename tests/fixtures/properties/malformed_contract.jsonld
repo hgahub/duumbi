@@ -1,0 +1,55 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/schema#"
+  },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:properties",
+  "duumbi:name": "properties",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:properties/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:contracts": {
+        "duumbi:effect": "pure",
+        "duumbi:postconditions": [
+          {
+            "duumbi:id": "bad-operator",
+            "duumbi:expr": {
+              "duumbi:op": "exec",
+              "duumbi:left": {
+                "duumbi:var": "result"
+              },
+              "duumbi:right": {
+                "duumbi:const": 0
+              }
+            }
+          }
+        ]
+      },
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:properties/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:properties/main/entry/c0",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:properties/main/entry/ret",
+              "duumbi:operand": {
+                "@id": "duumbi:properties/main/entry/c0"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

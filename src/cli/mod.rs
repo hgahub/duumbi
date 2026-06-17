@@ -158,6 +158,22 @@ pub enum Commands {
     Check {
         /// Path to the input `.jsonld` file (optional if in a workspace).
         input: Option<PathBuf>,
+
+        /// Run contract-based property checks after ordinary validation.
+        #[arg(long)]
+        properties: bool,
+
+        /// Deterministic property-generation seed.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+
+        /// Number of property cases to generate per function.
+        #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u32).range(1..))]
+        cases: u32,
+
+        /// Path for the property evidence JSON artifact.
+        #[arg(long)]
+        property_output: Option<PathBuf>,
     },
 
     /// Describe the program as human-readable pseudo-code.
@@ -805,6 +821,49 @@ mod tests {
             .expect("CLI must parse trace build flag");
 
         assert!(matches!(cli.command, Commands::Build { trace: true, .. }));
+    }
+
+    #[test]
+    fn check_property_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "duumbi",
+            "check",
+            "main.jsonld",
+            "--properties",
+            "--seed",
+            "717",
+            "--cases",
+            "32",
+            "--property-output",
+            "/tmp/duumbi-717.json",
+        ])
+        .expect("CLI must parse property check flags");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Check {
+                properties: true,
+                seed: 717,
+                cases: 32,
+                property_output: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn check_property_cases_zero_is_invalid() {
+        let err = Cli::try_parse_from([
+            "duumbi",
+            "check",
+            "main.jsonld",
+            "--properties",
+            "--cases",
+            "0",
+        ])
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid value"));
     }
 
     #[test]
