@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::config;
 use crate::mcp::capability;
 
 /// Returns DUUMBI MCP capability metadata and local workspace readiness.
@@ -40,6 +41,9 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
     let deps_lock = duumbi_dir.join("deps.lock");
     let build_dir = workspace.join("target");
     let approvals_dir = duumbi_dir.join("session").join("approvals");
+    let providers_configured = config::load_effective_config(workspace)
+        .map(|config| !config.config.effective_providers().is_empty())
+        .unwrap_or(false);
 
     Ok(serde_json::json!({
         "status": "success",
@@ -52,6 +56,7 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
             "intentsDirPresent": intents_dir.is_dir(),
             "depsLockPresent": deps_lock.is_file(),
             "buildOutputPresent": build_dir.exists(),
+            "providerConfigured": providers_configured,
             "pendingApprovalCount": pending_approval_count(&approvals_dir),
         },
         "capabilities": {
@@ -59,7 +64,7 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
             "readOnlyToolCount": read_only_count,
             "writeCapableToolCount": write_capable_count,
             "approvalFlowAvailable": false,
-            "queryToolAvailable": false,
+            "queryToolAvailable": true,
             "buildRunAvailable": false,
             "evidenceRetrievalAvailable": false,
             "unavailableTools": unavailable_tools,

@@ -125,6 +125,37 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             ToolMetadata::read_only("stage10", &["capability_status"]),
         ),
         tool(
+            "query_ask",
+            "Read-only conversational Query mode over the local DUUMBI workspace. Returns answer text, model metadata, source references, confidence, and suggested handoff without graph, intent, dependency, build, or evidence writes.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["question"],
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Read-only question to answer from local DUUMBI context"
+                    },
+                    "module": {
+                        "type": "string",
+                        "description": "Optional visible module name, such as 'main'"
+                    },
+                    "c4_level": {
+                        "type": "string",
+                        "description": "Optional visible C4 level"
+                    },
+                    "include_sources": {
+                        "type": "boolean",
+                        "description": "Whether source references should be returned; defaults to true"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                provider_required: true,
+                ..ToolMetadata::read_only("stage10", &["query_answer"])
+            },
+        ),
+        tool(
             "graph_query",
             "Query the DUUMBI semantic graph by node ID, @type, or name pattern. Returns matching nodes from all .jsonld files in the workspace.",
             serde_json::json!({

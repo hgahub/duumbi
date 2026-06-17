@@ -8,5 +8,6 @@ pub mod deps;
 pub mod graph;
 pub mod intent;
 pub mod model_telemetry;
+pub mod query;
 pub mod rewrite;
 pub mod status;

@@ -201,6 +201,7 @@ impl McpServer {
 
         let tool_result = match tool_name {
             "mcp_capability_status" => tools::status::mcp_capability_status(workspace, args),
+            "query_ask" => tools::query::query_ask(workspace, args),
             "graph_query" => tools::graph::graph_query(workspace, args),
             "graph_mutate" => tools::graph::graph_mutate(workspace, args),
             "graph_validate" => tools::graph::graph_validate(workspace, args),
@@ -371,6 +372,7 @@ mod tests {
 
         let expected_names = [
             "mcp_capability_status",
+            "query_ask",
             "graph_query",
             "graph_mutate",
             "graph_validate",
@@ -410,6 +412,14 @@ mod tests {
         assert_eq!(status.metadata.safety, capability::ToolSafety::ReadOnly);
         assert!(!status.metadata.approval_required);
         assert_eq!(status.input_schema["additionalProperties"], false);
+
+        let query = tools
+            .iter()
+            .find(|tool| tool.name == "query_ask")
+            .expect("query_ask exists");
+        assert_eq!(query.metadata.safety, capability::ToolSafety::ReadOnly);
+        assert!(query.metadata.provider_required);
+        assert!(!query.metadata.network_required);
 
         let graph_mutate = tools
             .iter()
@@ -603,6 +613,7 @@ mod tests {
                 .any(|tool| tool["name"] == "mcp_capability_status"
                     && tool["duumbi"]["safety"] == "read_only")
         );
+        assert_eq!(status["capabilities"]["queryToolAvailable"], true);
         assert!(
             status["capabilities"]["unavailableTools"]
                 .as_array()

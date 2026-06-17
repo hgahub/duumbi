@@ -382,6 +382,7 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     let tool_values = tools["tools"].as_array().expect("tools array");
     for expected in [
         "mcp_capability_status",
+        "query_ask",
         "graph_query",
         "graph_mutate",
         "graph_validate",
