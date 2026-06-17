@@ -342,6 +342,104 @@ fn duumbi682_model_telemetry_tools_do_not_mutate_local_state() {
     }
 }
 
+/// DUUMBI-719 Cycle 1: MCP exposes agent-facing capability metadata and status.
+#[test]
+fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    let workspace = setup_workspace();
+    let watched = vec![
+        workspace.path().join(".duumbi/config.toml"),
+        workspace.path().join(".duumbi/graph/main.jsonld"),
+    ];
+    let before = snapshot(&watched);
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let init = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "initialize".to_string(),
+            params: None,
+        })
+        .expect("initialize response");
+    assert!(init.error.is_none(), "initialize must succeed");
+    assert_eq!(
+        init.result.expect("initialize result")["serverInfo"]["name"],
+        "duumbi-mcp"
+    );
+
+    let tools_response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(2)),
+            method: "tools/list".to_string(),
+            params: None,
+        })
+        .expect("tools/list response");
+    assert!(tools_response.error.is_none(), "tools/list must succeed");
+    let tools = tools_response.result.expect("tools result");
+    let tool_values = tools["tools"].as_array().expect("tools array");
+    for expected in [
+        "mcp_capability_status",
+        "graph_query",
+        "graph_mutate",
+        "graph_validate",
+        "build_compile",
+        "build_run",
+        "intent_create",
+        "intent_execute",
+        "rewrite_preview",
+        "rewrite_apply",
+    ] {
+        assert!(
+            tool_values.iter().any(|tool| tool["name"] == expected),
+            "{expected} must be discoverable"
+        );
+    }
+    assert!(
+        tool_values
+            .iter()
+            .any(|tool| tool["name"] == "graph_query" && tool["duumbi"]["safety"] == "read_only"),
+        "tools/list must include read-only DUUMBI metadata"
+    );
+    assert!(
+        tool_values.iter().any(|tool| tool["name"] == "graph_mutate"
+            && tool["duumbi"]["safety"] == "trusted_immediate_write"),
+        "legacy immediate write tools must be clearly labeled"
+    );
+
+    let status_response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(3)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mcp_capability_status",
+                "arguments": {},
+            })),
+        })
+        .expect("status response");
+    assert!(status_response.error.is_none(), "status tool must succeed");
+    let status_text = status_response.result.expect("status result")["content"][0]["text"]
+        .as_str()
+        .expect("status text")
+        .to_string();
+    let status: serde_json::Value = serde_json::from_str(&status_text).expect("status JSON");
+    assert_eq!(status["workspace"]["duumbiInitialized"], true);
+    assert_eq!(status["workspace"]["mainGraphPresent"], true);
+    assert!(
+        status["capabilities"]["unavailableTools"]
+            .as_array()
+            .expect("unavailable tools")
+            .iter()
+            .any(|tool| tool["name"] == "build_compile"),
+        "stubbed workflow tools must expose structured unavailable state"
+    );
+
+    assert_snapshot_unchanged(&before);
+}
+
 // ---------------------------------------------------------------------------
 // Kill Criterion 2 — Dynamic agent assembly
 // ---------------------------------------------------------------------------
