@@ -316,6 +316,7 @@ Recommended attempt fields:
 - `suite`
 - `tags`
 - `provider`
+- `model_identity`
 - `attempt`
 - `workspace_strategy`
 - `initial_graph_exact_hash`
@@ -342,6 +343,13 @@ Keep raw prompts out of the report by default. If raw prompt retention is ever
 added for local debugging, it must be opt-in, clearly labeled, bounded, and
 excluded from committed evidence.
 
+`provider` is the requested provider route and must not include credential
+values. `model_identity` records the resolved model or catalog label actually
+used for the attempt when available. If model resolution is unavailable, record
+`model_identity.status = "unavailable"` with a stable reason rather than
+omitting the field. Replay tests must assert this field exists so evidence does
+not claim locked context while silently routing attempts to different models.
+
 ### 3. Add An Append-Only Ledger
 
 For every run, create:
@@ -351,8 +359,14 @@ For every run, create:
   ledger.jsonl
   report.json
   report.md                 # optional
-  attempts/<task>/<provider>/<attempt>/...
+  attempts/<task-key>/<provider-key>/<attempt>/...
 ```
+
+`<task-key>` and `<provider-key>` are filesystem-safe bundle components, not raw
+task names or provider routes. Derive them from a conservative slug plus a short
+stable hash of the raw value, reject path separators and `..`, and keep the raw
+task/provider/model route only in JSON evidence. Provider routes can include
+base URLs, so using them directly as path components is unsafe.
 
 Ledger events should be append-only JSON lines:
 
@@ -516,6 +530,20 @@ agreement_rate = largest_equivalence_group_count / comparable_attempt_count
 
 This is easier to interpret than pairwise agreement for the first report. If a
 future implementation needs pairwise agreement, add it as a separate metric.
+When `comparable_attempt_count == 0`, do not emit NaN, infinity, or a misleading
+numeric agreement rate. Emit a stable unavailable value such as:
+
+```json
+{
+  "status": "unavailable",
+  "reason": "no comparable attempts produced final graph evidence",
+  "comparable_attempt_count": 0
+}
+```
+
+For threshold evaluation in `--ci` mode, an unavailable metric fails only when a
+threshold for that specific metric was explicitly requested. The report must
+still preserve provider/setup failure evidence for failed attempts.
 
 Comparable attempt rules:
 
@@ -584,6 +612,15 @@ Keep Markdown generation deterministic except timestamps and run id.
 | Scaled smoke replay includes broader-evidence tasks | Unit test or integration test targets `scaled_http_sqlite_json` selection with process-evidence verification and asserts behavior status is broader-evidence-required unless process evidence is actually produced. |
 | Rewrite comparison is not yet comparable | Unit test asserts default provider-backed replay report emits `rewrite_comparison.status = "not_yet_comparable"` with no improvement claim. |
 | CI gating is explicitly requested | Integration test runs replay with `--ci --min-semantic-agreement 1.0` against a deterministic fixture that produces divergent semantic hashes; asserts non-zero exit and retained report bundle. Add a positive CI threshold test where the threshold passes. |
+
+Additional technical tests:
+
+- Resolved model identity is recorded as a model/catalog label or as an explicit
+  unavailable status with reason.
+- Provider and task path keys are sanitized and cannot escape the artifact
+  bundle when raw values contain `/`, URLs, whitespace, or `..`.
+- Zero-comparable graph agreement emits an unavailable status with reason and
+  never serializes NaN or infinity.
 
 ## Live E2E Plan
 
