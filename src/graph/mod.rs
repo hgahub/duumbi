@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use thiserror::Error;
 
+use crate::contracts::ContractSet;
 use crate::types::{BlockLabel, DuumbiType, FunctionName, ModuleName, NodeId, Op};
 
 /// Errors that can occur during graph construction.
@@ -139,6 +140,8 @@ pub struct FunctionInfo {
     pub blocks: Vec<BlockInfo>,
     /// Lifetime parameters declared on this function (e.g. `["'a", "'b"]`).
     pub lifetime_params: Vec<String>,
+    /// Function-level contracts for property checks and future verification.
+    pub contracts: ContractSet,
 }
 
 /// Information about a block in the graph.

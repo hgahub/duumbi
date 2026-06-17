@@ -228,6 +228,40 @@ pub(crate) fn check(input: &Path) -> Result<()> {
     }
 }
 
+/// Validates a graph file and writes property evidence for contract-bearing functions.
+pub(crate) fn check_with_properties(
+    input: &Path,
+    options: crate::properties::PropertyRunOptions,
+) -> Result<()> {
+    if let Some(workspace_root) = workspace_root_for_graph_input(input) {
+        check_workspace_program(&workspace_root)?;
+    }
+
+    let semantic_graph = parse_and_validate(input)?;
+    let report = crate::properties::run_properties(&semantic_graph, input, options)?;
+    eprintln!(
+        "{} Property evidence written: {}",
+        theme::check_mark(),
+        report.evidence_path.display()
+    );
+    eprintln!(
+        "  functions: discovered={}, checked={}, unsupported={}, failed={}",
+        report.evidence.summary.functions_discovered,
+        report.evidence.summary.functions_checked,
+        report.evidence.summary.functions_unsupported,
+        report.evidence.summary.properties_failed
+    );
+
+    if report.evidence.summary.properties_failed > 0 {
+        anyhow::bail!(
+            "Property check failed with {} failing function(s)",
+            report.evidence.summary.properties_failed
+        );
+    }
+
+    Ok(())
+}
+
 /// Prints a human-readable pseudocode description of the graph.
 pub(crate) fn describe(input: &Path) -> Result<()> {
     if let Some(workspace_root) = workspace_root_for_graph_input(input) {

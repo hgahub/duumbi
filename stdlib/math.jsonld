@@ -11,6 +11,19 @@
       "duumbi:name": "abs",
       "duumbi:returnType": "i64",
       "duumbi:params": [{"duumbi:name": "x", "duumbi:paramType": "i64"}],
+      "duumbi:contracts": {
+        "duumbi:effect": "pure",
+        "duumbi:postconditions": [
+          {
+            "duumbi:id": "abs-result-nonnegative",
+            "duumbi:expr": {
+              "duumbi:op": ">=",
+              "duumbi:left": {"duumbi:var": "result"},
+              "duumbi:right": {"duumbi:const": 0}
+            }
+          }
+        ]
+      },
       "duumbi:blocks": [
         {
           "@type": "duumbi:Block",

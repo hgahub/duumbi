@@ -1062,6 +1062,7 @@ mod tests {
             }],
             blocks: vec![],
             lifetime_params: vec![], // Missing!
+            contracts: Default::default(),
         };
 
         let mut diags = Vec::new();
@@ -1082,6 +1083,7 @@ mod tests {
             params: vec![],
             blocks: vec![],
             lifetime_params: vec![], // Missing!
+            contracts: Default::default(),
         };
 
         let mut diags = Vec::new();

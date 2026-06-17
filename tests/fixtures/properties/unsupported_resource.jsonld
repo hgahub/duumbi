@@ -1,0 +1,89 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/schema#"
+  },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:properties",
+  "duumbi:name": "properties",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:properties/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:properties/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:properties/main/entry/c0",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:properties/main/entry/ret",
+              "duumbi:operand": {
+                "@id": "duumbi:properties/main/entry/c0"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:properties/count_rows",
+      "duumbi:name": "count_rows",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [
+        {
+          "duumbi:name": "rows",
+          "duumbi:paramType": "db_rows"
+        }
+      ],
+      "duumbi:contracts": {
+        "duumbi:effect": "pure",
+        "duumbi:postconditions": [
+          {
+            "duumbi:id": "count-nonnegative",
+            "duumbi:expr": {
+              "duumbi:op": ">=",
+              "duumbi:left": {
+                "duumbi:var": "result"
+              },
+              "duumbi:right": {
+                "duumbi:const": 0
+              }
+            }
+          }
+        ]
+      },
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:properties/count_rows/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:properties/count_rows/entry/c0",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:properties/count_rows/entry/ret",
+              "duumbi:operand": {
+                "@id": "duumbi:properties/count_rows/entry/c0"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

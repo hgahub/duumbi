@@ -1,0 +1,89 @@
+{
+  "@context": {
+    "duumbi": "https://duumbi.dev/schema#"
+  },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:properties",
+  "duumbi:name": "properties",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:properties/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:properties/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:properties/main/entry/c0",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:properties/main/entry/ret",
+              "duumbi:operand": {
+                "@id": "duumbi:properties/main/entry/c0"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:properties/identity",
+      "duumbi:name": "identity",
+      "duumbi:returnType": "i64",
+      "duumbi:params": [
+        {
+          "duumbi:name": "n",
+          "duumbi:paramType": "i64"
+        }
+      ],
+      "duumbi:contracts": {
+        "duumbi:effect": "pure",
+        "duumbi:postconditions": [
+          {
+            "duumbi:id": "result-nonnegative",
+            "duumbi:expr": {
+              "duumbi:op": ">=",
+              "duumbi:left": {
+                "duumbi:var": "result"
+              },
+              "duumbi:right": {
+                "duumbi:const": 0
+              }
+            }
+          }
+        ]
+      },
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:properties/identity/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:Load",
+              "@id": "duumbi:properties/identity/entry/n",
+              "duumbi:variable": "n",
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:properties/identity/entry/ret",
+              "duumbi:operand": {
+                "@id": "duumbi:properties/identity/entry/n"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
