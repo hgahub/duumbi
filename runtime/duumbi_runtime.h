@@ -7,6 +7,8 @@
 
 /** Print message to stderr and exit(1). */
 void duumbi_panic(const char *msg);
+/** Print node-attributed message to stderr and exit(1). */
+void duumbi_panic_at(const char *msg, const char *node_id);
 
 /* ── Trace telemetry ───────────────────────────────────────────────── */
 
@@ -16,6 +18,7 @@ void duumbi_trace_function_exit(int64_t function_id);
 void duumbi_trace_block_enter(int64_t block_id);
 void duumbi_trace_block_exit(int64_t block_id);
 void duumbi_trace_panic(const char *msg);
+void duumbi_trace_panic_at(const char *msg, const char *node_id);
 
 /* ── Print ─────────────────────────────────────────────────────────── */
 
@@ -86,6 +89,10 @@ int8_t   duumbi_result_is_ok(void *ptr);
 int64_t  duumbi_result_unwrap(void *ptr);
 int64_t  duumbi_result_unwrap_err(void *ptr);
 void     duumbi_result_free(void *ptr);
+void    *duumbi_i64_add_checked(int64_t left, int64_t right);
+void    *duumbi_i64_sub_checked(int64_t left, int64_t right);
+void    *duumbi_i64_mul_checked(int64_t left, int64_t right);
+void    *duumbi_i64_div_checked(int64_t left, int64_t right);
 
 void    *duumbi_option_new_some(int64_t payload);
 void    *duumbi_option_new_none(void);

@@ -111,6 +111,14 @@ pub enum Op {
     Mul,
     /// Division: `duumbi:Div`
     Div,
+    /// Checked integer addition returning Result<i64,string>: `duumbi:AddChecked`
+    AddChecked,
+    /// Checked integer subtraction returning Result<i64,string>: `duumbi:SubChecked`
+    SubChecked,
+    /// Checked integer multiplication returning Result<i64,string>: `duumbi:MulChecked`
+    MulChecked,
+    /// Checked integer division returning Result<i64,string>: `duumbi:DivChecked`
+    DivChecked,
     /// Comparison: `duumbi:Compare`
     Compare(CompareOp),
     /// Conditional branch: `duumbi:Branch`
@@ -381,6 +389,10 @@ impl fmt::Display for Op {
             Op::Sub => f.write_str("Sub"),
             Op::Mul => f.write_str("Mul"),
             Op::Div => f.write_str("Div"),
+            Op::AddChecked => f.write_str("AddChecked"),
+            Op::SubChecked => f.write_str("SubChecked"),
+            Op::MulChecked => f.write_str("MulChecked"),
+            Op::DivChecked => f.write_str("DivChecked"),
             Op::Compare(op) => write!(f, "Compare({op})"),
             Op::Branch => f.write_str("Branch"),
             Op::Call { module, function } => {
@@ -515,6 +527,10 @@ impl Op {
             | Op::Sub
             | Op::Mul
             | Op::Div
+            | Op::AddChecked
+            | Op::SubChecked
+            | Op::MulChecked
+            | Op::DivChecked
             | Op::Load { .. }
             | Op::Call { .. }
             | Op::ArrayNew

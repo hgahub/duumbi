@@ -9,6 +9,7 @@
 #include <math.h>
 #include <errno.h>
 #include <ctype.h>
+#include <limits.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -401,7 +402,13 @@ void duumbi_trace_block_exit(int64_t block_id) {
     }
 }
 
+void duumbi_trace_panic_at(const char *msg, const char *node_id);
+
 void duumbi_trace_panic(const char *msg) {
+    duumbi_trace_panic_at(msg, NULL);
+}
+
+void duumbi_trace_panic_at(const char *msg, const char *node_id) {
     if (!duumbi_trace_active) {
         return;
     }
@@ -414,6 +421,10 @@ void duumbi_trace_panic(const char *msg) {
                 (long long)duumbi_current_function_id,
                 (long long)duumbi_current_block_id);
         duumbi_write_json_string(trace_file, msg);
+        if (node_id != NULL) {
+            fputs(",\"node_id\":", trace_file);
+            duumbi_write_json_string(trace_file, node_id);
+        }
         fputs("}\n", trace_file);
         fclose(trace_file);
     }
@@ -427,6 +438,10 @@ void duumbi_trace_panic(const char *msg) {
             "{\"schema_version\":\"%s\",\"event\":\"panic\",\"message\":",
             DUUMBI_CRASH_SCHEMA_VERSION);
     duumbi_write_json_string(crash_file, msg);
+    if (node_id != NULL) {
+        fputs(",\"node_id\":", crash_file);
+        duumbi_write_json_string(crash_file, node_id);
+    }
     fprintf(crash_file,
             ",\"function_id\":%lld,\"block_id\":%lld,\"trace_active\":true}\n",
             (long long)duumbi_current_function_id,
@@ -439,6 +454,16 @@ void duumbi_trace_panic(const char *msg) {
 void duumbi_panic(const char *msg) {
     duumbi_trace_panic(msg);
     fprintf(stderr, "duumbi panic: %s\n", msg);
+    exit(1);
+}
+
+void duumbi_panic_at(const char *msg, const char *node_id) {
+    duumbi_trace_panic_at(msg, node_id);
+    if (node_id != NULL) {
+        fprintf(stderr, "duumbi panic: %s at node %s\n", msg, node_id);
+    } else {
+        fprintf(stderr, "duumbi panic: %s\n", msg);
+    }
     exit(1);
 }
 
@@ -684,6 +709,61 @@ void *duumbi_result_new_err(int64_t payload) {
     r->tag = 0;
     r->payload = payload;
     return r;
+}
+
+static void *duumbi_checked_i64_err(const char *message) {
+    void *payload = duumbi_string_new(message, (uint64_t)strlen(message));
+    return duumbi_result_new_err((int64_t)(intptr_t)payload);
+}
+
+void *duumbi_i64_add_checked(int64_t left, int64_t right) {
+    if ((right > 0 && left > INT64_MAX - right) ||
+        (right < 0 && left < INT64_MIN - right)) {
+        return duumbi_checked_i64_err("integer overflow");
+    }
+    return duumbi_result_new_ok(left + right);
+}
+
+void *duumbi_i64_sub_checked(int64_t left, int64_t right) {
+    if ((right < 0 && left > INT64_MAX + right) ||
+        (right > 0 && left < INT64_MIN + right)) {
+        return duumbi_checked_i64_err("integer overflow");
+    }
+    return duumbi_result_new_ok(left - right);
+}
+
+void *duumbi_i64_mul_checked(int64_t left, int64_t right) {
+    if (left != 0 && right != 0) {
+        if (left == INT64_MIN && right == -1) {
+            return duumbi_checked_i64_err("integer overflow");
+        }
+        if (right == INT64_MIN && left == -1) {
+            return duumbi_checked_i64_err("integer overflow");
+        }
+        if (left > 0) {
+            if ((right > 0 && left > INT64_MAX / right) ||
+                (right < 0 && right < INT64_MIN / left)) {
+                return duumbi_checked_i64_err("integer overflow");
+            }
+        } else if (right > 0) {
+            if (left < INT64_MIN / right) {
+                return duumbi_checked_i64_err("integer overflow");
+            }
+        } else if (left < INT64_MAX / right) {
+            return duumbi_checked_i64_err("integer overflow");
+        }
+    }
+    return duumbi_result_new_ok(left * right);
+}
+
+void *duumbi_i64_div_checked(int64_t left, int64_t right) {
+    if (right == 0) {
+        return duumbi_checked_i64_err("division by zero");
+    }
+    if (left == INT64_MIN && right == -1) {
+        return duumbi_checked_i64_err("integer overflow");
+    }
+    return duumbi_result_new_ok(left / right);
 }
 
 int8_t duumbi_result_is_ok(void *ptr) {

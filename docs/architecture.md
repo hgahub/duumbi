@@ -121,7 +121,11 @@ Example: `duumbi:main/main/entry/2`
 | `Add` | `iadd` / `fadd` | 0 |
 | `Sub` | `isub` / `fsub` | 0 |
 | `Mul` | `imul` / `fmul` | 0 |
-| `Div` | `sdiv` / `fdiv` | 0 |
+| `Div` | guarded `sdiv` / `fdiv` | 0, DUUMBI-714 |
+| `AddChecked` | `call duumbi_i64_add_checked` | DUUMBI-714 |
+| `SubChecked` | `call duumbi_i64_sub_checked` | DUUMBI-714 |
+| `MulChecked` | `call duumbi_i64_mul_checked` | DUUMBI-714 |
+| `DivChecked` | `call duumbi_i64_div_checked` | DUUMBI-714 |
 | `Compare` | `icmp` / `fcmp` | 1 |
 | `Branch` | `brif` | 1 |
 | `Call` | `call` | 1 |
@@ -141,8 +145,8 @@ Example: `duumbi:main/main/entry/2`
 | `StringFromI64` | `call duumbi_string_from_i64` | 9a-1 |
 | `ArrayNew` | `call duumbi_array_new` | 9a-1 |
 | `ArrayPush` | `call duumbi_array_push` | 9a-1 |
-| `ArrayGet` | `call duumbi_array_get` | 9a-1 |
-| `ArraySet` | `call duumbi_array_set` | 9a-1 |
+| `ArrayGet` | guarded `call duumbi_array_get` | 9a-1, DUUMBI-714 |
+| `ArraySet` | guarded `call duumbi_array_set` | 9a-1, DUUMBI-714 |
 | `ArrayLength` | `call duumbi_array_len` | 9a-1 |
 | `StructNew` | `call duumbi_struct_new` | 9a-1 |
 | `FieldGet` | `call duumbi_struct_field_get` | 9a-1 |
@@ -165,6 +169,29 @@ Example: `duumbi:main/main/entry/2`
 
 **Types:** `i64`, `f64`, `bool`, `void`, `string`, `array<T>`, `struct<Name>`, `&T`, `&mut T`, `result<T,E>`, `option<T>`
 
+### Integer Arithmetic Semantics
+
+Unchecked integer `Add`, `Sub`, and `Mul` preserve Cranelift's current wrapping
+lowering behavior for compatibility. Integer `Div` is not wrapping: division by
+zero and signed division overflow (`i64::MIN / -1`) are guarded before `sdiv`
+and exit through a deterministic DUUMBI panic that includes the failing graph
+node id.
+
+Checked integer variants `AddChecked`, `SubChecked`, `MulChecked`, and
+`DivChecked` return `result<i64,string>`. Successful operations return `Ok(i64)`.
+Expected arithmetic failures return `Err(string)` instead of panicking:
+add/sub/mul report integer overflow, and div reports division by zero or signed
+division overflow (`i64::MIN / -1`).
+
+### Struct Layout Semantics
+
+DUUMBI derives a per-struct layout from compile-time field evidence instead of
+allocating a fixed struct buffer. Fields are assigned stable 8-byte slots by
+lexicographic field-name order. `i64`, heap references, arrays, options,
+results, and struct references use the slot directly; `bool` is widened on store
+and narrowed on load; `f64` is stored and loaded by bit-preserving casts.
+Conflicting field type evidence is a compile error naming the struct and field.
+
 ---
 
 ## Linker strategy
@@ -172,6 +199,12 @@ Example: `duumbi:main/main/entry/2`
 1. Check `$CC` env var
 2. Fall back to `cc` on PATH
 3. Command: `cc output.o duumbi_runtime.o -o output -lc`
+
+Object emission targets the host triple. On macOS, DUUMBI normalizes the host
+Darwin triple to a concrete `macosx` deployment target before Cranelift object
+creation so generated objects and linker diagnostics stay predictable. This is
+cross-target groundwork only: the current linker still delegates to the host C
+toolchain and does not claim a full cross-compilation matrix.
 
 `duumbi_runtime.c` provides: `duumbi_print_i64(int64_t)`,
 `duumbi_print_f64(double)` (Phase 1), `duumbi_print_bool(int8_t)` (Phase 1).

@@ -501,7 +501,8 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 result_type,
             ))
         }
-        "duumbi:Add" | "duumbi:Sub" | "duumbi:Mul" | "duumbi:Div" => {
+        "duumbi:Add" | "duumbi:Sub" | "duumbi:Mul" | "duumbi:Div" | "duumbi:AddChecked"
+        | "duumbi:SubChecked" | "duumbi:MulChecked" | "duumbi:DivChecked" => {
             let left = parse_node_ref(value, "duumbi:left", node_id_str)?;
             let right = parse_node_ref(value, "duumbi:right", node_id_str)?;
             let op = match at_type {
@@ -509,6 +510,10 @@ fn parse_op(value: &serde_json::Value) -> Result<OpAst, ParseError> {
                 "duumbi:Sub" => Op::Sub,
                 "duumbi:Mul" => Op::Mul,
                 "duumbi:Div" => Op::Div,
+                "duumbi:AddChecked" => Op::AddChecked,
+                "duumbi:SubChecked" => Op::SubChecked,
+                "duumbi:MulChecked" => Op::MulChecked,
+                "duumbi:DivChecked" => Op::DivChecked,
                 _ => unreachable!(),
             };
             let mut ast = make_op_ast(NodeId(node_id_str.to_string()), op, result_type);

@@ -1,0 +1,70 @@
+{
+  "@context": { "duumbi": "https://duumbi.dev/ns/core#" },
+  "@type": "duumbi:Module",
+  "@id": "duumbi:backend_hardening",
+  "duumbi:name": "backend_hardening",
+  "duumbi:functions": [
+    {
+      "@type": "duumbi:Function",
+      "@id": "duumbi:backend_hardening/main",
+      "duumbi:name": "main",
+      "duumbi:returnType": "i64",
+      "duumbi:blocks": [
+        {
+          "@type": "duumbi:Block",
+          "@id": "duumbi:backend_hardening/main/entry",
+          "duumbi:label": "entry",
+          "duumbi:ops": [
+            {
+              "@type": "duumbi:ArrayNew",
+              "@id": "duumbi:backend_hardening/main/entry/array",
+              "duumbi:resultType": "array<i64>"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/initial_value",
+              "duumbi:value": 1,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArrayPush",
+              "@id": "duumbi:backend_hardening/main/entry/push",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:element": { "@id": "duumbi:backend_hardening/main/entry/initial_value" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/negative_index",
+              "duumbi:value": -1,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/replacement_value",
+              "duumbi:value": 2,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:ArraySet",
+              "@id": "duumbi:backend_hardening/main/entry/array_set_negative",
+              "duumbi:array": { "@id": "duumbi:backend_hardening/main/entry/array" },
+              "duumbi:index": { "@id": "duumbi:backend_hardening/main/entry/negative_index" },
+              "duumbi:value": { "@id": "duumbi:backend_hardening/main/entry/replacement_value" }
+            },
+            {
+              "@type": "duumbi:Const",
+              "@id": "duumbi:backend_hardening/main/entry/zero",
+              "duumbi:value": 0,
+              "duumbi:resultType": "i64"
+            },
+            {
+              "@type": "duumbi:Return",
+              "@id": "duumbi:backend_hardening/main/entry/return",
+              "duumbi:operand": { "@id": "duumbi:backend_hardening/main/entry/zero" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
