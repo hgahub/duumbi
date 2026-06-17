@@ -22,6 +22,7 @@ Start with:
 1. `initialize`
 2. `tools/list`
 3. `tools/call` with `name: "mcp_capability_status"`
+4. `tools/call` with `name: "mcp_evidence_status"` when evidence is needed
 
 Use the DUUMBI metadata in `tools/list`:
 
@@ -72,7 +73,6 @@ When a tool fails, inspect `error.data` first. Use `category`,
 ## Current Limits
 
 - Dependency and intent MCP tools still need backend wiring.
-- Evidence retrieval is not yet exposed as a dedicated MCP tool.
 - TUI and Studio approval views are pending.
 - The flagship MCP-only benchmark is pending.
 
@@ -80,10 +80,9 @@ When a tool fails, inspect `error.data` first. Use `category`,
 
 Use `examples/flagship-http-sqlite-json` as the Stage 10 flagship scenario.
 Record `initialize`, `tools/list`, `mcp_capability_status`, graph or intent
-inspection, `build_compile`, `build_run`, evidence retrieval when available,
-and the loopback JSON response. Until evidence retrieval and a live transcript
-exist, report the benchmark as partial or blocked instead of claiming MCP-only
-success.
+inspection, `build_compile`, `build_run`, `mcp_evidence_status`, and the
+loopback JSON response. Until a live transcript exists, report the benchmark as
+partial or blocked instead of claiming MCP-only success.
 
 ## Safety Rules
 

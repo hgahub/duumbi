@@ -6,6 +6,7 @@
 pub mod approval;
 pub mod build;
 pub mod deps;
+pub mod evidence;
 pub mod graph;
 pub mod intent;
 pub mod model_telemetry;

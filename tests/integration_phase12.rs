@@ -382,6 +382,7 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     let tool_values = tools["tools"].as_array().expect("tools array");
     for expected in [
         "mcp_capability_status",
+        "mcp_evidence_status",
         "query_ask",
         "graph_patch_preview",
         "graph_patch_request_approval",
@@ -435,6 +436,7 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     assert_eq!(status["workspace"]["duumbiInitialized"], true);
     assert_eq!(status["workspace"]["mainGraphPresent"], true);
     assert_eq!(status["capabilities"]["buildRunAvailable"], true);
+    assert_eq!(status["capabilities"]["evidenceRetrievalAvailable"], true);
     assert!(
         !status["capabilities"]["unavailableTools"]
             .as_array()
@@ -442,6 +444,77 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
             .iter()
             .any(|tool| tool["name"] == "build_compile" || tool["name"] == "build_run"),
         "build/run tools must no longer expose structured unavailable state"
+    );
+
+    assert_snapshot_unchanged(&before);
+}
+
+/// DUUMBI-719 Cycle 6: MCP evidence status returns bounded read-only local evidence metadata.
+#[test]
+fn duumbi719_mcp_evidence_status_is_bounded_and_read_only() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    let workspace = setup_workspace();
+    let session_dir = workspace.path().join(".duumbi/session");
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
+    std::fs::write(
+        session_dir.join("current.json"),
+        serde_json::json!({
+            "session_id": "session-integration",
+            "started_at": "2026-06-17T00:00:00Z",
+            "turns": [{
+                "request": "raw request should stay private",
+                "summary": "summary",
+                "timestamp": "2026-06-17T00:00:01Z",
+                "task_type": "Query"
+            }],
+            "usage_stats": {"llm_calls": 0}
+        })
+        .to_string(),
+    )
+    .expect("write session");
+    let graph_path = workspace.path().join(".duumbi/graph/main.jsonld");
+    let session_path = session_dir.join("current.json");
+    let before = snapshot(&[graph_path, session_path]);
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let response = server
+        .handle_request(&JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "mcp_evidence_status",
+                "arguments": { "limit": 5 },
+            })),
+        })
+        .expect("evidence response");
+    assert!(
+        response.error.is_none(),
+        "evidence tool should succeed: {:?}",
+        response.error
+    );
+    let text = response.result.expect("result")["content"][0]["text"]
+        .as_str()
+        .expect("text content")
+        .to_string();
+    let evidence: serde_json::Value = serde_json::from_str(&text).expect("evidence JSON");
+
+    assert_eq!(evidence["status"], "success");
+    assert_eq!(evidence["readOnly"], true);
+    assert_eq!(evidence["session"]["sessionId"], "session-integration");
+    assert_eq!(evidence["session"]["turnCount"], 1);
+    assert_eq!(evidence["privacy"]["rawLogsIncluded"], false);
+    assert!(
+        !text.contains("raw request should stay private"),
+        "raw session turns must not be returned"
+    );
+    assert!(
+        evidence["roots"]
+            .as_array()
+            .expect("roots")
+            .iter()
+            .any(|root| root["name"] == "approvals")
     );
 
     assert_snapshot_unchanged(&before);
@@ -650,6 +723,7 @@ fn duumbi719_agent_docs_cover_current_mcp_surface() {
     for required in [
         "target/debug/duumbi mcp",
         "mcp_capability_status",
+        "mcp_evidence_status",
         "query_ask",
         "graph_patch_preview",
         "graph_patch_request_approval",

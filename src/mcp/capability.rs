@@ -125,6 +125,23 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             ToolMetadata::read_only("stage10", &["capability_status"]),
         ),
         tool(
+            "mcp_evidence_status",
+            "Read-only bounded local evidence inventory for sessions, approval records, model-performance summaries, snapshots, build outputs, local evidence files, and docs/e2e artifacts without returning raw logs or secrets.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Maximum files or records per evidence source; defaults to 25"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata::read_only("stage10", &["evidence_status"]),
+        ),
+        tool(
             "query_ask",
             "Read-only conversational Query mode over the local DUUMBI workspace. Returns answer text, model metadata, source references, confidence, and suggested handoff without graph, intent, dependency, build, or evidence writes.",
             serde_json::json!({

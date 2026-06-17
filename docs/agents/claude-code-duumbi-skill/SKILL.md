@@ -13,14 +13,16 @@ Use this skill when working in a DUUMBI workspace with `duumbi mcp`.
 2. Call `initialize`.
 3. Call `tools/list`.
 4. Call `mcp_capability_status`.
-5. Prefer read-only tools first:
+5. Call `mcp_evidence_status` when reviewing local evidence.
+6. Prefer read-only tools first:
    - `query_ask`
+   - `mcp_evidence_status`
    - `graph_query`
    - `graph_validate`
    - `graph_describe`
    - `rewrite_list_rules`
    - `rewrite_preview`
-6. For graph patches, use:
+7. For graph patches, use:
    - `graph_patch_preview`
    - `graph_patch_request_approval`
    - `approval_status`

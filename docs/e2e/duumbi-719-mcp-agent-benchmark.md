@@ -3,8 +3,8 @@
 Related to #719.
 
 This file defines the benchmark evidence expected before Stage 11. It is a plan
-and evidence placeholder until the full MCP-only flagship transcript and
-evidence retrieval path are available.
+and evidence placeholder until the full MCP-only flagship transcript is
+available.
 
 ## Scenario
 
@@ -26,7 +26,7 @@ Required transcript steps:
 6. graph or intent inspection
 7. build through `build_compile`
 8. run through `build_run`
-9. evidence retrieval once available
+9. evidence retrieval through `mcp_evidence_status`
 
 ## Raw Rust Baseline
 
@@ -52,8 +52,8 @@ editing or generating raw Rust directly. Record:
 
 ## Current Evidence
 
-Current status: partial. MCP build/run tooling is implemented; evidence
-retrieval and the live flagship transcript are still pending.
+Current status: partial. MCP build/run and bounded evidence status tooling are
+implemented; the live flagship transcript is still pending.
 
 Automated source evidence already present:
 

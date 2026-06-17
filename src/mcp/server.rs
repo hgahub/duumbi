@@ -201,6 +201,7 @@ impl McpServer {
 
         let tool_result = match tool_name {
             "mcp_capability_status" => tools::status::mcp_capability_status(workspace, args),
+            "mcp_evidence_status" => tools::evidence::mcp_evidence_status(workspace, args),
             "query_ask" => tools::query::query_ask(workspace, args),
             "graph_patch_preview" => tools::approval::graph_patch_preview(workspace, args),
             "graph_patch_request_approval" => {
@@ -381,6 +382,7 @@ mod tests {
 
         let expected_names = [
             "mcp_capability_status",
+            "mcp_evidence_status",
             "query_ask",
             "graph_patch_preview",
             "graph_patch_request_approval",
@@ -426,6 +428,14 @@ mod tests {
         assert_eq!(status.metadata.safety, capability::ToolSafety::ReadOnly);
         assert!(!status.metadata.approval_required);
         assert_eq!(status.input_schema["additionalProperties"], false);
+
+        let evidence = tools
+            .iter()
+            .find(|tool| tool.name == "mcp_evidence_status")
+            .expect("evidence tool exists");
+        assert_eq!(evidence.metadata.safety, capability::ToolSafety::ReadOnly);
+        assert!(!evidence.metadata.provider_required);
+        assert!(!evidence.metadata.network_required);
 
         let query = tools
             .iter()
@@ -643,6 +653,7 @@ mod tests {
         assert_eq!(status["capabilities"]["queryToolAvailable"], true);
         assert_eq!(status["capabilities"]["approvalFlowAvailable"], true);
         assert_eq!(status["capabilities"]["buildRunAvailable"], true);
+        assert_eq!(status["capabilities"]["evidenceRetrievalAvailable"], true);
         assert!(
             !status["capabilities"]["unavailableTools"]
                 .as_array()

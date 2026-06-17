@@ -27,7 +27,7 @@ CLI behavior.
 | Dependency search/install | `deps_search`, `deps_install` | write-capable/network | Structured unavailable state; MCP backend wiring pending |
 | Intent create/execute | `intent_create`, `intent_execute` | provider-backed write-capable | Structured unavailable state; async dispatch/backend wiring pending |
 | Model telemetry | `model_access_summary`, `model_performance_summary`, `model_telemetry_health` | read-only | Implemented |
-| Evidence retrieval | none yet | read-only | Pending |
+| Evidence retrieval | `mcp_evidence_status` | read-only | Implemented as bounded local evidence metadata |
 
 ## Agent-Safe Write Path
 
@@ -46,7 +46,6 @@ candidate hash, and validation result before writing the graph.
 
 - Dependency and intent tools still need async-capable MCP dispatch or explicit
   backend helpers.
-- Evidence retrieval is not yet exposed as an MCP tool.
 - TUI and Studio approval visibility are still pending.
 - Rewrite apply still uses its existing trusted immediate-write path.
 - The flagship MCP-only benchmark and raw Rust baseline are not yet implemented.
@@ -64,7 +63,7 @@ Live evidence still required before Stage 11:
 
 - provider-free MCP stdio smoke through `target/debug/duumbi mcp`;
 - MCP build/run smoke evidence through the implemented tools;
-- evidence path once that tool is implemented or explicitly reported blocked;
+- evidence retrieval smoke through `mcp_evidence_status`;
 - low-cost external-agent E2E when inside the USD 1 resource gate, or a
   structured blocked report;
 - raw Rust baseline evidence or explicit unavailable reason.
