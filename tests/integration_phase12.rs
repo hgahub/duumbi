@@ -383,6 +383,11 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     for expected in [
         "mcp_capability_status",
         "query_ask",
+        "graph_patch_preview",
+        "graph_patch_request_approval",
+        "approval_status",
+        "approval_decide",
+        "graph_patch_apply_approval",
         "graph_query",
         "graph_mutate",
         "graph_validate",
@@ -439,6 +444,107 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     );
 
     assert_snapshot_unchanged(&before);
+}
+
+/// DUUMBI-719 Cycle 3: approval-gated graph patch flow works through MCP dispatch.
+#[test]
+fn duumbi719_mcp_graph_patch_approval_applies_exact_candidate() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    fn call_tool(
+        server: &McpServer,
+        id: u64,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = server
+            .handle_request(&JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(id)),
+                method: "tools/call".to_string(),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+            })
+            .expect("tools/call response");
+        assert!(
+            response.error.is_none(),
+            "{name} should succeed: {:?}",
+            response.error
+        );
+        let text = response.result.expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string();
+        serde_json::from_str(&text).expect("tool JSON")
+    }
+
+    let workspace = setup_workspace();
+    let graph_path = workspace.path().join(".duumbi/graph/main.jsonld");
+    let before = std::fs::read_to_string(&graph_path).expect("read graph before");
+    let server = McpServer::new(workspace.path().to_path_buf());
+    let ops = serde_json::json!([{
+        "kind": "modify_op",
+        "node_id": "duumbi:main/main/entry/0",
+        "field": "duumbi:value",
+        "value": 9
+    }]);
+
+    let preview = call_tool(
+        &server,
+        1,
+        "graph_patch_preview",
+        serde_json::json!({ "ops": ops.clone() }),
+    );
+    assert_eq!(preview["read_only"], true);
+    assert_eq!(
+        std::fs::read_to_string(&graph_path).expect("read graph after preview"),
+        before,
+        "preview must not write graph"
+    );
+
+    let requested = call_tool(
+        &server,
+        2,
+        "graph_patch_request_approval",
+        serde_json::json!({
+            "ops": ops,
+            "summary": "Change main return value to nine"
+        }),
+    );
+    let approval_id = requested["approval"]["id"]
+        .as_str()
+        .expect("approval id")
+        .to_string();
+    assert_eq!(requested["approval"]["status"], "pending");
+    assert_eq!(
+        std::fs::read_to_string(&graph_path).expect("read graph after request"),
+        before,
+        "approval request must not write graph"
+    );
+
+    let approved = call_tool(
+        &server,
+        3,
+        "approval_decide",
+        serde_json::json!({
+            "id": approval_id,
+            "decision": "approve",
+            "decision_source": "integration_test"
+        }),
+    );
+    assert_eq!(approved["approval"]["status"], "approved");
+
+    let applied = call_tool(
+        &server,
+        4,
+        "graph_patch_apply_approval",
+        serde_json::json!({ "id": approval_id }),
+    );
+    assert_eq!(applied["approval"]["status"], "applied");
+    let after = std::fs::read_to_string(&graph_path).expect("read graph after apply");
+    assert!(after.contains("\"duumbi:value\": 9"));
 }
 
 // ---------------------------------------------------------------------------

@@ -156,6 +156,137 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             },
         ),
         tool(
+            "graph_patch_preview",
+            "Read-only graph patch preview. Applies patch operations in memory, validates the candidate, and returns workspace/candidate hashes without writing graph files.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["ops"],
+                "properties": {
+                    "ops": {
+                        "type": "array",
+                        "description": "Array of GraphPatch operations with 'kind' tag"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata::read_only("stage10", &["graph_patch_preview", "graph_validation"]),
+        ),
+        tool(
+            "graph_patch_request_approval",
+            "Create a pending local approval record for a graph patch candidate after read-only preview and validation. Writes only approval ledger state, not graph files.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["ops", "summary"],
+                "properties": {
+                    "ops": {
+                        "type": "array",
+                        "description": "Array of GraphPatch operations with 'kind' tag"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Human-readable summary of the requested graph change"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                stage: "stage10".to_string(),
+                safety: ToolSafety::WriteCapable,
+                approval_required: false,
+                writes: vec![".duumbi/session/approvals".to_string()],
+                provider_required: false,
+                network_required: false,
+                evidence_produced: vec![
+                    "approval_record".to_string(),
+                    "graph_patch_preview".to_string(),
+                ],
+                unavailable_reason: None,
+            },
+        ),
+        tool(
+            "approval_status",
+            "Read-only local approval ledger lookup. Returns one approval record by id or all approval records.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Optional local approval id"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata::read_only("stage10", &["approval_record"]),
+        ),
+        tool(
+            "approval_decide",
+            "Record a local human approval decision for a pending MCP approval record. This writes only approval ledger state.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["id", "decision"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Local approval id"
+                    },
+                    "decision": {
+                        "type": "string",
+                        "enum": ["approve", "reject"]
+                    },
+                    "decision_source": {
+                        "type": "string",
+                        "description": "Decision source such as mcp, tui, or studio"
+                    },
+                    "rejection_reason": {
+                        "type": "string",
+                        "description": "Optional rejection reason"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                stage: "stage10".to_string(),
+                safety: ToolSafety::WriteCapable,
+                approval_required: false,
+                writes: vec![".duumbi/session/approvals".to_string()],
+                provider_required: false,
+                network_required: false,
+                evidence_produced: vec!["approval_decision".to_string()],
+                unavailable_reason: None,
+            },
+        ),
+        tool(
+            "graph_patch_apply_approval",
+            "Apply an approved graph patch exactly after checking approval status, workspace hash, candidate hash, and validation. Rejects stale or unapproved candidates.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Approved local graph patch approval id"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                stage: "stage10".to_string(),
+                safety: ToolSafety::WriteCapable,
+                approval_required: true,
+                writes: vec![
+                    ".duumbi/graph/main.jsonld".to_string(),
+                    ".duumbi/session/approvals".to_string(),
+                ],
+                provider_required: false,
+                network_required: false,
+                evidence_produced: vec![
+                    "approval_record".to_string(),
+                    "graph_validation".to_string(),
+                ],
+                unavailable_reason: None,
+            },
+        ),
+        tool(
             "graph_query",
             "Query the DUUMBI semantic graph by node ID, @type, or name pattern. Returns matching nodes from all .jsonld files in the workspace.",
             serde_json::json!({

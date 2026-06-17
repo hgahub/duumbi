@@ -202,6 +202,15 @@ impl McpServer {
         let tool_result = match tool_name {
             "mcp_capability_status" => tools::status::mcp_capability_status(workspace, args),
             "query_ask" => tools::query::query_ask(workspace, args),
+            "graph_patch_preview" => tools::approval::graph_patch_preview(workspace, args),
+            "graph_patch_request_approval" => {
+                tools::approval::graph_patch_request_approval(workspace, args)
+            }
+            "approval_status" => tools::approval::approval_status(workspace, args),
+            "approval_decide" => tools::approval::approval_decide(workspace, args),
+            "graph_patch_apply_approval" => {
+                tools::approval::graph_patch_apply_approval(workspace, args)
+            }
             "graph_query" => tools::graph::graph_query(workspace, args),
             "graph_mutate" => tools::graph::graph_mutate(workspace, args),
             "graph_validate" => tools::graph::graph_validate(workspace, args),
@@ -373,6 +382,11 @@ mod tests {
         let expected_names = [
             "mcp_capability_status",
             "query_ask",
+            "graph_patch_preview",
+            "graph_patch_request_approval",
+            "approval_status",
+            "approval_decide",
+            "graph_patch_apply_approval",
             "graph_query",
             "graph_mutate",
             "graph_validate",
@@ -436,6 +450,16 @@ mod tests {
                 .iter()
                 .any(|path| path == ".duumbi/graph/main.jsonld")
         );
+
+        let apply_approval = tools
+            .iter()
+            .find(|tool| tool.name == "graph_patch_apply_approval")
+            .expect("approval apply exists");
+        assert_eq!(
+            apply_approval.metadata.safety,
+            capability::ToolSafety::WriteCapable
+        );
+        assert!(apply_approval.metadata.approval_required);
 
         let build_compile = tools
             .iter()
@@ -614,6 +638,7 @@ mod tests {
                     && tool["duumbi"]["safety"] == "read_only")
         );
         assert_eq!(status["capabilities"]["queryToolAvailable"], true);
+        assert_eq!(status["capabilities"]["approvalFlowAvailable"], true);
         assert!(
             status["capabilities"]["unavailableTools"]
                 .as_array()

@@ -141,6 +141,12 @@ fn classify(tool: &str, message: &str) -> McpErrorCategory {
     let lower = message.to_lowercase();
     if lower.contains("missing required") || lower.contains("invalid patch ops") {
         McpErrorCategory::Schema
+    } else if lower.contains("approval required") {
+        McpErrorCategory::ApprovalRequired
+    } else if lower.contains("approval stale") {
+        McpErrorCategory::ApprovalStale
+    } else if lower.contains("was rejected") {
+        McpErrorCategory::ApprovalRejected
     } else if lower.contains("cannot read graph dir")
         || lower.contains("cannot read main.jsonld")
         || lower.contains("workspace")
