@@ -414,6 +414,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "items": { "type": "string" },
                         "description": "Arguments passed to the compiled binary"
                     },
+                    "stdin": {
+                        "type": "string",
+                        "description": "Optional bounded stdin passed to the compiled binary; defaults to empty closed stdin"
+                    },
                     "timeout_secs": {
                         "type": "integer",
                         "minimum": 1,

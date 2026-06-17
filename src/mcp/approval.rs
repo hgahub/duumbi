@@ -174,7 +174,7 @@ pub fn list_records(workspace: &Path) -> Result<Vec<McpApprovalRecord>, String> 
 
 /// Loads one local approval record.
 pub fn load_record(workspace: &Path, id: &str) -> Result<McpApprovalRecord, String> {
-    read_record_path(&record_path(workspace, id))
+    read_record_path(&record_path(workspace, id)?)
 }
 
 /// Records an approve/reject decision.
@@ -250,19 +250,38 @@ fn approvals_dir(workspace: &Path) -> PathBuf {
     workspace.join(".duumbi").join("session").join("approvals")
 }
 
-fn record_path(workspace: &Path, id: &str) -> PathBuf {
-    approvals_dir(workspace).join(format!("{id}.json"))
+fn record_path(workspace: &Path, id: &str) -> Result<PathBuf, String> {
+    validate_approval_id(id)?;
+    Ok(approvals_dir(workspace).join(format!("{id}.json")))
 }
 
 fn save_record(workspace: &Path, record: &McpApprovalRecord) -> Result<(), String> {
+    validate_approval_id(&record.id)?;
     let dir = approvals_dir(workspace);
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Cannot create approvals dir '{}': {error}", dir.display()))?;
-    let path = record_path(workspace, &record.id);
+    let path = record_path(workspace, &record.id)?;
     let text = serde_json::to_string_pretty(record)
         .map_err(|error| format!("Approval serialization failed: {error}"))?;
     fs::write(&path, text)
         .map_err(|error| format!("Cannot write approval '{}': {error}", path.display()))
+}
+
+fn validate_approval_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("Invalid approval id: id must not be empty".to_string());
+    }
+    if id.len() > 128 {
+        return Err("Invalid approval id: id is too long".to_string());
+    }
+    if id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        Ok(())
+    } else {
+        Err("Invalid approval id: use only ASCII letters, digits, '-' or '_'".to_string())
+    }
 }
 
 fn read_record_path(path: &Path) -> Result<McpApprovalRecord, String> {
@@ -460,5 +479,28 @@ mod tests {
         let after = fs::read_to_string(&graph_path).expect("read graph after stale");
         assert!(after.contains("\"duumbi:value\": 3"));
         assert!(!after.contains("\"duumbi:value\": 7"));
+    }
+
+    #[test]
+    fn approval_id_path_traversal_is_rejected() {
+        let dir = workspace();
+        let graph_path = dir.path().join(".duumbi/graph/main.jsonld");
+        let before = fs::read_to_string(&graph_path).expect("read graph");
+
+        let err = decide_record(
+            dir.path(),
+            "../../graph/main",
+            true,
+            "test".to_string(),
+            None,
+        )
+        .expect_err("path traversal id must be rejected");
+
+        assert!(err.contains("Invalid approval id"));
+        assert_eq!(
+            fs::read_to_string(&graph_path).expect("read graph after"),
+            before,
+            "invalid approval id must not write outside approvals dir"
+        );
     }
 }

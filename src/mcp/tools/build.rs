@@ -7,6 +7,7 @@ use serde_json::Value;
 
 const DEFAULT_RUN_TIMEOUT_SECS: u64 = 30;
 const MAX_RUN_TIMEOUT_SECS: u64 = 300;
+const MAX_STDIN_BYTES: usize = 64 * 1024;
 
 /// Compile the workspace to a native binary.
 pub fn build_compile(workspace: &Path, params: &Value) -> Result<Value, String> {
@@ -21,8 +22,11 @@ pub fn build_compile(workspace: &Path, params: &Value) -> Result<Value, String> 
         "ok": true,
         "outputPath": built_path.display().to_string(),
         "offline": offline,
-        "stdout": "",
-        "stderr": "",
+        "outputCapture": {
+            "stdout": "unavailable",
+            "stderr": "unavailable",
+            "reason": "shared library build backend does not expose compiler process streams"
+        },
         "exitCode": 0,
         "timedOut": false,
         "evidence": [{
@@ -37,6 +41,10 @@ pub fn build_run(workspace: &Path, params: &Value) -> Result<Value, String> {
     let offline = optional_bool(params, "offline")?.unwrap_or(false);
     let build_first = optional_bool(params, "build")?.unwrap_or(true);
     let args = optional_string_array(params, "args")?.unwrap_or_default();
+    let stdin = optional_string(params, "stdin")?.unwrap_or_default();
+    if stdin.len() > MAX_STDIN_BYTES {
+        return Err(format!("stdin must be at most {MAX_STDIN_BYTES} bytes"));
+    }
     let timeout_secs = optional_u64(params, "timeout_secs")?
         .unwrap_or(DEFAULT_RUN_TIMEOUT_SECS)
         .clamp(1, MAX_RUN_TIMEOUT_SECS);
@@ -54,9 +62,10 @@ pub fn build_run(workspace: &Path, params: &Value) -> Result<Value, String> {
         None
     };
 
-    let output = crate::workspace::run_workspace_binary_with_timeout(
+    let output = crate::workspace::run_workspace_binary_with_stdin_and_timeout(
         workspace,
         &args,
+        &stdin,
         Duration::from_secs(timeout_secs),
     )
     .map_err(|error| format!("build_run failed: {error:#}"))?;
@@ -113,6 +122,17 @@ fn optional_string_array(params: &Value, field: &str) -> Result<Option<Vec<Strin
             .collect::<Result<Vec<_>, _>>()
             .map(Some),
         Some(_) => Err(format!("{field} must be an array of strings")),
+        None => Ok(None),
+    }
+}
+
+fn optional_string(params: &Value, field: &str) -> Result<Option<String>, String> {
+    match params.get(field) {
+        Some(value) => value
+            .as_str()
+            .map(ToString::to_string)
+            .map(Some)
+            .ok_or_else(|| format!("{field} must be a string")),
         None => Ok(None),
     }
 }
@@ -180,6 +200,7 @@ mod tests {
 
         assert_eq!(result["status"], "success");
         assert_eq!(result["ok"], true);
+        assert_eq!(result["outputCapture"]["stdout"], "unavailable");
         assert!(
             PathBuf::from(result["outputPath"].as_str().expect("output path")).is_file(),
             "build output must exist"
@@ -207,5 +228,16 @@ mod tests {
         let err = build_run(&PathBuf::from("."), &serde_json::json!({ "args": [1] }))
             .expect_err("args should reject non-string entries");
         assert!(err.contains("args entries must be strings"));
+    }
+
+    #[test]
+    fn build_run_rejects_oversized_stdin() {
+        let err = build_run(
+            &PathBuf::from("."),
+            &serde_json::json!({ "stdin": "x".repeat(MAX_STDIN_BYTES + 1) }),
+        )
+        .expect_err("oversized stdin should be rejected");
+
+        assert!(err.contains("stdin must be at most"));
     }
 }

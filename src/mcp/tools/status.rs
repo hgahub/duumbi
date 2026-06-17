@@ -1,11 +1,11 @@
 //! Read-only MCP capability and workspace status tool.
 
-use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
 
 use crate::config;
+use crate::mcp::approval::{self, McpApprovalStatus};
 use crate::mcp::capability;
 
 /// Returns DUUMBI MCP capability metadata and local workspace readiness.
@@ -79,26 +79,27 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
 }
 
 fn pending_approval_count(approvals_dir: &Path) -> usize {
-    if !approvals_dir.is_dir() {
+    let Some(workspace) = approvals_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
         return 0;
-    }
-    match fs::read_dir(approvals_dir) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .count(),
-        Err(_) => 0,
-    }
+    };
+    approval::list_records(workspace)
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.status == McpApprovalStatus::Pending)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]
@@ -129,5 +130,39 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "mcp_capability_status")
         );
+    }
+
+    #[test]
+    fn pending_approval_count_only_counts_pending_records() {
+        let dir = TempDir::new().expect("tempdir");
+        let approvals_dir = dir.path().join(".duumbi/session/approvals");
+        fs::create_dir_all(&approvals_dir).expect("approvals dir");
+        for (id, status) in [
+            ("pending-one", "pending"),
+            ("approved-one", "approved"),
+            ("applied-one", "applied"),
+        ] {
+            fs::write(
+                approvals_dir.join(format!("{id}.json")),
+                serde_json::json!({
+                    "id": id,
+                    "status": status,
+                    "requested_tool": "graph_patch_request_approval",
+                    "requested_action": "graph_patch_apply_approval",
+                    "candidate_hash": "sha256:test",
+                    "workspace_hash": "sha256:workspace",
+                    "affected_files": [".duumbi/graph/main.jsonld"],
+                    "affected_node_ids": [],
+                    "risk": "local_graph_patch",
+                    "summary": "test",
+                    "ops": [],
+                    "created_at": "2026-06-17T00:00:00Z"
+                })
+                .to_string(),
+            )
+            .expect("write approval");
+        }
+
+        assert_eq!(pending_approval_count(&approvals_dir), 1);
     }
 }
