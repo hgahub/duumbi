@@ -547,6 +547,73 @@ fn duumbi719_mcp_graph_patch_approval_applies_exact_candidate() {
     assert!(after.contains("\"duumbi:value\": 9"));
 }
 
+/// DUUMBI-719 Cycle 4: agent-facing docs match the implemented MCP surface and workflow rules.
+#[test]
+fn duumbi719_agent_docs_cover_current_mcp_surface() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let docs = [
+        repo.join("docs/agents/mcp-workflow-audit.md"),
+        repo.join("docs/agents/mcp-error-contract.md"),
+        repo.join("docs/agents/mcp-agent-guide.md"),
+        repo.join("docs/e2e/duumbi-719-mcp-agent-benchmark.md"),
+        repo.join("docs/agents/claude-code-duumbi-skill/SKILL.md"),
+    ];
+
+    let mut combined = String::new();
+    for doc in docs {
+        assert!(
+            doc.exists(),
+            "required DUUMBI-719 doc missing: {}",
+            doc.display()
+        );
+        let contents = std::fs::read_to_string(&doc)
+            .unwrap_or_else(|err| panic!("read {}: {err}", doc.display()));
+        assert!(
+            contents.contains("Related to #719") || contents.contains("duumbi-mcp-agent"),
+            "doc must use non-closing issue context or skill metadata: {}",
+            doc.display()
+        );
+        combined.push_str(&contents);
+        combined.push('\n');
+    }
+
+    for required in [
+        "target/debug/duumbi mcp",
+        "mcp_capability_status",
+        "query_ask",
+        "graph_patch_preview",
+        "graph_patch_request_approval",
+        "approval_status",
+        "approval_decide",
+        "graph_patch_apply_approval",
+        "error.data",
+        "provider_unavailable",
+        "approval_stale",
+        "examples/flagship-http-sqlite-json",
+    ] {
+        assert!(
+            combined.contains(required),
+            "DUUMBI-719 docs must mention {required}"
+        );
+    }
+
+    let lower = combined.to_lowercase();
+    for forbidden in [
+        "closes #719",
+        "fixes #719",
+        "resolves #719",
+        "api_key =",
+        "authorization: bearer",
+        "password =",
+        "greptile",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "DUUMBI-719 docs must not contain forbidden text: {forbidden}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Kill Criterion 2 — Dynamic agent assembly
 // ---------------------------------------------------------------------------
