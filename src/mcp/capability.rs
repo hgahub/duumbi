@@ -356,25 +356,66 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         tool(
             "build_compile",
-            "Compile the workspace graph to a native binary. Currently reports structured unavailable state until the shared backend path is wired.",
-            empty_schema(),
-            ToolMetadata::unavailable(
-                "stage10",
-                false,
-                false,
-                "Full MCP build backend is not wired yet; use CLI build until this Stage 10 slice implements it.",
-            ),
+            "Compile the workspace graph to a native binary through the shared DUUMBI workspace backend and return bounded build evidence.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "offline": {
+                        "type": "boolean",
+                        "description": "Restrict dependency resolution to workspace and vendor layers; defaults to false"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                stage: "stage10".to_string(),
+                safety: ToolSafety::WriteCapable,
+                approval_required: false,
+                writes: vec![".duumbi/build".to_string()],
+                provider_required: false,
+                network_required: false,
+                evidence_produced: vec!["build_output".to_string()],
+                unavailable_reason: None,
+            },
         ),
         tool(
             "build_run",
-            "Compile and run the workspace binary. Currently reports structured unavailable state until the shared backend path is wired.",
-            empty_schema(),
-            ToolMetadata::unavailable(
-                "stage10",
-                false,
-                false,
-                "Full MCP run backend is not wired yet; use CLI run until this Stage 10 slice implements it.",
-            ),
+            "Compile and run the workspace binary through the shared DUUMBI workspace backend, capturing stdout, stderr, exit code, timeout state, and evidence.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "offline": {
+                        "type": "boolean",
+                        "description": "Restrict dependency resolution to workspace and vendor layers during the optional build step; defaults to false"
+                    },
+                    "build": {
+                        "type": "boolean",
+                        "description": "Compile before running; defaults to true"
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Arguments passed to the compiled binary"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 300,
+                        "description": "Run timeout in seconds; defaults to 30"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            ToolMetadata {
+                stage: "stage10".to_string(),
+                safety: ToolSafety::WriteCapable,
+                approval_required: false,
+                writes: vec![".duumbi/build".to_string()],
+                provider_required: false,
+                network_required: false,
+                evidence_produced: vec!["build_output".to_string(), "run_output".to_string()],
+                unavailable_reason: None,
+            },
         ),
         tool(
             "deps_search",

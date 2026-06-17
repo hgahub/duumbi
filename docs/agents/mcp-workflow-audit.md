@@ -22,8 +22,8 @@ CLI behavior.
 | Rewrite rule discovery | `rewrite_list_rules` | read-only | Implemented |
 | Rewrite preview | `rewrite_preview` | read-only | Implemented |
 | Rewrite apply | `rewrite_apply` | trusted immediate write with snapshot | Existing compatibility path; approval integration still pending |
-| Build | `build_compile` | write-capable | Structured unavailable state; shared backend wiring pending |
-| Run | `build_run` | write-capable | Structured unavailable state; shared backend wiring pending |
+| Build | `build_compile` | write-capable | Implemented through shared workspace backend |
+| Run | `build_run` | write-capable | Implemented through shared workspace backend with captured stdout, stderr, exit code, and timeout state |
 | Dependency search/install | `deps_search`, `deps_install` | write-capable/network | Structured unavailable state; MCP backend wiring pending |
 | Intent create/execute | `intent_create`, `intent_execute` | provider-backed write-capable | Structured unavailable state; async dispatch/backend wiring pending |
 | Model telemetry | `model_access_summary`, `model_performance_summary`, `model_telemetry_health` | read-only | Implemented |
@@ -44,7 +44,6 @@ candidate hash, and validation result before writing the graph.
 
 ## Known Gaps
 
-- Build/run are listed but still require a shared backend implementation.
 - Dependency and intent tools still need async-capable MCP dispatch or explicit
   backend helpers.
 - Evidence retrieval is not yet exposed as an MCP tool.
@@ -64,8 +63,8 @@ Current automated coverage:
 Live evidence still required before Stage 11:
 
 - provider-free MCP stdio smoke through `target/debug/duumbi mcp`;
-- build/run/evidence path once those tools are implemented or explicitly
-  reported blocked;
+- MCP build/run smoke evidence through the implemented tools;
+- evidence path once that tool is implemented or explicitly reported blocked;
 - low-cost external-agent E2E when inside the USD 1 resource gate, or a
   structured blocked report;
 - raw Rust baseline evidence or explicit unavailable reason.

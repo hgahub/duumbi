@@ -71,7 +71,6 @@ When a tool fails, inspect `error.data` first. Use `category`,
 
 ## Current Limits
 
-- Build/run MCP tools still report structured unavailable state.
 - Dependency and intent MCP tools still need backend wiring.
 - Evidence retrieval is not yet exposed as a dedicated MCP tool.
 - TUI and Studio approval views are pending.
@@ -81,9 +80,10 @@ When a tool fails, inspect `error.data` first. Use `category`,
 
 Use `examples/flagship-http-sqlite-json` as the Stage 10 flagship scenario.
 Record `initialize`, `tools/list`, `mcp_capability_status`, graph or intent
-inspection, build/run evidence when available, and the loopback JSON response.
-Until build/run/evidence tools are implemented, report this path as blocked
-instead of claiming live MCP-only success.
+inspection, `build_compile`, `build_run`, evidence retrieval when available,
+and the loopback JSON response. Until evidence retrieval and a live transcript
+exist, report the benchmark as partial or blocked instead of claiming MCP-only
+success.
 
 ## Safety Rules
 

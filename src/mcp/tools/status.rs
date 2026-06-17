@@ -39,7 +39,7 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
     let main_graph = graph_dir.join("main.jsonld");
     let intents_dir = duumbi_dir.join("intents");
     let deps_lock = duumbi_dir.join("deps.lock");
-    let build_dir = workspace.join("target");
+    let build_output = crate::workspace::workspace_output_path(workspace);
     let approvals_dir = duumbi_dir.join("session").join("approvals");
     let providers_configured = config::load_effective_config(workspace)
         .map(|config| !config.config.effective_providers().is_empty())
@@ -55,7 +55,7 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
             "mainGraphPresent": main_graph.is_file(),
             "intentsDirPresent": intents_dir.is_dir(),
             "depsLockPresent": deps_lock.is_file(),
-            "buildOutputPresent": build_dir.exists(),
+            "buildOutputPresent": build_output.is_file(),
             "providerConfigured": providers_configured,
             "pendingApprovalCount": pending_approval_count(&approvals_dir),
         },
@@ -65,7 +65,7 @@ pub fn mcp_capability_status(workspace: &Path, _params: &Value) -> Result<Value,
             "writeCapableToolCount": write_capable_count,
             "approvalFlowAvailable": true,
             "queryToolAvailable": true,
-            "buildRunAvailable": false,
+            "buildRunAvailable": true,
             "evidenceRetrievalAvailable": false,
             "unavailableTools": unavailable_tools,
         },

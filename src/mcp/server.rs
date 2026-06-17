@@ -465,9 +465,13 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "build_compile")
             .expect("build_compile exists");
+        assert_eq!(build_compile.metadata.unavailable_reason, None);
         assert!(
-            build_compile.metadata.unavailable_reason.is_some(),
-            "stubbed tool must expose structured unavailable reason"
+            build_compile
+                .metadata
+                .writes
+                .contains(&".duumbi/build".to_string()),
+            "build_compile must declare build output writes"
         );
     }
 
@@ -570,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_build_compile_returns_error_content() {
+    fn tools_call_build_compile_failure_returns_structured_error() {
         let dir = TempDir::new().expect("tempdir");
         let server = server_with_workspace(&dir);
         let req = make_request(
@@ -580,10 +584,9 @@ mod tests {
         );
 
         let resp = server.handle_request(&req).expect("response");
-        // build_compile is a stub that returns an error via JsonRpcError
         assert!(
             resp.error.is_some(),
-            "build_compile stub should return an RPC error"
+            "build_compile should return an RPC error for an empty workspace"
         );
         let err = resp.error.expect("error");
         let data = err.data.expect("structured error data");
@@ -639,12 +642,14 @@ mod tests {
         );
         assert_eq!(status["capabilities"]["queryToolAvailable"], true);
         assert_eq!(status["capabilities"]["approvalFlowAvailable"], true);
+        assert_eq!(status["capabilities"]["buildRunAvailable"], true);
         assert!(
-            status["capabilities"]["unavailableTools"]
+            !status["capabilities"]["unavailableTools"]
                 .as_array()
                 .expect("unavailable tools")
                 .iter()
-                .any(|tool| tool["name"] == "build_compile")
+                .any(|tool| tool["name"] == "build_compile"),
+            "build_compile must not be reported as unavailable"
         );
     }
 

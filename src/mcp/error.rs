@@ -139,7 +139,11 @@ impl McpToolError {
 
 fn classify(tool: &str, message: &str) -> McpErrorCategory {
     let lower = message.to_lowercase();
-    if lower.contains("missing required") || lower.contains("invalid patch ops") {
+    if lower.contains("missing required")
+        || lower.contains("invalid patch ops")
+        || lower.contains(" must be ")
+        || lower.contains(" entries must be ")
+    {
         McpErrorCategory::Schema
     } else if lower.contains("approval required") {
         McpErrorCategory::ApprovalRequired
@@ -229,5 +233,19 @@ fn files_for(tool: &str) -> Vec<String> {
             vec![".duumbi/knowledge/model-performance".to_string()]
         }
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_run_argument_shape_errors_are_schema_errors() {
+        let err = McpToolError::from_tool_message("build_run", "args entries must be strings");
+
+        assert_eq!(err.code, "mcp.schema");
+        assert_eq!(err.category, McpErrorCategory::Schema);
+        assert_eq!(err.suggested_repairs, vec![McpRepairCategory::Schema]);
     }
 }

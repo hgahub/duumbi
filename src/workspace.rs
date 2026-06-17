@@ -6,6 +6,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use thiserror::Error;
@@ -90,6 +91,9 @@ pub struct BinaryRunOutput {
     pub stdout: String,
     /// Captured stderr.
     pub stderr: String,
+    /// Whether DUUMBI terminated the process after a configured timeout.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// Returns the default native binary path for a workspace build.
@@ -220,6 +224,16 @@ pub fn run_workspace_binary(workspace_root: &Path, args: &[String]) -> Result<Bi
     run_workspace_binary_inner(workspace_root, args, BinaryStdin::Inherit)
 }
 
+/// Runs a compiled workspace binary with a timeout, capturing stdout and stderr.
+#[must_use = "the captured process output should be inspected"]
+pub fn run_workspace_binary_with_timeout(
+    workspace_root: &Path,
+    args: &[String],
+    timeout: Duration,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner_with_timeout(workspace_root, args, BinaryStdin::Inherit, timeout)
+}
+
 /// Runs a compiled workspace binary with supplied stdin, capturing stdout and stderr.
 #[allow(dead_code)] // Public lib API used by integration tests; binary target uses inherited stdin.
 #[must_use = "the captured process output should be inspected"]
@@ -241,6 +255,15 @@ fn run_workspace_binary_inner(
     workspace_root: &Path,
     args: &[String],
     stdin: BinaryStdin<'_>,
+) -> Result<BinaryRunOutput> {
+    run_workspace_binary_inner_with_timeout(workspace_root, args, stdin, Duration::ZERO)
+}
+
+fn run_workspace_binary_inner_with_timeout(
+    workspace_root: &Path,
+    args: &[String],
+    stdin: BinaryStdin<'_>,
+    timeout: Duration,
 ) -> Result<BinaryRunOutput> {
     let output_path = workspace_output_path(workspace_root);
     if !output_path.exists() {
@@ -286,15 +309,41 @@ fn run_workspace_binary_inner(
         drop(child.stdin.take());
     }
 
-    let output = child
-        .wait_with_output()
+    let (output, timed_out) = wait_with_optional_timeout(child, timeout)
         .with_context(|| format!("Failed to wait for '{}'", output_path.display()))?;
 
     Ok(BinaryRunOutput {
         exit_code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        timed_out,
     })
+}
+
+fn wait_with_optional_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<(std::process::Output, bool)> {
+    if timeout.is_zero() {
+        return child
+            .wait_with_output()
+            .map(|output| (output, false))
+            .map_err(Into::into);
+    }
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            let output = child.wait_with_output()?;
+            return Ok((output, false));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output()?;
+            return Ok((output, true));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn workspace_runtime_telemetry_dir(workspace_root: &Path) -> Option<PathBuf> {

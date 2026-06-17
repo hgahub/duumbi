@@ -434,13 +434,14 @@ fn duumbi719_mcp_capability_status_is_discoverable_and_read_only() {
     let status: serde_json::Value = serde_json::from_str(&status_text).expect("status JSON");
     assert_eq!(status["workspace"]["duumbiInitialized"], true);
     assert_eq!(status["workspace"]["mainGraphPresent"], true);
+    assert_eq!(status["capabilities"]["buildRunAvailable"], true);
     assert!(
-        status["capabilities"]["unavailableTools"]
+        !status["capabilities"]["unavailableTools"]
             .as_array()
             .expect("unavailable tools")
             .iter()
-            .any(|tool| tool["name"] == "build_compile"),
-        "stubbed workflow tools must expose structured unavailable state"
+            .any(|tool| tool["name"] == "build_compile" || tool["name"] == "build_run"),
+        "build/run tools must no longer expose structured unavailable state"
     );
 
     assert_snapshot_unchanged(&before);
@@ -545,6 +546,75 @@ fn duumbi719_mcp_graph_patch_approval_applies_exact_candidate() {
     assert_eq!(applied["approval"]["status"], "applied");
     let after = std::fs::read_to_string(&graph_path).expect("read graph after apply");
     assert!(after.contains("\"duumbi:value\": 9"));
+}
+
+/// DUUMBI-719 Cycle 5: MCP build/run uses the shared backend and returns process evidence.
+#[test]
+fn duumbi719_mcp_build_run_returns_captured_evidence() {
+    use duumbi::mcp::server::{JsonRpcRequest, McpServer};
+
+    fn call_tool(
+        server: &McpServer,
+        id: u64,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = server
+            .handle_request(&JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(serde_json::json!(id)),
+                method: "tools/call".to_string(),
+                params: Some(serde_json::json!({
+                    "name": name,
+                    "arguments": arguments,
+                })),
+            })
+            .expect("tools/call response");
+        assert!(
+            response.error.is_none(),
+            "{name} should succeed: {:?}",
+            response.error
+        );
+        let text = response.result.expect("result")["content"][0]["text"]
+            .as_str()
+            .expect("text content")
+            .to_string();
+        serde_json::from_str(&text).expect("tool JSON")
+    }
+
+    let workspace = setup_workspace();
+    let server = McpServer::new(workspace.path().to_path_buf());
+
+    let build = call_tool(
+        &server,
+        1,
+        "build_compile",
+        serde_json::json!({ "offline": true }),
+    );
+    assert_eq!(build["status"], "success");
+    let output_path = build["outputPath"].as_str().expect("output path");
+    assert!(PathBuf::from(output_path).is_file());
+
+    let run = call_tool(
+        &server,
+        2,
+        "build_run",
+        serde_json::json!({ "offline": true, "build": false, "timeout_secs": 5 }),
+    );
+    assert_eq!(run["scope"], "build_run");
+    assert_eq!(run["ok"], true);
+    assert_eq!(run["exitCode"], 0);
+    assert_eq!(run["timedOut"], false);
+    assert_eq!(run["timeoutSecs"], 5);
+    assert!(run["stdout"].is_string());
+    assert!(run["stderr"].is_string());
+    assert!(
+        run["evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .any(|item| item["kind"] == "build_output")
+    );
 }
 
 /// DUUMBI-719 Cycle 4: agent-facing docs match the implemented MCP surface and workflow rules.
