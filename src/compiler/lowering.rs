@@ -916,6 +916,12 @@ fn embed_string_constants(
         obj_module,
         &mut string_data,
         &mut counter,
+        "division overflow",
+    )?;
+    insert_c_string_constant(
+        obj_module,
+        &mut string_data,
+        &mut counter,
         "array index out of bounds",
     )?;
 
@@ -1012,10 +1018,12 @@ fn build_struct_layouts(
     let mut layouts = HashMap::new();
     for (struct_name, builder) in builders {
         let mut offsets = HashMap::new();
-        for (idx, field_name) in builder.fields.iter().enumerate() {
+        let mut fields = builder.fields;
+        fields.sort();
+        for (idx, field_name) in fields.iter().enumerate() {
             offsets.insert(field_name.clone(), idx as i64 * 8);
         }
-        let total_size = std::cmp::max(builder.fields.len(), 1) as i64 * 8;
+        let total_size = std::cmp::max(fields.len(), 1) as i64 * 8;
         layouts.insert(
             struct_name,
             StructLayout {
@@ -2532,6 +2540,21 @@ fn emit_guarded_integer_div(
         panic_at_ref,
         is_zero,
         "division by zero",
+        node_id,
+    )?;
+
+    let min_i64 = builder.ins().iconst(types::I64, i64::MIN);
+    let minus_one = builder.ins().iconst(types::I64, -1);
+    let left_is_min = builder.ins().icmp(IntCC::Equal, left_val, min_i64);
+    let right_is_minus_one = builder.ins().icmp(IntCC::Equal, right_val, minus_one);
+    let is_signed_overflow = builder.ins().band(left_is_min, right_is_minus_one);
+    emit_node_panic_guard(
+        builder,
+        obj_module,
+        string_data,
+        panic_at_ref,
+        is_signed_overflow,
+        "division overflow",
         node_id,
     )?;
     Ok(builder.ins().sdiv(left_val, right_val))

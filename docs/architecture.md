@@ -173,8 +173,9 @@ Example: `duumbi:main/main/entry/2`
 
 Unchecked integer `Add`, `Sub`, and `Mul` preserve Cranelift's current wrapping
 lowering behavior for compatibility. Integer `Div` is not wrapping: division by
-zero is guarded before `sdiv` and exits through a deterministic DUUMBI panic
-that includes the failing graph node id.
+zero and signed division overflow (`i64::MIN / -1`) are guarded before `sdiv`
+and exit through a deterministic DUUMBI panic that includes the failing graph
+node id.
 
 Checked integer variants `AddChecked`, `SubChecked`, `MulChecked`, and
 `DivChecked` return `result<i64,string>`. Successful operations return `Ok(i64)`.
@@ -186,10 +187,10 @@ division overflow (`i64::MIN / -1`).
 
 DUUMBI derives a per-struct layout from compile-time field evidence instead of
 allocating a fixed struct buffer. Fields are assigned stable 8-byte slots by
-layout discovery order. `i64`, heap references, arrays, options, results, and
-struct references use the slot directly; `bool` is widened on store and narrowed
-on load; `f64` is stored and loaded by bit-preserving casts. Conflicting field
-type evidence is a compile error naming the struct and field.
+lexicographic field-name order. `i64`, heap references, arrays, options,
+results, and struct references use the slot directly; `bool` is widened on store
+and narrowed on load; `f64` is stored and loaded by bit-preserving casts.
+Conflicting field type evidence is a compile error naming the struct and field.
 
 ---
 

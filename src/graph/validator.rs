@@ -200,6 +200,18 @@ fn check_types(graph: &SemanticGraph, diagnostics: &mut Vec<Diagnostic>) {
                         .with_details(details),
                     );
                 }
+
+                if matches!(
+                    node.op,
+                    Op::AddChecked | Op::SubChecked | Op::MulChecked | Op::DivChecked
+                ) {
+                    check_exact_result_type(
+                        node,
+                        &result_i64_string(),
+                        "checked arithmetic ops must return result<i64,string>",
+                        diagnostics,
+                    );
+                }
             }
             Op::ReadLine => {
                 check_exact_result_type(

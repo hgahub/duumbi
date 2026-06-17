@@ -30,6 +30,7 @@ pub fn has_result_option_ops(graph: &SemanticGraph) -> bool {
                 | Op::SubChecked
                 | Op::MulChecked
                 | Op::DivChecked
+                | Op::ArrayTryGet
                 | Op::OptionSome
                 | Op::OptionNone
                 | Op::OptionIsSome
@@ -142,6 +143,11 @@ fn direct_result_or_option_type(node: &GraphNode) -> Option<&DuumbiType> {
     if !matches!(
         &node.op,
         Op::Call { .. }
+            | Op::AddChecked
+            | Op::SubChecked
+            | Op::MulChecked
+            | Op::DivChecked
+            | Op::ArrayTryGet
             | Op::ReadLine
             | Op::PrintLn
             | Op::ReadFile
