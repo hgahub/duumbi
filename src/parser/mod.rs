@@ -345,7 +345,10 @@ fn parse_function(value: &serde_json::Value) -> Result<FunctionAst, ParseError> 
             }
             params
         } else {
-            Vec::new()
+            return Err(ParseError::SchemaInvalid {
+                code: codes::E009_SCHEMA_INVALID,
+                message: format!("duumbi:params on {node_id_str} must be an array"),
+            });
         }
     } else {
         Vec::new()
@@ -1629,6 +1632,33 @@ mod tests {
         assert_eq!(func.params.len(), 1);
         assert_eq!(func.params[0].name, "n");
         assert_eq!(func.params[0].param_type, DuumbiType::I64);
+    }
+
+    #[test]
+    fn malformed_function_params_fails_schema_validation() {
+        let json = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:t", "duumbi:name": "t",
+            "duumbi:functions": [{
+                "@type": "duumbi:Function", "@id": "duumbi:t/main",
+                "duumbi:name": "main", "duumbi:returnType": "i64",
+                "duumbi:params": {"duumbi:name": "n", "duumbi:paramType": "i64"},
+                "duumbi:blocks": [{
+                    "@type": "duumbi:Block", "@id": "duumbi:t/main/e",
+                    "duumbi:label": "entry",
+                    "duumbi:ops": [
+                        {"@type": "duumbi:Const", "@id": "duumbi:t/main/e/0", "duumbi:value": 0, "duumbi:resultType": "i64"},
+                        {"@type": "duumbi:Return", "@id": "duumbi:t/main/e/1", "duumbi:operand": {"@id": "duumbi:t/main/e/0"}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let err = parse_jsonld(json).unwrap_err();
+        assert!(matches!(
+            err,
+            ParseError::SchemaInvalid { message, .. }
+                if message.contains("duumbi:params") && message.contains("must be an array")
+        ));
     }
 
     #[test]

@@ -93,6 +93,7 @@ fn generate_i64(rng: &mut DeterministicRng, target: usize) -> Vec<PropertyValue>
         PropertyValue::I64(0),
         PropertyValue::I64(1),
         PropertyValue::I64(-1),
+        PropertyValue::I64(i64::MIN),
         PropertyValue::I64(i64::MIN + 1),
         PropertyValue::I64(i64::MAX),
     ];
@@ -295,6 +296,21 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first[0], PropertyValue::I64(0));
         assert_eq!(first.len(), 8);
+    }
+
+    #[test]
+    fn i64_generation_includes_exact_minimum_boundary() {
+        let values = generate_values(
+            &DuumbiType::I64,
+            &GeneratorSettings {
+                seed: 717,
+                cases: 6,
+                max_array_len: 4,
+            },
+        )
+        .expect("i64 supported");
+
+        assert!(values.contains(&PropertyValue::I64(i64::MIN)));
     }
 
     #[test]

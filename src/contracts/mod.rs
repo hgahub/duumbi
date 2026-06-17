@@ -339,7 +339,7 @@ fn infer_unary_type(
         ContractOperator::Length => {
             issues.push(ContractValidationIssue {
                 code: codes::E001_TYPE_MISMATCH,
-                message: format!("length operand must be string, json, or array; found {operand}"),
+                message: format!("length operand must be string or array; found {operand}"),
                 clause_id: None,
             });
             None
@@ -492,10 +492,7 @@ fn numeric_pair(left: &DuumbiType, right: &DuumbiType) -> bool {
 }
 
 fn supports_length(ty: &DuumbiType) -> bool {
-    matches!(
-        ty,
-        DuumbiType::String | DuumbiType::Json | DuumbiType::Array(_)
-    )
+    matches!(ty, DuumbiType::String | DuumbiType::Array(_))
 }
 
 fn types_compatible_for_equality(left: &DuumbiType, right: &DuumbiType) -> bool {
@@ -600,6 +597,17 @@ fn parse_expr(value: &Value) -> Result<ContractExpr, String> {
     let obj = value
         .as_object()
         .ok_or_else(|| "contract expression must be an object".to_string())?;
+
+    let shape_count = ["duumbi:var", "duumbi:const", "duumbi:op"]
+        .iter()
+        .filter(|key| obj.contains_key(**key))
+        .count();
+    if shape_count > 1 {
+        return Err(
+            "contract expression must use exactly one of duumbi:var, duumbi:const, or duumbi:op"
+                .to_string(),
+        );
+    }
 
     if let Some(var) = obj.get("duumbi:var") {
         return var
@@ -735,5 +743,52 @@ mod tests {
 
         let err = parse_contract_set(&value).unwrap_err();
         assert!(err.contains("unknown contract operator"));
+    }
+
+    #[test]
+    fn rejects_mixed_expression_shape() {
+        let value = serde_json::json!({
+            "duumbi:postconditions": [{
+                "duumbi:expr": {
+                    "duumbi:var": "result",
+                    "duumbi:op": ">",
+                    "duumbi:left": { "duumbi:var": "result" },
+                    "duumbi:right": { "duumbi:const": 0 }
+                }
+            }]
+        });
+
+        let err = parse_contract_set(&value).unwrap_err();
+        assert!(err.contains("exactly one of duumbi:var, duumbi:const, or duumbi:op"));
+    }
+
+    #[test]
+    fn json_length_is_rejected_until_json_array_shape_is_static() {
+        let value = serde_json::json!({
+            "duumbi:postconditions": [{
+                "duumbi:id": "payload-length",
+                "duumbi:expr": {
+                    "duumbi:op": ">",
+                    "duumbi:left": {
+                        "duumbi:op": "length",
+                        "duumbi:expr": { "duumbi:var": "payload" }
+                    },
+                    "duumbi:right": { "duumbi:const": 0 }
+                }
+            }]
+        });
+        let contracts = parse_contract_set(&value).expect("contract shape should parse");
+
+        let issues = validate_contract_set(
+            &contracts,
+            &[("payload".to_string(), DuumbiType::Json)],
+            &DuumbiType::I64,
+        );
+
+        assert!(issues.iter().any(|issue| {
+            issue
+                .message
+                .contains("length operand must be string or array")
+        }));
     }
 }

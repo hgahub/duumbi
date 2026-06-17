@@ -127,26 +127,71 @@ fn eval_binary(
     match op {
         ContractOperator::Eq => Ok(PropertyValue::Bool(values_equal(&left, &right)?)),
         ContractOperator::Ne => Ok(PropertyValue::Bool(!values_equal(&left, &right)?)),
-        ContractOperator::Lt => compare_numeric(&left, &right, |left, right| left < right),
-        ContractOperator::Le => compare_numeric(&left, &right, |left, right| left <= right),
-        ContractOperator::Gt => compare_numeric(&left, &right, |left, right| left > right),
-        ContractOperator::Ge => compare_numeric(&left, &right, |left, right| left >= right),
-        ContractOperator::Add => arithmetic_numeric(&left, &right, |left, right| left + right),
-        ContractOperator::Sub => arithmetic_numeric(&left, &right, |left, right| left - right),
-        ContractOperator::Mul => arithmetic_numeric(&left, &right, |left, right| left * right),
+        ContractOperator::Lt => compare_numeric(
+            &left,
+            &right,
+            |left, right| left < right,
+            |left, right| left < right,
+        ),
+        ContractOperator::Le => compare_numeric(
+            &left,
+            &right,
+            |left, right| left <= right,
+            |left, right| left <= right,
+        ),
+        ContractOperator::Gt => compare_numeric(
+            &left,
+            &right,
+            |left, right| left > right,
+            |left, right| left > right,
+        ),
+        ContractOperator::Ge => compare_numeric(
+            &left,
+            &right,
+            |left, right| left >= right,
+            |left, right| left >= right,
+        ),
+        ContractOperator::Add => arithmetic_numeric(
+            &left,
+            &right,
+            |left, right| left.checked_add(right),
+            |left, right| left + right,
+            "addition",
+        ),
+        ContractOperator::Sub => arithmetic_numeric(
+            &left,
+            &right,
+            |left, right| left.checked_sub(right),
+            |left, right| left - right,
+            "subtraction",
+        ),
+        ContractOperator::Mul => arithmetic_numeric(
+            &left,
+            &right,
+            |left, right| left.checked_mul(right),
+            |left, right| left * right,
+            "multiplication",
+        ),
         ContractOperator::Div => {
             if numeric_zero(&right)? {
                 return Err(error("division_by_zero", "contract division by zero"));
             }
-            arithmetic_numeric(&left, &right, |left, right| left / right)
+            arithmetic_numeric(
+                &left,
+                &right,
+                |left, right| left.checked_div(right),
+                |left, right| left / right,
+                "division",
+            )
         }
         ContractOperator::Rem => match (&left, &right) {
             (PropertyValue::I64(_), PropertyValue::I64(0)) => {
                 Err(error("division_by_zero", "contract remainder by zero"))
             }
-            (PropertyValue::I64(left), PropertyValue::I64(right)) => {
-                Ok(PropertyValue::I64(left % right))
-            }
+            (PropertyValue::I64(left), PropertyValue::I64(right)) => left
+                .checked_rem(*right)
+                .map(PropertyValue::I64)
+                .ok_or_else(|| arithmetic_overflow("remainder")),
             _ => Err(type_error("remainder operands must be i64", &left, &right)),
         },
         other => Err(error(
@@ -220,28 +265,41 @@ fn values_equal(left: &PropertyValue, right: &PropertyValue) -> Result<bool, Pre
 fn compare_numeric(
     left: &PropertyValue,
     right: &PropertyValue,
-    compare: impl FnOnce(f64, f64) -> bool,
+    compare_i64: impl FnOnce(i64, i64) -> bool,
+    compare_f64: impl FnOnce(f64, f64) -> bool,
 ) -> Result<PropertyValue, PredicateEvalError> {
-    Ok(PropertyValue::Bool(compare(
-        numeric_value(left)?,
-        numeric_value(right)?,
-    )))
+    if let (PropertyValue::I64(left), PropertyValue::I64(right)) = (left, right) {
+        Ok(PropertyValue::Bool(compare_i64(*left, *right)))
+    } else {
+        Ok(PropertyValue::Bool(compare_f64(
+            numeric_value(left)?,
+            numeric_value(right)?,
+        )))
+    }
 }
 
 fn arithmetic_numeric(
     left: &PropertyValue,
     right: &PropertyValue,
+    checked_i64: impl FnOnce(i64, i64) -> Option<i64>,
     operation: impl FnOnce(f64, f64) -> f64,
+    operator: &'static str,
 ) -> Result<PropertyValue, PredicateEvalError> {
-    let value = operation(numeric_value(left)?, numeric_value(right)?);
-    if matches!(
-        (left, right),
-        (PropertyValue::I64(_), PropertyValue::I64(_))
-    ) {
-        Ok(PropertyValue::I64(value as i64))
+    if let (PropertyValue::I64(left), PropertyValue::I64(right)) = (left, right) {
+        checked_i64(*left, *right)
+            .map(PropertyValue::I64)
+            .ok_or_else(|| arithmetic_overflow(operator))
     } else {
+        let value = operation(numeric_value(left)?, numeric_value(right)?);
         Ok(PropertyValue::F64(value))
     }
+}
+
+fn arithmetic_overflow(operator: &'static str) -> PredicateEvalError {
+    error(
+        "arithmetic_overflow",
+        format!("i64 contract {operator} overflowed"),
+    )
 }
 
 fn numeric_value(value: &PropertyValue) -> Result<f64, PredicateEvalError> {
@@ -365,5 +423,43 @@ mod tests {
         };
         let err = eval_predicate(&expr, &PredicateContext::default()).unwrap_err();
         assert_eq!(err.reason, "division_by_zero");
+    }
+
+    #[test]
+    fn i64_arithmetic_stays_exact() {
+        let expr = ContractExpr::Binary {
+            op: ContractOperator::Add,
+            left: Box::new(i64_const(i64::MAX - 1)),
+            right: Box::new(i64_const(1)),
+        };
+
+        assert_eq!(
+            eval_expr(&expr, &PredicateContext::default()),
+            Ok(PropertyValue::I64(i64::MAX))
+        );
+    }
+
+    #[test]
+    fn reports_i64_arithmetic_overflow() {
+        let expr = ContractExpr::Binary {
+            op: ContractOperator::Add,
+            left: Box::new(i64_const(i64::MAX)),
+            right: Box::new(i64_const(1)),
+        };
+
+        let err = eval_expr(&expr, &PredicateContext::default()).unwrap_err();
+        assert_eq!(err.reason, "arithmetic_overflow");
+    }
+
+    #[test]
+    fn reports_min_remainder_negative_one_as_overflow() {
+        let expr = ContractExpr::Binary {
+            op: ContractOperator::Rem,
+            left: Box::new(i64_const(i64::MIN)),
+            right: Box::new(i64_const(-1)),
+        };
+
+        let err = eval_expr(&expr, &PredicateContext::default()).unwrap_err();
+        assert_eq!(err.reason, "arithmetic_overflow");
     }
 }

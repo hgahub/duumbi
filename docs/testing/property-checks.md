@@ -70,6 +70,7 @@ Current unsupported cases include:
 - contracts on `main`, because the wrapper must not replace the target
   function;
 - non-`i64` native execution signatures;
+- functions without an explicit `pure` or `read_only_deterministic` effect;
 - effectful functions and runtime resource types;
 - invariants, which are parsed and preserved for future verifier work but not
   executed as loop proofs.

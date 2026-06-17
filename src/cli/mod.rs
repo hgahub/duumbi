@@ -168,7 +168,7 @@ pub enum Commands {
         seed: u64,
 
         /// Number of property cases to generate per function.
-        #[arg(long, default_value_t = 64)]
+        #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u32).range(1..))]
         cases: u32,
 
         /// Path for the property evidence JSON artifact.
@@ -849,6 +849,21 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn check_property_cases_zero_is_invalid() {
+        let err = Cli::try_parse_from([
+            "duumbi",
+            "check",
+            "main.jsonld",
+            "--properties",
+            "--cases",
+            "0",
+        ])
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid value"));
     }
 
     #[test]
