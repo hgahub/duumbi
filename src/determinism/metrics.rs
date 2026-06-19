@@ -28,14 +28,6 @@ pub enum AgreementRate {
     },
 }
 
-impl AgreementRate {
-    /// Returns true when the metric is available.
-    #[must_use]
-    pub fn is_available(&self) -> bool {
-        matches!(self, Self::Available { .. })
-    }
-}
-
 /// Computes largest-group agreement for optional equivalence keys.
 ///
 /// `None` values are treated as non-comparable attempts. When no comparable

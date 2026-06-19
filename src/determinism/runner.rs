@@ -45,12 +45,12 @@ pub struct ReplayConfig {
     pub artifact_dir: PathBuf,
     /// UTC start timestamp as RFC3339 text.
     pub started_at: String,
-    /// UTC finish timestamp as RFC3339 text supplied by the caller.
-    pub finished_at: String,
     /// Source commit used for report metadata.
     pub source_commit: String,
     /// Provider configuration source label.
     pub provider_source: String,
+    /// Retain isolated attempt workspaces under the replay bundle.
+    pub keep_workspaces: bool,
 }
 
 /// Runs determinism replay for selected benchmark showcases.
@@ -125,7 +125,7 @@ where
     let mut report = ReplayReport::new(
         &config.run_id,
         &config.started_at,
-        &config.finished_at,
+        &config.started_at,
         env!("CARGO_PKG_VERSION"),
         &config.source_commit,
         inputs,
@@ -200,6 +200,7 @@ where
                     &spec,
                     attempt,
                     &attempt_dir,
+                    config.keep_workspaces,
                     &init_workspace,
                 )
                 .await;
@@ -214,7 +215,7 @@ where
                             LedgerEventKind::AttemptFailed
                         },
                         sequence,
-                        &config.finished_at,
+                        &utc_now(),
                         showcase.name,
                         &provider_route,
                         attempt,
@@ -233,13 +234,14 @@ where
     }
 
     report.metrics = ReplayMetrics::from_attempts(&report.attempts);
+    report.finished_at = utc_now();
     append_ledger(
         &mut ledger,
         LedgerEvent::new(
             &config.run_id,
             LedgerEventKind::RunCompleted,
             sequence,
-            &config.finished_at,
+            &report.finished_at,
             serde_json::json!({
                 "attempts_total": report.metrics.attempts_total,
                 "attempts_completed": report.metrics.attempts_completed,
@@ -258,6 +260,7 @@ async fn run_single_replay<F>(
     spec: &IntentSpec,
     attempt: u32,
     attempt_dir: &Path,
+    keep_workspace: bool,
     init_workspace: &F,
 ) -> ReplayAttempt
 where
@@ -372,7 +375,10 @@ where
                 .map_or(ErrorCategory::LogicError, categorize_error),
         )
     };
-    let artifact_paths = retain_attempt_log(attempt_dir, &log);
+    let mut artifact_paths = retain_attempt_log(attempt_dir, &log);
+    if keep_workspace {
+        artifact_paths.extend(retain_workspace_snapshot(workspace, attempt_dir));
+    }
     let behavior_signature = Some(format!(
         "success={success};tests={tests_passed}/{tests_total};error={}",
         error_category
@@ -536,6 +542,35 @@ fn retain_attempt_log(attempt_dir: &Path, log: &[String]) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+fn retain_workspace_snapshot(workspace: &Path, attempt_dir: &Path) -> Vec<String> {
+    let source = workspace.join(".duumbi");
+    let destination = attempt_dir.join("workspace").join(".duumbi");
+    if copy_dir_recursive(&source, &destination).is_ok() {
+        vec![destination.display().to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn utc_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn append_ledger(writer: &mut LedgerWriter, event: LedgerEvent) -> Result<(), String> {
