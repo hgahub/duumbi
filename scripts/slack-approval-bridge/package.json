@@ -8,7 +8,7 @@
     "test": "node --test src/functions/slackApproval.test.js"
   },
   "dependencies": {
-    "@azure/functions": "^4.16.0"
+    "@azure/functions": "^4.16.1"
   },
   "engines": {
     "node": ">=24.16.0"
