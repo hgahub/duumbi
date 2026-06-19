@@ -9,6 +9,7 @@ export const STATUS_FIELD_NAME = "Status";
 export const HUMAN_ACCEPTANCE_LABEL = "needs-human-review";
 export const DEFAULT_TARGET_HUMAN_ACCEPTANCE_MIN = 3;
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+export const DEFAULT_MOONSHOT_MODEL = "glm-5.2";
 export const MAX_ISSUES_CREATED_PER_RUN = 1;
 export const DEFAULT_PROJECT_OWNER_TYPE = "user";
 
@@ -32,6 +33,8 @@ const DEEPSEEK_PRICING_USD_PER_1M = {
     output: 0.87,
   },
 };
+
+const MOONSHOT_API_URL = "https://api.moonshot.ai/v1/chat/completions";
 
 function nowIso() {
   return new Date().toISOString();
@@ -280,7 +283,7 @@ export async function collectTriageContext({
   };
 }
 
-export function buildDeepSeekMessages(contextPayload) {
+export function buildTriageMessages(contextPayload) {
   const schema = {
     action: "route_existing_issue | create_issue | needs_clarification | no_action",
     existing_issue_number: "integer, required only for route_existing_issue",
@@ -319,6 +322,8 @@ export function buildDeepSeekMessages(contextPayload) {
     },
   ];
 }
+
+export const buildDeepSeekMessages = buildTriageMessages;
 
 function stripJsonFence(value) {
   const text = normalizeText(value);
@@ -368,7 +373,7 @@ export function parseTriageDecision(content) {
         // Fall through to the original parse error.
       }
     }
-    throw new Error(`DeepSeek decision was not valid JSON: ${firstError.message}`);
+    throw new Error(`Triage decision was not valid JSON: ${firstError.message}`);
   }
 }
 
@@ -380,7 +385,7 @@ function normalizeStringArray(value) {
 function requireSourceLinks(decision) {
   const sourceLinks = normalizeStringArray(decision.source_links);
   if (sourceLinks.length === 0) {
-    throw new Error("DeepSeek decision is missing required source_links.");
+    throw new Error("Triage decision is missing required source_links.");
   }
   return sourceLinks;
 }
@@ -389,7 +394,7 @@ export function validateTriageDecision(decision, contextPayload) {
   const action = normalizeText(decision?.action);
   const validActions = new Set(["route_existing_issue", "create_issue", "needs_clarification", "no_action"]);
   if (!validActions.has(action)) {
-    throw new Error(`DeepSeek decision action is not supported: ${action || "<missing>"}`);
+    throw new Error(`Triage decision action is not supported: ${action || "<missing>"}`);
   }
 
   const normalized = {
@@ -941,6 +946,101 @@ export async function callDeepSeek({
   ].join(" "));
 }
 
+export async function callMoonshot({
+  fetchImpl = fetch,
+  apiKey,
+  model = DEFAULT_MOONSHOT_MODEL,
+  messages,
+  timeoutMs = 120_000,
+  emptyContentRetries = 2,
+  maxTokens = 2500,
+  temperature = 0.2,
+}) {
+  const started = Date.now();
+  const maxAttempts = Math.max(1, 1 + Number(emptyContentRetries || 0));
+  const baseMessages = Array.isArray(messages) ? messages : [];
+  const retryInstruction = [
+    "Retry instruction: the previous Moonshot JSON-mode response returned empty content.",
+    "Return one non-empty JSON object only.",
+    "Do not return an empty string, markdown, prose outside JSON, or whitespace-only content.",
+  ].join("\n");
+  let lastEmptyDetails = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const retryMessages = attempt === 1
+      ? baseMessages
+      : baseMessages[0]?.role === "system"
+        ? [
+            { ...baseMessages[0], content: `${baseMessages[0].content || ""}\n\n${retryInstruction}` },
+            ...baseMessages.slice(1),
+          ]
+        : [{ role: "system", content: retryInstruction }, ...baseMessages];
+
+    try {
+      const response = await fetchImpl(MOONSHOT_API_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: retryMessages,
+          response_format: { type: "json_object" },
+          temperature,
+          max_tokens: maxTokens,
+        }),
+        signal: controller.signal,
+      });
+      const { text, json } = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(`Moonshot API failed: ${response.status} ${truncateText(text, 240)}`);
+      }
+      const choice = json.choices?.[0] || {};
+      const content = choice.message?.content;
+      if (normalizeText(content)) {
+        return {
+          model: json.model || model,
+          content,
+          usage: json.usage || {},
+          latencyMs: Date.now() - started,
+        };
+      }
+
+      lastEmptyDetails = {
+        attempt,
+        maxAttempts,
+        model: json.model || model,
+        finishReason: choice.finish_reason || null,
+        usage: json.usage || {},
+      };
+      if (attempt < maxAttempts) {
+        continue;
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(`Moonshot API timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const usage = lastEmptyDetails?.usage || {};
+  throw new Error([
+    "Moonshot returned empty decision content after JSON-mode retries.",
+    `attempts=${lastEmptyDetails?.maxAttempts || maxAttempts}`,
+    `model=${lastEmptyDetails?.model || model}`,
+    `finish_reason=${lastEmptyDetails?.finishReason || "unknown"}`,
+    `prompt_tokens=${usage.prompt_tokens ?? "unknown"}`,
+    `completion_tokens=${usage.completion_tokens ?? "unknown"}`,
+    `total_tokens=${usage.total_tokens ?? "unknown"}`,
+  ].join(" "));
+}
+
 export function buildWorkflowMetrics({
   context,
   conclusion,
@@ -1022,7 +1122,23 @@ function providerUsageFromDeepSeek(model, usage, latencyMs) {
   };
 }
 
-function combineDeepSeekUsage(responses) {
+function providerUsageFromMoonshot(model, usage, latencyMs) {
+  return {
+    available: true,
+    reason: "moonshot_api_call",
+    provider: "moonshot",
+    model,
+    request_count: Number.isFinite(Number(usage.request_count)) ? Number(usage.request_count) : 1,
+    prompt_tokens: Number.isFinite(Number(usage.prompt_tokens)) ? Number(usage.prompt_tokens) : null,
+    completion_tokens: Number.isFinite(Number(usage.completion_tokens)) ? Number(usage.completion_tokens) : null,
+    total_tokens: Number.isFinite(Number(usage.total_tokens)) ? Number(usage.total_tokens) : null,
+    estimated_cost_usd: null,
+    latency_ms: Number.isFinite(latencyMs) ? latencyMs : null,
+    failure_count: 0,
+  };
+}
+
+function combineProviderUsage(responses) {
   const usage = {
     request_count: responses.length,
     prompt_cache_hit_tokens: 0,
@@ -1086,7 +1202,7 @@ function combineDeepSeekUsage(responses) {
 
 async function getParsedTriageDecision({ fetchImpl, apiKey, model, messages, core, warnings = [] }) {
   const responses = [];
-  const firstResponse = await callDeepSeek({
+  const firstResponse = await callMoonshot({
     fetchImpl,
     apiKey,
     model,
@@ -1100,10 +1216,10 @@ async function getParsedTriageDecision({ fetchImpl, apiKey, model, messages, cor
       responses,
     };
   } catch (error) {
-    const warning = `DeepSeek decision was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
+    const warning = `Moonshot decision was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
     warnings.push(warning);
     core?.warning?.(warning);
-    const repairResponse = await callDeepSeek({
+    const repairResponse = await callMoonshot({
       fetchImpl,
       apiKey,
       model,
@@ -1207,8 +1323,8 @@ export async function runTriageQueueRefill({
   const projectPat = env.GH_PROJECT_PAT;
   const projectOwner = env.DUUMBI_PROJECT_OWNER || context.repo.owner;
   const projectNumber = Number(env.DUUMBI_PROJECT_NUMBER || 0);
-  const deepSeekApiKey = env.DEEPSEEK_API_KEY;
-  const deepSeekModel = env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL;
+  const moonshotApiKey = env.MOONSHOT_API_KEY;
+  const moonshotModel = env.MOONSHOT_MODEL || DEFAULT_MOONSHOT_MODEL;
 
   let result = {
     ok: false,
@@ -1284,8 +1400,8 @@ export async function runTriageQueueRefill({
       return { ...result, decision: "not_needed" };
     }
 
-    if (!deepSeekApiKey) {
-      throw new Error("DEEPSEEK_API_KEY is not configured; failing closed before triage refill.");
+    if (!moonshotApiKey) {
+      throw new Error("MOONSHOT_API_KEY is not configured; failing closed before triage refill.");
     }
 
     const triageContext = await collectTriageContext({
@@ -1297,11 +1413,11 @@ export async function runTriageQueueRefill({
       api,
       warnings,
     });
-    const messages = buildDeepSeekMessages(triageContext);
-    const { parsedDecision, responses: deepSeekResponses } = await getParsedTriageDecision({
+    const messages = buildTriageMessages(triageContext);
+    const { parsedDecision, responses: modelResponses } = await getParsedTriageDecision({
       fetchImpl,
-      apiKey: deepSeekApiKey,
-      model: deepSeekModel,
+      apiKey: moonshotApiKey,
+      model: moonshotModel,
       messages,
       core,
       warnings,
@@ -1332,8 +1448,8 @@ export async function runTriageQueueRefill({
       git,
     });
     const queued = applied.issueNumber ? 1 : 0;
-    const lastDeepSeekResponse = deepSeekResponses.at(-1);
-    const combinedDeepSeekUsage = combineDeepSeekUsage(deepSeekResponses);
+    const lastMoonshotResponse = modelResponses.at(-1);
+    const combinedMoonshotUsage = combineProviderUsage(modelResponses);
 
     result = {
       ...result,
@@ -1341,7 +1457,7 @@ export async function runTriageQueueRefill({
       decision: decision.action,
       issueNumber: applied.issueNumber,
       issueUrl: applied.issueUrl,
-      model: lastDeepSeekResponse.model,
+      model: lastMoonshotResponse.model,
       inboxNotesArchived: archivedInboxNotes.length,
       archivedInboxNotes,
       commitSha: vaultCommit.commitSha,
@@ -1359,10 +1475,10 @@ export async function runTriageQueueRefill({
         artifact_links_found: decision.source_links?.length || null,
         artifact_links_missing: decision.source_links?.length ? 0 : null,
       },
-      providerUsage: providerUsageFromDeepSeek(
-        lastDeepSeekResponse.model,
-        combinedDeepSeekUsage.usage,
-        combinedDeepSeekUsage.latencyMs,
+      providerUsage: providerUsageFromMoonshot(
+        lastMoonshotResponse.model,
+        combinedMoonshotUsage.usage,
+        combinedMoonshotUsage.latencyMs,
       ),
       warnings,
     });
