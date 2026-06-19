@@ -22,6 +22,7 @@ pub mod intent;
 pub mod interaction;
 pub mod knowledge;
 pub mod logging;
+pub mod loop_native;
 pub mod manifest;
 pub mod mcp;
 pub mod parser;
