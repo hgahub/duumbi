@@ -307,6 +307,13 @@ pub enum Commands {
         baseline: Option<std::path::PathBuf>,
     },
 
+    /// Measure determinism of provider-backed intent replay.
+    Determinism {
+        /// Determinism subcommand.
+        #[command(subcommand)]
+        subcommand: DeterminismSubcommand,
+    },
+
     /// Run the Phase 15 E2E validation harness.
     #[command(name = "phase15-e2e", hide = true)]
     Phase15E2e {
@@ -445,6 +452,65 @@ pub enum TelemetrySubcommand {
         /// Optional path for writing the repair validation evidence JSON.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+}
+
+/// Subcommands for `duumbi determinism`.
+#[derive(Subcommand, Debug)]
+pub enum DeterminismSubcommand {
+    /// Replay selected benchmark showcases and report agreement metrics.
+    Replay {
+        /// Benchmark suite to replay. Defaults to the existing core suite.
+        #[arg(long, value_enum)]
+        suite: Option<BenchmarkSuiteArg>,
+
+        /// Run only the low-budget smoke subset of the selected suite.
+        #[arg(long)]
+        smoke: bool,
+
+        /// Replay only the named showcase(s) (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        showcase: Option<Vec<String>>,
+
+        /// Replay only the named provider route(s) (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        provider: Option<Vec<String>>,
+
+        /// Number of attempts per selected showcase/provider pair.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(2..))]
+        attempts: Option<u32>,
+
+        /// Write JSON report to this file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Root directory for replay bundles.
+        #[arg(long, default_value = ".duumbi/determinism/replays")]
+        artifact_dir: PathBuf,
+
+        /// Optional Markdown summary output path.
+        #[arg(long)]
+        markdown_output: Option<PathBuf>,
+
+        /// CI mode: explicit thresholds determine the process exit code.
+        #[arg(long)]
+        ci: bool,
+
+        /// Minimum exact graph agreement rate for CI mode.
+        #[arg(long)]
+        min_exact_agreement: Option<f64>,
+
+        /// Minimum semantic graph agreement rate for CI mode.
+        #[arg(long)]
+        min_semantic_agreement: Option<f64>,
+
+        /// Minimum behavioral agreement rate for CI mode.
+        #[arg(long)]
+        min_behavioral_agreement: Option<f64>,
+
+        /// Retain isolated attempt workspaces inside the replay bundle.
+        #[arg(long)]
+        keep_workspaces: bool,
     },
 }
 

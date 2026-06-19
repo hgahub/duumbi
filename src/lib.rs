@@ -13,6 +13,7 @@ pub mod context;
 pub mod contracts;
 pub mod credentials;
 pub mod deps;
+pub mod determinism;
 pub mod errors;
 pub mod examples;
 pub mod graph;

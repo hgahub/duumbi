@@ -389,7 +389,7 @@ struct IntentExecutionMetrics {
     total_retry_count: Option<u32>,
 }
 
-fn extract_error_codes(text: &str) -> Vec<String> {
+pub(crate) fn extract_error_codes(text: &str) -> Vec<String> {
     let mut codes: Vec<String> = text
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|word| {
@@ -406,7 +406,7 @@ fn extract_error_codes(text: &str) -> Vec<String> {
 }
 
 /// Tries to load an archived intent (moved to history/ after execution).
-fn load_archived_intent(
+pub(crate) fn load_archived_intent(
     workspace: &Path,
     slug: &str,
 ) -> Result<crate::intent::spec::IntentSpec, crate::intent::IntentError> {
@@ -435,7 +435,7 @@ fn load_archived_intent(
 }
 
 /// Filters provider configs by name.
-fn filter_providers<'a>(
+pub(crate) fn filter_providers<'a>(
     providers: &'a [ProviderConfig],
     filter: Option<&[String]>,
 ) -> Vec<&'a ProviderConfig> {
@@ -456,7 +456,7 @@ fn filter_providers<'a>(
 /// Legacy configs with an explicit model keep the historical `provider:model`
 /// identifier. Provider-only configs include role, credential env, and base URL
 /// so multiple entries for the same provider remain filterable.
-fn provider_name(config: &ProviderConfig) -> String {
+pub(crate) fn provider_name(config: &ProviderConfig) -> String {
     if let Some(model) = config.model.as_deref() {
         return format!("{}:{model}", config.provider);
     }

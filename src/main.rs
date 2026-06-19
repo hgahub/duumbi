@@ -16,6 +16,7 @@ mod context;
 mod contracts;
 mod credentials;
 mod deps;
+mod determinism;
 mod errors;
 mod examples;
 mod graph;
@@ -227,6 +228,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Telemetry { .. } => "telemetry",
         Commands::Upgrade => "upgrade",
         Commands::Benchmark { .. } => "benchmark",
+        Commands::Determinism { .. } => "determinism",
         Commands::Phase15E2e { .. } => "phase15-e2e",
         Commands::Completions { .. } => "completions",
         Commands::Studio { .. } => "studio",
@@ -514,6 +516,7 @@ async fn run(cli: Cli) -> Result<i32> {
             })
             .await
         }
+        Commands::Determinism { subcommand } => run_determinism(subcommand).await,
         Commands::Phase15E2e {
             task,
             provider,
@@ -537,6 +540,152 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Commands::Mcp { sse, port } => success_exit(run_mcp(sse, port).await),
     }
+}
+
+async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> {
+    match subcommand {
+        cli::DeterminismSubcommand::Replay {
+            suite,
+            smoke,
+            showcase,
+            provider,
+            attempts,
+            output,
+            artifact_dir,
+            markdown_output,
+            ci,
+            min_exact_agreement,
+            min_semantic_agreement,
+            min_behavioral_agreement,
+            keep_workspaces,
+        } => {
+            let workspace = PathBuf::from(".");
+            let effective_config = config::load_effective_config(&workspace)?;
+            let provider_source = provider_source_label(effective_config.provider_source);
+            let cfg = effective_config.config;
+            let providers = cfg.effective_providers();
+            if providers.is_empty() {
+                anyhow::bail!(
+                    "No LLM providers configured. Use `duumbi provider add ...` to save a user-level provider."
+                );
+            }
+
+            let attempts = attempts.unwrap_or(2);
+            let started_at = iso8601_now();
+            let run_id = determinism_run_id(&started_at, suite, smoke);
+            let config = determinism::runner::ReplayConfig {
+                run_id,
+                attempts,
+                providers,
+                showcase_filter: showcase,
+                provider_filter: provider,
+                suite_filter: suite.map(|suite| match suite {
+                    cli::BenchmarkSuiteArg::Core => bench::showcases::ShowcaseSuite::Core,
+                    cli::BenchmarkSuiteArg::Scaled => bench::showcases::ShowcaseSuite::Scaled,
+                }),
+                smoke,
+                artifact_dir,
+                started_at,
+                source_commit: current_git_commit().unwrap_or_else(|| "unknown".to_string()),
+                provider_source: provider_source.to_string(),
+                keep_workspaces,
+            };
+
+            let report = determinism::runner::run_replay(&config, |path| {
+                cli::init::run_init(path).map(|_| ())
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let json = serde_json::to_string_pretty(&report)
+                .context("Failed to serialize determinism replay report")?;
+            match output {
+                Some(path) => {
+                    write_text_file(&path, &json).with_context(|| {
+                        format!("Failed to write replay report to '{}'", path.display())
+                    })?;
+                    eprintln!("Replay report written to {}", path.display());
+                }
+                None => println!("{json}"),
+            }
+            if let Some(path) = markdown_output {
+                write_text_file(&path, &report.to_markdown_summary()).with_context(|| {
+                    format!(
+                        "Failed to write replay Markdown summary to '{}'",
+                        path.display()
+                    )
+                })?;
+                eprintln!("Replay Markdown summary written to {}", path.display());
+            }
+
+            let thresholds_pass = determinism::metrics::replay_ci_thresholds_pass(
+                &report.metrics.exact_graph_agreement_rate,
+                &report.metrics.semantic_graph_agreement_rate,
+                &report.metrics.behavioral_agreement_rate,
+                min_exact_agreement,
+                min_semantic_agreement,
+                min_behavioral_agreement,
+            );
+            if ci && !thresholds_pass {
+                Ok(EXIT_FAILURE)
+            } else {
+                Ok(EXIT_SUCCESS)
+            }
+        }
+    }
+}
+
+fn provider_source_label(source: config::ProviderConfigSource) -> &'static str {
+    match source {
+        config::ProviderConfigSource::None => "none",
+        config::ProviderConfigSource::System => "system",
+        config::ProviderConfigSource::User => "user",
+        config::ProviderConfigSource::Workspace => "workspace",
+        config::ProviderConfigSource::LegacySystem => "legacy-system",
+        config::ProviderConfigSource::LegacyUser => "legacy-user",
+        config::ProviderConfigSource::LegacyWorkspace => "legacy-workspace",
+    }
+}
+
+fn determinism_run_id(
+    started_at: &str,
+    suite: Option<cli::BenchmarkSuiteArg>,
+    smoke: bool,
+) -> String {
+    let suite = match suite {
+        Some(cli::BenchmarkSuiteArg::Core) | None => "core",
+        Some(cli::BenchmarkSuiteArg::Scaled) => "scaled",
+    };
+    let mode = if smoke { "smoke" } else { "full" };
+    let timestamp = started_at
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!("duumbi-720-{timestamp}-{suite}-{mode}")
+}
+
+fn current_git_commit() -> Option<String> {
+    let output = process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8(output.stdout).ok()?;
+    let commit = commit.trim();
+    (!commit.is_empty()).then(|| commit.to_string())
+}
+
+fn write_text_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory '{}'", parent.display()))?;
+    }
+    fs::write(path, contents).with_context(|| format!("Failed to write '{}'", path.display()))
 }
 
 fn success_exit(result: Result<()>) -> Result<i32> {
