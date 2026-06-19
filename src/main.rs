@@ -26,6 +26,8 @@ mod interaction;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
 mod logging;
+#[allow(dead_code)] // Library exposes full native Loop provider API; binary uses CLI subset.
+mod loop_native;
 mod manifest;
 mod mcp;
 mod parser;
@@ -222,6 +224,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Deps { .. } => "deps",
         Commands::Search { .. } => "search",
         Commands::Intent { .. } => "intent",
+        Commands::Loop { .. } => "loop",
         Commands::Registry { .. } => "registry",
         Commands::Publish { .. } => "publish",
         Commands::Yank { .. } => "yank",
@@ -474,6 +477,10 @@ async fn run(cli: Cli) -> Result<i32> {
         Commands::Intent { subcommand } => {
             let workspace = PathBuf::from(".");
             run_intent(subcommand, workspace).await
+        }
+        Commands::Loop { subcommand } => {
+            let workspace = PathBuf::from(".");
+            run_loop(subcommand, workspace)
         }
         Commands::Yank {
             specifier,
@@ -1006,6 +1013,66 @@ async fn run_intent(subcommand: cli::IntentSubcommand, workspace: PathBuf) -> Re
                     .map_err(|e| anyhow::anyhow!("{e}")),
             ),
         },
+    }
+}
+
+/// Dispatches `duumbi loop` native workflow subcommands.
+fn run_loop(subcommand: cli::LoopSubcommand, workspace: PathBuf) -> Result<i32> {
+    match subcommand {
+        cli::LoopSubcommand::IntakeSpec { intent, json } => {
+            let result = loop_native::run_native_intake_spec(&workspace, &intent)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                eprintln!("Native Loop run {}: {}", result.run_id, result.state);
+                for artifact in &result.artifacts {
+                    eprintln!("- {}: {}", artifact.artifact_kind, artifact.path);
+                }
+                for reason in &result.blocking_reasons {
+                    eprintln!("- blocked: {reason}");
+                }
+            }
+            if result.state == loop_native::LoopRunState::Completed {
+                Ok(EXIT_SUCCESS)
+            } else {
+                Ok(EXIT_FAILURE)
+            }
+        }
+        cli::LoopSubcommand::ReviewPatch {
+            intent,
+            patch,
+            json,
+        } => {
+            let contents = fs::read_to_string(&patch)
+                .with_context(|| format!("Failed to read '{}'", patch.display()))?;
+            let patch_doc: patch::GraphPatch = serde_json::from_str(&contents)
+                .with_context(|| format!("Failed to parse GraphPatch '{}'", patch.display()))?;
+            let target = loop_native::graph_patch_review_target(&workspace, &intent, &patch_doc)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&target)?);
+            } else {
+                eprintln!("Review target: {:?}", target.kind);
+                eprintln!("Work item: {}", target.work_item_id);
+                match &target.change_set {
+                    loop_native::ChangeSet::GraphPatch {
+                        operation_count,
+                        affected_nodes,
+                    } => {
+                        eprintln!("GraphPatch operations: {operation_count}");
+                        for node in affected_nodes {
+                            eprintln!("- {node}");
+                        }
+                    }
+                    loop_native::ChangeSet::GraphSnapshotDiff { before, after } => {
+                        eprintln!("Snapshot diff: {before} -> {after}");
+                    }
+                    loop_native::ChangeSet::GeneratedArtifactDiff { before, after } => {
+                        eprintln!("Artifact diff: {before} -> {after}");
+                    }
+                }
+            }
+            Ok(EXIT_SUCCESS)
+        }
     }
 }
 

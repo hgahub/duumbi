@@ -225,6 +225,13 @@ pub enum Commands {
         subcommand: IntentSubcommand,
     },
 
+    /// Run native DUUMBI Loop workflows without external providers.
+    Loop {
+        /// Loop subcommand.
+        #[command(subcommand)]
+        subcommand: LoopSubcommand,
+    },
+
     /// Manage registry configurations and authentication.
     Registry {
         /// Registry subcommand.
@@ -381,6 +388,34 @@ pub enum Commands {
         /// Port for SSE transport (default: 8421).
         #[arg(long, default_value_t = 8421)]
         port: u16,
+    },
+}
+
+/// Subcommands for `duumbi loop`.
+#[derive(Subcommand, Debug)]
+pub enum LoopSubcommand {
+    /// Run native provider-duumbi intake+spec for a local intent.
+    IntakeSpec {
+        /// Intent slug under `.duumbi/intents`.
+        intent: String,
+
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Build a native review target from a GraphPatch JSON file.
+    ReviewPatch {
+        /// Intent slug under `.duumbi/intents`.
+        intent: String,
+
+        /// GraphPatch JSON file to review.
+        #[arg(long)]
+        patch: PathBuf,
+
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
     },
 }
 
