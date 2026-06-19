@@ -173,6 +173,12 @@ pub fn combined_registry_state_hash(lockfile_hash: &str, dependency_config_hash:
     hex_encode(hasher.finalize())
 }
 
+/// Hashes arbitrary replay evidence bytes as lowercase SHA-256 hex.
+#[must_use]
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    hex_encode(Sha256::digest(bytes))
+}
+
 fn collect_jsonld_files(
     graph_root: &Path,
     dir: &Path,

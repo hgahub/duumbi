@@ -560,7 +560,9 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
             keep_workspaces,
         } => {
             let workspace = PathBuf::from(".");
-            let cfg = config::load_effective_config(&workspace)?.config;
+            let effective_config = config::load_effective_config(&workspace)?;
+            let provider_source = provider_source_label(effective_config.provider_source);
+            let cfg = effective_config.config;
             let providers = cfg.effective_providers();
             if providers.is_empty() {
                 anyhow::bail!(
@@ -585,7 +587,7 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
                 artifact_dir,
                 started_at,
                 source_commit: current_git_commit().unwrap_or_else(|| "unknown".to_string()),
-                provider_source: "user".to_string(),
+                provider_source: provider_source.to_string(),
                 keep_workspaces,
             };
 
@@ -615,14 +617,12 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
                 eprintln!("Replay Markdown summary written to {}", path.display());
             }
 
-            let thresholds_pass = determinism::metrics::threshold_passes(
+            let thresholds_pass = determinism::metrics::replay_ci_thresholds_pass(
                 &report.metrics.exact_graph_agreement_rate,
-                min_exact_agreement,
-            ) && determinism::metrics::threshold_passes(
                 &report.metrics.semantic_graph_agreement_rate,
-                min_semantic_agreement,
-            ) && determinism::metrics::threshold_passes(
                 &report.metrics.behavioral_agreement_rate,
+                min_exact_agreement,
+                min_semantic_agreement,
                 min_behavioral_agreement,
             );
             if ci && !thresholds_pass {
@@ -631,6 +631,18 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
                 Ok(EXIT_SUCCESS)
             }
         }
+    }
+}
+
+fn provider_source_label(source: config::ProviderConfigSource) -> &'static str {
+    match source {
+        config::ProviderConfigSource::None => "none",
+        config::ProviderConfigSource::System => "system",
+        config::ProviderConfigSource::User => "user",
+        config::ProviderConfigSource::Workspace => "workspace",
+        config::ProviderConfigSource::LegacySystem => "legacy-system",
+        config::ProviderConfigSource::LegacyUser => "legacy-user",
+        config::ProviderConfigSource::LegacyWorkspace => "legacy-workspace",
     }
 }
 

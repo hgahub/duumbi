@@ -78,6 +78,21 @@ pub fn threshold_passes(metric: &AgreementRate, threshold: Option<f64>) -> bool 
     }
 }
 
+/// Evaluates the determinism replay CI gate against optional thresholds.
+#[must_use]
+pub fn replay_ci_thresholds_pass(
+    exact_graph_agreement_rate: &AgreementRate,
+    semantic_graph_agreement_rate: &AgreementRate,
+    behavioral_agreement_rate: &AgreementRate,
+    min_exact_agreement: Option<f64>,
+    min_semantic_agreement: Option<f64>,
+    min_behavioral_agreement: Option<f64>,
+) -> bool {
+    threshold_passes(exact_graph_agreement_rate, min_exact_agreement)
+        && threshold_passes(semantic_graph_agreement_rate, min_semantic_agreement)
+        && threshold_passes(behavioral_agreement_rate, min_behavioral_agreement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +142,50 @@ mod tests {
 
         assert!(threshold_passes(&metric, None));
         assert!(!threshold_passes(&metric, Some(1.0)));
+    }
+
+    #[test]
+    fn replay_ci_thresholds_require_only_requested_metrics() {
+        let exact = AgreementRate::Available {
+            rate: 0.5,
+            comparable_attempt_count: 2,
+            largest_equivalence_group_count: 1,
+            dominant_key: "exact-a".to_string(),
+        };
+        let semantic = AgreementRate::Available {
+            rate: 1.0,
+            comparable_attempt_count: 2,
+            largest_equivalence_group_count: 2,
+            dominant_key: "semantic-a".to_string(),
+        };
+        let behavior = AgreementRate::Unavailable {
+            reason: "no behavior evidence".to_string(),
+            comparable_attempt_count: 0,
+        };
+
+        assert!(replay_ci_thresholds_pass(
+            &exact,
+            &semantic,
+            &behavior,
+            Some(0.5),
+            Some(1.0),
+            None
+        ));
+        assert!(!replay_ci_thresholds_pass(
+            &exact,
+            &semantic,
+            &behavior,
+            Some(1.0),
+            Some(1.0),
+            None
+        ));
+        assert!(!replay_ci_thresholds_pass(
+            &exact,
+            &semantic,
+            &behavior,
+            None,
+            None,
+            Some(1.0)
+        ));
     }
 }
