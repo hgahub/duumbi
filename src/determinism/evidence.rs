@@ -495,7 +495,8 @@ pub enum LedgerEventKind {
     TaskSelected,
     /// Attempt started.
     AttemptStarted,
-    /// Context was locked.
+    /// Reserved for future context lock emission once replay context capture
+    /// can write the ledger at the exact lock point.
     ContextLocked,
     /// Attempt completed.
     AttemptCompleted,
@@ -503,7 +504,8 @@ pub enum LedgerEventKind {
     AttemptFailed,
     /// Run completed.
     RunCompleted,
-    /// Run interrupted.
+    /// Reserved for future interrupted-run recovery. The current runner
+    /// returns errors before producing a partial run ledger.
     RunInterrupted,
 }
 

@@ -164,13 +164,14 @@ where
             suite: showcase.suite.as_str().to_string(),
             tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
         });
+        let task_selected_at = utc_now();
         append_ledger(
             &mut ledger,
             event_with_task(
                 &config.run_id,
                 LedgerEventKind::TaskSelected,
                 sequence,
-                &config.started_at,
+                &task_selected_at,
                 showcase.name,
                 serde_json::json!({"suite": showcase.suite.as_str(), "tags": showcase.tags}),
             ),
@@ -181,8 +182,15 @@ where
             let provider = create_provider(provider_config)?;
             let provider_route = provider_name(provider_config);
             let provider_key = safe_artifact_key(&provider_route, "provider");
-            let model_identity = ModelIdentity::Available {
-                label: provider.model_label(),
+            let model_identity = if provider
+                .model_name()
+                .is_some_and(|model| !model.trim().is_empty())
+            {
+                ModelIdentity::Available {
+                    label: provider.model_label(),
+                }
+            } else {
+                ModelIdentity::unavailable("provider did not expose resolved model")
             };
             for attempt in 1..=config.attempts {
                 let attempt_dir = run_dir
@@ -196,13 +204,14 @@ where
                         attempt_dir.display()
                     )
                 })?;
+                let attempt_started_at = utc_now();
                 append_ledger(
                     &mut ledger,
                     event_with_attempt(AttemptEvent {
                         run_id: &config.run_id,
                         event: LedgerEventKind::AttemptStarted,
                         sequence,
-                        timestamp: &config.started_at,
+                        timestamp: &attempt_started_at,
                         task_id: showcase.name,
                         provider: &provider_route,
                         attempt,
@@ -652,20 +661,11 @@ fn replay_attempt_from_error(
 ) -> ReplayAttempt {
     let category = categorize_error(&message);
     replay_attempt_from_parts(ReplayAttemptParts {
-        showcase,
-        provider_route,
-        model_identity,
-        attempt,
         tests_total,
         error_category: Some(category),
         dominant_error_code: extract_error_codes(&message).into_iter().next(),
         duration_secs,
-        ..ReplayAttemptParts::new(
-            showcase,
-            provider_route,
-            ModelIdentity::unavailable("unused"),
-            attempt,
-        )
+        ..ReplayAttemptParts::new(showcase, provider_route, model_identity, attempt)
     })
 }
 
@@ -885,7 +885,7 @@ mod tests {
             suite_filter: Some(ShowcaseSuite::Core),
             smoke: false,
             artifact_dir: artifact_dir.path().join("replays"),
-            started_at: "2026-06-19T00:00:00Z".to_string(),
+            started_at: "2000-01-01T00:00:00Z".to_string(),
             source_commit: "test-commit".to_string(),
             provider_source: "test".to_string(),
             keep_workspaces: false,
@@ -925,5 +925,41 @@ mod tests {
         assert_eq!(ledger.matches(r#""event":"attempt_started""#).count(), 2);
         assert_eq!(ledger.matches(r#""event":"attempt_failed""#).count(), 2);
         assert!(ledger.contains(r#""event":"run_completed""#));
+
+        let events = ledger
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl"))
+            .collect::<Vec<_>>();
+        let run_started = events
+            .iter()
+            .find(|event| {
+                event.get("event").and_then(|value| value.as_str()) == Some("run_started")
+            })
+            .expect("run_started event should exist");
+        assert_eq!(
+            run_started
+                .get("timestamp")
+                .and_then(|value| value.as_str()),
+            Some(config.started_at.as_str())
+        );
+        for event_name in ["task_selected", "attempt_started"] {
+            let matching = events
+                .iter()
+                .filter(|event| {
+                    event.get("event").and_then(|value| value.as_str()) == Some(event_name)
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !matching.is_empty(),
+                "{event_name} events should be present in ledger"
+            );
+            assert!(
+                matching.iter().all(|event| event
+                    .get("timestamp")
+                    .and_then(|value| value.as_str())
+                    != Some(config.started_at.as_str())),
+                "{event_name} events should use their emission timestamp"
+            );
+        }
     }
 }
