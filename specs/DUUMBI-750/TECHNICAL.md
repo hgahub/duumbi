@@ -524,6 +524,7 @@ established local pattern, but the boundaries must remain.
 
 ```http
 GET  /api/me
+PATCH /api/me
 GET  /api/orgs
 POST /api/orgs
 GET  /api/orgs/{org_id}
@@ -538,6 +539,41 @@ POST /api/orgs/{org_id}/invitations
 DELETE /api/invitations/{invitation_id}
 POST /api/invitations/accept
 ```
+
+### Account Lifecycle
+
+Account routes are organization-independent unless an organization context is
+explicitly supplied for notification preferences or scoped tokens.
+
+```http
+GET    /api/me/identities
+POST   /api/me/identities/{provider}/link
+DELETE /api/me/identities/{identity_id}
+
+GET    /api/me/sessions
+DELETE /api/me/sessions/{session_id}
+DELETE /api/me/sessions
+
+GET    /api/me/tokens
+POST   /api/me/tokens
+DELETE /api/me/tokens/{token_id}
+
+GET    /api/me/notifications
+PUT    /api/me/notifications
+
+POST   /api/me/export
+GET    /api/me/export/{job_id}
+DELETE /api/me
+```
+
+Account lifecycle implementations must prove:
+
+- identity unlink leaves at least one usable login identity,
+- session revoke takes effect server-side,
+- raw personal API tokens are shown once and stored hashed,
+- account export jobs are scoped to the requesting user,
+- account deletion is blocked until sole-owner organizations are transferred or
+  deleted.
 
 ### Dashboard And Runs
 
@@ -604,7 +640,16 @@ POST /api/orgs/{org_id}/billing/checkout-session
 POST /api/orgs/{org_id}/billing/cancel
 POST /api/orgs/{org_id}/billing/reactivate
 POST /api/orgs/{org_id}/billing/credits/purchase
+POST /api/webhooks/stripe
 ```
+
+`POST /api/webhooks/stripe` is public ingress authenticated by Stripe signature
+verification, not by user session. It must ingest Stripe events idempotently,
+persist the raw event envelope or stable event reference for replay/audit, and
+update `BillingSubscription`, `BillingEntitlement`, `CreditLedgerEntry`, and
+related dunning state through the materialized billing mirror. Request-time
+checkout, dashboard, run-preflight, and repository-limit paths must read this
+mirror and must not call live Stripe APIs for entitlement decisions.
 
 ### Staff
 
@@ -767,10 +812,10 @@ If any check fails, return a typed block reason and do not enqueue the run.
 | Product scenario | Required tests | Target repo(s) |
 | --- | --- | --- |
 | Homepage presents DUUMBI-native Loop | Browser snapshot/assertion test for `loop.duumbi.dev` route text, workflow ordering, optional adapter copy, and duumbi.dev token use. | `duumbi-web` or `duumbi-loop` depending route ownership |
-| Login creates an organization session | Auth integration test with magic-link test adapter; Playwright login/onboarding flow. | `duumbi-loop`, auth repo if created |
-| Invited user joins an existing organization | API integration test for invitation lifecycle; Playwright invitation acceptance. | `duumbi-loop`, auth repo if created |
+| Login creates an organization session | Auth integration test with magic-link test adapter; account lifecycle API tests for profile/session/token/export/delete boundaries; Playwright login/onboarding flow. | `duumbi-loop`, auth repo if created |
+| Invited user joins an existing organization | API integration test for invitation lifecycle; identity-linking conflict test; Playwright invitation acceptance. | `duumbi-loop`, auth repo if created |
 | Dashboard shows active Loop work | Component/API test for dashboard summary states; Playwright dashboard rendering with seeded runs. | `duumbi-loop` |
-| Dashboard shows subscription usage before spend | API test for entitlement/credit summary; Playwright run-start block/allow states. | `duumbi-loop` |
+| Dashboard shows subscription usage before spend | API test for entitlement/credit summary; Stripe webhook idempotency and entitlement mirror update test; Playwright run-start block/allow states. | `duumbi-loop` |
 | Native workflow can start without Git provider credentials | Integration test that creates a native run with no provider connection rows and no Git tokens; should call #749 native path or fixture adapter. | `duumbi-loop`, `duumbi` |
 | Git provider connection is optional | UI test for provider empty state and native CTA; API test that native run creation does not require provider connection. | `duumbi-loop` |
 | Provider revocation disables dependent repositories | Provider webhook unit/integration test; repository state transition test; artifact readability assertion. | `duumbi-loop` |
@@ -1003,4 +1048,3 @@ cloud cost, auth, or cross-repo access creates a blocker.
 Use non-closing references to #750 in all PRs until final workflow closure.
 Greptile is reserved for final implementation PR review, not spec PRs.
 ```
-
