@@ -6,4 +6,5 @@
 
 pub mod digest;
 pub mod evidence;
+pub mod ledger;
 pub mod metrics;

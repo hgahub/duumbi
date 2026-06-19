@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bench::report::{BenchmarkEvidence, ErrorCategory, ProviderUsageSummary};
 
-use super::metrics::AgreementRate;
+use super::metrics::{AgreementRate, largest_group_agreement};
 
 /// Replay report schema version.
 pub const REPLAY_REPORT_SCHEMA_VERSION: &str = "duumbi.determinism.replay_report.v1";
@@ -74,6 +74,90 @@ impl ReplayReport {
             ),
             warnings: Vec::new(),
         }
+    }
+
+    /// Renders a compact deterministic Markdown summary for review evidence.
+    #[must_use]
+    pub fn to_markdown_summary(&self) -> String {
+        let mut output = String::new();
+        output.push_str("# DUUMBI Determinism Replay Report\n\n");
+        output.push_str(&format!("- Run: {}\n", self.run_id));
+        output.push_str(&format!("- Started: {}\n", self.started_at));
+        output.push_str(&format!("- Finished: {}\n", self.finished_at));
+        output.push_str(&format!("- DUUMBI version: {}\n", self.duumbi_version));
+        output.push_str(&format!("- Source commit: {}\n", self.source_commit));
+        output.push_str(&format!("- Suite: {}\n", self.inputs.suite));
+        output.push_str(&format!("- Smoke: {}\n", self.inputs.smoke));
+        output.push_str(&format!(
+            "- Showcases: {}\n",
+            self.inputs.showcases.join(", ")
+        ));
+        output.push_str(&format!(
+            "- Providers: {}\n",
+            self.inputs.providers.join(", ")
+        ));
+        output.push_str(&format!("- Attempts: {}\n\n", self.inputs.attempts));
+
+        output.push_str("## Metrics\n\n");
+        output.push_str("| Metric | Status | Detail |\n");
+        output.push_str("| --- | --- | --- |\n");
+        output.push_str(&metric_row(
+            "Exact graph",
+            &self.metrics.exact_graph_agreement_rate,
+        ));
+        output.push_str(&metric_row(
+            "Semantic graph",
+            &self.metrics.semantic_graph_agreement_rate,
+        ));
+        output.push_str(&metric_row(
+            "Behavioral",
+            &self.metrics.behavioral_agreement_rate,
+        ));
+        output.push_str(&metric_row(
+            "Failure category",
+            &self.metrics.failure_category_agreement_rate,
+        ));
+
+        output.push_str("\n## Attempts\n\n");
+        output.push_str("| Task | Provider | Model | Attempt | Success | Tests | Error |\n");
+        output.push_str("| --- | --- | --- | ---: | --- | ---: | --- |\n");
+        for attempt in &self.attempts {
+            let model = match &attempt.model_identity {
+                ModelIdentity::Available { label } => label.as_str(),
+                ModelIdentity::Unavailable { reason } => reason.as_str(),
+            };
+            let error = if let Some(code) = &attempt.dominant_error_code {
+                code.clone()
+            } else if let Some(category) = attempt.error_category {
+                category.to_string()
+            } else {
+                "none".to_string()
+            };
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {}/{} | {} |\n",
+                attempt.task_id,
+                attempt.provider,
+                model,
+                attempt.attempt,
+                attempt.success,
+                attempt.tests_passed,
+                attempt.tests_total,
+                error
+            ));
+        }
+
+        output.push_str("\n## Rewrite Comparison\n\n");
+        output.push_str(&format!(
+            "- Status: {:?}\n- Reason: {}\n",
+            self.rewrite_comparison.status, self.rewrite_comparison.reason
+        ));
+        if !self.warnings.is_empty() {
+            output.push_str("\n## Warnings\n\n");
+            for warning in &self.warnings {
+                output.push_str(&format!("- {warning}\n"));
+            }
+        }
+        output
     }
 }
 
@@ -269,6 +353,42 @@ impl Default for ReplayMetrics {
     }
 }
 
+impl ReplayMetrics {
+    /// Derives aggregate metrics from attempt evidence.
+    #[must_use]
+    pub fn from_attempts(attempts: &[ReplayAttempt]) -> Self {
+        Self {
+            attempts_total: attempts.len() as u32,
+            attempts_completed: attempts.len() as u32,
+            exact_graph_agreement_rate: largest_group_agreement(
+                attempts
+                    .iter()
+                    .map(|attempt| attempt.final_graph_exact_hash.as_deref()),
+                "no comparable attempts produced final graph evidence",
+            ),
+            semantic_graph_agreement_rate: largest_group_agreement(
+                attempts
+                    .iter()
+                    .map(|attempt| attempt.final_graph_semantic_hash.as_deref()),
+                "no comparable attempts produced semantic graph evidence",
+            ),
+            behavioral_agreement_rate: largest_group_agreement(
+                attempts
+                    .iter()
+                    .map(|attempt| attempt.behavior_signature.as_deref()),
+                "no comparable attempts produced behavior evidence",
+            ),
+            failure_category_agreement_rate: largest_group_agreement(
+                attempts
+                    .iter()
+                    .map(|attempt| attempt.error_category.map(|category| category.to_string())),
+                "no comparable attempts produced failure category evidence",
+            ),
+            divergence_examples: Vec::new(),
+        }
+    }
+}
+
 /// One divergence example for human inspection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DivergenceExample {
@@ -387,6 +507,26 @@ pub enum LedgerEventKind {
     RunInterrupted,
 }
 
+fn metric_row(name: &str, metric: &AgreementRate) -> String {
+    match metric {
+        AgreementRate::Available {
+            rate,
+            comparable_attempt_count,
+            largest_equivalence_group_count,
+            dominant_key,
+        } => format!(
+            "| {name} | available | rate {:.3}; {largest_equivalence_group_count}/{comparable_attempt_count}; dominant `{dominant_key}` |\n",
+            rate
+        ),
+        AgreementRate::Unavailable {
+            reason,
+            comparable_attempt_count,
+        } => format!(
+            "| {name} | unavailable | {reason}; comparable attempts {comparable_attempt_count} |\n"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +584,115 @@ mod tests {
         assert_eq!(event.schema_version, REPLAY_LEDGER_SCHEMA_VERSION);
         let json = serde_json::to_string(&event).expect("ledger event serializes");
         assert!(json.contains("\"event\":\"run_started\""));
+    }
+
+    #[test]
+    fn metrics_derive_from_attempt_rows() {
+        let attempts = vec![
+            ReplayAttempt {
+                task_id: "calculator".to_string(),
+                suite: "core".to_string(),
+                tags: Vec::new(),
+                provider: "mock".to_string(),
+                model_identity: ModelIdentity::unavailable("not exposed"),
+                attempt: 1,
+                workspace_strategy: "tempdir".to_string(),
+                initial_graph_exact_hash: None,
+                initial_graph_semantic_hash: None,
+                final_graph_exact_hash: Some("exact-a".to_string()),
+                final_graph_semantic_hash: Some("semantic-a".to_string()),
+                intent_spec_hash: None,
+                bdd_context_hash: None,
+                context_pack_hash: None,
+                prompt_hashes: PromptHashes::Unavailable {
+                    reason: "not captured".to_string(),
+                },
+                success: true,
+                tests_passed: 1,
+                tests_total: 1,
+                bdd_readiness: None,
+                bdd_coverage: Vec::new(),
+                behavior_signature: Some("behavior-a".to_string()),
+                error_category: None,
+                dominant_error_code: None,
+                provider_usage: ProviderUsageSummary::unavailable("not exposed"),
+                benchmark_evidence: None,
+                artifact_paths: Vec::new(),
+                duration_secs: 0.1,
+            },
+            ReplayAttempt {
+                task_id: "calculator".to_string(),
+                suite: "core".to_string(),
+                tags: Vec::new(),
+                provider: "mock".to_string(),
+                model_identity: ModelIdentity::unavailable("not exposed"),
+                attempt: 2,
+                workspace_strategy: "tempdir".to_string(),
+                initial_graph_exact_hash: None,
+                initial_graph_semantic_hash: None,
+                final_graph_exact_hash: Some("exact-b".to_string()),
+                final_graph_semantic_hash: Some("semantic-a".to_string()),
+                intent_spec_hash: None,
+                bdd_context_hash: None,
+                context_pack_hash: None,
+                prompt_hashes: PromptHashes::Unavailable {
+                    reason: "not captured".to_string(),
+                },
+                success: true,
+                tests_passed: 1,
+                tests_total: 1,
+                bdd_readiness: None,
+                bdd_coverage: Vec::new(),
+                behavior_signature: Some("behavior-a".to_string()),
+                error_category: None,
+                dominant_error_code: None,
+                provider_usage: ProviderUsageSummary::unavailable("not exposed"),
+                benchmark_evidence: None,
+                artifact_paths: Vec::new(),
+                duration_secs: 0.1,
+            },
+        ];
+
+        let metrics = ReplayMetrics::from_attempts(&attempts);
+
+        assert_eq!(metrics.attempts_total, 2);
+        assert!(matches!(
+            metrics.exact_graph_agreement_rate,
+            AgreementRate::Available { rate, .. } if rate == 0.5
+        ));
+        assert!(matches!(
+            metrics.semantic_graph_agreement_rate,
+            AgreementRate::Available { rate, .. } if rate == 1.0
+        ));
+    }
+
+    #[test]
+    fn markdown_summary_contains_metric_table() {
+        let mut report = ReplayReport::new(
+            "run-1",
+            "2026-06-17T00:00:00Z",
+            "2026-06-17T00:00:01Z",
+            "0.4.0-preview",
+            "abc123",
+            ReplayInputs {
+                suite: "core".to_string(),
+                smoke: false,
+                showcases: vec!["calculator".to_string()],
+                providers: vec!["mock".to_string()],
+                attempts: 2,
+            },
+            ReplayEnvironment {
+                provider_source: "test".to_string(),
+                registry_state_hash: "state".to_string(),
+                lockfile_hash: "absent".to_string(),
+                workspace_dependency_config_hash: "absent".to_string(),
+            },
+        );
+        report.metrics = ReplayMetrics::from_attempts(&[]);
+
+        let markdown = report.to_markdown_summary();
+
+        assert!(markdown.contains("# DUUMBI Determinism Replay Report"));
+        assert!(markdown.contains("| Exact graph | unavailable |"));
     }
 }
