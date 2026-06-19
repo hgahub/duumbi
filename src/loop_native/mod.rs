@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::intent;
-use crate::intent::bdd::{BddReadiness, load_bdd_report};
+use crate::intent::bdd::{BddReadiness, BddReadinessReport, load_bdd_report};
 use crate::intent::spec::IntentSpec;
 use crate::knowledge::store::KnowledgeStore;
 use crate::knowledge::types::KnowledgeNode;
@@ -29,6 +29,8 @@ pub const DEFAULT_SPEC_MODEL_LABEL: &str = "balanced";
 
 /// Primary DUUMBI-owned model label for native Loop review work.
 pub const DEFAULT_REVIEW_MODEL_LABEL: &str = "strict_review";
+
+const MAX_GRAPH_SOURCE_DEPTH: usize = 16;
 
 /// Provider kind for a Loop provider implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,8 +397,16 @@ impl DuumbiProvider {
         let slug = slug_from_work_item(item)?;
         let spec = intent::load_intent(&self.workspace, slug)?;
         let bdd_report = load_bdd_report(&spec, &self.workspace, slug);
+        self.load_context_index_from_bdd(item, &bdd_report)
+    }
+
+    fn load_context_index_from_bdd(
+        &self,
+        item: &WorkItem,
+        bdd_report: &BddReadinessReport,
+    ) -> Result<ContextIndex, LoopNativeError> {
         let graph_sources = collect_graph_sources(&self.workspace)?;
-        let graph_semantic_hash = graph_semantic_hash(&self.workspace);
+        let graph_semantic_hash = graph_semantic_hash(&self.workspace, &graph_sources);
         let bdd_sources = bdd_report
             .feature_files
             .iter()
@@ -464,7 +474,7 @@ impl DuumbiProvider {
             });
         }
 
-        let context = self.load_context_index(&work_item)?;
+        let context = self.load_context_index_from_bdd(&work_item, &bdd_report)?;
         let run_id = native_run_id(slug);
         let created_at = Utc::now().to_rfc3339();
         let artifacts_dir = self
@@ -498,19 +508,33 @@ impl DuumbiProvider {
                 markdown: render_intake_markdown(&spec, &context),
             },
         )?;
-        let product_ref = write_markdown_artifact(
+        let product_ref = write_artifact_pair(
             &self.workspace,
             &artifacts_dir,
             ArtifactKind::ProductSpec,
             "product_spec",
-            render_product_spec_markdown(&spec, &bdd_report),
+            ArtifactPairInput {
+                work_item_id: &work_item.id,
+                run_id: &run_id,
+                created_at: &created_at,
+                sources: source_refs.clone(),
+                body: product_body.clone(),
+                markdown: render_product_spec_markdown(&spec, &bdd_report),
+            },
         )?;
-        let technical_ref = write_markdown_artifact(
+        let technical_ref = write_artifact_pair(
             &self.workspace,
             &artifacts_dir,
             ArtifactKind::TechnicalSpec,
             "technical_spec",
-            render_technical_spec_markdown(&spec, &bdd_report, &context),
+            ArtifactPairInput {
+                work_item_id: &work_item.id,
+                run_id: &run_id,
+                created_at: &created_at,
+                sources: source_refs.clone(),
+                body: technical_body.clone(),
+                markdown: render_technical_spec_markdown(&spec, &bdd_report, &context),
+            },
         )?;
 
         let metadata = ArtifactEnvelope {
@@ -710,7 +734,7 @@ fn collect_graph_sources(workspace: &Path) -> Result<Vec<ContextSource>, LoopNat
         return Ok(Vec::new());
     }
     let mut sources = Vec::new();
-    collect_jsonld_sources(workspace, &graph_dir, &mut sources)?;
+    collect_jsonld_sources(workspace, &graph_dir, 0, &mut sources)?;
     sources.sort_by(|a, b| a.reference.cmp(&b.reference));
     Ok(sources)
 }
@@ -718,6 +742,7 @@ fn collect_graph_sources(workspace: &Path) -> Result<Vec<ContextSource>, LoopNat
 fn collect_jsonld_sources(
     workspace: &Path,
     dir: &Path,
+    depth: usize,
     sources: &mut Vec<ContextSource>,
 ) -> Result<(), LoopNativeError> {
     let entries = fs::read_dir(dir).map_err(|source| LoopNativeError::Io {
@@ -730,8 +755,17 @@ fn collect_jsonld_sources(
             source,
         })?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_jsonld_sources(workspace, &path, sources)?;
+        let file_type = entry.file_type().map_err(|source| LoopNativeError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if depth < MAX_GRAPH_SOURCE_DEPTH {
+                collect_jsonld_sources(workspace, &path, depth + 1, sources)?;
+            }
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonld") {
             let metadata = fs::metadata(&path).map_err(|source| LoopNativeError::Io {
                 path: path.display().to_string(),
@@ -748,12 +782,23 @@ fn collect_jsonld_sources(
     Ok(())
 }
 
-fn graph_semantic_hash(workspace: &Path) -> Option<String> {
-    let graph_dir = workspace.join(".duumbi").join("graph");
-    graph_dir
-        .exists()
-        .then(|| crate::hash::semantic_hash(&graph_dir).ok())
-        .flatten()
+fn graph_semantic_hash(workspace: &Path, graph_sources: &[ContextSource]) -> Option<String> {
+    if graph_sources.is_empty() {
+        return None;
+    }
+    let mut modules = Vec::new();
+    for source in graph_sources {
+        let path = workspace.join(&source.reference);
+        let content = fs::read_to_string(&path).ok()?;
+        let value = serde_json::from_str::<Value>(&content).ok()?;
+        modules.push(json!({
+            "path": source.reference,
+            "semantic_hash": crate::hash::semantic_hash_value(&value),
+        }));
+    }
+    Some(crate::hash::semantic_hash_value(
+        &json!({ "modules": modules }),
+    ))
 }
 
 fn collect_knowledge_sources(workspace: &Path) -> Vec<ContextSource> {
@@ -1086,18 +1131,6 @@ fn write_artifact_pair(
     write_json_file(&json_path, &envelope)?;
     write_text_file(&markdown_path, &input.markdown)?;
     artifact_ref(workspace, &json_path, kind, &format!("{kind} artifact"))
-}
-
-fn write_markdown_artifact(
-    workspace: &Path,
-    artifacts_dir: &Path,
-    kind: ArtifactKind,
-    stem: &str,
-    contents: String,
-) -> Result<ArtifactRef, LoopNativeError> {
-    let path = artifacts_dir.join(format!("{stem}.md"));
-    write_text_file(&path, &contents)?;
-    artifact_ref(workspace, &path, kind, &format!("{kind} artifact"))
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), LoopNativeError> {

@@ -184,6 +184,35 @@ fn native_intake_spec_writes_provider_free_artifacts_from_local_context() {
         metadata["body"]["resource_policy"]["review_model_label"],
         "strict_review"
     );
+    let product_spec = read_json(&artifacts_dir.join("product_spec.json"));
+    assert_eq!(product_spec["schema_version"], LOOP_ARTIFACT_SCHEMA_VERSION);
+    assert_eq!(product_spec["artifact_kind"], "product_spec");
+    assert_eq!(product_spec["provider_kind"], "duumbi");
+    assert!(
+        product_spec["links"]
+            .as_array()
+            .expect("links should be an array")
+            .iter()
+            .any(|link| link["path"]
+                == ".duumbi/loop/runs/duumbi-native-native-loop/artifacts/product_spec.md")
+    );
+    assert!(
+        product_spec["body"]["bdd_scenarios"]
+            .as_array()
+            .expect("bdd scenarios should be an array")
+            .iter()
+            .any(|scenario| scenario == "Run intake and spec without Git")
+    );
+    let technical_spec = read_json(&artifacts_dir.join("technical_spec.json"));
+    assert_eq!(
+        technical_spec["schema_version"],
+        LOOP_ARTIFACT_SCHEMA_VERSION
+    );
+    assert_eq!(technical_spec["artifact_kind"], "technical_spec");
+    assert_eq!(
+        technical_spec["body"]["resource_policy"]["external_llm_calls"],
+        0
+    );
     assert!(artifacts_dir.join("product_spec.md").exists());
     assert!(artifacts_dir.join("technical_spec.md").exists());
 }
@@ -280,6 +309,56 @@ fn missing_explicit_bdd_reference_blocks_before_writing_artifacts() {
         !ws.path()
             .join(".duumbi/loop/runs/duumbi-native-native-loop/artifacts")
             .exists()
+    );
+}
+
+#[test]
+fn graph_source_walk_is_depth_bounded() {
+    let ws = seed_native_workspace();
+    let mut deep_dir = ws.path().join(".duumbi/graph");
+    for level in 0..20 {
+        deep_dir = deep_dir.join(format!("level-{level}"));
+        fs::create_dir_all(&deep_dir).expect("deep graph dir should create");
+    }
+    write_file(
+        &deep_dir.join("deep.jsonld"),
+        r#"{
+  "@context": "https://duumbi.dev/ctx",
+  "@id": "duumbi:deep",
+  "duumbi:name": "deep",
+  "duumbi:functions": []
+}
+"#,
+    );
+
+    let result =
+        run_native_intake_spec(ws.path(), INTENT_SLUG).expect("native run should complete");
+
+    assert_eq!(result.state, LoopRunState::Completed);
+    assert!(
+        result
+            .context_summary
+            .iter()
+            .any(|item| item == "graph_sources=1")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn graph_source_walk_skips_symlink_cycle() {
+    let ws = seed_native_workspace();
+    std::os::unix::fs::symlink(".", ws.path().join(".duumbi/graph/cycle"))
+        .expect("graph symlink should create");
+
+    let result =
+        run_native_intake_spec(ws.path(), INTENT_SLUG).expect("native run should complete");
+
+    assert_eq!(result.state, LoopRunState::Completed);
+    assert!(
+        result
+            .context_summary
+            .iter()
+            .any(|item| item == "graph_sources=1")
     );
 }
 

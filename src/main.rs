@@ -26,6 +26,7 @@ mod interaction;
 #[allow(dead_code)] // Binary uses a subset of knowledge API; rest is used via lib crate
 mod knowledge;
 mod logging;
+#[allow(dead_code)] // Library exposes full native Loop provider API; binary uses CLI subset.
 mod loop_native;
 mod manifest;
 mod mcp;

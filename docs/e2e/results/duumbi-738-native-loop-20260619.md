@@ -43,7 +43,9 @@ Expected native artifacts:
 ```text
 .duumbi/loop/runs/duumbi-native-native-loop/artifacts/intake.json
 .duumbi/loop/runs/duumbi-native-native-loop/artifacts/intake.md
+.duumbi/loop/runs/duumbi-native-native-loop/artifacts/product_spec.json
 .duumbi/loop/runs/duumbi-native-native-loop/artifacts/product_spec.md
+.duumbi/loop/runs/duumbi-native-native-loop/artifacts/technical_spec.json
 .duumbi/loop/runs/duumbi-native-native-loop/artifacts/technical_spec.md
 .duumbi/loop/runs/duumbi-native-native-loop/artifacts/metadata.json
 ```
