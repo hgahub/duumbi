@@ -14,9 +14,10 @@ pub enum AgreementRate {
         rate: f64,
         /// Number of attempts with comparable evidence.
         comparable_attempt_count: usize,
-        /// Size of the dominant equivalence group.
+        /// Size of the dominant equivalence group, or the sum of dominant
+        /// groups when aggregating independent task/provider replay pairs.
         largest_equivalence_group_count: usize,
-        /// Dominant equivalence key.
+        /// Dominant equivalence key, or an aggregate grouping label.
         dominant_key: String,
     },
     /// Agreement could not be computed.

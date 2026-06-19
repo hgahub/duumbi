@@ -6,7 +6,7 @@
 //!
 //! # Algorithm
 //!
-//! 1. Read all `.jsonld` files in the graph directory (sorted by name).
+//! 1. Read all `.jsonld` files under the graph directory (sorted by path).
 //! 2. Canonicalize each JSON value:
 //!    - Remove `@id` keys from node objects (identity, not semantics).
 //!    - Remove `@context` from the top level (namespace declaration).
@@ -45,7 +45,7 @@ pub enum HashError {
     },
 }
 
-/// Computes the semantic hash of all `.jsonld` files in a graph directory.
+/// Computes the semantic hash of all `.jsonld` files under a graph directory.
 ///
 /// The hash is a hex-encoded SHA-256 string. It is deterministic across
 /// runs and machines for the same logical graph content, regardless of
@@ -101,25 +101,32 @@ pub fn semantic_hash_value(value: &serde_json::Value) -> String {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Collects all `.jsonld` file paths in a directory.
+/// Collects all `.jsonld` file paths under a directory.
 fn collect_jsonld_files(dir: &Path) -> Result<Vec<PathBuf>, HashError> {
+    let mut paths = Vec::new();
+    collect_jsonld_files_into(dir, &mut paths)?;
+    Ok(paths)
+}
+
+fn collect_jsonld_files_into(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), HashError> {
     let entries = fs::read_dir(dir).map_err(|e| HashError::Io {
         path: dir.display().to_string(),
         source: e,
     })?;
 
-    let mut paths = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| HashError::Io {
             path: dir.display().to_string(),
             source: e,
         })?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonld") {
+        if path.is_dir() {
+            collect_jsonld_files_into(&path, paths)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonld") {
             paths.push(path);
         }
     }
-    Ok(paths)
+    Ok(())
 }
 
 /// Canonicalizes a JSON-LD value for semantic hashing.
@@ -216,7 +223,11 @@ mod tests {
 
     /// Helper: write a .jsonld file with given content.
     fn write_jsonld(dir: &Path, name: &str, content: &str) {
-        fs::write(dir.join(name), content).expect("invariant: test file write must succeed");
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("invariant: test parent dirs must be created");
+        }
+        fs::write(path, content).expect("invariant: test file write must succeed");
     }
 
     #[test]
@@ -868,6 +879,68 @@ mod tests {
 
         let hash = semantic_hash(dir.path()).expect("must succeed");
         assert_eq!(hash.len(), 64, "multi-block function must hash");
+    }
+
+    #[test]
+    fn semantic_hash_includes_nested_graph_modules() {
+        let dir_a = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let dir_b = TempDir::new().expect("invariant: temp dir creation must succeed");
+        let main = r#"{
+            "@type": "duumbi:Module", "@id": "duumbi:main",
+            "duumbi:name": "main",
+            "duumbi:functions": []
+        }"#;
+
+        write_jsonld(dir_a.path(), "main.jsonld", main);
+        write_jsonld(dir_b.path(), "main.jsonld", main);
+        write_jsonld(
+            dir_a.path(),
+            "calculator/ops.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:calculator/ops",
+                "duumbi:name": "calculator/ops",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:calculator/ops/add",
+                    "duumbi:name": "add", "duumbi:returnType": "i64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:calculator/ops/add/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:calculator/ops/add/entry/0",
+                             "duumbi:value": 1, "duumbi:resultType": "i64"}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+        write_jsonld(
+            dir_b.path(),
+            "calculator/ops.jsonld",
+            r#"{
+                "@type": "duumbi:Module", "@id": "duumbi:calculator/ops",
+                "duumbi:name": "calculator/ops",
+                "duumbi:functions": [{
+                    "@type": "duumbi:Function", "@id": "duumbi:calculator/ops/add",
+                    "duumbi:name": "add", "duumbi:returnType": "i64", "duumbi:params": [],
+                    "duumbi:blocks": [{
+                        "@type": "duumbi:Block", "@id": "duumbi:calculator/ops/add/entry",
+                        "duumbi:label": "entry",
+                        "duumbi:ops": [
+                            {"@type": "duumbi:Const", "@id": "duumbi:calculator/ops/add/entry/0",
+                             "duumbi:value": 2, "duumbi:resultType": "i64"}
+                        ]
+                    }]
+                }]
+            }"#,
+        );
+
+        let hash_a = semantic_hash(dir_a.path()).expect("hash A should succeed");
+        let hash_b = semantic_hash(dir_b.path()).expect("hash B should succeed");
+
+        assert_ne!(
+            hash_a, hash_b,
+            "nested graph modules must contribute to semantic hash evidence"
+        );
     }
 
     #[test]

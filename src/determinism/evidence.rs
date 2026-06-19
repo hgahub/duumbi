@@ -360,32 +360,78 @@ impl ReplayMetrics {
         Self {
             attempts_total: attempts.len() as u32,
             attempts_completed: attempts.len() as u32,
-            exact_graph_agreement_rate: largest_group_agreement(
-                attempts
-                    .iter()
-                    .map(|attempt| attempt.final_graph_exact_hash.as_deref()),
+            exact_graph_agreement_rate: task_provider_grouped_agreement(
+                attempts,
+                |attempt| attempt.final_graph_exact_hash.clone(),
                 "no comparable attempts produced final graph evidence",
             ),
-            semantic_graph_agreement_rate: largest_group_agreement(
-                attempts
-                    .iter()
-                    .map(|attempt| attempt.final_graph_semantic_hash.as_deref()),
+            semantic_graph_agreement_rate: task_provider_grouped_agreement(
+                attempts,
+                |attempt| attempt.final_graph_semantic_hash.clone(),
                 "no comparable attempts produced semantic graph evidence",
             ),
-            behavioral_agreement_rate: largest_group_agreement(
-                attempts
-                    .iter()
-                    .map(|attempt| attempt.behavior_signature.as_deref()),
+            behavioral_agreement_rate: task_provider_grouped_agreement(
+                attempts,
+                |attempt| attempt.behavior_signature.clone(),
                 "no comparable attempts produced behavior evidence",
             ),
-            failure_category_agreement_rate: largest_group_agreement(
-                attempts
-                    .iter()
-                    .map(|attempt| attempt.error_category.map(|category| category.to_string())),
+            failure_category_agreement_rate: task_provider_grouped_agreement(
+                attempts,
+                |attempt| attempt.error_category.map(|category| category.to_string()),
                 "no comparable attempts produced failure category evidence",
             ),
             divergence_examples: Vec::new(),
         }
+    }
+}
+
+fn task_provider_grouped_agreement<F>(
+    attempts: &[ReplayAttempt],
+    value_for: F,
+    unavailable_reason: &str,
+) -> AgreementRate
+where
+    F: Fn(&ReplayAttempt) -> Option<String>,
+{
+    let mut groups: BTreeMap<(String, String), Vec<Option<String>>> = BTreeMap::new();
+    for attempt in attempts {
+        groups
+            .entry((attempt.task_id.clone(), attempt.provider.clone()))
+            .or_default()
+            .push(value_for(attempt));
+    }
+
+    let mut comparable_attempt_count = 0usize;
+    let mut largest_equivalence_group_count = 0usize;
+    let mut comparable_group_count = 0usize;
+
+    for values in groups.values() {
+        if let AgreementRate::Available {
+            comparable_attempt_count: group_comparable,
+            largest_equivalence_group_count: group_largest,
+            ..
+        } = largest_group_agreement(
+            values.iter().map(|value| value.as_deref()),
+            unavailable_reason,
+        ) {
+            comparable_attempt_count += group_comparable;
+            largest_equivalence_group_count += group_largest;
+            comparable_group_count += 1;
+        }
+    }
+
+    if comparable_attempt_count == 0 {
+        return AgreementRate::Unavailable {
+            reason: unavailable_reason.to_string(),
+            comparable_attempt_count,
+        };
+    }
+
+    AgreementRate::Available {
+        rate: largest_equivalence_group_count as f64 / comparable_attempt_count as f64,
+        comparable_attempt_count,
+        largest_equivalence_group_count,
+        dominant_key: format!("grouped_by=task_id/provider;groups={comparable_group_count}"),
     }
 }
 
@@ -533,6 +579,47 @@ fn metric_row(name: &str, metric: &AgreementRate) -> String {
 mod tests {
     use super::*;
 
+    fn replay_attempt(
+        task_id: &str,
+        provider: &str,
+        attempt: u32,
+        exact_hash: Option<&str>,
+        semantic_hash: Option<&str>,
+        behavior_signature: Option<&str>,
+    ) -> ReplayAttempt {
+        ReplayAttempt {
+            task_id: task_id.to_string(),
+            suite: "core".to_string(),
+            tags: Vec::new(),
+            provider: provider.to_string(),
+            model_identity: ModelIdentity::unavailable("not exposed"),
+            attempt,
+            workspace_strategy: "tempdir".to_string(),
+            initial_graph_exact_hash: None,
+            initial_graph_semantic_hash: None,
+            final_graph_exact_hash: exact_hash.map(ToString::to_string),
+            final_graph_semantic_hash: semantic_hash.map(ToString::to_string),
+            intent_spec_hash: None,
+            bdd_context_hash: None,
+            context_pack_hash: None,
+            prompt_hashes: PromptHashes::Unavailable {
+                reason: "not captured".to_string(),
+            },
+            success: true,
+            tests_passed: 1,
+            tests_total: 1,
+            bdd_readiness: None,
+            bdd_coverage: Vec::new(),
+            behavior_signature: behavior_signature.map(ToString::to_string),
+            error_category: None,
+            dominant_error_code: None,
+            provider_usage: ProviderUsageSummary::unavailable("not exposed"),
+            benchmark_evidence: None,
+            artifact_paths: Vec::new(),
+            duration_secs: 0.1,
+        }
+    }
+
     #[test]
     fn report_serializes_schema_and_rewrite_status() {
         let report = ReplayReport::new(
@@ -665,6 +752,74 @@ mod tests {
         assert!(matches!(
             metrics.semantic_graph_agreement_rate,
             AgreementRate::Available { rate, .. } if rate == 1.0
+        ));
+    }
+
+    #[test]
+    fn metrics_compute_agreement_within_task_provider_pairs() {
+        let attempts = vec![
+            replay_attempt(
+                "calculator",
+                "mock",
+                1,
+                Some("calculator-exact"),
+                Some("calculator-semantic"),
+                Some("calculator-behavior"),
+            ),
+            replay_attempt(
+                "calculator",
+                "mock",
+                2,
+                Some("calculator-exact"),
+                Some("calculator-semantic"),
+                Some("calculator-behavior"),
+            ),
+            replay_attempt(
+                "strings",
+                "mock",
+                1,
+                Some("strings-exact"),
+                Some("strings-semantic"),
+                Some("strings-behavior"),
+            ),
+            replay_attempt(
+                "strings",
+                "mock",
+                2,
+                Some("strings-exact"),
+                Some("strings-semantic"),
+                Some("strings-behavior"),
+            ),
+        ];
+
+        let metrics = ReplayMetrics::from_attempts(&attempts);
+
+        assert!(matches!(
+            metrics.exact_graph_agreement_rate,
+            AgreementRate::Available {
+                rate,
+                comparable_attempt_count: 4,
+                largest_equivalence_group_count: 4,
+                ..
+            } if rate == 1.0
+        ));
+        assert!(matches!(
+            metrics.semantic_graph_agreement_rate,
+            AgreementRate::Available {
+                rate,
+                comparable_attempt_count: 4,
+                largest_equivalence_group_count: 4,
+                ..
+            } if rate == 1.0
+        ));
+        assert!(matches!(
+            metrics.behavioral_agreement_rate,
+            AgreementRate::Available {
+                rate,
+                comparable_attempt_count: 4,
+                largest_equivalence_group_count: 4,
+                ..
+            } if rate == 1.0
         ));
     }
 
