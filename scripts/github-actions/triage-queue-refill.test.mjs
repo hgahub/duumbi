@@ -8,6 +8,7 @@ import {
   HUMAN_ACCEPTANCE_STATUS,
   TODO_STATUS,
   callDeepSeek,
+  callMoonshot,
   countOpenIssueItemsWithStatus,
   parseTriageDecision,
   runTriageQueueRefill,
@@ -187,7 +188,7 @@ function makeFetch({
       }
     }
 
-    if (url === "https://api.deepseek.com/chat/completions") {
+    if (url === "https://api.moonshot.ai/v1/chat/completions") {
       const content = Array.isArray(deepSeekContents) && deepSeekContents.length > 0
         ? deepSeekContents[deepSeekCallCount % deepSeekContents.length]
         : JSON.stringify(decision);
@@ -196,7 +197,7 @@ function makeFetch({
         : { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 };
       deepSeekCallCount += 1;
       return response({
-        model: "deepseek-v4-pro",
+        model: "glm-5.2",
         choices: [{ message: { content } }],
         usage,
       });
@@ -333,6 +334,30 @@ test("callDeepSeek reports model finish reason and token usage after empty retri
     }),
     /attempts=2 model=deepseek-v4-pro finish_reason=length prompt_tokens=33 completion_tokens=0 total_tokens=33/,
   );
+});
+
+test("callMoonshot uses Moonshot endpoint and default GLM model", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return response({
+      model: "glm-5.2",
+      choices: [{ finish_reason: "stop", message: { content: "{\"action\":\"no_action\"}" } }],
+      usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+    });
+  };
+
+  const result = await callMoonshot({
+    fetchImpl,
+    apiKey: "moonshot-key",
+    messages: [{ role: "user", content: "{}" }],
+  });
+
+  assert.equal(result.model, "glm-5.2");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.moonshot.ai/v1/chat/completions");
+  assert.equal(calls[0].body.model, "glm-5.2");
+  assert.deepEqual(calls[0].body.response_format, { type: "json_object" });
 });
 
 test("runTriageQueueRefill exits without model call when the queue is full", async () => {
@@ -504,7 +529,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   const result = await runTriageQueueRefill({
     env: {
       GH_PROJECT_PAT: "pat",
-      DEEPSEEK_API_KEY: "deepseek-key",
+      MOONSHOT_API_KEY: "moonshot-key",
       DUUMBI_PROJECT_NUMBER: "1",
       DUUMBI_METRICS_PATH: "metrics.json",
     },
@@ -519,7 +544,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   assert.equal(core.failed, null);
   assert.equal(result.decision, "route_existing_issue");
   assert.equal(result.issueNumber, 10);
-  assert.equal(calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions").length, 1);
+  assert.equal(calls.filter((call) => call.url === "https://api.moonshot.ai/v1/chat/completions").length, 1);
 
   const statusUpdates = calls.filter((call) => call.body.query?.includes("updateProjectV2ItemFieldValue"));
   assert.equal(statusUpdates.length, 1);
@@ -534,7 +559,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   const metrics = JSON.parse(fs.readFileSync(path.join(workspace, "metrics.json"), "utf8"));
   assert.equal(metrics.counts.issues_queued, 1);
   assert.equal(metrics.counts.slack_notifications_attempted, 0);
-  assert.equal(metrics.provider_usage.provider, "deepseek");
+  assert.equal(metrics.provider_usage.provider, "moonshot");
 
   const inboxPath = path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "candidate.md");
   const archivedPath = path.join(workspace, "duumbi-vault", "Duumbi", "05 Archive", "Processed Inbox", "candidate.md");
@@ -553,7 +578,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   }]);
 });
 
-test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", async () => {
+test("runTriageQueueRefill retries once when Moonshot returns malformed JSON", async () => {
   const project = projectWithItems([
     issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
     issueItem({ number: 2, status: HUMAN_ACCEPTANCE_STATUS }),
@@ -596,7 +621,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
   const result = await runTriageQueueRefill({
     env: {
       GH_PROJECT_PAT: "pat",
-      DEEPSEEK_API_KEY: "deepseek-key",
+      MOONSHOT_API_KEY: "moonshot-key",
       DUUMBI_PROJECT_NUMBER: "1",
       DUUMBI_METRICS_PATH: "metrics.json",
     },
@@ -612,9 +637,9 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
   assert.equal(result.decision, "route_existing_issue");
   assert.equal(result.issueNumber, 10);
   assert.equal(core.warnings.some((warning) => /retrying strict JSON repair once/.test(warning)), true);
-  assert.equal(calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions").length, 2);
+  assert.equal(calls.filter((call) => call.url === "https://api.moonshot.ai/v1/chat/completions").length, 2);
 
-  const repairRequest = calls.filter((call) => call.url === "https://api.deepseek.com/chat/completions")[1];
+  const repairRequest = calls.filter((call) => call.url === "https://api.moonshot.ai/v1/chat/completions")[1];
   assert.match(repairRequest.body.messages[0].content, /valid strict JSON object/);
   assert.match(repairRequest.body.messages.at(-1).content, /Repair this malformed decision/);
 
@@ -622,7 +647,7 @@ test("runTriageQueueRefill retries once when DeepSeek returns malformed JSON", a
   assert.equal(metrics.provider_usage.request_count, 2);
   assert.equal(metrics.provider_usage.prompt_tokens, 2000);
   assert.equal(metrics.provider_usage.completion_tokens, 400);
-  assert.equal(metrics.provider_usage.estimated_cost_usd, 0.00115329);
+  assert.equal(metrics.provider_usage.estimated_cost_usd, null);
   assert.equal(metrics.warnings.some((warning) => /retrying strict JSON repair once/.test(warning)), true);
 });
 
@@ -644,7 +669,7 @@ test("runTriageQueueRefill blocks before status update when existing issue label
   const result = await runTriageQueueRefill({
     env: {
       GH_PROJECT_PAT: "pat",
-      DEEPSEEK_API_KEY: "deepseek-key",
+      MOONSHOT_API_KEY: "moonshot-key",
       DUUMBI_PROJECT_NUMBER: "1",
       DUUMBI_METRICS_PATH: "metrics.json",
     },
@@ -696,7 +721,7 @@ test("runTriageQueueRefill archives Inbox notes after creating a queued issue", 
   const result = await runTriageQueueRefill({
     env: {
       GH_PROJECT_PAT: "pat",
-      DEEPSEEK_API_KEY: "deepseek-key",
+      MOONSHOT_API_KEY: "moonshot-key",
       DUUMBI_PROJECT_NUMBER: "1",
       DUUMBI_METRICS_PATH: "metrics.json",
     },
@@ -741,7 +766,7 @@ test("runTriageQueueRefill closes a created issue when Project insertion fails",
   const result = await runTriageQueueRefill({
     env: {
       GH_PROJECT_PAT: "pat",
-      DEEPSEEK_API_KEY: "deepseek-key",
+      MOONSHOT_API_KEY: "moonshot-key",
       DUUMBI_PROJECT_NUMBER: "1",
       DUUMBI_METRICS_PATH: "metrics.json",
     },
