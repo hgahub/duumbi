@@ -39,7 +39,7 @@ pre-release assumptions or incomplete launch framing:
   Delivered, Partial, and Research labels, but the current docs sidebar has no
   status or roadmap page.
 - There is no verified guard that checks public install instructions against
-  the latest release assets before publishing or release completion.
+  the documented release tag assets before publishing or release completion.
 
 The product risk is direct: a user may follow a public claim, choose an
 unsupported platform or install command, or misread roadmap research as shipped
@@ -81,10 +81,12 @@ When this work is done:
   claims changed, and which claims are intentionally left as historical blog
   context.
 - A release-time verification path exists. It may be automated CI or a required
-  release-checklist script, but it must compare install instructions with the
-  latest release metadata well enough to catch an unavailable primary install
-  command, a stale platform matrix, missing checksums, or missing required
-  release assets.
+  release-checklist script, but it must resolve the documented version or tag
+  and compare install instructions with that tag's release metadata. For this
+  issue, the documented tag is `v0.4.0-preview`; the guard must not rely on a
+  moving "latest release" endpoint. The comparison must catch an unavailable
+  primary install command, a stale platform matrix, missing checksums, or
+  missing required release assets.
 - Public docs and website builds pass after the changes.
 - The execution issue remains open after spec PRs and implementation PRs until
   Stage 12 verifies merged evidence.
@@ -110,7 +112,8 @@ When this work is done:
   point to the Status and roadmap page.
 - Add reviewable audit evidence for public-claim reconciliation.
 - Add a CI check, script, or release checklist item that verifies install
-  instructions against release metadata before publish/release completion.
+  instructions against the documented release tag metadata before
+  publish/release completion.
 - Update source-repo documentation only when needed to keep internal audit,
   release checklist, or README guidance aligned.
 - Preserve historical blog posts only if they are clearly marked as historical
@@ -276,9 +279,10 @@ Unsupported state:
 
 Error state:
 
-- If release metadata cannot be checked during implementation, the agent must
-  not invent asset availability. It must keep the last verified evidence in the
-  spec implementation report and mark live verification unavailable.
+- If documented release tag metadata cannot be checked during implementation,
+  the agent must not invent asset availability. It must keep the last verified
+  evidence in the spec implementation report and mark live verification
+  unavailable.
 
 ### Provider And Model Claims
 
@@ -340,9 +344,9 @@ Accessibility and focus behavior:
 
 Race conditions:
 
-- If release assets change while the implementation is in progress, Stage 10
-  must re-check release metadata before final evidence and update docs to the
-  latest verified release state.
+- If assets for the documented release tag change while the implementation is in
+  progress, Stage 10 must re-check that tag's release metadata before final
+  evidence and update docs to the verified documented release state.
 
 ## BDD Scenarios
 
@@ -406,14 +410,14 @@ Feature: Public docs match the shipped v0.4.0-preview release
 
     Scenario: Release checklist detects a stale platform matrix
       Given public install docs list a required target archive
-      And the latest release metadata lacks that archive
+      And the documented release tag metadata lacks that archive
       When the release install verification check runs
       Then the check fails or records a blocking checklist failure
       And the implementation evidence identifies the stale target claim
 
     Scenario: Release checklist detects missing checksums
       Given public install docs instruct users to verify checksums
-      And the latest release metadata lacks `checksums.txt`
+      And the documented release tag metadata lacks `checksums.txt`
       When the release install verification check runs
       Then the check fails or records a blocking checklist failure
       And the release must not be described as install-verified
@@ -449,12 +453,12 @@ Feature: Public docs match the shipped v0.4.0-preview release
 - Search checks over `hgahub/duumbi-web` for stale install, provider, model,
   version, and platform claims, excluding `node_modules` and generated build
   output.
-- GitHub API or `gh` evidence for `v0.4.0-preview` release assets and
-  `checksums.txt`.
+- GitHub API or `gh` evidence for documented `v0.4.0-preview` release assets
+  and `checksums.txt`.
 - Public docs build from `hgahub/duumbi-web/docs`.
 - Public website build from `hgahub/duumbi-web`.
 - Install verification guard evidence showing pass/fail behavior against the
-  current release metadata.
+  documented release tag metadata.
 - Static review of the Status and roadmap page for label honesty, public
   suitability, and source traceability.
 - Implementation PR evidence includes affected public surfaces, commands run,
