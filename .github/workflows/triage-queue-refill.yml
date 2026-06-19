@@ -39,8 +39,8 @@ jobs:
         uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         env:
           GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
-          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
-          MOONSHOT_MODEL: ${{ vars.MOONSHOT_MODEL || 'glm-5.2' }}
+          ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY }}
+          ZHIPU_MODEL: ${{ vars.ZHIPU_MODEL || 'glm-5.2' }}
           DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
           DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE }}
           DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}

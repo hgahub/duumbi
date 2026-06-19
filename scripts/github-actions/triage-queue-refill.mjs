@@ -9,7 +9,7 @@ export const STATUS_FIELD_NAME = "Status";
 export const HUMAN_ACCEPTANCE_LABEL = "needs-human-review";
 export const DEFAULT_TARGET_HUMAN_ACCEPTANCE_MIN = 3;
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
-export const DEFAULT_MOONSHOT_MODEL = "glm-5.2";
+export const DEFAULT_ZHIPU_MODEL = "glm-5.2";
 export const MAX_ISSUES_CREATED_PER_RUN = 1;
 export const DEFAULT_PROJECT_OWNER_TYPE = "user";
 
@@ -34,7 +34,7 @@ const DEEPSEEK_PRICING_USD_PER_1M = {
   },
 };
 
-const MOONSHOT_API_URL = "https://api.moonshot.ai/v1/chat/completions";
+const ZHIPU_API_URL = "https://api.z.ai/api/paas/v4/chat/completions";
 
 function nowIso() {
   return new Date().toISOString();
@@ -946,10 +946,10 @@ export async function callDeepSeek({
   ].join(" "));
 }
 
-export async function callMoonshot({
+export async function callZhipu({
   fetchImpl = fetch,
   apiKey,
-  model = DEFAULT_MOONSHOT_MODEL,
+  model = DEFAULT_ZHIPU_MODEL,
   messages,
   timeoutMs = 120_000,
   emptyContentRetries = 2,
@@ -960,7 +960,7 @@ export async function callMoonshot({
   const maxAttempts = Math.max(1, 1 + Number(emptyContentRetries || 0));
   const baseMessages = Array.isArray(messages) ? messages : [];
   const retryInstruction = [
-    "Retry instruction: the previous Moonshot JSON-mode response returned empty content.",
+    "Retry instruction: the previous Zhipu JSON-mode response returned empty content.",
     "Return one non-empty JSON object only.",
     "Do not return an empty string, markdown, prose outside JSON, or whitespace-only content.",
   ].join("\n");
@@ -979,7 +979,7 @@ export async function callMoonshot({
         : [{ role: "system", content: retryInstruction }, ...baseMessages];
 
     try {
-      const response = await fetchImpl(MOONSHOT_API_URL, {
+      const response = await fetchImpl(ZHIPU_API_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -996,7 +996,7 @@ export async function callMoonshot({
       });
       const { text, json } = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(`Moonshot API failed: ${response.status} ${truncateText(text, 240)}`);
+        throw new Error(`Zhipu API failed: ${response.status} ${truncateText(text, 240)}`);
       }
       const choice = json.choices?.[0] || {};
       const content = choice.message?.content;
@@ -1021,7 +1021,7 @@ export async function callMoonshot({
       }
     } catch (error) {
       if (error?.name === "AbortError") {
-        throw new Error(`Moonshot API timed out after ${timeoutMs}ms`);
+        throw new Error(`Zhipu API timed out after ${timeoutMs}ms`);
       }
       throw error;
     } finally {
@@ -1031,7 +1031,7 @@ export async function callMoonshot({
 
   const usage = lastEmptyDetails?.usage || {};
   throw new Error([
-    "Moonshot returned empty decision content after JSON-mode retries.",
+    "Zhipu returned empty decision content after JSON-mode retries.",
     `attempts=${lastEmptyDetails?.maxAttempts || maxAttempts}`,
     `model=${lastEmptyDetails?.model || model}`,
     `finish_reason=${lastEmptyDetails?.finishReason || "unknown"}`,
@@ -1122,11 +1122,11 @@ function providerUsageFromDeepSeek(model, usage, latencyMs) {
   };
 }
 
-function providerUsageFromMoonshot(model, usage, latencyMs) {
+function providerUsageFromZhipu(model, usage, latencyMs) {
   return {
     available: true,
-    reason: "moonshot_api_call",
-    provider: "moonshot",
+    reason: "zhipu_api_call",
+    provider: "zhipu",
     model,
     request_count: Number.isFinite(Number(usage.request_count)) ? Number(usage.request_count) : 1,
     prompt_tokens: Number.isFinite(Number(usage.prompt_tokens)) ? Number(usage.prompt_tokens) : null,
@@ -1202,7 +1202,7 @@ function combineProviderUsage(responses) {
 
 async function getParsedTriageDecision({ fetchImpl, apiKey, model, messages, core, warnings = [] }) {
   const responses = [];
-  const firstResponse = await callMoonshot({
+  const firstResponse = await callZhipu({
     fetchImpl,
     apiKey,
     model,
@@ -1216,10 +1216,10 @@ async function getParsedTriageDecision({ fetchImpl, apiKey, model, messages, cor
       responses,
     };
   } catch (error) {
-    const warning = `Moonshot decision was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
+    const warning = `Zhipu decision was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
     warnings.push(warning);
     core?.warning?.(warning);
-    const repairResponse = await callMoonshot({
+    const repairResponse = await callZhipu({
       fetchImpl,
       apiKey,
       model,
@@ -1323,8 +1323,8 @@ export async function runTriageQueueRefill({
   const projectPat = env.GH_PROJECT_PAT;
   const projectOwner = env.DUUMBI_PROJECT_OWNER || context.repo.owner;
   const projectNumber = Number(env.DUUMBI_PROJECT_NUMBER || 0);
-  const moonshotApiKey = env.MOONSHOT_API_KEY;
-  const moonshotModel = env.MOONSHOT_MODEL || DEFAULT_MOONSHOT_MODEL;
+  const zhipuApiKey = env.ZHIPUAI_API_KEY;
+  const zhipuModel = env.ZHIPU_MODEL || DEFAULT_ZHIPU_MODEL;
 
   let result = {
     ok: false,
@@ -1400,8 +1400,8 @@ export async function runTriageQueueRefill({
       return { ...result, decision: "not_needed" };
     }
 
-    if (!moonshotApiKey) {
-      throw new Error("MOONSHOT_API_KEY is not configured; failing closed before triage refill.");
+    if (!zhipuApiKey) {
+      throw new Error("ZHIPUAI_API_KEY is not configured; failing closed before triage refill.");
     }
 
     const triageContext = await collectTriageContext({
@@ -1416,8 +1416,8 @@ export async function runTriageQueueRefill({
     const messages = buildTriageMessages(triageContext);
     const { parsedDecision, responses: modelResponses } = await getParsedTriageDecision({
       fetchImpl,
-      apiKey: moonshotApiKey,
-      model: moonshotModel,
+      apiKey: zhipuApiKey,
+      model: zhipuModel,
       messages,
       core,
       warnings,
@@ -1448,8 +1448,8 @@ export async function runTriageQueueRefill({
       git,
     });
     const queued = applied.issueNumber ? 1 : 0;
-    const lastMoonshotResponse = modelResponses.at(-1);
-    const combinedMoonshotUsage = combineProviderUsage(modelResponses);
+    const lastZhipuResponse = modelResponses.at(-1);
+    const combinedZhipuUsage = combineProviderUsage(modelResponses);
 
     result = {
       ...result,
@@ -1457,7 +1457,7 @@ export async function runTriageQueueRefill({
       decision: decision.action,
       issueNumber: applied.issueNumber,
       issueUrl: applied.issueUrl,
-      model: lastMoonshotResponse.model,
+      model: lastZhipuResponse.model,
       inboxNotesArchived: archivedInboxNotes.length,
       archivedInboxNotes,
       commitSha: vaultCommit.commitSha,
@@ -1475,10 +1475,10 @@ export async function runTriageQueueRefill({
         artifact_links_found: decision.source_links?.length || null,
         artifact_links_missing: decision.source_links?.length ? 0 : null,
       },
-      providerUsage: providerUsageFromMoonshot(
-        lastMoonshotResponse.model,
-        combinedMoonshotUsage.usage,
-        combinedMoonshotUsage.latencyMs,
+      providerUsage: providerUsageFromZhipu(
+        lastZhipuResponse.model,
+        combinedZhipuUsage.usage,
+        combinedZhipuUsage.latencyMs,
       ),
       warnings,
     });

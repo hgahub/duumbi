@@ -13,7 +13,7 @@ or source-repo contracts that support it.
 - Slack is a capture, notification, clarification, and approval surface.
 - GitHub Actions generally avoid direct model calls. The Stage 4
   `triage-queue-refill.yml` workflow is the explicit exception: it may call a
-  bounded Moonshot-backed triage step when the Project V2 `Needs Human Acceptance`
+  bounded Z.ai/Zhipu-backed triage step when the Project V2 `Needs Human Acceptance`
   queue drops below the configured minimum. Other scheduled workflows create
   deterministic dispatch records and Slack handoffs for Codex Cloud, Codex App,
   Codex CLI, or reviewed local agent runs.
@@ -41,7 +41,7 @@ or source-repo contracts that support it.
 |---|---|---|
 | `slack-intake-dispatch.yml` | Slack shortcut repository dispatch, manual | Dispatches Stage 1 Slack intake without requiring the developer to name the skill. |
 | `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Uses DeepSeek to enrich one unprocessed Inbox note in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
-| `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Moonshot-backed Stage 4 triage refill when fewer than three issues are waiting. |
+| `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Z.ai/Zhipu-backed Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
 | `ready-for-build-handoff.yml` | `tech-spec-approved` label, hourly, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, with an idempotent issue marker so the notification can be retried independently from `stage-approval.yml`. |
@@ -77,10 +77,10 @@ closed.
   `clarification-routing.yml` for explicit `@Clarification` synthesis.
 - `DEEPSEEK_MODEL`: optional repository variable for DeepSeek-backed
   automation; defaults to `deepseek-v4-pro`.
-- `MOONSHOT_API_KEY`: Moonshot-compatible API key used by
+- `ZHIPUAI_API_KEY`: Z.ai/Zhipu API key used by
   `triage-queue-refill.yml` when the `Needs Human Acceptance` queue is below
   target.
-- `MOONSHOT_MODEL`: optional repository variable for the triage refill model;
+- `ZHIPU_MODEL`: optional repository variable for the triage refill model;
   defaults to `glm-5.2`.
 - `DUUMBI_PROJECT_NUMBER`: repository variable for the Project V2 number used by
   `triage-queue-refill.yml`.
@@ -130,7 +130,7 @@ V2 with `GH_PROJECT_PAT`; if at least three open issues are already in
 
 When refill is needed, the workflow checks out `duumbi-vault`, builds bounded
 context from active Inbox notes, Ideas Discussions, Project V2 issue state, and
-active Atlas/runbook docs, and asks Moonshot for one strict JSON decision:
+active Atlas/runbook docs, and asks Z.ai/Zhipu for one strict JSON decision:
 `route_existing_issue`, `create_issue`, `needs_clarification`, or `no_action`.
 Only `route_existing_issue` and `create_issue` perform GitHub writes, and at
 most one issue is queued per run.
@@ -141,10 +141,11 @@ Slack gate. The refill workflow itself does not post Slack notifications; this
 avoids duplicate messages. Clarification routing uses `GITHUB_TOKEN` because it
 only comments on the already-routed issue.
 
-Default model: `glm-5.2` through the Moonshot-compatible chat completions
-endpoint. The workflow records token counts when the provider returns usage
-metadata, but cost estimation is intentionally left null until stable pricing
-for this routed model is documented in the repository.
+Default model: `glm-5.2` through the Z.ai/Zhipu chat completions endpoint:
+`https://api.z.ai/api/paas/v4/chat/completions`. The workflow records token
+counts when the provider returns usage metadata, but cost estimation is
+intentionally left null until stable pricing for this routed model is documented
+in the repository.
 
 ## Gate Policy
 
@@ -218,7 +219,7 @@ after merge.
 All new workflows write metadata-only metrics artifacts. They must not store raw
 Slack payloads, issue bodies, comments, prompts from users, model completions,
 provider payloads, credentials, or broad logs. The Stage 4 refill workflow may
-send bounded triage context to Moonshot, but its metrics artifact records only
+send bounded triage context to Z.ai/Zhipu, but its metrics artifact records only
 metadata, counts, provider name/model, token usage, estimated cost, and
 warnings.
 
