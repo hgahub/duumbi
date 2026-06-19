@@ -358,6 +358,9 @@ test("callZhipu uses Zhipu endpoint and default GLM model", async () => {
   assert.equal(calls[0].url, "https://api.z.ai/api/paas/v4/chat/completions");
   assert.equal(calls[0].body.model, "glm-5.2");
   assert.deepEqual(calls[0].body.response_format, { type: "json_object" });
+  assert.deepEqual(calls[0].body.thinking, { type: "disabled" });
+  assert.equal(calls[0].body.reasoning_effort, "none");
+  assert.equal(calls[0].body.do_sample, false);
 });
 
 test("runTriageQueueRefill exits without model call when the queue is full", async () => {
