@@ -3,7 +3,7 @@ members = [".", "crates/duumbi-studio"]
 
 [package]
 name = "duumbi"
-version = "0.4.0-preview"
+version = "0.4.1-preview"
 edition = "2024"
 license = "MPL-2.0"
 default-run = "duumbi"
