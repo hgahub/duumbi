@@ -46,7 +46,7 @@ jobs:
       request_parse_failures: ${{ steps.request.outputs.request_parse_failures }}
     steps:
       - name: Check out helper
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate request and build Slack payload
         id: request
@@ -341,7 +341,7 @@ jobs:
       contents: read
     steps:
       - name: Check out helper
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Write DUUMBI workflow metrics
         if: always()
