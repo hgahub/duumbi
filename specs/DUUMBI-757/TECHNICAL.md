@@ -446,14 +446,23 @@ Approved resource names:
 
 Required controls:
 
-- USD 20/month non-prod Loop budget cap,
+- USD 20/month non-prod Loop budget alert policy,
 - alerts at 50/80/100 percent,
+- 100 percent threshold disable or teardown runbook,
 - max replicas 1 in staging,
 - scale-to-zero where supported,
 - worker disabled unless explicit E2E queue test runs,
 - no live provider/model spend,
 - no production secrets in Pulumi config or repository files,
 - tags sufficient to identify Project, Environment, Owner, and CostCenter.
+
+Azure Cost Management budgets are alerts, not hard spend caps. The
+implementation must therefore add an enforceable response at or before the 100
+percent threshold: disable the worker, scale application containers to zero
+where supported, remove scheduled/background execution, and require explicit
+manual approval before re-enabling hosted smoke. If automated disablement is not
+implemented in the first infra PR, hosted smoke must include a manual teardown
+runbook and evidence that it was executed.
 
 Implementation should add infrastructure only after `duumbi-loop` has stable
 health, readiness, configuration, and image/container boundaries.
@@ -629,19 +638,25 @@ Environment:
 - approved Azure staging resources from `duumbi-infra`,
 - staging `duumbi-loop` app/API container,
 - worker disabled by default,
-- Postgres/Neon non-prod database if credentials and budget are available,
+- Postgres/Neon non-prod database,
 - Stripe test mode,
 - test AuthAdapter,
 - deterministic no-spend model router,
 - `staging.loop.duumbi.dev`.
+
+Hosted smoke must be blocked or explicitly skipped with findings if a
+Postgres-compatible database is unavailable. This phase must not fall back to
+the #750 in-memory store because #757 is specifically the production-shaped
+persistence slice.
 
 Required evidence:
 
 - HTTPS public route reachable,
 - `/health` and `/ready` reachable,
 - session flow works in staging test mode,
-- dashboard loads persisted seeded state,
-- budget and alerts exist,
+- dashboard loads persisted seeded state from Postgres after an app restart or
+  container recycle,
+- budget alerts and 100 percent disable/teardown policy exist,
 - max replicas 1 is configured,
 - scale-to-zero or disabled-worker policy is visible,
 - no live model/provider spend occurs,

@@ -164,7 +164,11 @@ Approved non-prod resources:
 - `log-duumbi-loop-staging`
 - `staging.loop.duumbi.dev`
 
-Budget cap: USD 20/month for non-prod Loop, with alerts at 50/80/100 percent.
+Budget policy: USD 20/month for non-prod Loop, with alerts at 50/80/100
+percent. Because Azure budget alerts do not stop spend by themselves, the
+staging implementation must include a 100 percent threshold disable or teardown
+runbook, and hosted smoke evidence must show the post-smoke disabled or
+scale-to-zero state.
 
 Scale-to-zero is required where possible. Staging max replicas is 1. The worker
 must be disabled unless an explicit E2E queue test needs it. Hosted smoke must
