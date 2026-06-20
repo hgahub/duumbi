@@ -209,6 +209,19 @@ DUUMBI_LOOP_ENABLE_WORKER=false
 DUUMBI_LOOP_STRIPE_MODE=test
 ```
 
+The hosted staging database is an explicit prerequisite for hosted smoke. This
+slice must not add a new production database service by implication. The
+implementation must either:
+
+- use an approved non-prod Postgres-compatible database such as Neon Postgres,
+  if credentials and budget are available, or
+- stop before hosted smoke with findings that the database source is missing.
+
+When a staging database is available, `DUUMBI_LOOP_DATABASE_URL` must be supplied
+to the Container App through `kv-duumbi-loop-staging` as a secret reference. The
+raw URL must not appear in Pulumi outputs, logs, issue comments, PR bodies, or
+evidence artifacts.
+
 Required HTTP contract:
 
 - `GET /health` returns successful liveness.
@@ -233,6 +246,14 @@ Required resources:
 - Key Vault: `kv-duumbi-loop-staging`,
 - Log Analytics workspace: `log-duumbi-loop-staging`,
 - DNS/custom domain: `staging.loop.duumbi.dev`.
+
+Required external or pre-existing dependency:
+
+- Postgres-compatible staging persistence supplied as
+  `DUUMBI_LOOP_DATABASE_URL` through `kv-duumbi-loop-staging`.
+
+If this dependency is unavailable, the infra PR may still provide Pulumi preview
+evidence for the Azure shell, but hosted smoke must be blocked with findings.
 
 Required outputs:
 
@@ -263,7 +284,8 @@ Required scale:
 - staging app min replicas = 0 where compatible with smoke requirements,
 - worker max replicas = 1,
 - worker min replicas = 0,
-- worker disabled or not deployed unless explicit E2E queue work exists.
+- worker Container App is deployed for contract/output consistency,
+- worker execution is disabled unless explicit E2E queue work exists.
 
 Required teardown/disable:
 
@@ -306,7 +328,7 @@ Required teardown/disable:
 | Public Loop page is reachable and branded | Astro build plus route/content test or snapshot asserting first-viewport "DUUMBI Loop" and token-backed classes/content. | `duumbi-web` |
 | Public copy does not overclaim completion | Content test that rejects prohibited claims such as full launch, production auth complete, live billing complete, or Git adapters required. | `duumbi-web` |
 | Native workflow is primary | Content test asserting intent/intake/spec/review language and optional adapter language. | `duumbi-web` |
-| DUUMBI-owned model labels are the public contract | Content test asserting Fast/Balanced/Deep Research/Strict Review/Private-BYOK labels and absence of raw provider SKU choices. | `duumbi-web` |
+| DUUMBI-owned model labels are the public contract | Content test asserting Fast/Balanced/Deep Research/Strict Review/Private/BYOK labels and absence of raw provider SKU choices. | `duumbi-web` |
 | Public CTA reaches the staging boundary safely | Configured CTA test; staging smoke opens CTA target and verifies it does not start a spendful run. | `duumbi-web`, `duumbi-loop` |
 | Staging app exposes health and evidence | HTTP smoke for `/health`, `/ready`, `/ops/e2e-evidence`; evidence values assert no-spend guardrails. | `duumbi-loop`, `duumbi-infra` |
 | Azure staging resources follow approved names | Pulumi preview/test or static TypeScript assertions for approved names and tags. | `duumbi-infra` |
