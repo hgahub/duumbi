@@ -204,7 +204,9 @@ Given I am an organization admin
 When I open provider settings and choose GitHub
 Then DUUMBI Loop starts a GitHub App installation flow
 And the page states that GitHub is optional
-And the installation request uses repository-scoped permissions only.
+And the installation request uses repository-scoped permissions only
+And the callback requires a one-time state value bound to my session, user, and
+organization.
 
 ### Scenario: GitHub installation is stored without raw tokens
 
@@ -263,7 +265,8 @@ And the user sees a billing or entitlement explanation.
 
 Given an organization is already at its parallel run limit
 When another GitHub-backed task is submitted
-Then DUUMBI Loop rejects or blocks the new task before worker claim
+Then DUUMBI Loop rejects the new task before creating a task request, run, or
+worker job
 And the existing running tasks continue.
 
 ### Scenario: Worker claims queued work

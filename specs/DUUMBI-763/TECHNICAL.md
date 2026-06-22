@@ -131,7 +131,12 @@ Existing provider connection APIs may be extended or new endpoints may be added:
 - `DELETE /api/orgs/{org_id}/provider-connections/{connection_id}`
 
 The exact callback shape depends on the GitHub App flow selected by the
-implementation. The API must never return raw tokens or private keys.
+implementation. The start endpoint must persist a one-time state value bound to
+the initiating admin session, user id, organization id, redirect target, and
+expiry. The callback must verify and consume that state before creating or
+updating a provider connection. Missing, expired, reused, or cross-organization
+state values must fail closed before installation data is stored. The API must
+never return raw tokens or private keys.
 
 ### Repository Registration
 
@@ -219,6 +224,25 @@ normalized into related tables. Required persisted data:
 - revoked/disabled timestamp and reason.
 
 No raw installation token or private key may be stored in normal DB columns.
+
+### GitHub App Installation State
+
+Create a short-lived state table or equivalent durable store for the GitHub App
+installation handoff:
+
+- state id or nonce hash,
+- organization id,
+- initiating user id,
+- initiating session id or session binding hash,
+- redirect target,
+- provider kind = `github`,
+- created timestamp,
+- expires timestamp,
+- consumed timestamp.
+
+The raw state value must be high entropy, one-time use, and returned only to the
+initiating browser flow. Store a hash where practical. Expired, consumed, or
+mismatched state must not create or update provider connections.
 
 ### GitHub Repository Metadata
 
@@ -377,7 +401,7 @@ Timeout:
 | Product scenario | Required tests |
 | --- | --- |
 | Native DUUMBI remains available without GitHub | Integration test creates native task with no provider connection and verifies queued run. |
-| Admin starts GitHub App installation | Route/UI test verifies admin-only start endpoint and optional-adapter copy. |
+| Admin starts GitHub App installation | Route/UI test verifies admin-only start endpoint, optional-adapter copy, one-time state creation, callback state verification, and rejection of missing/expired/reused/cross-org state. |
 | GitHub installation is stored without raw tokens | Unit/integration test validates provider connection stores credential ref and redacts token fields/log output. |
 | Repository registration validates installation access | Integration test with fake GitHub adapter registers repository only when installation grants access. |
 | Revoked GitHub access disables repository queueing | Integration test syncs revoked fixture, disables repository, blocks GitHub queueing, and allows native queueing. |
@@ -385,7 +409,7 @@ Timeout:
 | Duplicate webhook delivery is idempotent | API test sends same delivery id twice and verifies one task/job plus duplicate audit record. |
 | Annotation creates a queued task | Webhook integration test parses `@duumbi-loop`, creates task request, run, job, and run event. |
 | Entitlement blocks queue writes | Integration test exhausts credits/max run cap and verifies no task/run/job write. |
-| Parallel run limit blocks excess queued work | Integration test seeds active jobs and verifies parallel limit blocks new work. |
+| Parallel run limit blocks excess queued work | Integration test seeds active jobs and verifies parallel limit rejection happens before task request, run, or worker job creation. |
 | Worker claims queued work | Worker integration test uses Postgres queue claim and verifies queued to running transition and lease audit. |
 | Worker completion creates review evidence | Worker integration test runs no-spend execution and verifies review/completed state, artifacts, credits, and evidence. |
 | Worker failure records actionable evidence | Worker test injects retryable and non-retryable failures and verifies attempts/backoff/terminal state. |
@@ -404,6 +428,7 @@ For the `duumbi-loop` implementation PR:
 - `cargo test`
 - Postgres migration tests
 - fake GitHub App installation tests
+- GitHub App callback state, expiry, reuse, and cross-org rejection tests
 - fake GitHub webhook signature/idempotency tests
 - repository sync and revoked-access tests
 - queue claim, retry, cancel, timeout, and stale lease tests
@@ -564,6 +589,7 @@ Required verification:
 - `cargo test`
 - Postgres migration tests
 - fake GitHub App installation/repository registration tests
+- GitHub App callback state, expiry, reuse, and cross-org rejection tests
 - GitHub webhook signature, replay, scope, and idempotency tests
 - revoked provider access blocks queueing while native remains available
 - entitlement and credit preflight blocks queue writes
