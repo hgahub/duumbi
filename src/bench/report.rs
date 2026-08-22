@@ -384,7 +384,7 @@ impl BenchmarkReport {
         eprintln!();
 
         let mut table = Table::new();
-        table.load_preset(presets::UTF8_FULL);
+        table.load_style(presets::UTF8_FULL);
         table.set_header(vec!["Showcase", "Provider", "Success", "Rate"]);
 
         for showcase in &self.showcases {

@@ -34,7 +34,7 @@ pub fn list_providers(config: &DuumbiConfig) -> Vec<OutputLine> {
     let mut table = comfy_table::Table::new();
     table
         .set_header(vec!["#", "Provider", "Role", "Auth", "Key Env", "Ready?"])
-        .load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
+        .load_style(comfy_table::presets::UTF8_FULL_CONDENSED);
 
     for (i, p) in providers.iter().enumerate() {
         let (auth_type, ready) = if let Some(ref token_env) = p.auth_token_env {

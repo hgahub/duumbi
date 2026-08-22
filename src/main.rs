@@ -1106,7 +1106,7 @@ fn run_knowledge(subcommand: cli::KnowledgeSubcommand, workspace: PathBuf) -> Re
                 eprintln!("No knowledge nodes found.");
             } else {
                 let mut table = comfy_table::Table::new();
-                table.load_preset(comfy_table::presets::UTF8_FULL_CONDENSED);
+                table.load_style(comfy_table::presets::UTF8_FULL_CONDENSED);
                 table.set_header(vec!["Type", "ID"]);
                 for node in &nodes {
                     table.add_row(vec![node.node_type(), node.id()]);
