@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, TrapCode, Value};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, TrapCode, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{self, Context, isa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -1563,7 +1563,7 @@ fn compile_function(
                         message: format!("String constant data not found for '{s}'"),
                     })?;
                     let gv = obj_module.declare_data_in_func(*data_id, builder.func);
-                    let ptr = builder.ins().global_value(types::I64, gv);
+                    let ptr = builder.ins().symbol_value(types::I64, gv);
                     let len = builder.ins().iconst(types::I64, s.len() as i64);
                     let call = builder.ins().call(string_new_ref, &[ptr, len]);
                     let result = builder.inst_results(call)[0];
@@ -2508,7 +2508,7 @@ fn compile_function(
 
     // Seal all blocks
     builder.seal_all_blocks();
-    builder.finalize();
+    builder.finalize(obj_module.isa().frontend_config());
 
     Ok(())
 }
@@ -2670,7 +2670,7 @@ fn c_string_ptr(
             message: format!("C string data not found for '{value}'"),
         })?;
     let gv = obj_module.declare_data_in_func(*data_id, builder.func);
-    Ok(builder.ins().global_value(types::I64, gv))
+    Ok(builder.ins().symbol_value(types::I64, gv))
 }
 
 fn trace_id_for_function(
@@ -2947,7 +2947,9 @@ fn coerce_string_concat_operand(
 fn coerce_struct_field_store(builder: &mut FunctionBuilder<'_>, value: Value) -> Value {
     match builder.func.dfg.value_type(value) {
         types::I8 => builder.ins().uextend(types::I64, value),
-        types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), value),
+        types::F64 => builder
+            .ins()
+            .bitcast(types::I64, MemFlagsData::new(), value),
         _ => value,
     }
 }
@@ -2959,7 +2961,9 @@ fn coerce_struct_field_load(
 ) -> Value {
     match result_type {
         Some(DuumbiType::Bool) => builder.ins().ireduce(types::I8, value),
-        Some(DuumbiType::F64) => builder.ins().bitcast(types::F64, MemFlags::new(), value),
+        Some(DuumbiType::F64) => builder
+            .ins()
+            .bitcast(types::F64, MemFlagsData::new(), value),
         _ => value,
     }
 }
