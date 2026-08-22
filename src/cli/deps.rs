@@ -24,7 +24,7 @@ pub fn run_deps_list(workspace: &Path) -> Result<()> {
     }
 
     let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL_CONDENSED);
+    table.load_style(presets::UTF8_FULL_CONDENSED);
     table.set_header(vec!["Name", "Version/Path", "Source", "Status"]);
 
     for (name, dep_path, resolution) in &entries {
@@ -261,7 +261,7 @@ pub async fn run_search(workspace: &Path, query: &str, registry: Option<&str>) -
         }
 
         let mut table = Table::new();
-        table.load_preset(presets::UTF8_FULL_CONDENSED);
+        table.load_style(presets::UTF8_FULL_CONDENSED);
         table.set_header(vec!["Name", "Version", "Description", "Registry"]);
 
         for hit in &result.results {
