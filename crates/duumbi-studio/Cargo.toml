@@ -6,25 +6,25 @@ license = "MPL-2.0"
 
 [dependencies]
 duumbi = { path = "../.." }
-leptos = "0.8.19"
-leptos_axum = { version = "0.8.9", optional = true }
-leptos_router = "0.8.13"
+leptos = "0.8.20"
+leptos_axum = { version = "0.8.10", optional = true }
+leptos_router = "0.8.15"
 leptos_meta = "0.8.6"
 leptos_config = "0.8.10"
 axum = { version = "0.8.9", optional = true }
-tokio = { version = "1.52.3", features = ["full"], optional = true }
+tokio = { version = "1.53.1", features = ["full"], optional = true }
 tower-http = { version = "0.7.0", features = ["cors", "fs"], optional = true }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 serde_yaml = { version = "0.9.34", optional = true }
-toml = { version = "1.1.2", optional = true }
+toml = { version = "1.1.4", optional = true }
 petgraph = { version = "0.8.3", optional = true }
 chrono = { version = "0.4.45", optional = true }
-anyhow = "1.0.102"
+anyhow = "1.0.104"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
-web-sys = { version = "0.3.102", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
-wasm-bindgen = "0.2.125"
+web-sys = { version = "0.3.104", features = ["WheelEvent", "MouseEvent", "HtmlInputElement", "EventTarget"] }
+wasm-bindgen = "0.2.127"
 console_error_panic_hook = "0.1.7"
 
 [[bin]]
