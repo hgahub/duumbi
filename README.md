@@ -27,9 +27,12 @@ DUUMBI `v0.4.1-preview` is distributed as prebuilt GitHub Release archives for:
 | Platform | Target | Status |
 |----------|--------|--------|
 | macOS Apple Silicon | `aarch64-apple-darwin` | Required preview target |
-| macOS Intel | `x86_64-apple-darwin` | Required preview target |
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | Required preview target |
 | Linux ARM64 | `aarch64-unknown-linux-gnu` | Extra preview target |
+
+macOS Intel (`x86_64-apple-darwin`) is not included in this developer preview.
+Build from source on Intel Macs if needed. No macOS Intel or Windows preview
+archive is published for this release path.
 
 Preview write-path evidence is intentionally limited. The current scaled
 intent-execute smoke notes are tracked in
