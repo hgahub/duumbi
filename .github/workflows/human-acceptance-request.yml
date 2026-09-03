@@ -115,6 +115,16 @@ jobs:
 
             const workflowDispatchUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/stage-approval.yml`;
 
+            const slackTriggerFor = (eventName) => {
+              if (eventName === "schedule") {
+                return "`scheduled sweep`";
+              }
+              if (eventName === "workflow_dispatch") {
+                return "`manual workflow_dispatch`";
+              }
+              return "`needs-human-review` label";
+            };
+
             const buildSlackMessage = (issue, triggeredBy) => {
               const issueUrl = issue.html_url || issueUrlFor(issue.number);
               const labelNames = labelsFor(issue);
@@ -122,6 +132,7 @@ jobs:
               const title = sanitizeSlackField(issue.title);
               const safeLabels = sanitizeSlackField(labels);
               const safeTriggeredBy = sanitizeSlackField(triggeredBy);
+              const triggerSource = slackTriggerFor(context.eventName);
               const correlationId = `${context.runId}-${issue.number}`;
 
               const buttonValue = (decision) => JSON.stringify({
@@ -137,7 +148,7 @@ jobs:
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Trigger:* \`needs-human-review\` label\n*Status:* Needs Human Acceptance\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
+                      text: `*DUUMBI issue needs human acceptance*\n*Issue:* <${issueUrl}|#${issue.number} ${title}>\n*Trigger:* ${triggerSource}\n*Status:* Needs Human Acceptance\n*Labels:* ${safeLabels}\n*Triggered by:* ${safeTriggeredBy}\n*Correlation:* \`${correlationId}\``,
                     },
                   },
                   {
