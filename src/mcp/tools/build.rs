@@ -211,16 +211,16 @@ mod tests {
     fn build_run_builds_and_captures_output() {
         let _guard = BUILD_TEST_LOCK.lock().expect("build test lock");
         let dir = setup_workspace();
-        let result = build_run(
-            dir.path(),
-            &serde_json::json!({ "offline": true, "timeout_secs": 5 }),
-        )
-        .expect("run succeeds");
+        // This is a successful-run smoke test, not a latency test. Use the
+        // normal run budget so loaded Windows CI runners can start the newly
+        // compiled binary; timeout enforcement is covered in workspace tests.
+        let result =
+            build_run(dir.path(), &serde_json::json!({ "offline": true })).expect("run succeeds");
 
         assert_eq!(result["scope"], "build_run");
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["exitCode"], 0);
-        assert_eq!(result["timedOut"], false);
+        assert_eq!(result["ok"], true, "build_run result: {result:#}");
+        assert_eq!(result["exitCode"], 0, "build_run result: {result:#}");
+        assert_eq!(result["timedOut"], false, "build_run result: {result:#}");
     }
 
     #[test]
