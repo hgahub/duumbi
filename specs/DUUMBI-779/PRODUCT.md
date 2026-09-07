@@ -91,13 +91,23 @@ When this work is complete:
   telemetry is typed, not inferred from leftover log text.
 - Failed attempts retain enough evidence to identify the failing pipeline
   stage and a deterministic root-cause class, including explicit `unknown`.
+- Classification uses only **terminal** phase evidence. Recovered
+  mutation/provider errors that were retried or repaired must stay in
+  `phase_evidence` and must not drive final `root_cause`.
+- Success attempts do not receive a failure `root_cause`. `product_logic_mismatch`
+  requires positive evidence that the verifier could judge the claimed
+  behavior.
 - Default retained evidence is sanitized and hash-based: final graph hashes,
   intent-state hashes, validator/compiler/verifier summaries, sanitized
   execution transcript, exact provider/model identity when available, and
-  prompt/context hashes.
+  prompt/context hashes. Hashes cannot reconstruct the graph; graph/intent
+  content for autopsy requires `--keep-workspaces`.
 - Exact model I/O is retained only behind an explicit local opt-in such as
   `--capture-model-io`, with secret redaction. It is never committed by
   default and never emitted to GitHub workflow summaries.
+- Every execute and infrastructure error path finalizes partial evidence.
+  Execution outcome and evidence-persistence status are separate fields.
+  Persistence failure does not override an established execution cause.
 - Existing benchmark and replay JSON consumers keep working: current fields
   remain, new fields are additive or defaulted, and schema versioning is
   used when the report shape changes.
@@ -185,9 +195,11 @@ Assumptions:
 - Changing unclassified `Ok(false)` rows from `logic_error` to a finer class
   or `unknown` is an intended diagnostic correction. Baseline comparison
   docs must call out that category counts may shift.
-- A mock or deterministic provider fixture is sufficient to prove evidence
-  retention, repair telemetry, taxonomy, and privacy. Live provider calls
-  are not required to close the diagnostic contract.
+- A deterministic provider fixture that drives **actual** execute through
+  repair is required to prove evidence retention, repair telemetry,
+  taxonomy, and privacy. Injecting a pre-built structured outcome is not
+  sufficient. Live provider calls are not required to close the diagnostic
+  contract.
 - Bounded local evidence is enough. Cloud upload would expand privacy risk
   without improving the autopsy prerequisite.
 
@@ -201,8 +213,8 @@ Constraints:
 - Normal CI must not make live provider calls and must not upload retained
   workspaces or raw model I/O.
 - Query mode must remain read-only.
-- Retention must be bounded: no binaries, no credential values, truncated
-  transcripts, and explicit cleanup guidance for `--keep-workspaces`.
+- Retention must follow the allowlist, byte/file-count caps, sanitize-
+  before-persist, symlink, and flag-matrix rules in Evidence Retention.
 - Cranelift internals must not leak outside `src/compiler/`.
 
 ## Decisions
@@ -254,6 +266,38 @@ Constraints:
   **Evidence:** Issue #781 lists #779 as a prerequisite and is still in
   human-acceptance. Issue #779 scope explicitly excludes pass-rate work.
 
+- **Decision:** Classification uses terminal phase evidence only. Recovered
+  errors remain recorded but never select `root_cause`. Success paths omit
+  failure `root_cause`. `product_logic_mismatch` requires positive verifier
+  applicability evidence. Attribution language is `matched_rule` or
+  `no_matching_rule`, never `root_cause_confidence: observed`.
+  **Evidence:** Codex Stage 6/8 review of PR #787, blocking finding 1.
+
+- **Decision:** Every error exit, including init/intent-save failure and
+  infrastructure `Err` after repair began, must finalize a partial attempt
+  record. `evidence_persistence` is separate from execution `root_cause`.
+  Persistence failure does not rewrite an established execution cause.
+  **Evidence:** Codex Stage 6/8 review of PR #787, blocking finding 2.
+
+- **Decision:** Retention is an allowlisted, byte- and file-count-bounded
+  contract. Sanitize before persist. Flag matrix for `--keep-workspaces` ×
+  `--capture-model-io` is specified below, including providers that do not
+  expose payloads. Default autopsy is hash/summary based; reconstructing
+  graph or intent content requires `--keep-workspaces`.
+  **Evidence:** Codex Stage 6/8 review of PR #787, blocking finding 3;
+  existing `safe_artifact_key` and `#720` workspace snapshot.
+
+- **Decision:** Serialized unknown compatibility is locked now: do **not**
+  add `ErrorCategory::Unknown`. Failed attempts always include the
+  `error_category` field. Classified failures use an existing snake_case
+  enum value. Unmatched failures serialize `"error_category": null` and
+  `"root_cause": "unknown"`. Historical baselines omit `root_cause` and
+  remain readable. Old readers ignore additive fields and accept null
+  `error_category` because the field is already `Option`.
+  **Evidence:** Codex Stage 6/8 review of PR #787, blocking finding 4;
+  `src/bench/report.rs` `error_category: Option<ErrorCategory>` without
+  `deny_unknown_fields`.
+
 ## Behavior
 
 ### Shared Attempt Contract
@@ -263,6 +307,9 @@ Constraints:
 - The executor initializes an isolated workspace, saves the intent, runs the
   structured execute path, captures hashes and phase evidence, copies bounded
   evidence out of the temp workspace, then drops the `TempDir`.
+- A `finally`-style finalizer runs on every exit, including `Err` after
+  repair began, init failure, and intent-save failure. Partial outcomes are
+  preserved before `TempDir` drop.
 - The full determinism replay runner remains responsible for ledger events,
   agreement metrics, rewrite comparison, and CI thresholds. Benchmark does
   not grow those concerns.
@@ -286,7 +333,7 @@ Constraints:
 
 ### Evidence Retention
 
-Default retained evidence for every attempt, success or failure:
+JSON fields retained for every attempt, success or failure:
 
 - provider route and resolved model identity, or explicit unavailable reason
 - prompt/context hashes, including honest `partial` status when final
@@ -294,47 +341,156 @@ Default retained evidence for every attempt, success or failure:
 - initial and final graph exact and semantic hashes when a graph exists
 - intent spec hash and terminal intent status
 - validator, compiler, and verifier summaries or hashes
-- sanitized execution transcript
-- structured phase events and terminal status
-- root-cause class plus the phase evidence that produced it
+- sanitized execution transcript hash plus, on failed attempts, the truncated
+  transcript file
+- structured phase events (terminal and recovered) and terminal status
+- `root_cause` plus `root_cause_attribution` on failures; both omitted/null
+  on success
+- `evidence_persistence` status
 - relative artifact paths that remain after `TempDir` teardown
 
-Failed attempts always persist bounded sanitized evidence under a local
-artifact directory so inspection does not depend on remembering a flag.
+File persistence differs by outcome:
+
+- **Failed attempts always persist** the allowlisted files under a local
+  artifact directory so inspection does not depend on remembering a flag.
+- **Success attempts persist hashes and summaries in JSON only** by default.
+  They do not copy bulky workspace files unless `--keep-workspaces` is set.
+  Success `artifact_paths` may be empty.
+
 Recommended default root for benchmark is `.duumbi/benchmark/attempts`.
 Determinism keeps its existing `--artifact-dir` default
 (`.duumbi/determinism/replays`). `--artifact-dir` overrides the root.
-Layout must be filesystem-safe and must reject path traversal.
+Layout is `<artifact-dir>/<run-id>/<task-key>/<provider-key>/<attempt>/`
+with `safe_artifact_key` components and a unique `run-id` per invocation.
+Path traversal is rejected. If the destination already exists, the executor
+must not overwrite it; it records a persistence error or a unique suffix
+and never merges two attempts into one directory.
 
-`--keep-workspaces` retains a bounded `.duumbi` snapshot under the artifact
-bundle, matching current determinism semantics. Default remains false.
+#### Allowlist
 
-`--capture-model-io` retains redacted prompt and response payloads locally
-under the artifact bundle. Default is off. When off, only hashes are stored.
+Default failed-attempt files (sanitize, then persist, never persist then
+redact):
 
-Retention bounds:
+- `execute.log` (sanitized, truncated)
+- `phase_evidence.json`
+- `intent-status.txt` (terminal intent status plus validator/verifier
+  summary text)
+- `summaries.json` (validator, compiler, verifier hashes/summaries)
+- `hashes.json` when not already fully inlined in the parent report
 
-- no credential values, API keys, or secret-bearing headers
-- no generated binaries or object files
-- transcripts truncated to a documented size cap
-- model I/O files excluded from Git, docs commits, and GitHub workflow
-  summaries
-- cleanup guidance documents how to delete `--keep-workspaces` snapshots
+`--keep-workspaces` additionally allowlists:
 
-Failed attempts must still retain evidence after the temp workspace is
-dropped. Success attempts must not break current JSON consumers.
+- sanitized intent spec (YAML/JSON)
+- sanitized graph JSON-LD under `.duumbi/graph` or equivalent
+- existing non-secret `.duumbi` config needed to reopen the attempt
+
+Never allowlisted:
+
+- generated binaries, `*.o`, `target/`, object files
+- credential values, API keys, secret-bearing headers
+- model prompt/response files unless `--capture-model-io` is on
+- provider caches, previous `model-io/`, `prompts/`, or `responses/`
+  directories that would bypass the capture flag
+- symlinks that escape the TempDir workspace
+
+#### Size And Count Limits
+
+Locked bounds (Stage 10 may implement with these exact caps, not larger
+undocumented limits):
+
+- sanitized `execute.log`: 256 KiB
+- model I/O: 256 KiB per file after redaction
+- per-attempt file count: 32 default, 64 with `--keep-workspaces`
+- per-attempt total bytes: 1 MiB default, 8 MiB with `--keep-workspaces`
+- per-run total across attempts: 32 MiB
+
+Overflow must write truncation metadata (`truncated: true`,
+`original_bytes`, `retained_bytes`, `omitted_files`) and drop lowest-priority
+files rather than exceeding the cap. Priority: hashes/summaries, then
+`execute.log`, then graph/intent snapshot, then model I/O.
+
+#### Flag Matrix
+
+| `--keep-workspaces` | `--capture-model-io` | Files |
+| --- | --- | --- |
+| false | false | Failed: allowlist without workspace snapshot and without model-io files. Success: JSON hashes only. |
+| true | false | Allowlist plus bounded sanitized graph/intent snapshot. No model-io files. Previously stored prompts/responses in the workspace are excluded. |
+| false | true | Failed allowlist plus redacted model-io files **only if** the capture seam obtained payloads. No graph snapshot. |
+| true | true | Snapshot plus redacted model-io when payloads exist. Snapshot copy still excludes uncaptured prompt/response caches. |
+
+When a provider or orchestrator does not expose raw payloads:
+
+- `model_io_status` is `unavailable` or `partial` with reason
+  `provider_did_not_expose_payload`
+- no placeholder/fake payload files are written
+- prompt hashes stay honest `partial` when the final provider prompt is not
+  exposed
+- `--capture-model-io` does not fail the attempt
+
+#### Autopsy Versus Hashes
+
+Hashes, summaries, and truncated transcripts are enough to **classify** a
+failed attempt. They cannot reconstruct the graph or intent. Graph-content
+or intent-content autopsy for #779 requires `--keep-workspaces`. Default
+evidence remains hash-based.
+
+#### Symlink And Collision Protection
+
+Copy must not follow a symlink whose resolved target is outside the
+attempt TempDir. Escaping links are skipped and listed in truncation
+metadata as omitted. `safe_artifact_key` remains the only path-component
+encoder. Concurrent runs must not share `run-id`.
+
+Cleanup guidance documents how to delete `--keep-workspaces` snapshots.
+Model I/O files are excluded from Git, docs commits, and GitHub workflow
+summaries.
 
 ### Root-Cause Taxonomy
 
 Each attempt stores:
 
-- `phase_evidence`: observed stage facts such as validation diagnostics,
-  compiler/linker errors, verifier test counts, repair entered/applied, and
-  provider errors
-- `root_cause`: a deterministic class derived from those facts
-- `root_cause_confidence`: `observed` for rule-based classification
+- `phase_evidence`: observed stage facts. Every event has
+  `status: terminal | recovered | informational`. Recovered events include
+  mutation or provider errors that were retried successfully and repair
+  attempts that were later superseded by a later phase. Informational events
+  include hashes captured and repair-entered markers that did not fail.
+- `root_cause`: a rule-derived class computed from **terminal** events only
+- `root_cause_attribution`: `matched_rule` when a rule fired, or
+  `no_matching_rule` when the class is `unknown`
 
-Required classes:
+Do not serialize `root_cause_confidence: observed`. Observed facts live in
+`phase_evidence`. Attribution lives in `root_cause` +
+`root_cause_attribution`. `unknown` is rule-derived (`no_matching_rule`),
+not an observed cause.
+
+#### Success-path classification
+
+When `success` is true:
+
+- `root_cause` is JSON `null` and may be omitted
+- `root_cause_attribution` is omitted
+- `error_category` is omitted or JSON `null` (current success behavior)
+- recovered mutation/provider errors that occurred before eventual success
+  remain in `phase_evidence` with `status: recovered` and do not produce a
+  failure class
+
+#### Verifier applicability before product logic
+
+Assign `product_logic_mismatch` only when **all** of the following terminal
+facts are present:
+
+1. A graph compiled or otherwise produced a runnable artifact.
+2. The verifier actually executed applicable checks (`tests_total > 0`, or
+   process-evidence status is `passed`/`failed`).
+3. Terminal evidence has no `unsupported`, `broader_evidence_required`, or
+   verification-gap marker.
+
+If the verifier or process checker cannot judge the claimed behavior, the
+class is `verifier_mismatch_or_unsupported_evidence`, even if tests also
+look empty or failed. That rule is evaluated **before**
+`product_logic_mismatch`.
+
+#### Required classes
 
 - `schema_graph_validation`
 - `task_decomposition_or_missing_function`
@@ -346,11 +502,14 @@ Required classes:
 - `provider_or_infrastructure`
 - `unknown`
 
-Rules must be deterministic and ordered. If no rule matches, the class is
-`unknown`, not `logic_error`. `error_category` remains the coarse
-compatibility field and continues to serialize with current snake_case
-values. Mapping from `root_cause` onto `error_category` is documented in the
-technical spec; unclassified rows no longer collapse into `logic_error`.
+Rules are deterministic and ordered. First matching rule on **terminal**
+evidence wins. Overlapping recovered+terminal evidence must not let the
+recovered error win. If no rule matches, the class is `unknown`, not
+`logic_error`.
+
+`error_category` remains the coarse compatibility field using the existing
+snake_case enum. Mapping is locked in JSON Compatibility below.
+Unclassified rows no longer collapse into `logic_error`.
 
 Later offline inference, if ever added by another issue, must use a separate
 field such as `root_cause_inference` and must not overwrite `root_cause` or
@@ -369,14 +528,111 @@ field such as `root_cause_inference` and must not overwrite `root_cause` or
   documented category-count shift from finer classification is not a
   regression by itself.
 
+Locked `root_cause` → `error_category` mapping (existing enum only; **do
+not** add `ErrorCategory::Unknown`):
+
+| `root_cause` | serialized `error_category` |
+| --- | --- |
+| `schema_graph_validation` | `"schema_error"` |
+| `control_flow_or_ssa` | `"schema_error"` |
+| `task_decomposition_or_missing_function` | `"mutation_failed"` |
+| `cross_module_resolution` | `"mutation_failed"` |
+| `compiler_or_runtime` | `"crash"` |
+| `product_logic_mismatch` | `"logic_error"` |
+| `verifier_mismatch_or_unsupported_evidence` | `"evidence_required"` |
+| `provider_or_infrastructure` | `"provider_error"` |
+| `unknown` | JSON `null` (field present on failed attempts) |
+| success | omitted or JSON `null` (current behavior) |
+
+Failed attempts always include the `error_category` key. For `unknown`, the
+value is JSON `null` rather than omitted, so consumers can distinguish
+"success" from "unmatched failure". Implementation must serialize that null
+even if other optionals use `skip_serializing_if`.
+
+Bidirectional compatibility:
+
+- **New readers + historical baselines:** missing `root_cause` /
+  `phase_evidence` / `schema_version` default to absent. Historical
+  `error_category` strings still parse. New code must not require the new
+  fields when loading `--baseline`.
+- **Existing readers + new reports:** extra fields are ignored (no
+  `deny_unknown_fields` today). Classified failures use enum strings those
+  readers already accept. Unknown failures use `error_category: null`, which
+  already deserializes as `Option::None`. Old binaries do not see a new enum
+  variant.
+
+Representative JSON (fields abbreviated):
+
+Success:
+
+```json
+{
+  "showcase": "scaled_math_pipeline",
+  "provider": "mock",
+  "attempt": 1,
+  "success": true,
+  "tests_passed": 4,
+  "tests_total": 4,
+  "duration_secs": 1.2,
+  "repair_attempted": false,
+  "first_pass_success": true,
+  "root_cause": null,
+  "evidence_persistence": "json_only"
+}
+```
+
+Classified failure:
+
+```json
+{
+  "success": false,
+  "tests_passed": 0,
+  "tests_total": 4,
+  "repair_attempted": true,
+  "repair_applied": false,
+  "repair_success": false,
+  "first_pass_success": false,
+  "root_cause": "schema_graph_validation",
+  "root_cause_attribution": "matched_rule",
+  "error_category": "schema_error",
+  "evidence_persistence": "complete",
+  "phase_evidence": {
+    "events": [
+      {"phase": "provider", "status": "recovered", "code": "timeout"},
+      {"phase": "validate", "status": "terminal", "code": "E009"}
+    ]
+  }
+}
+```
+
+Unknown failure:
+
+```json
+{
+  "success": false,
+  "repair_attempted": false,
+  "root_cause": "unknown",
+  "root_cause_attribution": "no_matching_rule",
+  "error_category": null,
+  "phase_evidence": {"events": [{"phase": "complete", "status": "terminal"}]},
+  "evidence_persistence": "complete"
+}
+```
+
 ### Failure And Privacy Behavior
 
 - A failed attempt is a successful measurement. The command should still
   write the report and retain evidence.
+- Execution outcome (`success`, `root_cause`, `error_category`) is separate
+  from `evidence_persistence` (`complete`, `partial`, `failed`,
+  `json_only`).
 - Provider or credential failures are classified as
   `provider_or_infrastructure`, not as graph or logic failure.
-- Missing credentials fail closed and do not count as graph-generation
-  failure.
+- Missing credentials fail closed and are **excluded from graph-failure
+  accounting**. Relabeling them `provider_or_infrastructure` is not enough:
+  graph-failure totals, taxonomy histograms of graph classes, and scaled
+  graph-generation denominators must not increment. They may appear in a
+  separate infra/credential bucket.
 - Interrupted runs preserve already-copied attempt evidence when possible.
 - The command never writes raw credential values.
 - GitHub workflow summaries, if they mention a run, may include hashes,
@@ -384,6 +640,37 @@ field such as `root_cause_inference` and must not overwrite `root_cause` or
 - Default `duumbi intent execute` user-facing logs remain available; this
   issue does not require changing interactive execute UX beyond exposing
   structured outcome data to the shared executor.
+
+#### Evidence finalization on every error exit
+
+The attempt finalizer always runs, including:
+
+- `TempDir` create failure (record persistence/infra failure with no
+  workspace)
+- workspace init failure
+- intent-save failure
+- structured execute `Err` after repair has already begun
+- copy/retention I/O failure
+- process interruption after some files were copied
+
+Partial outcomes (phase events so far, hashes so far, sanitized log so far,
+repair telemetry already known) must be copied before `TempDir` drop.
+
+When retention/copy fails:
+
+- `root_cause` stays the execution classification if one was already
+  established. Persistence failure does **not** override it.
+- `evidence_persistence` becomes `failed` or `partial`, with
+  `persistence_error` text (sanitized).
+- The `--output` JSON report is the durable record of that persistence
+  status. Already-copied files under the attempt directory remain.
+- Default process exit follows existing measurement behavior (failed
+  attempts do not by themselves fail the process).
+- If even the JSON report cannot be written, the process exits non-zero,
+  prints a sanitized stderr diagnostic, and leaves any already-copied
+  attempt files on disk.
+- `--ci`: persistence `failed` is an infrastructure CI failure, distinct
+  from graph-failure kill criteria.
 
 ## BDD Scenarios
 
@@ -409,22 +696,84 @@ Feature: Scaled write-path attempt evidence and failure classification
       Then `repair_attempted` is true
       And `first_pass_success` is false
       And `repair_success` is false
+      And `repair_applied` is false when no repair patch was written
       And the classification does not depend on scanning a replaced short
       error string for `[Repair] Attempting repair`
 
-  Rule: Taxonomy distinguishes listed failure classes
+    Scenario: Repair applies a patch and still fails
+      Given intent execute enters repair and writes at least one patch
+      And verification still fails
+      When the report is written
+      Then `repair_attempted` is true
+      And `repair_applied` is true
+      And `repair_success` is false
+
+    Scenario: Repair converts the attempt to success
+      Given intent execute fails first-pass verification
+      And repair applies a patch
+      And final verification passes
+      When the report is written
+      Then `success` is true
+      And `repair_attempted` is true
+      And `repair_success` is true
+      And `root_cause` is null
+      And recovered first-pass failure events do not select a failure class
+
+    Scenario: Failure after repair entry with retries remaining
+      Given repair is entered
+      And retry budget still has remaining attempts
+      And the attempt ends unsuccessful
+      When the report is written
+      Then remaining retry availability is recorded in phase evidence
+      And `repair_attempted` is true
+      And `success` is false
+
+  Rule: Taxonomy uses terminal evidence and verifier applicability
 
     Scenario: Taxonomy distinguishes listed failure classes
-      Given failed attempts whose phase evidence matches schema validation,
-      missing function or decomposition, cross-module resolution,
-      control-flow or SSA, compiler or runtime, product-logic mismatch,
-      verifier mismatch or unsupported evidence, and provider failure
+      Given failed attempts whose **terminal** phase evidence matches schema
+      validation, missing function or decomposition, cross-module
+      resolution, control-flow or SSA, compiler or runtime, product-logic
+      mismatch, verifier mismatch or unsupported evidence, and provider
+      failure
       When the reports are written
       Then each attempt receives the corresponding `root_cause` class
-      And unmatched failures receive `unknown`
+      And unmatched failures receive `unknown` with
+      `root_cause_attribution` `no_matching_rule`
       And `phase_evidence` remains present even when `root_cause` is
       `unknown`
-      And `error_category` remains populated for existing consumers
+      And classified failures populate `error_category` with the mapped
+      existing enum value
+      And unknown failures serialize `"error_category": null`
+
+    Scenario: Recovered provider error does not become root_cause
+      Given a provider timeout is retried successfully
+      And the attempt later fails graph validation with E009
+      When the report is written
+      Then phase evidence includes the timeout with status recovered
+      And `root_cause` is `schema_graph_validation`
+      And `root_cause` is not `provider_or_infrastructure`
+
+    Scenario: Overlapping terminal diagnostics pick the first matching rule
+      Given terminal evidence includes both schema validation E009 and a
+      later verifier test failure
+      When the report is written
+      Then `root_cause` is `schema_graph_validation`
+      And the later test failure is recorded but does not win
+
+    Scenario: Product logic requires verifier applicability
+      Given a compiled graph whose verifier did not run applicable checks
+      And process evidence is unsupported
+      When the report is written
+      Then `root_cause` is `verifier_mismatch_or_unsupported_evidence`
+      And `root_cause` is not `product_logic_mismatch`
+
+    Scenario: Success path has no failure root_cause
+      Given first-pass verification passes
+      When the report is written
+      Then `success` is true
+      And `root_cause` is null
+      And `error_category` is omitted or null
 
   Rule: Opt-in model I/O stays local and redacted
 
@@ -438,6 +787,58 @@ Feature: Scaled write-path attempt evidence and failure classification
       hashes rather than raw payloads
       And without the flag only sanitized hashes are retained
 
+    Scenario: Capture flag combinations including unavailable payloads
+      Given each combination of `--keep-workspaces` and `--capture-model-io`
+      And a provider that does not expose raw response payloads
+      When attempts run
+      Then model-io files exist only when the flag is on and payloads were
+      actually captured
+      And keep-workspaces snapshots never include previously stored
+      prompts or responses unless `--capture-model-io` is on
+      And unavailable payloads record `model_io_status` without inventing
+      bodies
+
+    Scenario: Default failed retention without extra flags
+      Given a failed attempt with default flags
+      When TempDir is dropped
+      Then allowlisted sanitized files exist under the artifact dir
+      And they include terminal intent status and validator or verifier
+      summaries
+      And no workspace graph snapshot is copied
+      And no model-io files are written
+
+    Scenario: Persistence failure does not rewrite execution cause
+      Given execute already classified `schema_graph_validation`
+      And copying artifacts fails
+      When the report is written
+      Then `root_cause` remains `schema_graph_validation`
+      And `evidence_persistence` is `failed` or `partial`
+      And the JSON report still exists unless report write also failed
+
+    Scenario: Infra error after repair began still keeps partial evidence
+      Given repair has been entered
+      And execute then returns an infrastructure Err
+      When the TempDir is dropped
+      Then `repair_attempted` is true
+      And partial phase evidence and sanitized log survive under the
+      artifact dir or in the JSON report
+      And `evidence_persistence` is not omitted
+
+    Scenario: Missing credentials are excluded from graph-failure accounting
+      Given a provider route whose credentials are absent
+      When the run finishes
+      Then those attempts are `provider_or_infrastructure`
+      And graph-failure totals and graph-class histograms do not increment
+      And the exclusion is not implemented merely by relabeling a row that
+      still counts as a graph failure
+
+    Scenario: Symlink escape is not copied
+      Given the temp workspace contains a symlink pointing outside itself
+      When evidence is copied
+      Then the escaping link is omitted
+      And truncation metadata lists it
+      And files outside the TempDir are unchanged
+
   Rule: Success path stays compatible
 
     Scenario: Success path still compatible
@@ -450,28 +851,34 @@ Feature: Scaled write-path attempt evidence and failure classification
       And old baseline JSON without the new fields still deserializes
       And current `duumbi benchmark --output` and `duumbi determinism replay
       --output` callers can read the report without a breaking rename
+      And bulky workspace files are not copied unless `--keep-workspaces`
+      is set
 
 ## Tasks
 
 1. Specify and implement the shared isolated-attempt executor and structured
-   execute outcome.
+   execute outcome, including a finally-style evidence finalizer.
 2. Stop replacing `Ok(false)` logs with a short error that drops repair
    evidence.
-3. Copy bounded evidence out of `TempDir` before drop; add compatible
-   `--artifact-dir` / `--keep-workspaces` to benchmark.
-4. Add `--capture-model-io` as local opt-in with redaction.
-5. Add deterministic `root_cause` plus `phase_evidence`, keeping
-   `error_category`.
+3. Copy bounded allowlisted evidence out of `TempDir` before drop; add
+   compatible `--artifact-dir` / `--keep-workspaces` to benchmark.
+4. Add `--capture-model-io` as local opt-in with a provider capture seam and
+   redaction. Exclude prior prompt/response caches from snapshots unless
+   the flag is on.
+5. Add deterministic `root_cause` plus terminal/recovered `phase_evidence`,
+   keeping `error_category` as specified in JSON Compatibility.
 6. Version report schemas additively and update baseline docs.
-7. Add regression tests for TempDir survival, repair-entered failure,
-   taxonomy classes, opt-in I/O privacy, and success compatibility.
+7. Add a deterministic provider fixture that drives **actual** execute
+   through repair into both runner reports, plus tests for retention,
+   persistence failure, taxonomy/privacy edges, and credential exclusion.
 8. Document flags, layout, retention bounds, and cleanup.
 
 Independent slices:
 
 - Structured execute outcome can land before artifact-layout flags.
-- Taxonomy rules can be unit-tested with synthetic phase evidence.
-- Privacy/redaction tests can use fixtures without providers.
+- Taxonomy rules can be unit-tested with synthetic phase evidence **and**
+  must also be proven through the live execute fixture.
+- Privacy/redaction tests can use fixtures without live providers.
 - Live provider evidence is optional and must stay local.
 
 ## Checks
@@ -479,20 +886,31 @@ Independent slices:
 Independently testable acceptance criteria:
 
 1. After a failed attempt, artifact files exist at the reported paths after
-   the process has dropped the `TempDir`.
-2. A fixture that emits the repair-cycle entry and then fails reports
-   `repair_attempted=true`.
-3. Synthetic or fixture failures covering each required `root_cause` class
-   serialize that class; a non-matching failure serializes `unknown`.
-4. `--capture-model-io` writes redacted local files and does not put raw
-   payloads into JSON reports used for GitHub summaries; without the flag,
-   reports contain hashes only.
+   the process has dropped the `TempDir`. Default retention (no extra flags)
+   includes terminal intent status and validator/verifier summaries.
+2. A deterministic provider fixture that drives actual `run_execute` through
+   repair, not a pre-built structured outcome, reports
+   `repair_attempted=true` on failure and the matching repair fields on
+   no-patch, patched-failure, and repaired-success cases. The same fixture
+   feeds both benchmark and determinism reports.
+3. Synthetic **and** execute-driven fixtures covering each required
+   `root_cause` class serialize that class; a non-matching failure
+   serializes `unknown` with `"error_category": null`. Overlapping-rule and
+   recovered-error fixtures pass.
+4. `--capture-model-io` writes redacted local files only when payloads were
+   captured and does not put raw payloads into JSON reports used for GitHub
+   summaries; without the flag, reports contain hashes only. Keep-workspaces
+   copies cannot smuggle prior prompts/responses.
 5. A successful first-pass result still deserializes as today's
    `BenchmarkResult` / `ReplayAttempt` required fields, and a pre-change
-   baseline JSON still loads.
-6. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
+   baseline JSON still loads. Success attempts do not copy bulky files by
+   default.
+6. Missing-credential attempts are excluded from graph-failure accounting.
+7. Persistence-failure fixture keeps the execution `root_cause` and records
+   `evidence_persistence`.
+8. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
    warnings` pass on the implementation PR.
-7. No committed raw provider payloads, secrets, or retained workspaces.
+9. No committed raw provider payloads, secrets, or retained workspaces.
 
 Expected artifacts for later Stage 10, not this spec PR:
 
@@ -510,18 +928,25 @@ Resolved in this spec:
 
 - Shared lower-level attempt executor, not benchmark-calls-determinism.
 - Default evidence is sanitized/hash-based; `--capture-model-io` is local
-  opt-in with redaction.
+  opt-in with redaction. Graph/intent content autopsy needs
+  `--keep-workspaces`; hashes remain the default.
 - Taxonomy is deterministic rules plus `unknown`; later inference is a
-  separate labeled field and out of scope.
+  separate labeled field and out of scope. Terminal vs recovered, success
+  classification, and verifier-applicability gating are locked.
 - Existing JSON fields stay; schema version is added or bumped when needed.
+- `error_category` for unknown failures is JSON `null` with `root_cause:
+  unknown`; no new `ErrorCategory` variant.
+- Success attempts persist JSON hashes/summaries only; failed attempts
+  always persist allowlisted files. `--keep-workspaces` snapshots success
+  or failure when requested.
+- Retention caps, allowlist, flag matrix, symlink/collision, and capture
+  seam are locked above.
+- Persistence failure does not override execution `root_cause`.
 
 Non-blocking Stage 10 choices:
 
 - Exact module path of the shared executor (`src/intent/attempt.rs` versus
   `src/bench/attempt.rs`), provided both runners call the same contract.
-- Transcript size cap, as long as it is documented, tested, and bounded.
-- Whether success attempts omit file copies and keep hashes in JSON only,
-  provided failed attempts still persist files by default.
 
 Owner input is not required to start Stage 10 after spec approval. The only
 later Owner call is the existing Ralph external-LLM gate if a live provider

@@ -134,6 +134,9 @@ Expected Stage 10 source changes:
   - Additive attempt fields for phase evidence, repair telemetry, and
     root cause. Keep `v1` if additive; bump to `v2` only if a required
     field appears.
+- `src/agents/mod.rs` and provider implementations used by bench/replay
+  (at least OpenAI and Anthropic): capture seam for optional raw response
+  retention when `--capture-model-io` is on.
 - `src/cli/mod.rs` and `src/main.rs`
   - Additive flags: benchmark `--artifact-dir`, `--keep-workspaces`,
     `--capture-model-io`; determinism `--capture-model-io`.
@@ -178,6 +181,7 @@ pub struct IntentExecutionOutcome {
     pub repair_success: Option<bool>,
     pub mutation_retry_count: Option<u32>,
     pub repair_retry_count: Option<u32>,
+    pub retries_remaining: Option<u32>,
     pub tests_passed: usize,
     pub tests_total: usize,
     pub terminal_status: String,
@@ -185,12 +189,19 @@ pub struct IntentExecutionOutcome {
     pub diagnostics: Vec<CapturedDiagnostic>,
     pub dominant_error_code: Option<String>,
 }
+
+pub struct ExecutionPhaseEvent {
+    pub phase: String,
+    pub status: PhaseEventStatus, // terminal | recovered | informational
+    pub error_code: Option<String>,
+}
 ```
 
-`ExecutionPhaseEvent` should record ordered phase names such as
-`preflight`, `mutation`, `verify`, `repair`, `reverify`, and `complete`,
-with status and optional error code. Repair attempted is true when a
-`repair` event exists, not when a log line happens to survive.
+`ExecutionPhaseEvent` records ordered phase names such as `preflight`,
+`init`, `intent_save`, `mutation`, `verify`, `repair`, `reverify`,
+`complete`, and `persist`. Repair attempted is true when a `repair` event
+exists, not when a log line happens to survive. Recovered mutation/provider
+errors keep `status: recovered` and are ignored by the classifier.
 
 Keep `run_execute` as:
 
@@ -222,8 +233,31 @@ pub struct AttemptEvidence {
     pub sanitized_log: Vec<String>,
     pub artifact_paths: Vec<String>,
     pub phase_evidence: PhaseEvidence,
-    pub root_cause: RootCauseClass,
+    pub root_cause: Option<RootCauseClass>,
+    pub root_cause_attribution: Option<RootCauseAttribution>,
     pub error_category: Option<ErrorCategory>,
+    pub evidence_persistence: EvidencePersistence,
+    pub persistence_error: Option<String>,
+    pub model_io_status: ModelIoStatus,
+}
+
+pub enum EvidencePersistence {
+    Complete,
+    Partial,
+    Failed,
+    JsonOnly,
+}
+
+pub enum RootCauseAttribution {
+    MatchedRule,
+    NoMatchingRule,
+}
+
+pub enum ModelIoStatus {
+    NotRequested,
+    Captured,
+    Partial,
+    Unavailable,
 }
 ```
 
@@ -233,16 +267,25 @@ The outer executor:
    `init_workspace` callback.
 2. Saves the intent.
 3. Captures initial graph hashes when a graph exists.
-4. Calls structured execute.
+4. Calls structured execute through a capturing provider decorator when
+   `--capture-model-io` is on (see capture seam below).
 5. Captures final hashes, intent status, validator/compiler/verifier
    summaries, and sanitized transcript.
-6. Classifies `root_cause` from `phase_evidence`.
-7. Copies bounded artifacts into `artifact_dir` using
-   `safe_artifact_key`.
-8. Optionally snapshots `.duumbi` when `keep_workspace` is true.
-9. Optionally writes redacted model I/O when `capture_model_io` is true.
-10. Drops `TempDir` only after copies succeed or a copy failure is recorded
-    as `unknown` with phase evidence describing the copy error.
+6. Classifies `root_cause` from **terminal** `phase_evidence` only.
+7. Sanitizes, then copies allowlisted artifacts into `artifact_dir` using
+   `safe_artifact_key` and a unique `run-id`.
+8. Optionally snapshots allowlisted `.duumbi` graph/intent files when
+   `keep_workspace` is true. Never copy `model-io/`, `prompts/`, or
+   `responses/` unless `capture_model_io` is true.
+9. Optionally writes redacted model I/O when `capture_model_io` is true and
+   payloads were captured.
+10. Runs a `finally` finalizer on **every** exit, including init/intent-save
+    `Err` and infrastructure `Err` after repair began, then drops `TempDir`.
+
+Copy failure is recorded as `evidence_persistence: failed|partial` and must
+not rewrite an established execution `root_cause`. If no execution class
+exists yet, classify from the infra/init facts; do not invent
+`product_logic_mismatch`.
 
 Determinism continues to wrap this helper with ledger events and agreement
 metrics. Benchmark maps `AttemptEvidence` onto `BenchmarkResult`.
@@ -252,15 +295,70 @@ That would couple regular eval JSON to replay ledgers, rewrite comparison,
 and CI agreement thresholds, and it would invert the current
 determinism-depends-on-bench direction.
 
-### 2. Stop Lossy `Ok(false)` Log Replacement
+### Capture Seam For `--capture-model-io`
+
+Fact: `LlmProvider::call_with_tools*` returns `Vec<PatchOp>` and current
+OpenAI/Anthropic implementations discard the raw HTTP body. Wrapping
+`&dyn LlmProvider` cannot recover exact response payloads from parsed ops.
+
+Required Stage 10 change, still inside this issue:
+
+- Keep `call_with_tools` for existing callers.
+- Add an object-safe capture method with a default that returns ops plus
+  `raw_response: None` and `payload_status: Unavailable`.
+- DUUMBI-constructed prompts are captured at the orchestrator (always
+  available as request text).
+- OpenAI and Anthropic (and any provider used by bench/replay) must retain
+  the raw response body **only when capture is enabled**, then hand it to
+  the redactor. Do not retain raw bodies by default.
+- A capturing decorator records request text, optional raw response, and
+  `model_io_status`.
+- Tests must cover (a) a provider that exposes payloads and (b) one that
+  does not.
+
+Recommended record:
+
+```rust
+pub struct CapturedProviderCall {
+    pub ops: Vec<PatchOp>,
+    pub request_prompt: String,
+    pub raw_response: Option<String>,
+    pub payload_status: ModelIoStatus,
+}
+```
+
+When payloads are unavailable, write no fake files and keep prompt hashes
+`partial` if the final on-wire prompt is not exposed.
+
+### 2. Stop Lossy `Ok(false)` Log Replacement And Finalize Every Err Path
 
 Delete the `run_in_temp_workspace` pattern that turns `Ok(false)` into a
 short `Err` string. The shared executor must return the structured outcome
 on both success and unsuccessful-but-completed execute paths.
 
 `Err` remains for infrastructure failures: tempdir creation, init, intent
-save, or I/O. Those classify as `provider_or_infrastructure` or `unknown`
-according to the rule table, not as `logic_error`.
+save, or I/O. Those classify from terminal infra facts as
+`provider_or_infrastructure` or `unknown` according to the rule table, not
+as `logic_error`.
+
+Every such `Err` still runs the evidence finalizer **before** `TempDir`
+drop:
+
+- init/intent-save failure: persist phase events `init`/`intent_save` as
+  terminal, hashes if any, sanitized log if any
+- execute `Err` after repair began: keep `repair_attempted=true`, persist
+  partial log and events
+- copy failure: keep execution `root_cause`; set
+  `evidence_persistence=failed|partial`; write `--output` JSON
+- JSON write failure: non-zero process exit, sanitized stderr, leave any
+  already-copied attempt files on disk
+
+`evidence_persistence` never overwrites `root_cause`. Default process exit
+follows existing measurement behavior. `--ci` treats persistence `failed`
+as infrastructure CI failure, not as a graph-failure kill.
+
+Success attempts set `evidence_persistence: json_only` and skip bulky file
+copies unless `--keep-workspaces` is set.
 
 ### 3. CLI Flags
 
@@ -283,13 +381,18 @@ Add `--capture-model-io` with the same semantics.
 Defaults:
 
 - `--artifact-dir` for benchmark: `.duumbi/benchmark/attempts`. Failed
-  attempts always copy bounded sanitized evidence there (or to an override
-  path) before `TempDir` drop. Success attempts may keep hashes in JSON and
-  skip bulky file copies.
-- `--keep-workspaces`: false
-- `--capture-model-io`: false
+  attempts always copy allowlisted sanitized evidence there (or to an
+  override path) before `TempDir` drop. Success attempts keep hashes in
+  JSON (`evidence_persistence: json_only`) and skip bulky file copies
+  unless `--keep-workspaces` is set.
+- `--keep-workspaces`: false. When true, copy the graph/intent allowlist
+  for success or failure. Exclude binaries, secrets, and uncaptured
+  prompt/response caches.
+- `--capture-model-io`: false. When true, write redacted model-io files
+  only if the capture seam obtained payloads.
 
-Do not add a user-facing default-model flag.
+Flag matrix matches PRODUCT.md. Do not add a user-facing default-model
+flag.
 
 ### 4. Schema Versioning And Migration
 
@@ -324,24 +427,53 @@ Document that `error_category` counts may shift because unclassified
 `Ok(false)` rows no longer become `logic_error`. That is a diagnostic
 correction, not a kill-criterion change.
 
+Locked serialization (do **not** add `ErrorCategory::Unknown`):
+
+- Classified failures: map `root_cause` onto an existing snake_case
+  `ErrorCategory` as in PRODUCT.md.
+- Unknown failures: `"root_cause": "unknown"`,
+  `"root_cause_attribution": "no_matching_rule"`, and
+  `"error_category": null` with the key **present** (do not
+  `skip_serializing_if` this null on failed attempts).
+- Success: `root_cause` null/omitted, `error_category` omitted or null.
+
+Bidirectional compatibility:
+
+- New readers load historical baselines that lack `schema_version` and
+  `root_cause`.
+- Existing readers ignore additive fields and accept `error_category: null`
+  because the field is already `Option<ErrorCategory>`.
+
+Representative JSON lives in PRODUCT.md (`Success`, `Classified failure`,
+`Unknown failure`). Tests must round-trip those three shapes.
+
 ### 5. Deterministic Root-Cause Rules
 
-Store `phase_evidence` separately from `root_cause`.
+Store `phase_evidence` separately from `root_cause`. Classifier input is
+**terminal** events only. Recovered events are stored and tested, then
+ignored when selecting `root_cause`.
+
+Do not emit `root_cause_confidence`. Use `root_cause_attribution`:
+`matched_rule` or `no_matching_rule`.
+
+Success: `root_cause = None`. Recovered errors on a successful attempt do
+not create a failure class.
 
 Recommended `phase_evidence` facts:
 
 - preflight blocked
-- mutation failed / retry exhausted
+- mutation failed / retry exhausted / retries remaining
 - diagnostic codes from validation or compilation
 - SSA/dominance or backward-branch messages
 - unresolved export/import/call (`E010`, missing exports)
 - compiler/link/runtime (`E008`, cranelift, signal, write obj)
-- verifier tests passed/failed vs expected
-- process-evidence gap
-- provider/auth/rate-limit/timeout
+- verifier tests passed/failed vs expected, and whether the verifier ran
+- process-evidence gap / unsupported
+- provider/auth/rate-limit/timeout/missing credentials
 - repair entered/applied/succeeded
+- persist/copy errors (`evidence_persistence` only; not a graph class)
 
-Ordered rules (first match wins):
+Ordered rules (first match on **terminal** evidence wins):
 
 1. Provider/auth/rate-limit/timeout/missing credentials ->
    `provider_or_infrastructure` / `ErrorCategory::ProviderError`
@@ -364,18 +496,28 @@ Ordered rules (first match wins):
 7. Missing function or failed task decomposition before a graph exists ->
    `task_decomposition_or_missing_function` /
    `ErrorCategory::MutationFailed`
-8. Verifier ran, graph compiled, tests failed with no diagnostic code ->
-   `product_logic_mismatch` / `ErrorCategory::LogicError`
-9. Verifier or process checker cannot judge the claimed behavior ->
-   `verifier_mismatch_or_unsupported_evidence` /
+8. Verifier or process checker cannot judge the claimed behavior
+   (unsupported evidence, `broader_evidence_required`, verifier did not run
+   applicable checks) -> `verifier_mismatch_or_unsupported_evidence` /
    `ErrorCategory::EvidenceRequired`
-10. Else -> `unknown` / `error_category` remains present as `None` or a
-    new serialized value only if serde compatibility is preserved. Prefer
-    keeping `ErrorCategory` unchanged and adding optional
-    `error_category: None` plus `root_cause: unknown` rather than adding a
-    new enum variant if that would break older readers. If a variant is
-    required, add `Unknown` with `#[serde(other)]` or default so old
-    writers still parse.
+9. Verifier ran applicable checks with **positive applicability evidence**
+   (compiled/runnable graph, `tests_total > 0` or process-evidence
+   `passed`/`failed`, no unsupported marker), graph compiled, tests failed
+   with no diagnostic code -> `product_logic_mismatch` /
+   `ErrorCategory::LogicError`
+10. Else -> `unknown` / `"error_category": null` /
+    `root_cause_attribution: no_matching_rule`
+
+Rule 8 is evaluated before rule 9. A compiled graph with unsupported
+process evidence must not become `product_logic_mismatch`.
+
+Overlapping-rule fixture: terminal E009 plus later verifier failure =>
+`schema_graph_validation`. Recovered-error fixture: recovered provider
+timeout plus terminal E009 => `schema_graph_validation`.
+
+Missing credentials use rule 1 **and** are omitted from graph-failure
+totals (see PRODUCT.md). Tests must assert the accounting exclusion, not
+only the label.
 
 Do not implement an LLM or offline inference classifier in this issue. If a
 later issue adds one, it must write `root_cause_inference` and leave
@@ -383,7 +525,8 @@ later issue adds one, it must write `root_cause_inference` and leave
 
 ### 6. Privacy, Redaction, And Retention Bounds
 
-Default evidence: hashes and sanitized summaries only.
+Default evidence: hashes and sanitized summaries only. Sanitize **before**
+persist.
 
 Reuse or extract the secret-line sanitizer from
 `src/knowledge/learning.rs` rather than inventing a second policy. Redact
@@ -393,10 +536,22 @@ at least:
 - values of configured credential env vars, never the env var names
 - common token prefixes if present in transcripts
 
+Allowlist (failed attempts, default flags):
+
+- `execute.log`
+- `phase_evidence.json`
+- `intent-status.txt` (terminal intent status + validator/verifier summary)
+- `summaries.json`
+- `hashes.json` if not fully inlined
+
+`--keep-workspaces` adds sanitized intent spec and graph JSON-LD. It must
+not copy binaries, `target/`, credentials, or prompt/response caches unless
+`--capture-model-io` is on.
+
 `--capture-model-io` writes redacted files under:
 
 ```text
-<artifact-dir>/<run-or-command>/<task-key>/<provider-key>/<attempt>/model-io/
+<artifact-dir>/<run-id>/<task-key>/<provider-key>/<attempt>/model-io/
 ```
 
 Those files are local-only. Implementation must:
@@ -406,12 +561,28 @@ Those files are local-only. Implementation must:
 - never print raw payloads to stdout JSON used by CI summaries
 - never attach them to GitHub workflow summaries
 - never commit them in the implementation PR
+- skip writing files when `model_io_status` is `Unavailable`
 
-Size caps (implementation may tune, but must test):
+Locked caps:
 
 - sanitized `execute.log`: 256 KiB truncated
-- copied workspace snapshot: skip `*.o`, binaries, and `target/`
 - model I/O: 256 KiB per file truncated after redaction
+- per-attempt file count: 32 default, 64 with `--keep-workspaces`
+- per-attempt total bytes: 1 MiB default, 8 MiB with `--keep-workspaces`
+- per-run total: 32 MiB
+
+Truncation metadata is mandatory when dropping bytes or files:
+`truncated`, `original_bytes`, `retained_bytes`, `omitted_files`.
+
+Symlink/collision:
+
+- Do not follow symlinks whose canonical target is outside the TempDir.
+- Use `safe_artifact_key` for every path component.
+- Unique `run-id` per invocation. Existing destination => persistence error
+  or unique suffix; never overwrite or merge attempts.
+
+Graph/intent content for autopsy requires `--keep-workspaces`. Hashes
+remain the default and cannot reconstruct the graph.
 
 ### 7. Success-Path Compatibility
 
@@ -435,9 +606,11 @@ defaulted.
   the full replay runner.
 - `TempDir` drop must not delete the only copy of attempt evidence.
 - `repair_attempted` is typed from the execute outcome.
-- `root_cause` is rule-based and may be `unknown`.
-- `phase_evidence` is observed fact; inference belongs in a later labeled
-  field, not here.
+- `root_cause` is rule-based, uses terminal evidence only, and may be
+  `unknown` with `root_cause_attribution: no_matching_rule`.
+- `phase_evidence` is observed fact, including recovered events. Inference
+  belongs in a later labeled field, not here.
+- `evidence_persistence` is independent of execution `root_cause`.
 - Default evidence is sanitized/hash-based.
 - `--capture-model-io` is local, redacted, off by default.
 - Existing JSON required fields remain.
@@ -449,19 +622,38 @@ defaulted.
 
 ## BDD-To-Test Mapping
 
+Required execute fixture (not optional): a deterministic `LlmProvider` that
+drives **actual** `run_execute` / structured execute through the verifier
+repair cycle into **both** `duumbi benchmark` and
+`duumbi determinism replay` reports. Injecting a pre-built
+`IntentExecutionOutcome` is allowed as an extra unit test, but it does **not**
+satisfy the product repair or retention scenarios.
+
 | Product scenario | Automated, E2E, manual, or review evidence |
 | --- | --- |
-| Failed attempt retains evidence after TempDir lifecycle | Integration test builds a fixture provider that fails execute, runs the shared executor with an artifact dir, drops the TempDir (or lets it drop), then asserts `execute.log` or equivalent, graph hashes, and report `artifact_paths` still exist on disk. |
-| Repair-entered failure reports `repair_attempted=true` | Unit or integration test feeds a structured outcome or mock execute path that emits a repair phase event and final failure; asserts `repair_attempted=true`, `first_pass_success=false`, `repair_success=false`, and that a replaced short error string is not required. Regression test covers the old `Ok(false)` log-loss case. |
-| Taxonomy distinguishes listed failure classes | Unit tests for the rule table: one fixture or synthetic `phase_evidence` per required class, plus an unmatched fixture that yields `unknown`. Serialization test proves `root_cause` and `phase_evidence` both appear in JSON. |
-| Opt-in model I/O stays local and redacted | Unit test with a payload containing `Authorization: Bearer secret` and an API key; with the flag, the written file is redacted and the JSON report has hashes only; without the flag, no model-io file is written. Review check: implementation PR contains no raw payloads. |
-| Success path still compatible | Report unit test serializes a first-pass success and asserts required fields; `load_baseline` parses a fixture copied from current `BenchmarkReport` JSON without `schema_version` or `root_cause`. Determinism integration fixture still parses `replay_report.v1`. |
+| Failed attempt retains evidence after TempDir lifecycle | Integration test uses the execute fixture, fails after execute, drops TempDir, asserts surviving `execute.log`, graph hashes, `intent-status.txt` (or equivalent) with terminal intent status, validator/verifier summaries, and report `artifact_paths`. Default flags, no `--keep-workspaces`. |
+| Repair-entered failure / no patch | Execute fixture enters repair, applies no patch, fails. Both runner reports: `repair_attempted=true`, `repair_applied=false`, `first_pass_success=false`, `repair_success=false`. Does not scrape replaced short error strings. |
+| Repair applies a patch and still fails | Execute fixture writes a repair patch then fails verification. Assert `repair_applied=true`, `repair_success=false`. |
+| Repair converts the attempt to success | Execute fixture fails first pass, repair patch, verifier pass. Assert `success=true`, `repair_success=true`, `root_cause` null. |
+| Failure after repair entry with retries remaining | Execute fixture enters repair with remaining retry budget and ends unsuccessful. Assert retries remaining in phase evidence and `repair_attempted=true`. |
+| Taxonomy listed classes | Unit tests of the rule table **and** execute-driven fixtures for each required class plus unmatched `unknown`. Serialization test covers the three JSON shapes in PRODUCT.md. |
+| Recovered provider error | Fixture recovers a timeout then fails E009. Assert recovered event present and `root_cause=schema_graph_validation`. |
+| Overlapping terminal diagnostics | Fixture with terminal E009 plus later test failure. Assert schema class wins. |
+| Product logic requires verifier applicability | Fixture compiles but process evidence is unsupported. Assert `verifier_mismatch_or_unsupported_evidence`, not `product_logic_mismatch`. |
+| Success path still compatible | First-pass success serialize required fields; `root_cause` null; no bulky files; `load_baseline` parses current `BenchmarkReport` JSON without `schema_version`. Replay `v1` still parses. |
+| Opt-in model I/O | Payload with `Authorization: Bearer secret`. Flag on + exposing provider: redacted files, JSON hashes only. Flag off: no model-io files. Non-exposing provider: `model_io_status=unavailable`, no fake bodies. |
+| Capture × keep-workspaces matrix | Four flag combinations. Keep-workspaces without capture must not copy prior `model-io/`/`prompts/`/`responses/`. |
+| Default failed retention without flags | Assert allowlisted files including intent status and validator/verifier summaries; no graph snapshot; no model-io. |
+| Persistence failure | After execution class is `schema_graph_validation`, inject copy failure. Assert `root_cause` unchanged and `evidence_persistence` failed/partial; JSON report still written. |
+| Infra Err after repair began | Fixture enters repair then returns execute `Err`. Assert `repair_attempted=true` and partial evidence survives. |
+| Missing credentials excluded | Provider route with absent credentials. Assert `provider_or_infrastructure` **and** graph-failure totals/histograms/denominators do not increment. Relabel-only implementations fail this test. |
+| Symlink escape | Workspace symlink pointing outside TempDir is omitted; truncation metadata lists it; outside files unchanged. |
 
 Additional technical tests:
 
-- `--keep-workspaces` copies `.duumbi` and still sanitizes secrets.
+- `--keep-workspaces` copies sanitized graph/intent and still sanitizes secrets.
 - Path keys reject `..` and URL characters via `safe_artifact_key`.
-- Provider/credential failures are not counted as `product_logic_mismatch`.
+- Run-id collision does not overwrite an existing attempt directory.
 - Existing `tests/integration_phase9c.rs` baseline comparison still loads.
 
 ## Live E2E Plan
@@ -509,9 +701,11 @@ Live constraints:
 Pass/fail for optional live smoke:
 
 - Command writes JSON.
-- Failed or successful attempt has surviving artifact paths after process
-  exit.
-- Report contains `root_cause` and `repair_attempted`.
+- Failed attempts have surviving allowlisted artifact files after process
+  exit, including intent status and validator/verifier summaries.
+- Successful attempts have hashes in JSON; bulky files are absent unless
+  `--keep-workspaces` was passed.
+- Report contains `root_cause` (null on success) and `repair_attempted`.
 - No secrets in JSON.
 
 ## Ralph Cycle Protocol
@@ -539,11 +733,12 @@ Recommended conservative cycles:
   tests. No live LLM.
 - Cycle 2: Shared attempt executor, TempDir copy-out, artifact-path tests.
   No live LLM.
-- Cycle 3: Wire bench runner; remove `Ok(false)` log loss; repair
-  regression test. No live LLM.
+- Cycle 3: Wire bench runner; remove `Ok(false)` log loss; execute-through-
+  repair fixture (not a pre-injected outcome). No live LLM.
 - Cycle 4: Taxonomy rules and JSON schema versioning tests. No live LLM.
-- Cycle 5: Determinism runner reuse, CLI flags, redaction tests, docs.
-  Optional local live smoke only if estimated cost is under USD 1.
+- Cycle 5: Determinism runner reuse, CLI flags, capture seam, redaction
+  tests, docs. Optional local live smoke only if estimated cost is under
+  USD 1.
 
 ## Cycle Budget
 
@@ -587,12 +782,18 @@ When to stop and ask for human guidance:
 6. Reuse the executor from determinism replay without dropping ledger or
    metrics behavior.
 7. Add CLI flags and help text.
-8. Add `--capture-model-io` redaction tests.
-9. Update integration tests and docs.
-10. Optional local live smoke; never upload artifacts.
+8. Add `--capture-model-io` capture seam and redaction tests, including
+   non-exposing providers and keep-workspaces exclusion of prior payloads.
+9. Add the execute-through-repair fixture covering both runners, plus
+   persistence-failure, credential-exclusion, symlink, and taxonomy edge
+   tests.
+10. Update integration tests and docs.
+11. Optional local live smoke; never upload artifacts.
 
 Independently executable slices: taxonomy unit tests, redaction unit
-tests, and schema defaulting tests can start as soon as types exist.
+tests, and schema defaulting tests can start as soon as types exist. They
+do not replace the execute-through-repair fixture required for both
+runners.
 
 ## Verification Plan
 
@@ -634,12 +835,21 @@ Review artifacts for Stage 10:
 Stage 10 is complete only when:
 
 - Shared attempt executor is used by both runners.
-- Failed attempts retain evidence after `TempDir` drop.
-- Repair-entered failures report `repair_attempted=true`.
-- Required `root_cause` classes plus `unknown` are tested.
+- Failed attempts retain allowlisted evidence after `TempDir` drop,
+  including intent status and validator/verifier summaries.
+- A deterministic provider fixture drives actual execute through repair
+  into both runner reports.
+- Repair-entered failures report `repair_attempted=true`; no-patch, patched
+  failure, repaired success, and infra-Err-after-repair are tested.
+- Required `root_cause` classes plus `unknown` are tested, including
+  recovered-error and overlapping-rule fixtures. Verifier-applicability
+  gating is tested.
 - Default evidence is sanitized/hash-based; opt-in I/O is local and
-  redacted.
+  redacted; keep-workspaces cannot smuggle uncaptured payloads.
 - Existing JSON required fields still deserialize, including old baselines.
+  Unknown failures serialize `"error_category": null`.
+- Missing credentials are excluded from graph-failure accounting.
+- Persistence failure keeps execution `root_cause`.
 - Product BDD scenarios are mapped to passing tests or documented fixture
   evidence.
 - Focused tests, fmt, and clippy pass.
@@ -662,17 +872,22 @@ Stage 10 is complete only when:
 
 ## Rollback / Compatibility Notes
 
-- Boolean `run_execute` remains. Revert is possible by restoring callers
-  without removing the structured path.
+- Boolean `run_execute` remains. **Unreleased revert** (before a release
+  ships this work): restore prior callers to the boolean path and drop the
+  new helper if needed. That is a source revert, not a user-facing break.
 - JSON: new fields defaulted; removing them later must keep serde
   defaults.
-- CLI: new flags only. Removing flags later is non-breaking if defaults
-  restore current behavior.
+- CLI: new flags only. While they remain unreleased, they can be deleted
+  without a compatibility promise. **After a release ships**
+  `--keep-workspaces` (on benchmark) or `--capture-model-io`, withdrawing
+  those flags is a breaking CLI change for scripts that pass them.
+  Defaults-off means *not passing the flag* preserves current behavior; it
+  does **not** mean a later flag removal is non-breaking.
 - Taxonomy shift from catch-all `logic_error` to finer classes is
   intentional. Document it in benchmark docs so baseline category counts
   are not misread as product regressions.
-- `--keep-workspaces` and `--capture-model-io` default off, so rollback of
-  those flags does not change current default runs.
+- `--keep-workspaces` and `--capture-model-io` default off, so enabling
+  them is opt-in on current default runs.
 
 ## Open Questions
 
@@ -681,11 +896,16 @@ None blocking.
 Non-blocking Stage 10 choices:
 
 - Exact file path of the shared executor module.
-- Whether success attempts omit file copies and keep hashes in JSON only.
-- Whether `ErrorCategory` gains `Unknown` or `unknown` is represented only
-  on `root_cause`. Prefer representing `unknown` on `root_cause` and keep
-  `error_category` optional to avoid breaking enum readers.
 
-Owner input is not required for those choices. Request Owner input only if
-implementation discovers that surviving evidence requires unbounded
-workspace retention or default raw model I/O.
+Locked (not Stage 10 choices):
+
+- Success attempts omit bulky file copies and keep hashes in JSON only
+  (`evidence_persistence: json_only`) unless `--keep-workspaces` is set.
+- `ErrorCategory` does **not** gain `Unknown`. Unknown failures serialize
+  `"error_category": null` with `"root_cause": "unknown"`.
+- Retention caps, allowlist, capture seam, terminal vs recovered taxonomy,
+  and persistence-vs-execution split are specified above.
+
+Owner input is not required for the remaining module-path choice. Request
+Owner input only if implementation discovers that surviving evidence
+requires unbounded workspace retention or default raw model I/O.
