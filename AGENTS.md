@@ -54,6 +54,17 @@ cargo test --all                     # All tests (~817 tests)
 cargo clippy --all-targets -- -D warnings  # Zero-warning lint policy
 cargo fmt --check                    # Format check
 
+## Cursor Cloud specific instructions
+Cloud Agents need **Rust 1.85+** because the workspace uses `edition = "2024"`.
+The default Cloud image ships `rustc 1.83.0`, which cannot parse `Cargo.toml`.
+`rust-toolchain.toml` pins `stable` (rustfmt + clippy). Install also needs
+`libcurl4-openssl-dev` for the C runtime, matching `.github/workflows/ci.yml`.
+
+Do not put `duumbi studio` in the environment `start` command. The repo root
+is not a DUUMBI workspace; Studio expects an initialized `.duumbi` directory.
+Start Studio only after `duumbi init` in a temp workspace, or from a checked-out
+example that already has one.
+
 ## Code standards
 - Use `thiserror` per module, `anyhow` at application boundaries only
 - NEVER `.unwrap()` in library code; `.expect("invariant: ...")` for true invariants

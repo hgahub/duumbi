@@ -1,0 +1,4 @@
+{
+  "name": "DUUMBI",
+  "install": "set -euo pipefail\nsudo apt-get update\nsudo apt-get install -y --no-install-recommends libcurl4-openssl-dev build-essential\nrustup toolchain install stable --profile minimal --no-self-update\nrustup component add --toolchain stable rustfmt clippy\nrustup default stable\ncargo build --workspace\ncargo build -p duumbi-studio --features ssr --bin studio"
+}
