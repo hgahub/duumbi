@@ -349,13 +349,21 @@ JSON fields retained for every attempt, success or failure:
 - `evidence_persistence` status
 - relative artifact paths that remain after `TempDir` teardown
 
-File persistence differs by outcome:
+File persistence differs by outcome and flags:
 
-- **Failed attempts always persist** the allowlisted files under a local
+- **Failed attempts** persist the failed-attempt allowlist under a local
   artifact directory so inspection does not depend on remembering a flag.
-- **Success attempts persist hashes and summaries in JSON only** by default.
-  They do not copy bulky workspace files unless `--keep-workspaces` is set.
-  Success `artifact_paths` may be empty.
+  If the 32 MiB per-run budget is exhausted, later failed attempts still
+  persist a minimum on-disk stub (see Size And Count Limits).
+- **Success attempts** persist hashes and summaries in JSON
+  (`evidence_persistence: json_only`, `artifact_paths` empty) unless a
+  success file exception applies:
+  - `--keep-workspaces`: bounded sanitized graph/intent snapshot
+  - `--capture-model-io` and the **current attempt** capture seam obtained
+    payloads: redacted `model-io/` files only
+  - both flags: snapshot plus current-attempt `model-io/`
+  Success never copies the failed-attempt allowlist (`execute.log` and
+  companions). `--keep-workspaces` adds only the graph/intent snapshot.
 
 Recommended default root for benchmark is `.duumbi/benchmark/attempts`.
 Determinism keeps its existing `--artifact-dir` default
@@ -384,14 +392,18 @@ redact):
 - sanitized graph JSON-LD under `.duumbi/graph` or equivalent
 - existing non-secret `.duumbi` config needed to reopen the attempt
 
-Never allowlisted:
+Never allowlisted, in **every** flag combination:
 
 - generated binaries, `*.o`, `target/`, object files
 - credential values, API keys, secret-bearing headers
-- model prompt/response files unless `--capture-model-io` is on
-- provider caches, previous `model-io/`, `prompts/`, or `responses/`
-  directories that would bypass the capture flag
+- provider caches and any pre-existing `model-io/`, `prompts/`, or
+  `responses/` directories inside the workspace snapshot
 - symlinks that escape the TempDir workspace
+
+Current-attempt capture artifacts are **not** copied from the workspace.
+They are written only from the capture seam into
+`<attempt>/model-io/` when `--capture-model-io` is on and payloads were
+obtained for this attempt.
 
 #### Size And Count Limits
 
@@ -406,17 +418,39 @@ undocumented limits):
 
 Overflow must write truncation metadata (`truncated: true`,
 `original_bytes`, `retained_bytes`, `omitted_files`) and drop lowest-priority
-files rather than exceeding the cap. Priority: hashes/summaries, then
-`execute.log`, then graph/intent snapshot, then model I/O.
+files rather than exceeding the cap. Priority: hashes/summaries/phase
+evidence, then `execute.log`, then graph/intent snapshot, then model I/O.
+
+Per-attempt caps shrink files inside one attempt. The **per-run 32 MiB
+cap** must not leave a failed attempt with zero files:
+
+- Already-written earlier attempts are not rewritten or shrunk when a later
+  attempt would exceed the run budget.
+- Each later failed attempt still creates its attempt directory and writes
+  at least `truncation.json` (omission metadata: `run_budget_exhausted`,
+  omitted file names, bytes used vs cap).
+- Classification, hashes, intent status, validator/verifier summaries, and
+  phase evidence for that attempt remain in the parent `--output` JSON
+  (`run_retention` object: `bytes_used`, `cap_bytes`, omitted paths).
+- `evidence_persistence` is `partial`, not `failed`. Run-budget truncation
+  is not an infrastructure `--ci` failure. Copy I/O errors remain `failed`.
+- `artifact_paths` points at the stub that survived.
 
 #### Flag Matrix
 
-| `--keep-workspaces` | `--capture-model-io` | Files |
-| --- | --- | --- |
-| false | false | Failed: allowlist without workspace snapshot and without model-io files. Success: JSON hashes only. |
-| true | false | Allowlist plus bounded sanitized graph/intent snapshot. No model-io files. Previously stored prompts/responses in the workspace are excluded. |
-| false | true | Failed allowlist plus redacted model-io files **only if** the capture seam obtained payloads. No graph snapshot. |
-| true | true | Snapshot plus redacted model-io when payloads exist. Snapshot copy still excludes uncaptured prompt/response caches. |
+Rows are outcome × flags. Workspace snapshots **never** copy pre-existing
+payload caches.
+
+| Success | `--keep-workspaces` | `--capture-model-io` | Files and `evidence_persistence` |
+| --- | --- | --- | --- |
+| no | false | false | Failed allowlist. `complete`. |
+| no | false | true | Failed allowlist plus current-attempt `model-io/` if the seam captured payloads. `complete` (or `complete` with `model_io_status: unavailable` and no `model-io/` files). |
+| no | true | false | Failed allowlist plus graph/intent snapshot. No `model-io/`. `complete`. |
+| no | true | true | Failed allowlist plus snapshot plus current-attempt `model-io/` if captured. Snapshot still excludes old caches. `complete`. |
+| yes | false | false | JSON hashes only. `json_only`. `artifact_paths` empty. |
+| yes | false | true | JSON hashes plus current-attempt `model-io/` if captured; no `execute.log`, no snapshot. `complete` when files were written, else `json_only` with `model_io_status: unavailable`. `artifact_paths` lists only those `model-io/` files. |
+| yes | true | false | JSON plus graph/intent snapshot. `complete`. |
+| yes | true | true | Snapshot plus current-attempt `model-io/` if captured. Old caches never copied. `complete`. |
 
 When a provider or orchestrator does not expose raw payloads:
 
@@ -505,7 +539,10 @@ look empty or failed. That rule is evaluated **before**
 Rules are deterministic and ordered. First matching rule on **terminal**
 evidence wins. Overlapping recovered+terminal evidence must not let the
 recovered error win. If no rule matches, the class is `unknown`, not
-`logic_error`.
+`logic_error`. Identical `root_cause` values always serialize to the
+single `error_category` in the JSON Compatibility table. TECHNICAL rule
+text must not remap `control_flow_or_ssa` to `crash` or
+`cross_module_resolution` to any value other than `mutation_failed`.
 
 `error_category` remains the coarse compatibility field using the existing
 snake_case enum. Mapping is locked in JSON Compatibility below.
@@ -598,8 +635,8 @@ Classified failure:
   "evidence_persistence": "complete",
   "phase_evidence": {
     "events": [
-      {"phase": "provider", "status": "recovered", "code": "timeout"},
-      {"phase": "validate", "status": "terminal", "code": "E009"}
+      {"phase": "provider", "status": "recovered", "error_code": "timeout"},
+      {"phase": "validate", "status": "terminal", "error_code": "E009"}
     ]
   }
 }
@@ -791,12 +828,24 @@ Feature: Scaled write-path attempt evidence and failure classification
       Given each combination of `--keep-workspaces` and `--capture-model-io`
       And a provider that does not expose raw response payloads
       When attempts run
-      Then model-io files exist only when the flag is on and payloads were
-      actually captured
+      Then model-io files exist only when the flag is on and the **current
+      attempt** capture seam obtained payloads
       And keep-workspaces snapshots never include previously stored
-      prompts or responses unless `--capture-model-io` is on
+      prompts or responses, including when `--capture-model-io` is on
       And unavailable payloads record `model_io_status` without inventing
       bodies
+
+    Scenario: Success with capture and without keep-workspaces
+      Given an attempt passes first-pass verification
+      And `--capture-model-io` is on
+      And `--keep-workspaces` is off
+      And the capture seam obtained redacted payloads
+      When the report is written
+      Then redacted current-attempt `model-io/` files exist under the
+      artifact dir
+      And `execute.log` and graph snapshots are absent
+      And `artifact_paths` lists only those `model-io/` files
+      And `evidence_persistence` is `complete`
 
     Scenario: Default failed retention without extra flags
       Given a failed attempt with default flags
@@ -832,6 +881,18 @@ Feature: Scaled write-path attempt evidence and failure classification
       And the exclusion is not implemented merely by relabeling a row that
       still counts as a graph failure
 
+    Scenario: Run-budget exhaustion still leaves a failed-attempt stub
+      Given a run with multiple failed attempts whose full allowlists would
+      exceed the 32 MiB per-run cap
+      When later failed attempts are finalized
+      Then each later attempt directory still contains `truncation.json`
+      And the parent report inlines that attempt's hashes, intent status,
+      validator or verifier summaries, and phase evidence
+      And `evidence_persistence` is `partial`
+      And `--ci` does not treat run-budget truncation as infrastructure
+      failure
+      And earlier attempts' already-written files are not deleted
+
     Scenario: Symlink escape is not copied
       Given the temp workspace contains a symlink pointing outside itself
       When evidence is copied
@@ -853,6 +914,8 @@ Feature: Scaled write-path attempt evidence and failure classification
       --output` callers can read the report without a breaking rename
       And bulky workspace files are not copied unless `--keep-workspaces`
       is set
+      And `model-io/` files appear on success only when `--capture-model-io`
+      obtained current-attempt payloads
 
 ## Tasks
 
@@ -897,20 +960,25 @@ Independently testable acceptance criteria:
    `root_cause` class serialize that class; a non-matching failure
    serializes `unknown` with `"error_category": null`. Overlapping-rule and
    recovered-error fixtures pass.
-4. `--capture-model-io` writes redacted local files only when payloads were
-   captured and does not put raw payloads into JSON reports used for GitHub
-   summaries; without the flag, reports contain hashes only. Keep-workspaces
-   copies cannot smuggle prior prompts/responses.
+4. `--capture-model-io` writes redacted local files only from the current
+   attempt capture seam. Workspace snapshots never copy prior
+   prompts/responses in any flag combination. Success + capture + no
+   keep-workspaces writes `model-io/` only (no `execute.log` / snapshot).
 5. A successful first-pass result still deserializes as today's
    `BenchmarkResult` / `ReplayAttempt` required fields, and a pre-change
-   baseline JSON still loads. Success attempts do not copy bulky files by
-   default.
+   baseline JSON still loads. Success without capture or keep-workspaces
+   copies no bulky files.
 6. Missing-credential attempts are excluded from graph-failure accounting.
 7. Persistence-failure fixture keeps the execution `root_cause` and records
    `evidence_persistence`.
-8. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
-   warnings` pass on the implementation PR.
-9. No committed raw provider payloads, secrets, or retained workspaces.
+8. Run-budget exhaustion fixture: later failed attempts still have
+   `truncation.json` plus inlined report evidence; `partial`; not a `--ci`
+   infra failure.
+9. Each required `root_cause` serializes to exactly the locked
+   `error_category` in the JSON Compatibility table.
+10. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
+    warnings` pass on the implementation PR.
+11. No committed raw provider payloads, secrets, or retained workspaces.
 
 Expected artifacts for later Stage 10, not this spec PR:
 
@@ -935,10 +1003,14 @@ Resolved in this spec:
   classification, and verifier-applicability gating are locked.
 - Existing JSON fields stay; schema version is added or bumped when needed.
 - `error_category` for unknown failures is JSON `null` with `root_cause:
-  unknown`; no new `ErrorCategory` variant.
-- Success attempts persist JSON hashes/summaries only; failed attempts
-  always persist allowlisted files. `--keep-workspaces` snapshots success
-  or failure when requested.
+  unknown`; no new `ErrorCategory` variant. `control_flow_or_ssa` always
+  serializes `schema_error`; `cross_module_resolution` always serializes
+  `mutation_failed`.
+- Success without flags is `json_only`. Success + `--capture-model-io`
+  writes current-attempt `model-io/` files when payloads exist. Failed
+  attempts persist the allowlist, or a `truncation.json` stub if the run
+  budget is exhausted.
+- Workspace snapshots never copy pre-existing payload caches.
 - Retention caps, allowlist, flag matrix, symlink/collision, and capture
   seam are locked above.
 - Persistence failure does not override execution `root_cause`.

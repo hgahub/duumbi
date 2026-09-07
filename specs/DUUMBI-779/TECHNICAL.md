@@ -193,7 +193,7 @@ pub struct IntentExecutionOutcome {
 pub struct ExecutionPhaseEvent {
     pub phase: String,
     pub status: PhaseEventStatus, // terminal | recovered | informational
-    pub error_code: Option<String>,
+    pub error_code: Option<String>, // JSON name `error_code`, never `code`
 }
 ```
 
@@ -275,10 +275,12 @@ The outer executor:
 7. Sanitizes, then copies allowlisted artifacts into `artifact_dir` using
    `safe_artifact_key` and a unique `run-id`.
 8. Optionally snapshots allowlisted `.duumbi` graph/intent files when
-   `keep_workspace` is true. Never copy `model-io/`, `prompts/`, or
-   `responses/` unless `capture_model_io` is true.
-9. Optionally writes redacted model I/O when `capture_model_io` is true and
-   payloads were captured.
+   `keep_workspace` is true. **Never** copy `model-io/`, `prompts/`, or
+   `responses/` out of the workspace, including when `capture_model_io` is
+   true.
+9. Write redacted `model-io/` files only from the **current attempt**
+   capture seam when `capture_model_io` is true and payloads were obtained.
+   Do not populate `model-io/` by copying caches.
 10. Runs a `finally` finalizer on **every** exit, including init/intent-save
     `Err` and infrastructure `Err` after repair began, then drops `TempDir`.
 
@@ -357,8 +359,17 @@ drop:
 follows existing measurement behavior. `--ci` treats persistence `failed`
 as infrastructure CI failure, not as a graph-failure kill.
 
-Success attempts set `evidence_persistence: json_only` and skip bulky file
-copies unless `--keep-workspaces` is set.
+Success attempts skip the failed-attempt allowlist (`execute.log` and
+companions). They write files only for:
+
+- `--keep-workspaces`: graph/intent snapshot
+- `--capture-model-io` with current-attempt captured payloads: `model-io/`
+  files (`evidence_persistence: complete`, `artifact_paths` lists those
+  files)
+- neither: `evidence_persistence: json_only`, empty `artifact_paths`
+
+Success + capture + unavailable payloads + no keep-workspaces stays
+`json_only` with `model_io_status: unavailable`.
 
 ### 3. CLI Flags
 
@@ -381,15 +392,17 @@ Add `--capture-model-io` with the same semantics.
 Defaults:
 
 - `--artifact-dir` for benchmark: `.duumbi/benchmark/attempts`. Failed
-  attempts always copy allowlisted sanitized evidence there (or to an
-  override path) before `TempDir` drop. Success attempts keep hashes in
-  JSON (`evidence_persistence: json_only`) and skip bulky file copies
-  unless `--keep-workspaces` is set.
+  attempts copy the failed-attempt allowlist there before `TempDir` drop,
+  or a `truncation.json` stub if the 32 MiB run budget is exhausted.
+  Success attempts follow the success file exceptions in PRODUCT.md (JSON
+  only; plus `model-io/` when capture obtained payloads; plus snapshot
+  when `--keep-workspaces`).
 - `--keep-workspaces`: false. When true, copy the graph/intent allowlist
-  for success or failure. Exclude binaries, secrets, and uncaptured
-  prompt/response caches.
-- `--capture-model-io`: false. When true, write redacted model-io files
-  only if the capture seam obtained payloads.
+  for success or failure. Exclude binaries, secrets, and **all**
+  pre-existing prompt/response/`model-io` caches in every flag combination.
+- `--capture-model-io`: false. When true, write redacted `model-io/` files
+  from the current-attempt capture seam only, including on success, if
+  payloads were obtained.
 
 Flag matrix matches PRODUCT.md. Do not add a user-facing default-model
 flag.
@@ -484,13 +497,13 @@ Ordered rules (first match on **terminal** evidence wins):
    rules below) -> `schema_graph_validation` /
    `ErrorCategory::SchemaError`
 4. Cross-module export/import/call (`E010`, missing export, unresolved
-   call) -> `cross_module_resolution` / `ErrorCategory::MutationFailed`
-   unless a more specific existing category already applies; do not use
-   `logic_error`
+   call) -> `cross_module_resolution` /
+   `ErrorCategory::MutationFailed` only. Do not remap to `logic_error`,
+   `schema_error`, or any other coarse value.
 5. SSA dominance, forward reference, or backward-branch loop construction
-   messages -> `control_flow_or_ssa` / `ErrorCategory::SchemaError` or
-   `Crash` only if compilation actually crashed; prefer a dedicated mapping
-   documented in tests
+   messages -> `control_flow_or_ssa` / `ErrorCategory::SchemaError` only.
+   A compiler/linker/runtime crash without those control-flow diagnostics
+   is rule 6, not a remapping of this class to `Crash`.
 6. Compiler/linker/runtime crash -> `compiler_or_runtime` /
    `ErrorCategory::Crash`
 7. Missing function or failed task decomposition before a graph exists ->
@@ -510,6 +523,12 @@ Ordered rules (first match on **terminal** evidence wins):
 
 Rule 8 is evaluated before rule 9. A compiled graph with unsupported
 process evidence must not become `product_logic_mismatch`.
+
+The PRODUCT JSON Compatibility table is the only coarse mapping. Tests
+must not invent a second `error_category` for the same `root_cause`.
+If terminal evidence includes both SSA diagnostics (rule 5) and a later
+compile crash (rule 6), first-match keeps `control_flow_or_ssa` /
+`schema_error`.
 
 Overlapping-rule fixture: terminal E009 plus later verifier failure =>
 `schema_graph_validation`. Recovered-error fixture: recovered provider
@@ -545,7 +564,8 @@ Allowlist (failed attempts, default flags):
 - `hashes.json` if not fully inlined
 
 `--keep-workspaces` adds sanitized intent spec and graph JSON-LD. It must
-not copy binaries, `target/`, credentials, or prompt/response caches unless
+not copy binaries, `target/`, credentials, or any pre-existing
+`model-io/`, `prompts/`, or `responses/` caches, **including when**
 `--capture-model-io` is on.
 
 `--capture-model-io` writes redacted files under:
@@ -570,6 +590,20 @@ Locked caps:
 - per-attempt file count: 32 default, 64 with `--keep-workspaces`
 - per-attempt total bytes: 1 MiB default, 8 MiB with `--keep-workspaces`
 - per-run total: 32 MiB
+
+Per-attempt overflow drops lowest-priority files inside that attempt and
+writes truncation metadata.
+
+When a later failed attempt would exceed the **per-run** 32 MiB budget:
+
+- do not rewrite or delete earlier attempts' files
+- still create the later attempt directory
+- write at least `truncation.json` with `omission_reason:
+  run_budget_exhausted`, omitted names, and bytes used vs cap
+- inline hashes, intent status, validator/verifier summaries, and phase
+  evidence in the parent report `run_retention` object
+- set `evidence_persistence: partial` (not `failed`)
+- `--ci` does not treat run-budget truncation as infrastructure failure
 
 Truncation metadata is mandatory when dropping bytes or files:
 `truncated`, `original_bytes`, `retained_bytes`, `omitted_files`.
@@ -640,11 +674,13 @@ satisfy the product repair or retention scenarios.
 | Recovered provider error | Fixture recovers a timeout then fails E009. Assert recovered event present and `root_cause=schema_graph_validation`. |
 | Overlapping terminal diagnostics | Fixture with terminal E009 plus later test failure. Assert schema class wins. |
 | Product logic requires verifier applicability | Fixture compiles but process evidence is unsupported. Assert `verifier_mismatch_or_unsupported_evidence`, not `product_logic_mismatch`. |
-| Success path still compatible | First-pass success serialize required fields; `root_cause` null; no bulky files; `load_baseline` parses current `BenchmarkReport` JSON without `schema_version`. Replay `v1` still parses. |
-| Opt-in model I/O | Payload with `Authorization: Bearer secret`. Flag on + exposing provider: redacted files, JSON hashes only. Flag off: no model-io files. Non-exposing provider: `model_io_status=unavailable`, no fake bodies. |
-| Capture × keep-workspaces matrix | Four flag combinations. Keep-workspaces without capture must not copy prior `model-io/`/`prompts/`/`responses/`. |
+| Success path still compatible | First-pass success serialize required fields; `root_cause` null; no bulky files without flags; `load_baseline` parses current `BenchmarkReport` JSON without `schema_version`. Replay `v1` still parses. |
+| Opt-in model I/O | Payload with `Authorization: Bearer secret`. Flag on + exposing provider: redacted files from the current-attempt seam, JSON hashes only in the report body. Flag off: no model-io files. Non-exposing provider: `model_io_status=unavailable`, no fake bodies. |
+| Success + capture, no keep-workspaces | First-pass success with capture payloads: `model-io/` files exist; no `execute.log`/snapshot; `artifact_paths` lists only those files; `evidence_persistence=complete`. |
+| Capture × keep-workspaces matrix | All flag×outcome rows in PRODUCT. Snapshots **never** copy prior `model-io/`/`prompts/`/`responses/`, including when capture is on. |
 | Default failed retention without flags | Assert allowlisted files including intent status and validator/verifier summaries; no graph snapshot; no model-io. |
 | Persistence failure | After execution class is `schema_graph_validation`, inject copy failure. Assert `root_cause` unchanged and `evidence_persistence` failed/partial; JSON report still written. |
+| Run-budget exhaustion | Multiple oversized failed attempts. Later attempts have `truncation.json`; parent report inlines hashes/intent/summaries/phase evidence; `partial`; not a `--ci` infra failure; earlier files kept. |
 | Infra Err after repair began | Fixture enters repair then returns execute `Err`. Assert `repair_attempted=true` and partial evidence survives. |
 | Missing credentials excluded | Provider route with absent credentials. Assert `provider_or_infrastructure` **and** graph-failure totals/histograms/denominators do not increment. Relabel-only implementations fail this test. |
 | Symlink escape | Workspace symlink pointing outside TempDir is omitted; truncation metadata lists it; outside files unchanged. |
@@ -703,8 +739,9 @@ Pass/fail for optional live smoke:
 - Command writes JSON.
 - Failed attempts have surviving allowlisted artifact files after process
   exit, including intent status and validator/verifier summaries.
-- Successful attempts have hashes in JSON; bulky files are absent unless
-  `--keep-workspaces` was passed.
+- Successful attempts have hashes in JSON; bulky workspace files are
+  absent unless `--keep-workspaces` was passed. `--capture-model-io` is
+  not used in this live smoke.
 - Report contains `root_cause` (null on success) and `repair_attempted`.
 - No secrets in JSON.
 
@@ -899,10 +936,16 @@ Non-blocking Stage 10 choices:
 
 Locked (not Stage 10 choices):
 
-- Success attempts omit bulky file copies and keep hashes in JSON only
-  (`evidence_persistence: json_only`) unless `--keep-workspaces` is set.
+- Success without capture or keep-workspaces is `json_only`. Success +
+  `--capture-model-io` writes current-attempt `model-io/` when payloads
+  exist. `--keep-workspaces` adds the graph/intent snapshot only.
+- Workspace snapshots never copy pre-existing payload caches.
+- Failed attempts persist the allowlist, or `truncation.json` plus inlined
+  report fields when the 32 MiB run budget is exhausted (`partial`).
 - `ErrorCategory` does **not** gain `Unknown`. Unknown failures serialize
   `"error_category": null` with `"root_cause": "unknown"`.
+  `control_flow_or_ssa` → `schema_error`; `cross_module_resolution` →
+  `mutation_failed` with no test-local remapping.
 - Retention caps, allowlist, capture seam, terminal vs recovered taxonomy,
   and persistence-vs-execution split are specified above.
 
