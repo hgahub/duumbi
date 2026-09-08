@@ -231,7 +231,7 @@ pub struct AttemptEvidence {
 }
 
 /// Per-run retention counters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunRetentionState {
     /// Allowlisted content bytes written under the run tree.
     pub content_bytes: u64,
@@ -239,16 +239,6 @@ pub struct RunRetentionState {
     pub stub_bytes: u64,
     /// Stop creating artifact-producing attempts.
     pub stop_artifact_attempts: bool,
-}
-
-impl Default for RunRetentionState {
-    fn default() -> Self {
-        Self {
-            content_bytes: 0,
-            stub_bytes: 0,
-            stop_artifact_attempts: false,
-        }
-    }
 }
 
 impl RunRetentionState {
@@ -573,6 +563,7 @@ fn infra_outcome(phase: &str, message: &str) -> IntentExecutionOutcome {
     outcome
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_evidence(
     request: &AttemptRequest<'_>,
     outcome: IntentExecutionOutcome,
@@ -820,7 +811,7 @@ fn apply_per_attempt_caps(mut files: Vec<PlannedFile>, keep_workspace: bool) -> 
             3
         }
     };
-    files.sort_by(|a, b| priority(&b.relative).cmp(&priority(&a.relative)));
+    files.sort_by_key(|file| std::cmp::Reverse(priority(&file.relative)));
     let mut kept = Vec::new();
     let mut bytes = 0u64;
     for file in files {

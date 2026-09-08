@@ -934,7 +934,7 @@ pub async fn run_execute_structured_with_progress(
     if all_passed {
         emit!("Intent completed successfully.".to_string());
         collector.push_event("complete", PhaseEventStatus::Terminal, None);
-        return Ok(collector.finish(true, "completed"));
+        Ok(collector.finish(true, "completed"))
     } else {
         // Record failure patterns for future learning.
         let error_codes: Vec<String> = report
@@ -1011,7 +1011,7 @@ pub async fn run_execute_structured_with_progress(
             collector.push_event("verify", PhaseEventStatus::Terminal, None);
         }
         collector.push_event("complete", PhaseEventStatus::Informational, None);
-        return Ok(collector.finish(false, "verifier_failed"));
+        Ok(collector.finish(false, "verifier_failed"))
     }
 }
 
@@ -1791,11 +1791,10 @@ mod tests {
                     && event.status == PhaseEventStatus::Terminal)
         );
         assert_eq!(provider.call_count(), 0);
-        assert_eq!(
-            run_execute(&provider, tmp.path(), "weak", &mut Vec::new())
+        assert!(
+            !run_execute(&provider, tmp.path(), "weak", &mut Vec::new())
                 .await
-                .expect("boolean wrapper"),
-            false
+                .expect("boolean wrapper")
         );
     }
 
@@ -1834,12 +1833,14 @@ mod tests {
 
     #[test]
     fn outcome_collector_records_repair_attempted_without_log_scan() {
-        let mut collector = OutcomeCollector::default();
-        collector.repair_attempted = true;
-        collector.repair_applied = false;
-        collector.first_pass_success = false;
-        collector.tests_passed = 0;
-        collector.tests_total = 4;
+        let mut collector = OutcomeCollector {
+            repair_attempted: true,
+            repair_applied: false,
+            first_pass_success: false,
+            tests_passed: 0,
+            tests_total: 4,
+            ..OutcomeCollector::default()
+        };
         collector.push_event("verify", PhaseEventStatus::Recovered, None);
         collector.push_event("repair", PhaseEventStatus::Informational, None);
         collector.push_event("reverify", PhaseEventStatus::Terminal, None);

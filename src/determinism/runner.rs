@@ -14,7 +14,7 @@ use crate::bench::showcases::{self, Showcase, ShowcaseSuite, ShowcaseVerificatio
 use crate::config::ProviderConfig;
 use crate::intent::attempt::{AttemptRequest, RunRetentionState, run_isolated_attempt};
 use crate::intent::bdd::{DEFAULT_BDD_CONTEXT_LIMIT, load_bdd_report, render_bdd_prompt_context};
-use crate::intent::spec::{IntentSpec, IntentStatus};
+use crate::intent::spec::IntentSpec;
 
 use super::digest::{safe_artifact_key, sha256_hex_bytes, workspace_state_hashes};
 use super::evidence::{
@@ -756,7 +756,7 @@ mod tests {
     use crate::agents::{AgentError, LlmProvider};
     use crate::config::{ProviderKind, ProviderRole};
     use crate::determinism::digest::exact_graph_digest;
-    use crate::intent::spec::{IntentModules, TestCase};
+    use crate::intent::spec::{IntentModules, IntentStatus, TestCase};
     use crate::patch::PatchOp;
 
     struct MockReplayProvider;

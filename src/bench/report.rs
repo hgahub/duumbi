@@ -20,6 +20,10 @@ use crate::intent::taxonomy::{RootCauseAttribution, RootCauseClass};
 /// Schema version for reports that include root-cause and phase evidence.
 pub const BENCHMARK_REPORT_SCHEMA_V2: &str = "duumbi.benchmark.report.v2";
 /// Historical reports without the new evidence fields.
+///
+/// Kept as a named identifier for baseline compatibility docs and tests.
+/// Missing `schema_version` is treated as this generation on read.
+#[allow(dead_code)]
 pub const BENCHMARK_REPORT_SCHEMA_V1: &str = "duumbi.benchmark.report.v1";
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1284,10 @@ mod tests {
         let report = load_baseline(&path).expect("load without schema_version");
         let _ = std::fs::remove_file(&path);
         assert!(report.schema_version.is_none());
+        assert_eq!(
+            super::BENCHMARK_REPORT_SCHEMA_V1,
+            "duumbi.benchmark.report.v1"
+        );
         assert_eq!(report.results.len(), 0);
     }
 }
