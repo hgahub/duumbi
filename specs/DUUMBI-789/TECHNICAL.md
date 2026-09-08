@@ -13,10 +13,19 @@ and reopen / accidental-Done correction messages.
 The implementation must:
 
 - reuse `scripts/slack-approval-bridge` → `repository_dispatch`
+- reject invalid/stale Slack signatures with no GitHub dispatch and no
+  request-directed Slack callbacks
+- carry Slack `channel_id` and parent `thread_ts` on `project_status` dispatch
+  (never `response_url`) and reply in-thread when that metadata is present
+- post a correction/entry card after combined-spec merge or reopen when Status
+  is Done or Spec Needed, even without `tech-spec-approved`
+- dedupe that card per occurrence, not once per issue lifetime
+- update Status only on the configured DUUMBI Project
 - update Project V2 Status without Stage 7/9 spec-PR merge validation
 - keep combined two-file PRODUCT+TECHNICAL spec PRs unblocked
 - leave Stage 7/9 single-file merge rules unchanged
 - never reopen a closed issue from Slack
+- not post live Slack buttons until the Function routes `project_status`
 
 This spec does not implement the change, approve itself, or start Ralph cycles.
 
@@ -47,13 +56,26 @@ Verified source at Stage 6 inspection:
   - `fallbackWorkflowName` returns `stage-10-authorization.yml` or
     `stage-approval.yml`
 - `scripts/slack-approval-bridge/src/functions/slackApproval.test.js`
-- `.github/workflows/ready-for-build-handoff.yml` — text-only `chat.postMessage`
+  - invalid/missing timestamps fail `verifySlackSignature`; handler returns 401
+    before dispatch today, but PRODUCT must not require a Slack follow-up on
+    that path
+- `.github/workflows/ready-for-build-handoff.yml` — text-only `chat.postMessage`;
+  `isReady` is `tech-spec-approved` or Status `Ready for Build`; Project scan
+  uses `DUUMBI_PROJECT_NUMBER` / `DUUMBI_PROJECT_OWNER` /
+  `DUUMBI_PROJECT_OWNER_TYPE`
 - `.github/workflows/stage-approval.yml` — Stage 5/7/9 matrix;
-  `validateAndMergeSpecPr` requires exactly one PRODUCT.md or TECHNICAL.md file
-- `.github/workflows/stage-10-authorization.yml` — sibling-workflow precedent
+  `validateAndMergeSpecPr` requires exactly one PRODUCT.md or TECHNICAL.md file;
+  Project write iterates all `issue.projectItems`
+- `.github/workflows/stage-10-authorization.yml` — sibling-workflow precedent;
+  also iterates all `issue.projectItems`
 - `.github/workflows/human-acceptance-request.yml` — Block Kit button shape
+- `scripts/github-actions/triage-queue-refill.mjs` — fail-closed if
+  `DUUMBI_PROJECT_NUMBER` is missing
 - `scripts/github-actions/stage-approval-workflow.test.mjs`
 - No current `issues.reopened` Slack handoff exists
+- Slack shortcut intake already copies `channel_id` / `thread_ts` /
+  `message_ts` into `client_payload` without `response_url`; `block_actions`
+  `project_status` must do the same for in-thread GitHub replies
 
 ## Affected Areas
 
@@ -88,8 +110,12 @@ Do not modify:
 | Workflow file | `.github/workflows/project-status.yml` |
 | Fallback workflow name | `project-status.yml` |
 | Decisions | `ready-for-build`, `undo-done` |
+| Target Project | repository vars `DUUMBI_PROJECT_NUMBER`, `DUUMBI_PROJECT_OWNER`, `DUUMBI_PROJECT_OWNER_TYPE` (same as Ready-for-Build handoff / triage refill) |
 | Target Project Status | `Ready for Build` for both decisions |
+| Slack thread metadata | `channel_id` + parent `thread_ts` in `client_payload`; never `response_url` |
 | Closed issues | fail closed; do not reopen |
+| Signature failure | HTTP 401; no dispatch; no Slack callbacks |
+| Button enablement | Function with `project_status` routing must be live, or workflows must omit `blocks` until an enablement var is true |
 
 Use a **sibling workflow**, not an extra Stage in `stage-approval.yml`. Stage 10
 already split away from `stage-approval.yml` so resource authorization would not
@@ -124,21 +150,54 @@ return eventTypeForStage(actionData?.stage);
   "issue_number": 789,
   "decision": "ready-for-build",
   "rationale": "Ready for build by Slack (name)",
-  "reviewer": "Slack (name)"
+  "reviewer": "Slack (name)",
+  "channel_id": "C123",
+  "thread_ts": "1234567890.123456"
 }
 ```
 
+`channel_id` comes from the verified Slack payload (`payload.channel.id` or
+`payload.channel_id`). Parent `thread_ts` is `payload.message.thread_ts` when
+the card is already in a thread, otherwise `payload.message.ts` (the card
+itself is the thread root). Do not send empty strings as substitutes for
+missing IDs; omit the fields when absent.
+
 Rules:
 
-- Do not include `slack_response_url`.
+- Do not include `slack_response_url` or `response_url`.
 - Do not require `pr_number` or `stage`.
 - `decision` is `ready-for-build` or `undo-done` only.
 - `fallbackWorkflowName("project-status")` returns `project-status.yml`.
 - `buildDispatchSuccessText` for this event must say Project Status update is
   running, not Stage 7/9 approval and not implementation.
+- Immediate Function follow-up after a **valid** signature may use Slack
+  `response_url` inside the Function process only (the existing
+  `dispatchAsync` pattern). That is not a GitHub payload field.
 
-Keep existing Stage 5/7/9/10 tests green. Add tests for the new route and for
-the invariant that a Stage 9 approve payload still maps to `stage-approval`.
+Keep existing Stage 5/7/9/10 tests green. Add tests for the new route, for
+thread metadata, and for the invariant that a Stage 9 approve payload still
+maps to `stage-approval`.
+
+### Invalid or stale signature (fail-closed)
+
+Keep `verifySlackSignature` as the first gate. On failure:
+
+1. Return HTTP 401 with a generic body (`Invalid signature`).
+2. Do not `JSON.parse` the Slack payload for side effects that call out.
+3. Do not call `fetch` against GitHub `repository_dispatch`.
+4. Do not call `fetch` against `response_url`, `chat.postMessage`, or any
+   other Slack URL taken from the request.
+
+Negative tests (required):
+
+- missing signing secret / missing timestamp / non-numeric timestamp / stale
+  timestamp (>300s) / wrong HMAC → `verifySlackSignature` is false
+- handler (or a testable wrapper around dispatch) makes **zero** outbound
+  Slack or GitHub HTTP calls when verification fails
+- no `repository_dispatch` body is constructed
+
+Do not add a same-thread fallback on this path. Slack's own ephemeral or
+original-card error to the clicker is sufficient.
 
 ### Slack button value
 
@@ -178,45 +237,87 @@ Do not point this fallback at `stage-approval.yml` Approve.
 ### Ready-for-Build handoff
 
 In `.github/workflows/ready-for-build-handoff.yml`, change `chat.postMessage`
-to send `blocks` plus fallback `text`.
+to send `blocks` plus fallback `text` **only when Project Status buttons are
+enabled** (see Rollout). Until then, keep text-only posts so live cards cannot
+click an undeployed Function.
 
 Keep current candidate selection, `isReady` predicate, and v1 marker
-`<!-- duumbi-ready-for-build-slack-notified:v1 issue=N -->`. Buttons are an
-additive payload change. Do not require Project Status to already be Ready
-for Build before showing **Set Ready for Build**; the button exists because
-Status may still be Done or Spec Needed after a combined spec merge.
+`<!-- duumbi-ready-for-build-slack-notified:v1 issue=N -->`. Combined-spec
+issues that stay `Spec Needed` without `tech-spec-approved` will **not** match
+`isReady`; they are covered by the correction/entry producer below, not by
+widening `isReady` in a way that spams Stage 10 handoff prompts.
 
-Query Project Status with the existing `getProjectStatus` helper. If it
-returns `Done` or `null`, include **Undo Done**.
+Query Status with the **DUUMBI target Project only** (do not reuse a
+`projectItems` scan that returns the first Status field from any board). If
+that Status is `Done` or the query fails after buttons are enabled, include
+**Undo Done**.
 
-### Reopen / accidental-Done correction message
+### Project Status correction/entry producer
 
-No reopen Slack path exists today. Add it in the same
-`ready-for-build-handoff.yml` workflow (preferred: one notification job) or a
-thin sibling workflow if that keeps the YAML readable.
+Ready-for-Build handoff does not cover combined-spec completion: after a
+two-file `PRODUCT.md` + `TECHNICAL.md` merge, the issue may remain open at
+**Spec Needed** without `tech-spec-approved`, so `isReady` never posts a
+button. Reopen alone also misses that case when GitHub never closed the issue.
 
-Trigger: `issues` types `[reopened]` in addition to current labeled / schedule
-/ `workflow_dispatch` triggers.
+**Producer (required):** post the same Project Status button card as the
+reopen correction when **all** of these are true:
 
-Post the correction message when **all** of these are true:
+1. The issue is open and is not a pull request.
+2. DUUMBI Project Status is `Spec Needed` or `Done` (or Status cannot be read
+   after a qualifying producer event).
+3. A qualifying event fired:
+   - `issues.reopened`, or
+   - `pull_request` closed and merged whose changed files are exactly
+     `specs/DUUMBI-<N>/PRODUCT.md` and `specs/DUUMBI-<N>/TECHNICAL.md` for
+     that issue `<N>`, or
+   - `workflow_dispatch` naming `issue_number` for an issue that already has
+     those two spec files on the default branch and/or combined Stage 7+9
+     accept comments.
+4. Buttons are enabled (same rollout gate as Ready-for-Build handoff).
+5. No correction marker already exists for **this occurrence**.
 
-1. The issue is open after a reopen event (or a targeted `workflow_dispatch`).
-2. The issue is not a pull request.
-3. At least one Ready-for-Build track signal is present:
-   - label `tech-spec-approved`, or
-   - existing Ready-for-Build v1 marker comment, or
-   - Project Status `Done`
-4. The distinct correction marker is not already present:
-   `<!-- duumbi-reopen-project-status-slack-notified:v1 issue=N -->`
+Put this in `ready-for-build-handoff.yml` (preferred: extra triggers + a
+separate candidate path) or a thin sibling workflow. Do not call
+`pulls.merge`. Do not require a single-file Stage 7/9 spec PR. Do not require
+the Owner to open the GitHub Project UI.
 
-The prior Ready-for-Build marker must **not** suppress this message.
+Hourly Ready-for-Build cron must **not** scan every `Spec Needed` issue for
+this card. Combined-spec entry is event-driven (merged two-file spec PR,
+reopen, or targeted dispatch).
 
-After a successful Slack post, write the correction marker comment. Include
-the same two buttons and fallback context.
+#### Per-occurrence dedupe
 
-Scheduled sweeps should not spam correction messages. Limit reopen handling to
-the `issues.reopened` event plus optional `workflow_dispatch` with
-`issue_number`. Do not scan every open issue for Done on the hourly cron.
+Do **not** use an issue-wide marker such as
+`<!-- duumbi-reopen-project-status-slack-notified:v1 issue=N -->`.
+
+Use a stable occurrence id that is identical across retries of the same
+delivery and different for a later close/reopen:
+
+- Reopen: `issue=<N>;kind=reopened;occurrence=<stable>` where `<stable>` is
+  the GitHub webhook delivery id (`github.event.delivery` / `GITHUB_DELIVERY`)
+  when present, otherwise `issue.updated_at` from the `issues.reopened`
+  payload (ISO timestamp of that reopen).
+- Combined-spec merge: `issue=<N>;kind=combined-spec;occurrence=<merge SHA>`.
+- Manual dispatch: `issue=<N>;kind=dispatch;occurrence=<run_id>` is allowed
+  because humans can re-run deliberately; document that retries of the same
+  run_attempt should still no-op if the marker was written.
+
+Marker example:
+
+```html
+<!-- duumbi-project-status-correction-slack-notified:v1 issue=779;kind=reopened;occurrence=111222333 -->
+```
+
+Rules:
+
+- Duplicate delivery of the same reopen: marker already present → do not post
+  again.
+- A later close + reopen: new occurrence id → post again.
+- Prior Ready-for-Build v1 marker must **not** suppress correction/entry.
+- Write the occurrence marker only after Slack post succeeds.
+
+Tests: same occurrence twice → one Slack post; two sequential reopens → two
+posts.
 
 ### Project Status-only workflow
 
@@ -240,29 +341,46 @@ on:
       rationale:
         required: false
         type: string
+      reviewer:
+        required: false
+        type: string
 ```
 
 Permissions: `contents: read`, `issues: write`. Do **not** grant
 `pull-requests: write`. Do **not** call `github.rest.pulls.merge`.
 
+Env (same Project identity as Ready-for-Build handoff):
+
+- `GH_PROJECT_PAT`
+- `SLACK_BOT_TOKEN`
+- `SLACK_REVIEW_CHANNEL_ID`
+- `DUUMBI_PROJECT_NUMBER`
+- `DUUMBI_PROJECT_OWNER` (default `github.repository_owner`)
+- `DUUMBI_PROJECT_OWNER_TYPE`
+
 Job steps:
 
-1. Read `issue_number`, `decision`, `reviewer` from `client_payload` or
-   `inputs`.
+1. Read `issue_number`, `decision`, `reviewer`, `channel_id`, `thread_ts` from
+   `client_payload` or `inputs`. Reviewer is `raw.reviewer` if non-empty,
+   otherwise `context.actor` (covers manual dispatch with no reviewer input).
 2. Reject unknown `action_type` values if present and not `project_status`.
 3. Reject unknown `decision` values.
 4. `GET` the issue. If `state !== "open"`, `core.setFailed` with a closed-issue
-   message, notify Slack, and return without GraphQL mutation.
-5. If `GH_PROJECT_PAT` is missing, fail the status update, comment that Status
-   was not changed, and Slack the fallback.
-6. Reuse the GraphQL Status update pattern from `stage-approval.yml` /
-   `stage-10-authorization.yml`: find `projectItems`, find field `Status`, find
-   option `Ready for Build`, `updateProjectV2ItemFieldValue`.
+   message, notify Slack using the thread rules below, and return without
+   GraphQL mutation.
+5. If `GH_PROJECT_PAT` or `DUUMBI_PROJECT_NUMBER` is missing, fail the status
+   update, comment that Status was not changed, and Slack the fallback. Do not
+   scan arbitrary `issue.projectItems`.
+6. Resolve **one** target Project: `DUUMBI_PROJECT_OWNER` +
+   `DUUMBI_PROJECT_NUMBER` (infer owner type as Ready-for-Build handoff does).
+   Load that `projectV2`, find the issue's item **on that Project only**, find
+   Status option `Ready for Build`. If the Project, item, or option is missing,
+   fail visibly. Do not update any other Project.
 7. Both decisions write option **Ready for Build**. `undo-done` is an alias
    for the same mutation; keep the decision string in the issue comment for
    audit.
-8. If Status is already Ready for Build, skip mutation or rewrite the same
-   option, then report idempotent success.
+8. If Status on the DUUMBI Project is already Ready for Build, skip mutation
+   or rewrite the same option, then report idempotent success.
 9. Create an issue comment, for example:
 
    ```text
@@ -271,18 +389,24 @@ Job steps:
    **Reviewer source:** Slack (name)
    **Previous status:** Done
    **Project:** Ready for Build
+   **Target project:** DUUMBI_PROJECT_NUMBER=<n>
    **Spec PR merged:** no
    ```
 
-10. Post Slack success via `chat.postMessage` to `SLACK_REVIEW_CHANNEL_ID`.
-    Do not rely on `response_url` from GitHub. The Function already posted the
-    in-progress line through `response_url`.
+10. Slack result:
+    - If `channel_id` and parent `thread_ts` are present, `chat.postMessage`
+      to that channel with `thread_ts` set (in-thread reply). Do not use
+      `response_url`.
+    - If either is missing (manual `workflow_dispatch`), post channel-only to
+      `SLACK_REVIEW_CHANNEL_ID` with no `thread_ts`. The GitHub comment must
+      say the Slack reply was not in-thread.
+    - Never post to a channel ID taken from an unverified Slack body.
 11. Write metadata-only `duumbi-workflow-metrics.json` with
     `correlation.project_status: "Ready for Build"`, no Slack bodies, no
     secrets.
 
-If GraphQL finds no project item or no Status option, fail visibly in Slack
-with the Project UI fallback. Do not create Project fields.
+Do not create Project fields. Do not iterate every `projectItems` node and
+write Status on each board.
 
 ### Stage 7/9 isolation
 
@@ -311,28 +435,52 @@ Update the dispatch table in `scripts/slack-approval-bridge/README.md`:
 
 Keep Stage 5/7/9 and Stage 10 rows unchanged.
 
-Add deploy/rollback:
+### Rollout (Function first)
 
-1. Merge implementation to default branch (GitHub workflows go live).
+Do **not** ship live Slack buttons against an undeployed Function. Unknown
+`action_type` currently falls through to `stage-approval`, which is the wrong
+workflow.
+
+Required order:
+
+1. Implement and test `project_status` routing in the Function.
 2. Deploy the Azure Function (`func azure functionapp publish
-   func-duumbi-slack-bridge` or the duumbi-infra path). Until this deploy,
-   new buttons dispatch as unknown `action_type` and fall through to
-   `stage-approval`, which will fail closed for missing stage/decision.
-3. Rollback: revert the Function first so stray clicks fail closed through
-   existing Stage Approval, then revert workflows so new Slack posts lose the
-   buttons. Do not leave buttons live against an undeployed Function.
+   func-duumbi-slack-bridge` or the duumbi-infra path) so `project_status`
+   dispatches `project-status`.
+3. Only then enable Block Kit `blocks` on Ready-for-Build and correction/entry
+   posts. Enablement is either (a) deploy the workflow change after the
+   Function is verified live, or (b) a repository variable such as
+   `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true` that workflows check before
+   attaching buttons. Default is buttons off.
+
+Rollback:
+
+1. Turn the enablement var off or revert the workflow files that attach
+   `blocks`, so new Slack posts are text-only.
+2. Then revert or disable the Function routing if needed.
+
+Do not leave buttons live against an undeployed Function. Do not document
+"merge workflows first, Function later" as an acceptable ship state.
 
 Update `docs/automation/agentic-development-orchestration.md` Slack Bridge
-Routing with the same row.
+Routing with the `project_status` row and the Function-first note.
 
 ## Invariants
 
 - Execution issue #789 stays open after this spec PR merges or closes.
 - `stage-approval.yml` Stage 7/9 approve still requires a single spec file.
 - Combined two-file spec PRs never need to pass that merge gate for Project
-  Status correction.
+  Status correction. Combined-spec merge or reopen at Done/Spec Needed still
+  produces a button card.
 - Project Status-only workflow never merges PRs and never reopens issues.
+- Status mutation targets only `DUUMBI_PROJECT_NUMBER` / owner vars.
 - Bridge still omits `slack_response_url` from GitHub payloads.
+- Invalid Slack signatures produce no outbound Slack or GitHub calls.
+- `project_status` dispatch includes `channel_id` and parent `thread_ts` when
+  Slack provided them; in-thread replies use those fields.
+- Correction/entry markers are per occurrence, not once per issue.
+- Live Slack buttons are not posted until Function `project_status` routing is
+  live or an enablement gate is on.
 - No new GitHub labels or Project fields.
 - No `src/` application/runtime changes.
 - Metrics remain metadata-only.
@@ -341,12 +489,17 @@ Routing with the same row.
 
 | Product BDD scenario | Evidence type | Required implementation evidence |
 |---|---|---|
-| Owner sets Ready for Build from a Ready-for-Build handoff | Static workflow test + optional live Slack smoke | Assert `ready-for-build-handoff.yml` posts `blocks` with `action_type: "project_status"` and decision `ready-for-build`. Optional live click on a throwaway open issue proves Project Status becomes Ready for Build. |
+| Owner sets Ready for Build from a Ready-for-Build handoff | Static workflow test + optional live Slack smoke | Assert `ready-for-build-handoff.yml` posts `blocks` with `action_type: "project_status"` only when the enablement gate is on. Dispatch payload includes `channel_id` and parent `thread_ts`, not `response_url`. Optional live click on a throwaway open issue proves DUUMBI Project Status becomes Ready for Build. |
+| Combined-spec history produces a button without Stage 7/9 merge | Workflow fixture + contract test | Simulate merged two-file `PRODUCT.md`+`TECHNICAL.md` PR with issue open and DUUMBI Status `Spec Needed`; assert a correction/entry Slack payload with buttons is produced; `project-status.yml` has no `pulls.merge`. |
 | Combined two-file spec PR does not block the status button | Workflow contract test | Assert `project-status.yml` has no `pulls.merge` and no single-file PRODUCT/TECHNICAL requirement. Assert `stage-approval.yml` still has the single-file merge gate. |
 | Undo Done moves Status on an open issue only | Bridge unit test + workflow script assertions | Button value `undo-done` routes to `project-status`. Workflow requires `issue.state === "open"` before GraphQL update. |
-| Closed issue is not reopened from Slack | Workflow contract + unit/simulation | Assert no `issues.update` / `state: "open"` in `project-status.yml`. Simulate closed issue and expect failure Slack text. |
-| Reopen after accidental Done gets a correction message | Workflow YAML test | Assert `issues.types` includes `reopened`, distinct marker string, and that the v1 Ready-for-Build marker is not used to skip correction posts. |
-| Dispatch or Project update failure keeps a Slack fallback | Bridge unit test + workflow text assertion | `fallbackWorkflowName` is `project-status.yml`. Failure Slack mentions Project UI and does not tell the user to Approve Stage 7/9. |
+| Closed issue is not reopened from Slack | Workflow contract + unit/simulation | Assert no `issues.update` / `state: "open"` in `project-status.yml`. Simulate closed issue and expect in-thread failure Slack when thread metadata is present. |
+| Reopen after accidental Done gets a correction message | Workflow YAML/helper test | Assert `issues.types` includes `reopened`, occurrence marker includes reopen identity, and the v1 Ready-for-Build marker is not used to skip correction posts. |
+| Duplicate reopen delivery posts once; a later reopen posts again | Helper unit test | Same occurrence id → skip second Slack post. New occurrence id after a second reopen → post again. |
+| Invalid Slack signature is fail-closed | Bridge negative test | Stale/wrong/missing signature: HTTP 401; assert zero GitHub and Slack outbound fetches; no `repository_dispatch` body. |
+| Manual dispatch without thread metadata | Workflow simulation | Missing `channel_id`/`thread_ts` → channel-only `SLACK_REVIEW_CHANNEL_ID` post, no `thread_ts`. Reviewer is `github.actor` when input omitted. Present thread metadata → `chat.postMessage` uses that channel + `thread_ts`. |
+| Dispatch or Project update failure keeps a Slack fallback | Bridge unit test + workflow text assertion | `fallbackWorkflowName` is `project-status.yml`. Valid-signature failure Slack mentions Project UI and does not tell the user to Approve Stage 7/9. |
+| Unrelated Project boards are not updated | GraphQL fixture test | Issue has two project items; mutation is called only for the `DUUMBI_PROJECT_NUMBER` item; the other item's Status is unchanged. Missing target Project/item/option fails without mutating others. |
 | Existing Stage 7/9 buttons still merge only single-file spec PRs | Existing `stage-approval-workflow.test.mjs` plus one extra assertion | Keep current merge-gate tests. Add that a Stage 9 payload still maps to `stage-approval` in `slackApproval.test.js`. |
 | Already Ready for Build is idempotent success | Workflow simulation or comment/Slack copy test | Status already Ready for Build does not fail the job. |
 
@@ -369,22 +522,29 @@ path and no expected external LLM cost.
 Canonical interface: Slack Block Kit in the review channel plus GitHub Project
 V2 Status.
 
-Optional live smoke (human-approved throwaway issue only):
+Optional live smoke (human-approved throwaway issue only), after Function
+`project_status` routing is live and buttons are enabled:
 
-1. Open test issue on the Project board, Status Done, label
+1. Open test issue on the DUUMBI Project board, Status Done, label
    `tech-spec-approved` or trigger Ready-for-Build handoff
    `workflow_dispatch`.
 2. Confirm Slack message has buttons and fallback link.
 3. Click **Set Ready for Build**.
-4. Pass: Project Status is Ready for Build; issue stays open; no PR merge;
-   Slack success reply; GitHub comment recorded.
-5. Close the test issue, click a leftover button if present: Slack failure,
-   issue stays closed.
+4. Pass: DUUMBI Project Status is Ready for Build; other boards unchanged;
+   issue stays open; no PR merge; **same-thread** Slack success reply; GitHub
+   comment recorded.
+5. Close the test issue, click a leftover button if present: Slack in-thread
+   failure, issue stays closed.
 6. Reopen the test issue: correction Slack posts despite Ready-for-Build
    marker; **Undo Done** / **Set Ready for Build** works.
+7. Reopen a second time: a new correction card posts (new occurrence).
+8. Combined-spec entry: open issue at Spec Needed with a merged two-file
+   PRODUCT+TECHNICAL spec (or fixture equivalent); correction/entry card posts
+   without `tech-spec-approved`; click updates DUUMBI Status only.
 
-Fail: Status unchanged without Slack fallback, closed issue reopened, or
-`stage-approval.yml` merge path invoked.
+Fail: Status unchanged without Slack fallback (except invalid-signature 401),
+closed issue reopened, `stage-approval.yml` merge path invoked, or buttons
+posted before Function routing is live.
 
 TUI/Studio: not applicable. No parity checks.
 
@@ -423,51 +583,64 @@ Each cycle must:
 - No autonomous batch cap.
 - When to stop and ask for human guidance: any proposal to edit
   `validateAndMergeSpecPr` merge rules, reopen closed issues, create Project
-  fields/labels, or restore previous Status instead of Ready for Build.
+  fields/labels, restore previous Status instead of Ready for Build, or post
+  live buttons before Function `project_status` routing is deployed.
 
 Suggested cycle order:
 
-1. Bridge routing + unit tests + README dispatch table
-2. `project-status.yml` + workflow contract tests (no merge, closed-issue fail)
-3. Ready-for-Build handoff Block Kit buttons + tests
-4. Reopen correction message + marker + tests
-5. Orchestration docs + deploy/rollback notes + remaining acceptance sweep
+1. Bridge routing + signature-fail-closed tests + thread metadata in payload
+   (no live buttons yet)
+2. Deploy Function; enablement gate remains off
+3. `project-status.yml` + single-Project GraphQL + in-thread vs channel-only
+   replies + `github.actor` audit
+4. Correction/entry producer (combined-spec merge + per-occurrence reopen
+   dedupe) with buttons still gated
+5. Enable buttons (var or post-deploy workflow) + Ready-for-Build `blocks` +
+   orchestration docs
 
 ## Task Breakdown
 
-1. Add `project_status` routing in `slackApproval.js` and tests.
-2. Add `.github/workflows/project-status.yml` with `repository_dispatch` and
+1. Add `project_status` routing in `slackApproval.js` and tests (including
+   zero outbound calls on bad signature; `channel_id`/`thread_ts` present;
+   `response_url` absent).
+2. Deploy the Azure Function; keep Slack `blocks` disabled until verified.
+3. Add `.github/workflows/project-status.yml` with `repository_dispatch` and
    `workflow_dispatch`.
-3. Implement open-issue Project V2 update, issue comment, Slack result,
-   metrics.
-4. Add Block Kit to `ready-for-build-handoff.yml`.
-5. Add `issues.reopened` correction path and distinct marker.
-6. Extend `stage-approval-workflow.test.mjs` (or sibling test) so Stage 7/9
-   merge gates remain and the new workflow stays merge-free.
-7. Update README and orchestration docs, including Azure Function deploy
-   after workflow merge.
-8. Optional live smoke on a throwaway issue.
+4. Implement open-issue DUUMBI-Project-only V2 update, issue comment, in-thread
+   or channel-only Slack result, `github.actor` fallback, metrics.
+5. Add gated Block Kit to `ready-for-build-handoff.yml`.
+6. Add combined-spec merge + `issues.reopened` correction/entry path with
+   per-occurrence markers.
+7. Extend `stage-approval-workflow.test.mjs` (or sibling test) so Stage 7/9
+   merge gates remain, the new workflow stays merge-free, and multi-Project
+   fixtures leave unrelated boards unchanged.
+8. Update README and orchestration docs with Function-first rollout.
+9. Optional live smoke on a throwaway issue after buttons are enabled.
 
 ## Verification Plan
 
 - `node --test scripts/slack-approval-bridge/src/functions/slackApproval.test.js`
 - `node --test scripts/github-actions/stage-approval-workflow.test.mjs`
-- New tests for handoff blocks / reopen marker if extracted from inline YAML
+- New tests for handoff blocks / correction occurrence markers / combined-spec
+  producer if extracted from inline YAML
 - YAML load of `project-status.yml` and `ready-for-build-handoff.yml`
 - Static grep: `project-status.yml` has no `pulls.merge`; `stage-approval.yml`
-  still has `must change only`
+  still has `must change only`; `project-status.yml` references
+  `DUUMBI_PROJECT_NUMBER`
 - Codex self-review of the implementation PR
-- Optional live Slack/Project smoke with human approval
-- Azure Function deploy recorded in the implementation PR (or an explicit
-  follow-up if infra deploy is separate)
+- Optional live Slack/Project smoke with human approval **after** Function
+  deploy and button enablement
+- Azure Function deploy recorded before buttons are enabled
 
 ## Completion Criteria
 
 - All ten product-spec numbered acceptance criteria pass
-- BDD-to-test mapping evidence exists for each scenario
+- BDD-to-test mapping evidence exists for each scenario, including signature
+  fail-closed, in-thread vs manual-dispatch, per-occurrence dedupe,
+  combined-spec entry, and single-Project targeting
 - Stage 7/9 single-file merge tests still pass
 - Bridge tests cover `project_status` and regression of Stage 5/7/9/10
-- Docs list the new dispatch event and rollback
+- Docs list Function-first rollout / enablement gate
 - Implementation PR uses non-closing `Related to #789` wording
 - Execution issue #789 remains open
 
@@ -481,9 +654,9 @@ Suggested cycle order:
   that change.
 - If expected external LLM cost would exceed USD 1, stop and ask. This work
   should not need any.
-- If Azure Function deploy is blocked, ship GitHub workflows only with docs
-  stating buttons will fail closed until the Function is published; do not
-  silently route `project_status` through `stage-approval`.
+- If Azure Function deploy is blocked, do **not** enable Slack `blocks`. Keep
+  text-only handoffs. Do not silently route `project_status` through
+  `stage-approval`.
 
 ## Open Questions
 
