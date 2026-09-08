@@ -44,7 +44,8 @@ or source-repo contracts that support it.
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Z.ai/Zhipu-backed Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
-| `ready-for-build-handoff.yml` | `tech-spec-approved` label, hourly, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, with an idempotent issue marker so the notification can be retried independently from `stage-approval.yml`. |
+| `ready-for-build-handoff.yml` | `tech-spec-approved` label, `issues.reopened`, combined-spec PR merge, hourly, manual | Sends the Stage 10 Slack handoff when an issue becomes Ready for Build, and posts a per-occurrence Project Status correction/entry card after reopen or a merged two-file PRODUCT+TECHNICAL spec PR. Slack `blocks` stay off until `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true`. |
+| `project-status.yml` | `project-status` repository dispatch, manual | Sets DUUMBI Project V2 Status to Ready for Build without merging a spec PR. Sibling of `stage-approval.yml`; never calls `pulls.merge` or `validateAndMergeSpecPr`. |
 | `ralph-cycle-approval-request.yml` | `needs-cycle-approval` label, twice daily, manual, repository dispatch | Sends Stage 10 bounded-cycle resource authorization Slack notifications; decisions are recorded through `stage-10-authorization.yml`. |
 | `implementation-review-request.yml` | `needs-review` label, PR ready/labeled, twice daily, manual, repository dispatch | Sends implementation review handoff notifications with linked spec and PR evidence. |
 | `stage12-closure-dispatch.yml` | merged PR, manual | Dispatches `duumbi-closure` after a developer merges the implementation PR. It does not merge, close issues, or claim `Done` itself. |
@@ -57,17 +58,27 @@ or source-repo contracts that support it.
 - Stage 10 resource buttons use `stage-10-authorization` when the payload has
   `action_type: "stage_10_authorization"`; legacy stage-only buttons are
   normalized into the same workflow.
+- Project Status buttons use `action_type: "project_status"` → `project-status`
+  → `project-status.yml`. The Function revision that understands this route
+  must be deployed before live Slack `blocks` are enabled. Until then, keep
+  repository variable `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS` unset/false so
+  Ready-for-Build and correction/entry posts stay text-only.
 - Stage 11 merge, request-changes, clarification, and abandon decisions are made
   directly by the human reviewer in GitHub.
 - Slack shortcuts use `slack-intake` with Slack channel/thread identifiers only.
 
 Unknown stages fall back to `stage-approval`, where unsupported stages fail
-closed.
+closed. Do not ship live `project_status` buttons against an undeployed
+Function: unknown `action_type` would otherwise fall through to
+`stage-approval`.
 
 ## Required Configuration
 
 - `SLACK_BOT_TOKEN`: Slack bot token for notification posts.
 - `SLACK_REVIEW_CHANNEL_ID`: human review channel.
+- `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS`: optional repository variable; set to
+  `true` only after the Slack approval Function routes `project_status`.
+  Default unset/false keeps Project Status Slack posts text-only.
 - `DUUMBI_AGENT_DISPATCH_CHANNEL_ID`: optional agent dispatch channel; falls
   back to `SLACK_REVIEW_CHANNEL_ID`.
 - `GH_PROJECT_PAT`: PAT that can read and update GitHub Project V2 and write
@@ -204,9 +215,15 @@ open issues that are already labeled `tech-spec-approved` or whose Project V2
 Status is `Ready for Build`. It records
 `<!-- duumbi-ready-for-build-slack-notified:v1 issue=N -->` on the issue after a
 successful Slack post, so reruns and scheduled scans do not duplicate the same
-handoff. This keeps Slack delivery independent from `stage-approval.yml` merge
-or validation failures while preserving GitHub Issues and Project V2 as the
-source of truth.
+handoff. A separate per-occurrence correction/entry path posts after
+`issues.reopened` or a merged two-file `PRODUCT.md`+`TECHNICAL.md` spec PR
+when DUUMBI Status is Done or Spec Needed; the Ready-for-Build v1 marker does
+not suppress that card. Hourly cron does not scan every Spec Needed issue for
+correction cards. Slack `blocks` are attached only when
+`DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true` after the Function routes
+`project_status`. This keeps Slack delivery independent from
+`stage-approval.yml` merge or validation failures while preserving GitHub
+Issues and Project V2 as the source of truth.
 
 Stage 11 merge remains human-authorized. The merge workflow requires explicit
 human decision, Stage 11 review artifact, green checks, a clean or handled

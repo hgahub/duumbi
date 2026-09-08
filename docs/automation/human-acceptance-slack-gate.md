@@ -82,9 +82,12 @@ unavailable, the reviewer uses Codex App, Codex Cloud, Codex CLI, or a reviewed
 local agent run with the `duumbi-human-acceptance` skill.
 
 For interactive buttons, `scripts/slack-approval-bridge` routes Stage 5, Stage 7,
-and Stage 9 to `stage-approval.yml`, and Stage 10 resource authorization to
-`stage-10-authorization.yml`. Stage 11 merge or status decisions are made
-directly by the human reviewer in GitHub; after merge,
+and Stage 9 to `stage-approval.yml`, Stage 10 resource authorization to
+`stage-10-authorization.yml`, and Project Status (`action_type: "project_status"`)
+to `project-status.yml`. Live Project Status Slack `blocks` stay off until that
+Function route is deployed and repository variable
+`DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true`. Stage 11 merge or status decisions
+are made directly by the human reviewer in GitHub; after merge,
 `stage12-closure-dispatch.yml` sends the Stage 12 closure handoff.
 
 The Slack notification job uses `issues: read`. A separate marker job uses
