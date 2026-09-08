@@ -30,11 +30,12 @@ Slack button click or shortcut
 
 The bridge chooses the repository dispatch event from the button payload:
 
-| Payload stage | Dispatch event | Workflow |
+| Payload | Dispatch event | Workflow |
 |---|---|---|
-| `5`, `7`, `9` | `stage-approval` | `stage-approval.yml` |
+| stage `5`, `7`, `9` | `stage-approval` | `stage-approval.yml` |
 | `10` + `action_type: "stage_10_authorization"` | `stage-10-authorization` | `stage-10-authorization.yml` |
 | `10` without `action_type` | `stage-10-authorization` | `stage-10-authorization.yml` |
+| `action_type: "project_status"` | `project-status` | `project-status.yml` |
 | Slack message/global shortcut | `slack-intake` | `slack-intake-dispatch.yml` |
 
 Unknown stage values fall back to `stage-approval`, where unsupported stages fail
@@ -78,7 +79,42 @@ npm install --production
 func azure functionapp publish func-duumbi-slack-bridge
 ```
 
-Or via GitHub Actions CI (configure in `duumbi-infra`).
+Or via the [duumbi-infra](https://github.com/hgahub/duumbi-infra) Pulumi stack
+(`stack-platform.ts`) / GitHub Actions CI in that repo.
+
+### Function-first Project Status buttons (DUUMBI-789)
+
+Do **not** post live Slack `blocks` for Project Status until this Function
+revision is deployed to `func-duumbi-slack-bridge` and
+`action_type: "project_status"` dispatches `project-status` (not
+`stage-approval`).
+
+Rollout:
+
+1. Merge the Function + `project-status.yml` code with repository variable
+   `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS` unset or `false` (default: buttons
+   off; Ready-for-Build and correction/entry posts stay text-only).
+2. Deploy the Function with the command above, or the duumbi-infra publish
+   path that targets `func-duumbi-slack-bridge`.
+3. Verify a signed `project_status` click (or a local `node --test` plus a
+   Function smoke) routes to `project-status`.
+4. Only then set `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true` so new Slack
+   cards include **Set Ready for Build** / **Undo Done**.
+
+Rollback:
+
+1. Set `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS` to `false` (or unset it) so new
+   posts are text-only.
+2. Revert or disable Function routing if needed.
+
+Do not document "merge workflows first, Function later" as an acceptable
+state for **live buttons**. Workflows may merge first only while the
+enablement variable stays off.
+
+Manual Project Status fallback (no Slack thread): run
+`.github/workflows/project-status.yml` with `decision=ready-for-build` and
+the issue number. Reviewer identity is `github.actor` when the reviewer
+input is omitted. That path posts channel-only to `SLACK_REVIEW_CHANNEL_ID`.
 
 ## Slack App Configuration
 
@@ -102,6 +138,6 @@ Or via GitHub Actions CI (configure in `duumbi-infra`).
 If the function is unavailable, Slack notifications include workflow fallback
 links where decisions can be triggered directly from the GitHub Actions UI.
 Stage 5, Stage 7, and Stage 9 approvals use `stage-approval.yml`; Stage 10
-resource authorization uses `stage-10-authorization.yml`. Stage 11 merge,
-request-changes, clarification, and abandon decisions are made directly in
-GitHub by the human reviewer.
+resource authorization uses `stage-10-authorization.yml`; Project Status
+uses `project-status.yml`. Stage 11 merge, request-changes, clarification,
+and abandon decisions are made directly in GitHub by the human reviewer.
