@@ -9,19 +9,18 @@
 //! provider with 3 attempts (instead of 2×). Each provider gets its own
 //! isolated [`tempfile::TempDir`] per attempt — no shared-state conflicts.
 
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::agents::LlmProvider;
 use crate::agents::factory;
-use crate::bench::report::{
-    BenchmarkEvidence, BenchmarkResult, ErrorCategory, ProviderUsageSummary, categorize_error,
-};
+use crate::bench::report::{BenchmarkEvidence, BenchmarkResult, ProviderUsageSummary};
 use crate::bench::showcases::{self, Showcase, ShowcaseSuite, ShowcaseVerification};
 use crate::config::ProviderConfig;
-use crate::intent;
-use crate::intent::spec::IntentStatus;
+use crate::intent::attempt::{
+    AttemptRequest, DEFAULT_BENCHMARK_ARTIFACT_DIR, RunRetentionState, generate_run_id,
+    run_isolated_attempt,
+};
 
 /// Configuration for a benchmark run.
 #[derive(Debug, Clone)]
@@ -38,6 +37,12 @@ pub struct BenchmarkConfig {
     pub suite_filter: Option<ShowcaseSuite>,
     /// Whether to run only the selected suite's low-budget smoke subset.
     pub smoke: bool,
+    /// Artifact root for retained attempt evidence.
+    pub artifact_dir: PathBuf,
+    /// Copy graph/intent snapshots.
+    pub keep_workspaces: bool,
+    /// Capture current-attempt model I/O.
+    pub capture_model_io: bool,
 }
 
 /// Runs the full benchmark suite.
@@ -58,6 +63,33 @@ pub async fn run_benchmark<F>(
 ) -> Result<Vec<BenchmarkResult>, String>
 where
     F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+{
+    run_benchmark_with_provider_factory(config, init_workspace, |prov_config| {
+        factory::create_provider(prov_config)
+            .map(Arc::from)
+            .map_err(|e| {
+                format!(
+                    "failed to create provider '{}': {e}",
+                    provider_name(prov_config)
+                )
+            })
+    })
+    .await
+}
+
+/// Runs the benchmark suite with an injected provider factory.
+///
+/// # Errors
+///
+/// Returns an error if no providers or showcases are available.
+pub async fn run_benchmark_with_provider_factory<F, P>(
+    config: &BenchmarkConfig,
+    init_workspace: F,
+    create_provider: P,
+) -> Result<Vec<BenchmarkResult>, String>
+where
+    F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    P: Fn(&ProviderConfig) -> Result<Arc<dyn LlmProvider>, String>,
 {
     let showcase_refs: Vec<&Showcase> = if config.suite_filter.is_none() && !config.smoke {
         showcases::filter_showcases(config.showcase_filter.as_deref())
@@ -91,6 +123,13 @@ where
 
     // Wrap init_workspace in Arc so it can be shared across spawned tasks.
     let init_workspace = Arc::new(init_workspace);
+    let run_id = generate_run_id();
+    let artifact_dir = if config.artifact_dir.as_os_str().is_empty() {
+        PathBuf::from(DEFAULT_BENCHMARK_ARTIFACT_DIR)
+    } else {
+        config.artifact_dir.clone()
+    };
+    let retention = Arc::new(Mutex::new(RunRetentionState::default()));
 
     let mut all_results: Vec<BenchmarkResult> = Vec::with_capacity(total_runs);
 
@@ -104,30 +143,42 @@ where
         // Spawn one task per provider; attempts within each task are sequential.
         let mut handles = Vec::with_capacity(provider_configs.len());
         for prov_config in &provider_configs {
-            let provider: Arc<dyn LlmProvider> =
-                Arc::from(factory::create_provider(prov_config).map_err(|e| {
-                    format!(
-                        "failed to create provider '{}': {e}",
-                        provider_name(prov_config)
-                    )
-                })?);
+            let provider: Arc<dyn LlmProvider> = create_provider(prov_config)?;
 
             let spec_clone = Arc::clone(&spec);
             let init_clone = Arc::clone(&init_workspace);
             let attempts = config.attempts;
             let prov_name = provider.name().to_string();
+            let artifact_dir = artifact_dir.clone();
+            let run_id = run_id.clone();
+            let retention = Arc::clone(&retention);
+            let keep_workspaces = config.keep_workspaces;
+            let capture_model_io = config.capture_model_io;
 
             let handle = tokio::spawn(async move {
                 let mut results = Vec::with_capacity(attempts as usize);
                 for attempt in 1..=attempts {
                     eprintln!("  [{showcase_name} / {prov_name}] attempt {attempt}/{attempts}",);
 
+                    let execute = {
+                        let state = retention.lock().expect("invariant: retention mutex");
+                        !state.stop_artifact_attempts
+                    };
                     let result = run_single(
                         showcase,
                         provider.as_ref(),
                         &spec_clone,
                         attempt,
                         &*init_clone,
+                        SingleAttemptOptions {
+                            run_id: &run_id,
+                            artifact_dir: &artifact_dir,
+                            keep_workspaces,
+                            capture_model_io,
+                            execute,
+                            provider_key: &prov_name,
+                            retention: Arc::clone(&retention),
+                        },
                     )
                     .await;
 
@@ -175,6 +226,16 @@ where
     Ok(all_results)
 }
 
+struct SingleAttemptOptions<'a> {
+    run_id: &'a str,
+    artifact_dir: &'a Path,
+    keep_workspaces: bool,
+    capture_model_io: bool,
+    execute: bool,
+    provider_key: &'a str,
+    retention: Arc<Mutex<RunRetentionState>>,
+}
+
 /// Runs a single benchmark attempt in an isolated temp workspace.
 async fn run_single<F>(
     showcase: &Showcase,
@@ -182,12 +243,40 @@ async fn run_single<F>(
     spec: &crate::intent::spec::IntentSpec,
     attempt: u32,
     init_workspace: &F,
+    options: SingleAttemptOptions<'_>,
 ) -> BenchmarkResult
 where
     F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync,
 {
-    let start = Instant::now();
+    let process_evidence_status = match showcase.verification {
+        ShowcaseVerification::ProcessEvidence { .. } => Some("broader_evidence_required"),
+        _ => None,
+    };
+    let evidence = run_isolated_attempt(
+        AttemptRequest {
+            run_id: options.run_id,
+            task_id: showcase.name,
+            spec,
+            provider,
+            provider_key: options.provider_key,
+            attempt,
+            artifact_dir: options.artifact_dir,
+            keep_workspace: options.keep_workspaces,
+            capture_model_io: options.capture_model_io,
+            slug: "benchmark-showcase",
+            execute: options.execute,
+            process_evidence_status,
+            force_persist_failure: false,
+            credentials_missing: false,
+            captured_model_io: Vec::new(),
+        },
+        init_workspace,
+        options.retention.as_ref(),
+    )
+    .await;
 
+    let mut result =
+        benchmark_result_from_evidence(showcase, provider.name(), attempt, spec, evidence);
     if let ShowcaseVerification::ProcessEvidence {
         evidence_kind,
         expected_route,
@@ -195,198 +284,89 @@ where
         verification_gap,
     } = showcase.verification
     {
-        return BenchmarkResult {
-            showcase: showcase.name.to_string(),
-            task_id: Some(showcase.name.to_string()),
-            suite: Some(showcase.suite.as_str().to_string()),
-            tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
-            provider: provider.name().to_string(),
-            attempt,
-            success: false,
-            first_pass_success: Some(false),
-            repair_attempted: false,
-            repair_success: None,
-            error_category: Some(ErrorCategory::EvidenceRequired),
-            error_message: Some(verification_gap.to_string()),
-            dominant_error_code: Some("broader_evidence_required".to_string()),
-            mutation_retry_count: None,
-            repair_retry_count: None,
-            total_retry_count: None,
-            provider_usage: ProviderUsageSummary::unavailable("process_evidence_not_executed"),
-            evidence: Some(BenchmarkEvidence {
-                kind: evidence_kind.to_string(),
-                status: "broader_evidence_required".to_string(),
-                detail: verification_gap.to_string(),
-                command: None,
-                expected_route: Some(expected_route.to_string()),
-                expected_json_fields: expected_json_fields
-                    .iter()
-                    .map(|field| (*field).to_string())
-                    .collect(),
-                verification_gap: Some(verification_gap.to_string()),
-                artifact_path: None,
-            }),
-            tests_passed: 0,
-            tests_total: spec.test_cases.len(),
-            duration_secs: start.elapsed().as_secs_f64(),
-        };
+        result.evidence = Some(BenchmarkEvidence {
+            kind: evidence_kind.to_string(),
+            status: "broader_evidence_required".to_string(),
+            detail: verification_gap.to_string(),
+            command: None,
+            expected_route: Some(expected_route.to_string()),
+            expected_json_fields: expected_json_fields
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect(),
+            verification_gap: Some(verification_gap.to_string()),
+            artifact_path: result.artifact_paths.first().cloned(),
+        });
+        result.dominant_error_code = Some("broader_evidence_required".to_string());
     }
-
-    let result = run_in_temp_workspace(provider, spec, init_workspace).await;
-
-    let duration_secs = start.elapsed().as_secs_f64();
-
-    match result {
-        Ok(outcome) => BenchmarkResult {
-            showcase: showcase.name.to_string(),
-            task_id: Some(showcase.name.to_string()),
-            suite: Some(showcase.suite.as_str().to_string()),
-            tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
-            provider: provider.name().to_string(),
-            attempt,
-            success: outcome.tests_passed == outcome.tests_total,
-            first_pass_success: Some(outcome.first_pass_success),
-            repair_attempted: outcome.repair_attempted,
-            repair_success: outcome.repair_success,
-            error_category: if outcome.tests_passed < outcome.tests_total {
-                Some(ErrorCategory::LogicError)
-            } else {
-                None
-            },
-            error_message: if outcome.tests_passed < outcome.tests_total {
-                Some(format!(
-                    "only {}/{} tests passed",
-                    outcome.tests_passed, outcome.tests_total
-                ))
-            } else {
-                None
-            },
-            dominant_error_code: outcome.dominant_error_code,
-            mutation_retry_count: outcome.mutation_retry_count,
-            repair_retry_count: outcome.repair_retry_count,
-            total_retry_count: outcome.total_retry_count,
-            provider_usage: ProviderUsageSummary::unavailable(
-                "provider_response_did_not_expose_usage",
-            ),
-            evidence: None,
-            tests_passed: outcome.tests_passed,
-            tests_total: outcome.tests_total,
-            duration_secs,
-        },
-        Err(msg) => {
-            let category = categorize_error(&msg);
-            let error_codes = extract_error_codes(&msg);
-            BenchmarkResult {
-                showcase: showcase.name.to_string(),
-                task_id: Some(showcase.name.to_string()),
-                suite: Some(showcase.suite.as_str().to_string()),
-                tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
-                provider: provider.name().to_string(),
-                attempt,
-                success: false,
-                first_pass_success: Some(false),
-                repair_attempted: msg.contains("[Repair] Attempting repair"),
-                repair_success: None,
-                error_category: Some(category),
-                error_message: Some(msg),
-                dominant_error_code: error_codes.first().cloned(),
-                mutation_retry_count: None,
-                repair_retry_count: None,
-                total_retry_count: None,
-                provider_usage: ProviderUsageSummary::unavailable(
-                    "provider_response_did_not_expose_usage",
-                ),
-                evidence: None,
-                tests_passed: 0,
-                tests_total: spec.test_cases.len(),
-                duration_secs,
-            }
-        }
-    }
+    result
 }
 
-/// Creates an isolated workspace, saves the intent, and runs `run_execute`.
-///
-/// Returns structured test and repair metrics on success.
-async fn run_in_temp_workspace<F>(
-    provider: &dyn LlmProvider,
+fn benchmark_result_from_evidence(
+    showcase: &Showcase,
+    provider_name: &str,
+    attempt: u32,
     spec: &crate::intent::spec::IntentSpec,
-    init_workspace: &F,
-) -> Result<IntentExecutionMetrics, String>
-where
-    F: Fn(&Path) -> Result<(), anyhow::Error>,
-{
-    let tmp = tempfile::TempDir::new().map_err(|e| format!("tempdir creation failed: {e}"))?;
-    let workspace = tmp.path();
-
-    // Initialize workspace
-    init_workspace(workspace).map_err(|e| format!("init failed: {e}"))?;
-
-    // Save intent spec
-    let slug = "benchmark-showcase";
-    let mut run_spec = spec.clone();
-    run_spec.status = IntentStatus::Pending;
-    intent::save_intent(workspace, slug, &run_spec)
-        .map_err(|e| format!("failed to save intent: {e}"))?;
-
-    // Execute intent
-    let mut log = Vec::new();
-    let ok = intent::execute::run_execute(provider, workspace, slug, &mut log)
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    // Read back the spec to get test results
-    let final_spec = intent::load_intent(workspace, slug)
-        .or_else(|_| load_archived_intent(workspace, slug))
-        .map_err(|e| format!("failed to read final spec: {e}"))?;
-
-    let tests_total = spec.test_cases.len();
-    let tests_passed = final_spec.execution.as_ref().map_or(0, |e| e.tests_passed);
-    let repair_attempted = log
-        .iter()
-        .any(|line| line.contains("[Repair] Attempting repair"));
-    let error_codes = extract_error_codes(&log.join("\n"));
-
-    if ok {
-        Ok(IntentExecutionMetrics {
-            tests_passed,
-            tests_total,
-            first_pass_success: !repair_attempted,
-            repair_attempted,
-            repair_success: repair_attempted.then_some(true),
-            dominant_error_code: error_codes.first().cloned(),
-            mutation_retry_count: None,
-            repair_retry_count: None,
-            total_retry_count: None,
-        })
+    evidence: crate::intent::attempt::AttemptEvidence,
+) -> BenchmarkResult {
+    let tests_total = if evidence.outcome.tests_total == 0 {
+        spec.test_cases.len()
     } else {
-        // The intent pipeline returned false (failure)
-        Err(format!(
-            "intent execution failed: {tests_passed}/{tests_total} tests passed"
-        ))
+        evidence.outcome.tests_total
+    };
+    BenchmarkResult {
+        showcase: showcase.name.to_string(),
+        task_id: Some(showcase.name.to_string()),
+        suite: Some(showcase.suite.as_str().to_string()),
+        tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
+        provider: provider_name.to_string(),
+        attempt,
+        success: evidence.outcome.success,
+        first_pass_success: Some(evidence.outcome.first_pass_success),
+        repair_attempted: evidence.outcome.repair_attempted,
+        repair_applied: evidence.outcome.repair_applied,
+        repair_success: evidence.outcome.repair_success,
+        root_cause: evidence.root_cause,
+        root_cause_attribution: evidence.root_cause_attribution,
+        error_category: evidence.error_category,
+        error_message: if evidence.outcome.success {
+            None
+        } else {
+            Some(
+                evidence
+                    .sanitized_log
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| evidence.outcome.terminal_status.clone()),
+            )
+        },
+        dominant_error_code: evidence.outcome.dominant_error_code,
+        mutation_retry_count: evidence.outcome.mutation_retry_count,
+        repair_retry_count: evidence.outcome.repair_retry_count,
+        total_retry_count: match (
+            evidence.outcome.mutation_retry_count,
+            evidence.outcome.repair_retry_count,
+        ) {
+            (Some(mutation), Some(repair)) => Some(mutation.saturating_add(repair)),
+            (Some(mutation), None) => Some(mutation),
+            (None, Some(repair)) => Some(repair),
+            (None, None) => None,
+        },
+        provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
+        evidence: None,
+        phase_evidence: Some(evidence.phase_evidence),
+        evidence_persistence: Some(evidence.evidence_persistence),
+        artifact_paths: evidence.artifact_paths,
+        hashes: Some(evidence.hashes),
+        model_io_status: Some(evidence.model_io_status),
+        omission_reason: evidence.omission_reason,
+        executed: Some(evidence.executed),
+        persistence_error: evidence.persistence_error,
+        graph_failure: Some(evidence.graph_failure),
+        tests_passed: evidence.outcome.tests_passed,
+        tests_total,
+        duration_secs: evidence.duration_secs,
     }
-}
-
-/// Metrics inferred from an intent execution run.
-struct IntentExecutionMetrics {
-    /// Number of verifier tests that passed.
-    tests_passed: usize,
-    /// Number of verifier tests selected.
-    tests_total: usize,
-    /// Whether verification passed before any repair cycle.
-    first_pass_success: bool,
-    /// Whether a repair cycle was attempted.
-    repair_attempted: bool,
-    /// Whether repair converted the run into a success.
-    repair_success: Option<bool>,
-    /// Dominant DUUMBI error code, when one is visible in logs.
-    dominant_error_code: Option<String>,
-    /// Mutation retry count, when exposed by the execute path.
-    mutation_retry_count: Option<u32>,
-    /// Repair retry count, when exposed by the execute path.
-    repair_retry_count: Option<u32>,
-    /// Total retry count, when exposed by the execute path.
-    total_retry_count: Option<u32>,
 }
 
 pub(crate) fn extract_error_codes(text: &str) -> Vec<String> {
@@ -532,5 +512,97 @@ mod tests {
             provider_name(&second),
             "anthropic:auto:fallback:ANTHROPIC_FALLBACK_API_KEY"
         );
+    }
+
+    const FIXTURE_SHOWCASE: Showcase = Showcase {
+        name: "repair_fixture",
+        yaml: "",
+        suite: ShowcaseSuite::Core,
+        smoke: true,
+        tags: &["fixture"],
+        verification: ShowcaseVerification::I64Tests,
+    };
+
+    #[tokio::test]
+    async fn bench_run_single_execute_through_repair_no_patch() {
+        use crate::intent::attempt::RunRetentionState;
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
+        let retention = Arc::new(Mutex::new(RunRetentionState::default()));
+        let run_id = "run-bench-repair".to_string();
+        let result = run_single(
+            &FIXTURE_SHOWCASE,
+            &provider,
+            &spec,
+            1,
+            &init_skeleton_workspace,
+            SingleAttemptOptions {
+                run_id: &run_id,
+                artifact_dir: artifacts.path(),
+                keep_workspaces: false,
+                capture_model_io: false,
+                execute: true,
+                provider_key: "mock",
+                retention,
+            },
+        )
+        .await;
+
+        assert!(!result.success);
+        assert!(result.repair_attempted);
+        assert!(!result.repair_applied);
+        assert_eq!(result.repair_success, Some(false));
+        assert!(!result.artifact_paths.is_empty());
+        assert_eq!(result.executed, Some(true));
+        assert_eq!(
+            result.evidence_persistence,
+            Some(crate::intent::attempt::EvidencePersistence::Complete)
+        );
+    }
+
+    #[tokio::test]
+    async fn bench_run_single_does_not_replace_ok_false_with_logic_error() {
+        use crate::intent::attempt::RunRetentionState;
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::RepairedSuccess);
+        let retention = Arc::new(Mutex::new(RunRetentionState::default()));
+        let run_id = "run-bench-success".to_string();
+        let result = run_single(
+            &FIXTURE_SHOWCASE,
+            &provider,
+            &spec,
+            1,
+            &init_skeleton_workspace,
+            SingleAttemptOptions {
+                run_id: &run_id,
+                artifact_dir: artifacts.path(),
+                keep_workspaces: false,
+                capture_model_io: false,
+                execute: true,
+                provider_key: "mock",
+                retention,
+            },
+        )
+        .await;
+
+        assert!(
+            result.success,
+            "error={:?} terminal paths={:?}",
+            result.error_message, result.artifact_paths
+        );
+        assert!(result.repair_attempted);
+        assert!(result.repair_applied);
+        assert_eq!(result.repair_success, Some(true));
+        assert_eq!(result.first_pass_success, Some(false));
     }
 }

@@ -510,6 +510,9 @@ async fn run(cli: Cli) -> Result<i32> {
             output,
             ci,
             baseline,
+            artifact_dir,
+            keep_workspaces,
+            capture_model_io,
         } => {
             run_benchmark(BenchmarkRunArgs {
                 suite,
@@ -520,6 +523,9 @@ async fn run(cli: Cli) -> Result<i32> {
                 output,
                 ci,
                 baseline,
+                artifact_dir,
+                keep_workspaces,
+                capture_model_io,
             })
             .await
         }
@@ -565,6 +571,7 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
             min_semantic_agreement,
             min_behavioral_agreement,
             keep_workspaces,
+            capture_model_io,
         } => {
             let workspace = PathBuf::from(".");
             let effective_config = config::load_effective_config(&workspace)?;
@@ -596,6 +603,7 @@ async fn run_determinism(subcommand: cli::DeterminismSubcommand) -> Result<i32> 
                 source_commit: current_git_commit().unwrap_or_else(|| "unknown".to_string()),
                 provider_source: provider_source.to_string(),
                 keep_workspaces,
+                capture_model_io,
             };
 
             let report = determinism::runner::run_replay(&config, |path| {
@@ -1343,6 +1351,9 @@ struct BenchmarkRunArgs {
     output: Option<PathBuf>,
     ci: bool,
     baseline: Option<PathBuf>,
+    artifact_dir: PathBuf,
+    keep_workspaces: bool,
+    capture_model_io: bool,
 }
 
 async fn run_benchmark(args: BenchmarkRunArgs) -> Result<i32> {
@@ -1355,6 +1366,9 @@ async fn run_benchmark(args: BenchmarkRunArgs) -> Result<i32> {
         output,
         ci,
         baseline,
+        artifact_dir,
+        keep_workspaces,
+        capture_model_io,
     } = args;
     let workspace = PathBuf::from(".");
     let cfg = config::load_effective_config(&workspace)?.config;
@@ -1379,6 +1393,9 @@ async fn run_benchmark(args: BenchmarkRunArgs) -> Result<i32> {
             cli::BenchmarkSuiteArg::Scaled => bench::showcases::ShowcaseSuite::Scaled,
         }),
         smoke,
+        artifact_dir,
+        keep_workspaces,
+        capture_model_io,
     };
 
     let started_at = iso8601_now();
@@ -1419,8 +1436,11 @@ async fn run_benchmark(args: BenchmarkRunArgs) -> Result<i32> {
         }
     }
 
-    // CI exit code
-    if ci && !report.kill_criterion_met {
+    // CI exit code: persistence failed is infrastructure, distinct from graph kill.
+    let persistence_failed = report.results.iter().any(|result| {
+        result.evidence_persistence == Some(crate::intent::attempt::EvidencePersistence::Failed)
+    });
+    if ci && (persistence_failed || !report.kill_criterion_met) {
         Ok(EXIT_FAILURE)
     } else {
         Ok(EXIT_SUCCESS)

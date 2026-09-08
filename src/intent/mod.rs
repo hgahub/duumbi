@@ -36,6 +36,9 @@ pub mod spec;
 pub mod status;
 /// Deterministic root-cause classification for scaled write-path attempts.
 pub mod taxonomy;
+/// Shared execute-through-repair fixtures used by unit tests.
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod verifier;
 
 use std::fs;

@@ -5,6 +5,8 @@
 //! with 3-step retry, then verifies test cases with the Verifier Agent.
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -106,6 +108,45 @@ pub struct IntentExecutionOutcome {
     pub diagnostics: Vec<CapturedDiagnostic>,
     /// Dominant error code when one is known.
     pub dominant_error_code: Option<String>,
+}
+
+/// Infrastructure failure that preserves a partial structured execute outcome.
+///
+/// Used when I/O fails after repair has already begun so callers can keep
+/// `repair_attempted=true` instead of dropping the collector on `?`.
+#[derive(Debug)]
+pub struct StructuredExecuteError {
+    /// Sanitized failure message.
+    pub message: String,
+    /// Outcome collected before the infrastructure failure.
+    pub partial: IntentExecutionOutcome,
+}
+
+impl std::fmt::Display for StructuredExecuteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StructuredExecuteError {}
+
+#[cfg(test)]
+pub(crate) static FAIL_IO_AFTER_REPAIR: AtomicBool = AtomicBool::new(false);
+
+fn structured_execute_error(
+    mut collector: OutcomeCollector,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    let message = message.into();
+    collector.push_event(
+        "execute",
+        PhaseEventStatus::Terminal,
+        Some("provider_or_infrastructure"),
+    );
+    anyhow::Error::new(StructuredExecuteError {
+        partial: collector.finish(false, "infrastructure_error"),
+        message,
+    })
 }
 
 #[derive(Default)]
@@ -752,6 +793,13 @@ pub async fn run_execute_structured_with_progress(
         collector.repair_attempted = true;
         collector.push_event("repair", PhaseEventStatus::Informational, None);
         collector.retries_remaining = Some(agent_policy.repair_retries);
+        #[cfg(test)]
+        if FAIL_IO_AFTER_REPAIR.swap(false, Ordering::SeqCst) {
+            return Err(structured_execute_error(
+                collector,
+                "injected infrastructure error after repair began",
+            ));
+        }
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
         let repair_prompt =
@@ -760,9 +808,24 @@ pub async fn run_execute_structured_with_progress(
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
         for path in collect_jsonld_paths(&graph_dir) {
-            let module_source: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path)?)
-                    .context("Failed to parse module for repair")?;
+            let source_text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(structured_execute_error(
+                        collector,
+                        format!("Failed to read module for repair: {error}"),
+                    ));
+                }
+            };
+            let module_source: serde_json::Value = match serde_json::from_str(&source_text) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(structured_execute_error(
+                        collector,
+                        format!("Failed to parse module for repair: {error}"),
+                    ));
+                }
+            };
 
             // AI-AGENT: Same Arc<Mutex> pattern as the main streaming callback above.
             let repair_log = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -786,10 +849,21 @@ pub async fn run_execute_structured_with_progress(
             if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
                 collector.note_repair_retries(mr.retry_count);
                 cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path, &spec);
-                let patched_str = serde_json::to_string_pretty(&mr.patched)
-                    .context("Serialize repaired graph")?;
-                std::fs::write(&path, &patched_str)
-                    .with_context(|| format!("Write repaired '{}'", path.display()))?;
+                let patched_str = match serde_json::to_string_pretty(&mr.patched) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        return Err(structured_execute_error(
+                            collector,
+                            format!("Serialize repaired graph: {error}"),
+                        ));
+                    }
+                };
+                if let Err(error) = std::fs::write(&path, &patched_str) {
+                    return Err(structured_execute_error(
+                        collector,
+                        format!("Write repaired '{}': {error}", path.display()),
+                    ));
+                }
                 repaired = true;
                 collector.repair_applied = true;
                 emit!(format!(
@@ -843,13 +917,18 @@ pub async fn run_execute_structured_with_progress(
     if collector.repair_attempted {
         collector.repair_success = Some(all_passed);
     }
-    archive_success(
+    if let Err(error) = archive_success(
         workspace,
         slug,
         tasks_completed,
         report.passed,
         report.passed + report.failed,
-    )?;
+    ) {
+        if collector.repair_attempted {
+            return Err(structured_execute_error(collector, format!("{error:#}")));
+        }
+        return Err(error);
+    }
 
     if all_passed {
         emit!("Intent completed successfully.".to_string());
@@ -898,7 +977,14 @@ pub async fn run_execute_structured_with_progress(
         }
 
         spec.status = IntentStatus::Failed;
-        save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
+        if let Err(error) =
+            save_intent(workspace, slug, &spec).map_err(|e: IntentError| anyhow::anyhow!("{e}"))
+        {
+            if collector.repair_attempted {
+                return Err(structured_execute_error(collector, format!("{error:#}")));
+            }
+            return Err(error);
+        }
         let summary = report.display();
         record_intent_failure(
             workspace,

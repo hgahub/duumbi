@@ -6,6 +6,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,8 @@ use crate::bench::report::ErrorCategory;
 use crate::determinism::digest::{exact_graph_digest, safe_artifact_key, sha256_hex_bytes};
 use crate::hash;
 use crate::intent::execute::{
-    ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, run_execute_structured,
+    ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, StructuredExecuteError,
+    run_execute_structured,
 };
 use crate::intent::spec::{IntentSpec, IntentStatus};
 use crate::intent::taxonomy::{
@@ -283,7 +285,7 @@ pub fn generate_run_id() -> String {
 pub async fn run_isolated_attempt<F>(
     request: AttemptRequest<'_>,
     init_workspace: &F,
-    retention: &mut RunRetentionState,
+    retention: &Mutex<RunRetentionState>,
 ) -> AttemptEvidence
 where
     F: Fn(&Path) -> Result<(), anyhow::Error>,
@@ -298,8 +300,11 @@ where
         },
     };
 
-    if !request.execute || retention.stop_artifact_attempts {
-        return json_only_unexecuted(request, model_identity, start.elapsed().as_secs_f64());
+    {
+        let state = retention.lock().expect("invariant: retention mutex");
+        if !request.execute || state.stop_artifact_attempts {
+            return json_only_unexecuted(request, model_identity, start.elapsed().as_secs_f64());
+        }
     }
 
     if request.process_evidence_status == Some("broader_evidence_required") {
@@ -356,13 +361,16 @@ where
             persist_error,
             start.elapsed().as_secs_f64(),
         );
-        persist_according_to_policy(
-            &request,
-            workspace,
-            retention,
-            &mut evidence,
-            request.force_persist_failure,
-        );
+        {
+            let mut state = retention.lock().expect("invariant: retention mutex");
+            persist_according_to_policy(
+                &request,
+                workspace,
+                &mut state,
+                &mut evidence,
+                request.force_persist_failure,
+            );
+        }
         drop(tmp);
         return evidence;
     }
@@ -373,9 +381,14 @@ where
             persist_error = None;
         }
         Err(error) => {
-            let message = format!("{error:#}");
-            outcome = infra_outcome("execute", &message);
-            persist_error = Some(redact_secret_text(&message));
+            if let Some(structured) = error.downcast_ref::<StructuredExecuteError>() {
+                outcome = structured.partial.clone();
+                persist_error = Some(redact_secret_text(&structured.message));
+            } else {
+                let message = format!("{error:#}");
+                outcome = infra_outcome("execute", &message);
+                persist_error = Some(redact_secret_text(&message));
+            }
         }
     }
 
@@ -401,13 +414,16 @@ where
         persist_error,
         start.elapsed().as_secs_f64(),
     );
-    persist_according_to_policy(
-        &request,
-        workspace,
-        retention,
-        &mut evidence,
-        request.force_persist_failure,
-    );
+    {
+        let mut state = retention.lock().expect("invariant: retention mutex");
+        persist_according_to_policy(
+            &request,
+            workspace,
+            &mut state,
+            &mut evidence,
+            request.force_persist_failure,
+        );
+    }
     drop(tmp);
     evidence
 }
@@ -1103,11 +1119,11 @@ mod tests {
         let artifacts = tempfile::TempDir::new().expect("artifacts");
         let spec = sample_spec();
         let provider = CountingProvider::default();
-        let mut retention = RunRetentionState::default();
+        let retention = Mutex::new(RunRetentionState::default());
         let evidence = run_isolated_attempt(
             request("run-test", &spec, &provider, artifacts.path()),
             &init_workspace,
-            &mut retention,
+            &retention,
         )
         .await;
 
@@ -1126,7 +1142,7 @@ mod tests {
         assert!(joined.contains("phase_evidence.json"));
         assert!(!joined.contains("workspace/"));
         assert!(!joined.contains("model-io"));
-        assert!(retention.within_caps());
+        assert!(retention.lock().expect("mutex").within_caps());
     }
 
     #[tokio::test]
@@ -1134,10 +1150,10 @@ mod tests {
         let artifacts = tempfile::TempDir::new().expect("artifacts");
         let spec = sample_spec();
         let provider = CountingProvider::default();
-        let mut retention = RunRetentionState::default();
+        let retention = Mutex::new(RunRetentionState::default());
         let mut req = request("run-fail", &spec, &provider, artifacts.path());
         req.force_persist_failure = true;
-        let evidence = run_isolated_attempt(req, &init_workspace, &mut retention).await;
+        let evidence = run_isolated_attempt(req, &init_workspace, &retention).await;
 
         assert!(!evidence.outcome.success);
         assert_eq!(evidence.evidence_persistence, EvidencePersistence::Failed);
@@ -1308,5 +1324,146 @@ mod tests {
         let key = safe_artifact_key("../etc/passwd", "task");
         assert!(!key.contains(".."));
         assert!(!key.contains('/'));
+    }
+
+    fn repair_request<'a>(
+        run_id: &'a str,
+        spec: &'a IntentSpec,
+        provider: &'a crate::intent::test_support::ScriptedRepairProvider,
+        artifact_dir: &'a Path,
+    ) -> AttemptRequest<'a> {
+        AttemptRequest {
+            run_id,
+            task_id: "repair_fixture",
+            spec,
+            provider,
+            provider_key: "mock",
+            attempt: 1,
+            artifact_dir,
+            keep_workspace: false,
+            capture_model_io: false,
+            slug: "benchmark-showcase",
+            execute: true,
+            process_evidence_status: None,
+            force_persist_failure: false,
+            credentials_missing: false,
+            captured_model_io: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_through_repair_no_patch_records_repair_attempted() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
+        let retention = Mutex::new(RunRetentionState::default());
+        let evidence = run_isolated_attempt(
+            repair_request("run-nopatch", &spec, &provider, artifacts.path()),
+            &init_skeleton_workspace,
+            &retention,
+        )
+        .await;
+
+        assert!(!evidence.outcome.success);
+        assert!(evidence.outcome.repair_attempted);
+        assert!(!evidence.outcome.repair_applied);
+        assert_eq!(evidence.outcome.repair_success, Some(false));
+        assert!(!evidence.outcome.first_pass_success);
+        assert!(evidence.executed);
+        assert!(!evidence.artifact_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_through_repair_patched_fail_keeps_failure() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::PatchedFail);
+        let retention = Mutex::new(RunRetentionState::default());
+        let evidence = run_isolated_attempt(
+            repair_request("run-patched-fail", &spec, &provider, artifacts.path()),
+            &init_skeleton_workspace,
+            &retention,
+        )
+        .await;
+
+        assert!(!evidence.outcome.success);
+        assert!(evidence.outcome.repair_attempted);
+        assert!(evidence.outcome.repair_applied);
+        assert_eq!(evidence.outcome.repair_success, Some(false));
+    }
+
+    #[tokio::test]
+    async fn execute_through_repair_success_passes_verifier() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::RepairedSuccess);
+        let retention = Mutex::new(RunRetentionState::default());
+        let evidence = run_isolated_attempt(
+            repair_request("run-repaired", &spec, &provider, artifacts.path()),
+            &init_skeleton_workspace,
+            &retention,
+        )
+        .await;
+
+        assert!(
+            evidence.outcome.success,
+            "terminal={} tests={}/{} log={:?}",
+            evidence.outcome.terminal_status,
+            evidence.outcome.tests_passed,
+            evidence.outcome.tests_total,
+            evidence.sanitized_log
+        );
+        assert!(evidence.outcome.repair_attempted);
+        assert!(evidence.outcome.repair_applied);
+        assert_eq!(evidence.outcome.repair_success, Some(true));
+        assert!(!evidence.outcome.first_pass_success);
+    }
+
+    #[tokio::test]
+    async fn infra_err_after_repair_keeps_repair_attempted() {
+        use crate::intent::execute::FAIL_IO_AFTER_REPAIR;
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+        use std::sync::atomic::Ordering;
+
+        FAIL_IO_AFTER_REPAIR.store(true, Ordering::SeqCst);
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
+        let retention = Mutex::new(RunRetentionState::default());
+        let evidence = run_isolated_attempt(
+            repair_request("run-infra-repair", &spec, &provider, artifacts.path()),
+            &init_skeleton_workspace,
+            &retention,
+        )
+        .await;
+        FAIL_IO_AFTER_REPAIR.store(false, Ordering::SeqCst);
+
+        assert!(!evidence.outcome.success);
+        assert!(evidence.outcome.repair_attempted);
+        assert!(!evidence.outcome.repair_applied);
+        assert!(
+            evidence
+                .persistence_error
+                .as_deref()
+                .is_some_and(|msg| msg.contains("injected infrastructure error"))
+                || evidence
+                    .sanitized_log
+                    .iter()
+                    .any(|line| line.contains("Repair"))
+        );
     }
 }

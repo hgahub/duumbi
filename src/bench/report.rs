@@ -12,6 +12,16 @@ use comfy_table::{Table, presets};
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
+use crate::intent::attempt::{
+    AttemptHashes, EvidencePersistence, ModelIoStatus, OmissionReason, PhaseEvidence,
+};
+use crate::intent::taxonomy::{RootCauseAttribution, RootCauseClass};
+
+/// Schema version for reports that include root-cause and phase evidence.
+pub const BENCHMARK_REPORT_SCHEMA_V2: &str = "duumbi.benchmark.report.v2";
+/// Historical reports without the new evidence fields.
+pub const BENCHMARK_REPORT_SCHEMA_V1: &str = "duumbi.benchmark.report.v1";
+
 // ---------------------------------------------------------------------------
 // Core result types
 // ---------------------------------------------------------------------------
@@ -42,11 +52,20 @@ pub struct BenchmarkResult {
     /// Whether a repair cycle was attempted.
     #[serde(default)]
     pub repair_attempted: bool,
+    /// Whether at least one repair patch was written.
+    #[serde(default)]
+    pub repair_applied: bool,
     /// Whether repair converted the run into a success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_success: Option<bool>,
-    /// Categorized failure reason (if `!success`).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Fine-grained root cause; JSON `null` on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_cause: Option<RootCauseClass>,
+    /// `matched_rule` or `no_matching_rule`; omitted on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_cause_attribution: Option<RootCauseAttribution>,
+    /// Categorized failure reason (if `!success`). Present as JSON `null` for unknown failures.
+    #[serde(default)]
     pub error_category: Option<ErrorCategory>,
     /// Raw error message (if `!success`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +88,33 @@ pub struct BenchmarkResult {
     /// Additional evidence for non-i64 or process-level checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<BenchmarkEvidence>,
+    /// Observed phase events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_evidence: Option<PhaseEvidence>,
+    /// Evidence persistence status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_persistence: Option<EvidencePersistence>,
+    /// Relative artifact paths retained after TempDir drop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_paths: Vec<String>,
+    /// Graph/intent/transcript hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashes: Option<AttemptHashes>,
+    /// Model I/O capture status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_io_status: Option<ModelIoStatus>,
+    /// Why attempt files were omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omission_reason: Option<OmissionReason>,
+    /// Whether execute ran. `false` for stub-pool remaining rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed: Option<bool>,
+    /// Sanitized persistence error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_error: Option<String>,
+    /// Whether this row counts toward graph-failure totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_failure: Option<bool>,
     /// Number of test cases that passed.
     pub tests_passed: usize,
     /// Total number of test cases.
@@ -232,6 +278,9 @@ pub struct BenchmarkReport {
     pub started_at: String,
     /// ISO-8601 end timestamp.
     pub finished_at: String,
+    /// Report schema version. Absent on historical documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
     /// Duumbi version string.
     pub duumbi_version: String,
     /// Number of attempts per (showcase, provider) pair.
@@ -279,6 +328,15 @@ pub struct BenchmarkSummary {
     pub dominant_error_codes: BTreeMap<String, u32>,
     /// Top failure patterns from this report.
     pub top_failure_patterns: Vec<FailurePatternSummary>,
+    /// Failures that count as graph-generation failures (excludes credentials/infra).
+    #[serde(default)]
+    pub graph_failures: u32,
+    /// Histogram of graph `root_cause` classes.
+    #[serde(default)]
+    pub graph_class_histogram: BTreeMap<String, u32>,
+    /// Provider/credential/infrastructure failures excluded from graph totals.
+    #[serde(default)]
+    pub infra_failures: u32,
 }
 
 /// Aggregated failure pattern summary.
@@ -351,6 +409,7 @@ impl BenchmarkReport {
         Self {
             started_at,
             finished_at,
+            schema_version: Some(BENCHMARK_REPORT_SCHEMA_V2.to_string()),
             duumbi_version: env!("CARGO_PKG_VERSION").to_string(),
             attempts_per_run,
             showcases,
@@ -646,6 +705,9 @@ fn aggregate_summary(results: &[BenchmarkResult]) -> BenchmarkSummary {
     let mut cost_seen = false;
     let mut dominant_error_codes = BTreeMap::new();
     let mut failure_patterns = BTreeMap::new();
+    let mut graph_failures = 0u32;
+    let mut infra_failures = 0u32;
+    let mut graph_class_histogram = BTreeMap::new();
 
     for result in results {
         if !result.provider_usage.available
@@ -669,6 +731,25 @@ fn aggregate_summary(results: &[BenchmarkResult]) -> BenchmarkSummary {
                 .or_else(|| result.error_category.as_ref().map(ToString::to_string))
                 .unwrap_or_else(|| "unknown_failure".to_string());
             *failure_patterns.entry(pattern).or_insert(0) += 1;
+            let is_graph = result.graph_failure.unwrap_or_else(|| {
+                result.error_category != Some(ErrorCategory::ProviderError)
+                    && result.root_cause
+                        != Some(crate::intent::taxonomy::RootCauseClass::ProviderOrInfrastructure)
+            });
+            if is_graph {
+                graph_failures += 1;
+                if let Some(root) = result.root_cause {
+                    let key = serde_json::to_value(root)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| format!("{root:?}"));
+                    if key != "provider_or_infrastructure" && key != "unknown" {
+                        *graph_class_histogram.entry(key).or_insert(0) += 1;
+                    }
+                }
+            } else {
+                infra_failures += 1;
+            }
         }
     }
 
@@ -698,6 +779,9 @@ fn aggregate_summary(results: &[BenchmarkResult]) -> BenchmarkSummary {
         total_estimated_cost_usd: cost_seen.then_some(total_cost),
         dominant_error_codes,
         top_failure_patterns,
+        graph_failures,
+        graph_class_histogram,
+        infra_failures,
     }
 }
 
@@ -737,7 +821,10 @@ mod tests {
             success,
             first_pass_success: Some(success),
             repair_attempted: false,
+            repair_applied: false,
             repair_success: None,
+            root_cause: None,
+            root_cause_attribution: None,
             error_category: if success {
                 None
             } else {
@@ -756,6 +843,15 @@ mod tests {
                 "provider_response_did_not_expose_usage",
             ),
             evidence: None,
+            phase_evidence: None,
+            evidence_persistence: None,
+            artifact_paths: Vec::new(),
+            hashes: None,
+            model_io_status: None,
+            omission_reason: None,
+            executed: Some(true),
+            persistence_error: None,
+            graph_failure: if success { Some(false) } else { Some(true) },
             tests_passed: if success { 4 } else { 2 },
             tests_total: 4,
             duration_secs: 5.0,
@@ -1016,5 +1112,174 @@ mod tests {
 
         let regressions = detect_regressions(&current, &baseline, 0.05);
         assert!(regressions.is_empty());
+    }
+
+    #[test]
+    fn product_json_success_shape_round_trips() {
+        let json = r#"{
+          "showcase": "scaled_math_pipeline",
+          "provider": "mock",
+          "attempt": 1,
+          "success": true,
+          "tests_passed": 4,
+          "tests_total": 4,
+          "duration_secs": 1.2,
+          "repair_attempted": false,
+          "first_pass_success": true,
+          "root_cause": null,
+          "evidence_persistence": "json_only"
+        }"#;
+        let result: BenchmarkResult = serde_json::from_str(json).expect("success shape");
+        assert!(result.success);
+        assert!(!result.repair_attempted);
+        assert_eq!(result.first_pass_success, Some(true));
+        assert_eq!(result.root_cause, None);
+        assert_eq!(
+            result.evidence_persistence,
+            Some(EvidencePersistence::JsonOnly)
+        );
+        let encoded = serde_json::to_value(&result).expect("encode");
+        assert!(encoded.get("error_category").is_some());
+    }
+
+    #[test]
+    fn product_json_classified_failure_shape_round_trips() {
+        let json = r#"{
+          "showcase": "scaled_math_pipeline",
+          "provider": "mock",
+          "attempt": 1,
+          "success": false,
+          "tests_passed": 0,
+          "tests_total": 4,
+          "duration_secs": 1.0,
+          "repair_attempted": true,
+          "repair_applied": false,
+          "repair_success": false,
+          "first_pass_success": false,
+          "root_cause": "schema_graph_validation",
+          "root_cause_attribution": "matched_rule",
+          "error_category": "schema_error",
+          "evidence_persistence": "complete",
+          "phase_evidence": {
+            "events": [
+              {"phase": "provider", "status": "recovered", "error_code": "timeout"},
+              {"phase": "validate", "status": "terminal", "error_code": "E009"}
+            ]
+          }
+        }"#;
+        let result: BenchmarkResult = serde_json::from_str(json).expect("classified shape");
+        assert!(!result.success);
+        assert_eq!(
+            result.root_cause,
+            Some(RootCauseClass::SchemaGraphValidation)
+        );
+        assert_eq!(
+            result.root_cause_attribution,
+            Some(RootCauseAttribution::MatchedRule)
+        );
+        assert_eq!(result.error_category, Some(ErrorCategory::SchemaError));
+        let encoded = serde_json::to_value(&result).expect("encode");
+        assert_eq!(
+            encoded.get("error_category").and_then(|v| v.as_str()),
+            Some("schema_error")
+        );
+        assert_eq!(
+            encoded.get("root_cause").and_then(|v| v.as_str()),
+            Some("schema_graph_validation")
+        );
+    }
+
+    #[test]
+    fn product_json_unknown_failure_serializes_error_category_null() {
+        let json = r#"{
+          "showcase": "scaled_math_pipeline",
+          "provider": "mock",
+          "attempt": 1,
+          "success": false,
+          "tests_passed": 0,
+          "tests_total": 1,
+          "duration_secs": 0.5,
+          "repair_attempted": false,
+          "root_cause": "unknown",
+          "root_cause_attribution": "no_matching_rule",
+          "error_category": null,
+          "phase_evidence": {"events": [{"phase": "complete", "status": "terminal"}]},
+          "evidence_persistence": "complete"
+        }"#;
+        let result: BenchmarkResult = serde_json::from_str(json).expect("unknown shape");
+        assert_eq!(result.root_cause, Some(RootCauseClass::Unknown));
+        assert_eq!(
+            result.root_cause_attribution,
+            Some(RootCauseAttribution::NoMatchingRule)
+        );
+        assert_eq!(result.error_category, None);
+        let encoded = serde_json::to_value(&result).expect("encode");
+        assert!(encoded.get("error_category").is_some());
+        assert!(encoded.get("error_category").unwrap().is_null());
+        assert_eq!(
+            encoded.get("root_cause").and_then(|v| v.as_str()),
+            Some("unknown")
+        );
+    }
+
+    #[test]
+    fn missing_credentials_are_excluded_from_graph_failure_totals() {
+        let mut credential = make_result("scaled_math_pipeline", "mock", false);
+        credential.root_cause = Some(RootCauseClass::ProviderOrInfrastructure);
+        credential.error_category = Some(ErrorCategory::ProviderError);
+        credential.graph_failure = Some(false);
+
+        let mut graph = make_result("scaled_math_pipeline", "mock", false);
+        graph.root_cause = Some(RootCauseClass::ProductLogicMismatch);
+        graph.error_category = Some(ErrorCategory::LogicError);
+        graph.graph_failure = Some(true);
+
+        let report = BenchmarkReport::from_results(
+            vec![credential, graph],
+            1,
+            "2026-09-08T00:00:00Z".to_string(),
+            "2026-09-08T00:01:00Z".to_string(),
+        );
+        assert_eq!(report.summary.graph_failures, 1);
+        assert_eq!(report.summary.infra_failures, 1);
+        assert_eq!(
+            report
+                .summary
+                .graph_class_histogram
+                .get("product_logic_mismatch"),
+            Some(&1)
+        );
+        assert!(
+            !report
+                .summary
+                .graph_class_histogram
+                .contains_key("provider_or_infrastructure")
+        );
+    }
+
+    #[test]
+    fn load_baseline_accepts_reports_without_schema_version() {
+        let json = r#"{
+          "started_at": "2026-03-18T00:00:00Z",
+          "finished_at": "2026-03-18T01:00:00Z",
+          "duumbi_version": "0.1.0",
+          "attempts_per_run": 1,
+          "showcases": [],
+          "results": [],
+          "kill_criterion_met": false
+        }"#;
+        let path = std::env::temp_dir().join(format!(
+            "duumbi-noschema-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(&path, json).expect("write");
+        let report = load_baseline(&path).expect("load without schema_version");
+        let _ = std::fs::remove_file(&path);
+        assert!(report.schema_version.is_none());
+        assert_eq!(report.results.len(), 0);
     }
 }

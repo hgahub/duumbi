@@ -55,6 +55,8 @@ pub struct ReplayConfig {
     pub provider_source: String,
     /// Retain isolated attempt workspaces under the replay bundle.
     pub keep_workspaces: bool,
+    /// Capture current-attempt model I/O.
+    pub capture_model_io: bool,
 }
 
 /// Runs determinism replay for selected benchmark showcases.
@@ -889,6 +891,7 @@ mod tests {
             source_commit: "test-commit".to_string(),
             provider_source: "test".to_string(),
             keep_workspaces: false,
+            capture_model_io: false,
         };
 
         let report = run_replay_with_provider_factory(
