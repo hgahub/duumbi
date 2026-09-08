@@ -665,7 +665,8 @@ export async function runReadyForBuildHandoff(deps) {
 
   try {
     const correction = await collectCorrectionCandidate();
-    if (correction) {
+    const postedReadyThisRun = results.some((result) => result.outcome === "posted");
+    if (correction && !postedReadyThisRun) {
       results.push(await notifyCorrection(correction));
     }
   } catch (error) {
