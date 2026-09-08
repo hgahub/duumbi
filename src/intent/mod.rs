@@ -20,6 +20,8 @@
 
 #![allow(dead_code)] // Progressively integrated as CLI commands are wired
 
+/// Isolated per-attempt executor shared by benchmark and determinism replay.
+pub mod attempt;
 /// BDD/Gherkin companion artifact support for runtime intents.
 pub mod bdd;
 pub mod benchmarks;
@@ -32,6 +34,8 @@ pub mod preflight;
 pub mod review;
 pub mod spec;
 pub mod status;
+/// Deterministic root-cause classification for scaled write-path attempts.
+pub mod taxonomy;
 pub mod verifier;
 
 use std::fs;
