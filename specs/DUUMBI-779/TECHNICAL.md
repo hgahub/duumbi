@@ -394,11 +394,13 @@ Defaults:
 - `--artifact-dir` for benchmark: `.duumbi/benchmark/attempts`. Failed
   attempts copy the failed-attempt allowlist there before `TempDir` drop
   when remaining allowlisted content budget can hold it. If that remainder
-  cannot hold the next attempt's content, write only a reserved-pool
-  `truncation.json` stub. `content_bytes + stub_bytes` never exceeds
-  32 MiB. Success attempts follow the success file exceptions in
-  PRODUCT.md (JSON only; plus `model-io/` when capture obtained payloads;
-  plus snapshot when `--keep-workspaces`).
+  cannot hold the next attempt's content and the stub pool can hold a stub,
+  write only a reserved-pool `truncation.json` stub
+  (`content_budget_exhausted`). If the stub pool cannot hold another stub,
+  write no new run-tree files, record `stub_pool_exhausted` in the parent
+  JSON, and stop further artifact-producing attempts for that run.
+  `content_bytes + stub_bytes` never exceeds 32 MiB. Success attempts
+  follow the success file exceptions in PRODUCT.md.
 - `--keep-workspaces`: false. When true, copy the graph/intent allowlist
   for success or failure. Exclude binaries, secrets, and **all**
   pre-existing prompt/response/`model-io` caches in every flag combination.
@@ -610,26 +612,43 @@ bytes and is written only from the reserved pool. Content files never
 consume the stub pool.
 
 Per-attempt overflow drops lowest-priority **content** files inside that
-attempt (still within remaining content budget) and writes truncation
-metadata.
+attempt (still within remaining content budget). A `truncation.json` for
+that overflow is charged to the stub pool; if the pool cannot hold it,
+inline the overflow metadata only in the parent JSON.
+
+Two sequential run-budget states (same as PRODUCT.md; no second cap):
 
 When remaining content budget cannot hold the next failed attempt's
-content (even after in-attempt lowest-priority drops):
+content (even after in-attempt lowest-priority drops) **and** the stub
+pool can hold another stub ≤ `4096` bytes:
 
 - do not rewrite or delete earlier attempts' files
 - write **no** new allowlisted content files for that attempt
-- still create the attempt directory
+- create the attempt directory
 - write `truncation.json` from the reserved stub pool with
-  `omission_reason: run_budget_exhausted`, omitted names, `content_bytes`,
-  `stub_bytes`, `cap_bytes`, `stub_pool_bytes`
+  `omission_reason: content_budget_exhausted`, omitted names,
+  `content_bytes`, `stub_bytes`, `cap_bytes`, `stub_pool_bytes`
 - inline hashes, intent status, validator/verifier summaries, and phase
   evidence in the parent report `run_retention` object
 - set `evidence_persistence: partial` (not `failed`)
-- `--ci` does not treat run-budget truncation as infrastructure failure
+- `--ci` does not treat content-budget truncation as infrastructure failure
+
+When remaining stub pool cannot hold another stub for a later failed
+attempt that needs one:
+
+- write **no** new file under `<artifact-dir>/<run-id>/` (no stub, no
+  attempt directory)
+- record that attempt in the parent `--output` JSON with
+  `omission_reason: stub_pool_exhausted`, `evidence_persistence:
+  json_only`, empty `artifact_paths`
+- **stop scheduling further artifact-producing attempts** for that run.
+  Remaining planned attempts are JSON-only rows with `stub_pool_exhausted`
+  and `executed: false`
+- `--ci` does not treat stub-pool exhaustion as infrastructure failure
 
 Invariant: `content_bytes + stub_bytes <= 33554432`,
-`content_bytes <= 33292288`, `stub_bytes <= 262144`. Overflow must not
-exceed the 32 MiB total.
+`content_bytes <= 33292288`, `stub_bytes <= 262144`. After stub-pool
+exhaustion, no new files appear under the run artifact tree.
 
 Truncation metadata is mandatory when dropping bytes or files:
 `truncated`, `original_bytes`, `retained_bytes`, `omitted_files`.
@@ -706,7 +725,8 @@ satisfy the product repair or retention scenarios.
 | Capture × keep-workspaces matrix | All flag×outcome rows in PRODUCT. Snapshots **never** copy prior `model-io/`/`prompts/`/`responses/`, including when capture is on. |
 | Default failed retention without flags | Assert allowlisted files including intent status and validator/verifier summaries; no graph snapshot; no model-io. |
 | Persistence failure | After execution class is `schema_graph_validation`, inject copy failure. Assert `root_cause` unchanged and `evidence_persistence` failed/partial; JSON report still written. |
-| Run-budget exhaustion | Multiple oversized failed attempts so remaining content budget cannot hold the next allowlist. Later attempts have `truncation.json` and **no** new content files; parent report inlines hashes/intent/summaries/phase evidence; `partial`; not a `--ci` infra failure; earlier files kept. Assert measured `content_bytes + stub_bytes <= 33554432`, `content_bytes <= 33292288`, and `stub_bytes <= 262144` (sum of actual file sizes under the run artifact tree, not stub presence alone). |
+| Run-budget content exhaustion | Multiple oversized failed attempts so remaining content budget cannot hold the next allowlist **and** the stub pool can still hold a stub. Later attempts have `truncation.json` and **no** new content files; `omission_reason=content_budget_exhausted`; parent report inlines hashes/intent/summaries/phase evidence; `partial`; not a `--ci` infra failure; earlier files kept. Assert measured `content_bytes + stub_bytes <= 33554432`, `content_bytes <= 33292288`, and `stub_bytes <= 262144` (actual file sizes under the run artifact tree). |
+| Stub-pool exhaustion | Multi-attempt run that fills the reserved stub pool so another stub cannot fit, while content budget also cannot hold the next allowlist. Assert no new run-tree files, no new attempt directory, JSON-only row with `omission_reason=stub_pool_exhausted` and `evidence_persistence=json_only`, empty `artifact_paths`, remaining planned attempts JSON-only with `executed=false`, no further stubs, earlier files unchanged, and measured `stub_bytes <= 262144` plus `content_bytes + stub_bytes <= 33554432`. |
 | Infra Err after repair began | Fixture enters repair then returns execute `Err`. Assert `repair_attempted=true` and partial evidence survives. |
 | Missing credentials excluded | Provider route with absent credentials. Assert `provider_or_infrastructure` **and** graph-failure totals/histograms/denominators do not increment. Relabel-only implementations fail this test. |
 | Symlink escape | Workspace symlink pointing outside TempDir is omitted; truncation metadata lists it; outside files unchanged. |
@@ -913,6 +933,8 @@ Stage 10 is complete only when:
   Unknown failures serialize `"error_category": null`.
 - Missing credentials are excluded from graph-failure accounting.
 - Persistence failure keeps execution `root_cause`.
+- Content-budget and stub-pool exhaustion fixtures pass, including measured
+  byte sums and stop-scheduling after `stub_pool_exhausted`.
 - Product BDD scenarios are mapped to passing tests or documented fixture
   evidence.
 - Focused tests, fmt, and clippy pass.
@@ -966,10 +988,12 @@ Locked (not Stage 10 choices):
   `--capture-model-io` writes current-attempt `model-io/` when payloads
   exist. `--keep-workspaces` adds the graph/intent snapshot only.
 - Workspace snapshots never copy pre-existing payload caches.
-- Failed attempts persist the allowlist when content budget remains, or
-  reserved-pool `truncation.json` plus inlined report fields when content
-  budget is exhausted (`partial`). `content_bytes + stub_bytes` never
-  exceeds 32 MiB.
+- Failed attempts persist the allowlist when content budget remains, a
+  reserved-pool `truncation.json` when content is exhausted and the stub
+  pool has room (`partial`, `content_budget_exhausted`), or JSON-only
+  `stub_pool_exhausted` with no new run-tree files when the stub pool
+  cannot hold another stub. Further artifact-producing attempts stop.
+  `content_bytes + stub_bytes` never exceeds 32 MiB.
 - `ErrorCategory` does **not** gain `Unknown`. Unknown failures serialize
   `"error_category": null` with `"root_cause": "unknown"`.
   `control_flow_or_ssa` → `schema_error`; `cross_module_resolution` →

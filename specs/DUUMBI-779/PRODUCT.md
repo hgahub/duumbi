@@ -353,9 +353,11 @@ File persistence differs by outcome and flags:
 
 - **Failed attempts** persist the failed-attempt allowlist under a local
   artifact directory so inspection does not depend on remembering a flag.
-  If the per-run content budget is exhausted, later failed attempts still
-  persist a reserved-pool `truncation.json` stub (see Size And Count
-  Limits). The 32 MiB total is never exceeded.
+  If the per-run content budget is exhausted and the stub pool can hold
+  another stub, later failed attempts persist a reserved-pool
+  `truncation.json` stub. If the stub pool cannot hold another stub, later
+  attempts get **no** new run-tree files (see Size And Count Limits). The
+  32 MiB total is never exceeded.
 - **Success attempts** persist hashes and summaries in JSON
   (`evidence_persistence: json_only`, `artifact_paths` empty) unless a
   success file exception applies:
@@ -438,32 +440,58 @@ files. Allowlisted content may use at most
 consume the stub pool.
 
 Per-attempt overflow (still inside one attempt, still inside the remaining
-content budget) writes truncation metadata and drops lowest-priority
-**content** files rather than exceeding that attempt's content cap.
-Priority: hashes/summaries/phase evidence, then `execute.log`, then
-graph/intent snapshot, then model I/O.
+content budget) drops lowest-priority **content** files rather than
+exceeding that attempt's content cap. If a `truncation.json` is written
+for that overflow, it is charged to the stub pool. If the stub pool cannot
+hold that file, overflow metadata is inlined only in the parent `--output`
+JSON; remaining fitting content files may still be written. Priority:
+hashes/summaries/phase evidence, then `execute.log`, then graph/intent
+snapshot, then model I/O.
 
-The **per-run** budget must stay implementable when later failed attempts
-need a nonempty stub and earlier files cannot shrink:
+Two sequential run-budget states. Do not add a second cap besides the
+32 MiB total and its reserved stub pool.
+
+**1. Content exhaustion** (remaining content budget cannot hold the next
+allowlist, even after in-attempt lowest-priority drops; remaining stub
+pool can hold another stub ≤ `4096` bytes):
 
 - Already-written earlier attempts are not rewritten or shrunk.
-- Before copying the next attempt's allowlisted content, compute remaining
-  content budget (`33292288 - content_bytes_already_written`). If that
-  remainder cannot hold the next attempt's content (even after
-  lowest-priority drops inside the attempt), write **no** new content
-  files for that attempt.
-- Still create the attempt directory and write `truncation.json` from the
-  reserved stub pool (`omission_reason: run_budget_exhausted`, omitted
-  names, `content_bytes`, `stub_bytes`, `cap_bytes`, `stub_pool_bytes`).
+- Write **no** new allowlisted content files for that attempt.
+- Create the attempt directory and write `truncation.json` from the stub
+  pool (`omission_reason: content_budget_exhausted`, omitted names,
+  `content_bytes`, `stub_bytes`, `cap_bytes`, `stub_pool_bytes`).
 - Classification, hashes, intent status, validator/verifier summaries, and
-  phase evidence for that attempt remain in the parent `--output` JSON
-  (`run_retention` with those same byte fields plus omitted paths).
-- `evidence_persistence` is `partial`, not `failed`. Run-budget truncation
-  is not an infrastructure `--ci` failure. Copy I/O errors remain `failed`.
-- `artifact_paths` points at the stub that survived.
-- Invariant: `content_bytes + stub_bytes <= 33554432`,
-  `content_bytes <= 33292288`, `stub_bytes <= 262144`. Overflow must not
-  exceed the 32 MiB total.
+  phase evidence remain in the parent `--output` JSON (`run_retention`
+  with those byte fields plus omitted paths).
+- `evidence_persistence` is `partial`. `artifact_paths` points at the stub.
+- `--ci` does not treat this as an infrastructure failure.
+
+**2. Stub-pool exhaustion** (remaining stub pool cannot hold another stub
+for a later failed attempt that needs one):
+
+- Do **not** write another stub or any other new file under
+  `<artifact-dir>/<run-id>/`.
+- Do **not** create a new attempt directory.
+- Record that attempt in the parent `--output` JSON with
+  `omission_reason: stub_pool_exhausted`, `evidence_persistence:
+  json_only`, empty `artifact_paths`, and hashes/status/summaries/phase
+  evidence inlined when the attempt already executed; if it had not
+  started, record it as not executed with the same reason.
+- **Stop scheduling further artifact-producing attempts** for that run:
+  no further TempDir work, no further files under the run artifact tree.
+  Any remaining planned attempts are JSON-only rows with
+  `stub_pool_exhausted` and `executed: false`.
+- `--ci` does not treat stub-pool exhaustion as an infrastructure failure.
+  Copy I/O errors remain `evidence_persistence: failed`.
+
+Invariants (all must hold):
+
+- Earlier files never shrink or delete.
+- `content_bytes + stub_bytes <= 33554432`
+- `content_bytes <= 33292288`
+- `stub_bytes <= 262144`
+- After stub-pool exhaustion, no new files appear under the run artifact
+  tree for later attempts.
 
 #### Flag Matrix
 
@@ -913,22 +941,42 @@ Feature: Scaled write-path attempt evidence and failure classification
       And the exclusion is not implemented merely by relabeling a row that
       still counts as a graph failure
 
-    Scenario: Run-budget exhaustion still leaves a failed-attempt stub
+    Scenario: Run-budget content exhaustion still leaves a failed-attempt stub
       Given a run with multiple failed attempts whose full allowlists would
       exceed the 32 MiB per-run cap
       And remaining allowlisted content budget cannot hold the next
       failed-attempt allowlist
+      And the reserved stub pool can still hold another stub
       When later failed attempts are finalized
-      Then each later attempt directory still contains `truncation.json`
+      Then each such attempt directory still contains `truncation.json`
       And no new allowlisted content files are written for those attempts
       And the parent report inlines that attempt's hashes, intent status,
       validator or verifier summaries, and phase evidence
+      And `omission_reason` is `content_budget_exhausted`
       And `evidence_persistence` is `partial`
-      And `--ci` does not treat run-budget truncation as infrastructure
+      And `--ci` does not treat content-budget truncation as infrastructure
       failure
       And earlier attempts' already-written files are not deleted
       And measured `content_bytes + stub_bytes` is <= `33554432`
       And measured `content_bytes` is <= `33292288`
+      And measured `stub_bytes` is <= `262144`
+
+    Scenario: Stub-pool exhaustion stops further artifact files
+      Given a run whose reserved stub pool cannot hold another stub
+      And remaining allowlisted content budget cannot hold the next
+      failed-attempt allowlist
+      When the next failed attempt would need a stub
+      Then no new files are written under the run artifact tree
+      And no new attempt directory is created
+      And that attempt is recorded in the parent `--output` JSON with
+      `omission_reason` `stub_pool_exhausted` and `evidence_persistence`
+      `json_only`
+      And `artifact_paths` is empty
+      And further planned attempts are JSON-only rows with
+      `stub_pool_exhausted` and `executed` false
+      And no further stubs appear
+      And earlier attempts' already-written files are not deleted
+      And measured `content_bytes + stub_bytes` is <= `33554432`
       And measured `stub_bytes` is <= `262144`
 
     Scenario: Symlink escape is not copied
@@ -1010,15 +1058,18 @@ Independently testable acceptance criteria:
 6. Missing-credential attempts are excluded from graph-failure accounting.
 7. Persistence-failure fixture keeps the execution `root_cause` and records
    `evidence_persistence`.
-8. Run-budget exhaustion fixture: later failed attempts still have
-   `truncation.json` plus inlined report evidence; `partial`; not a `--ci`
-   infra failure; measured `content_bytes + stub_bytes <= 33554432`,
-   `content_bytes <= 33292288`, and `stub_bytes <= 262144`.
-9. Each required `root_cause` serializes to exactly the locked
-   `error_category` in the JSON Compatibility table.
-10. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
+8. Content-budget exhaustion fixture: later failed attempts still have
+   `truncation.json` plus inlined report evidence; `partial`;
+   `content_budget_exhausted`; measured byte sums within the locked caps.
+9. Stub-pool exhaustion fixture: after the pool cannot hold another stub,
+   no new run-tree files; JSON-only `stub_pool_exhausted` rows; no further
+   stubs; earlier files kept; measured `stub_bytes <= 262144` and
+   `content_bytes + stub_bytes <= 33554432`.
+10. Each required `root_cause` serializes to exactly the locked
+    `error_category` in the JSON Compatibility table.
+11. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
     warnings` pass on the implementation PR.
-11. No committed raw provider payloads, secrets, or retained workspaces.
+12. No committed raw provider payloads, secrets, or retained workspaces.
 
 Expected artifacts for later Stage 10, not this spec PR:
 
@@ -1048,9 +1099,12 @@ Resolved in this spec:
   `mutation_failed`.
 - Success without flags is `json_only`. Success + `--capture-model-io`
   writes current-attempt `model-io/` files when payloads exist. Failed
-  attempts persist the allowlist when content budget remains, or a
-  reserved-pool `truncation.json` stub if the content budget is exhausted
-  (`content_bytes + stub_bytes` never exceeds 32 MiB).
+  attempts persist the allowlist when content budget remains, a
+  reserved-pool `truncation.json` stub when content is exhausted and the
+  stub pool has room, or JSON-only `stub_pool_exhausted` with no new
+  run-tree files (and no further artifact-producing attempts) when the
+  stub pool cannot hold another stub. `content_bytes + stub_bytes` never
+  exceeds 32 MiB.
 - Workspace snapshots never copy pre-existing payload caches.
 - Retention caps, allowlist, flag matrix, symlink/collision, and capture
   seam are locked above.
