@@ -392,11 +392,13 @@ Add `--capture-model-io` with the same semantics.
 Defaults:
 
 - `--artifact-dir` for benchmark: `.duumbi/benchmark/attempts`. Failed
-  attempts copy the failed-attempt allowlist there before `TempDir` drop,
-  or a `truncation.json` stub if the 32 MiB run budget is exhausted.
-  Success attempts follow the success file exceptions in PRODUCT.md (JSON
-  only; plus `model-io/` when capture obtained payloads; plus snapshot
-  when `--keep-workspaces`).
+  attempts copy the failed-attempt allowlist there before `TempDir` drop
+  when remaining allowlisted content budget can hold it. If that remainder
+  cannot hold the next attempt's content, write only a reserved-pool
+  `truncation.json` stub. `content_bytes + stub_bytes` never exceeds
+  32 MiB. Success attempts follow the success file exceptions in
+  PRODUCT.md (JSON only; plus `model-io/` when capture obtained payloads;
+  plus snapshot when `--keep-workspaces`).
 - `--keep-workspaces`: false. When true, copy the graph/intent allowlist
   for success or failure. Exclude binaries, secrets, and **all**
   pre-existing prompt/response/`model-io` caches in every flag combination.
@@ -588,22 +590,46 @@ Locked caps:
 - sanitized `execute.log`: 256 KiB truncated
 - model I/O: 256 KiB per file truncated after redaction
 - per-attempt file count: 32 default, 64 with `--keep-workspaces`
-- per-attempt total bytes: 1 MiB default, 8 MiB with `--keep-workspaces`
-- per-run total: 32 MiB
+- per-attempt total **content** bytes: 1 MiB default, 8 MiB with
+  `--keep-workspaces`
+- per-run retained-evidence total: 32 MiB (`33554432` bytes)
 
-Per-attempt overflow drops lowest-priority files inside that attempt and
-writes truncation metadata.
+**Byte accounting (same rule as PRODUCT.md):** every file under
+`<artifact-dir>/<run-id>/` counts toward the 32 MiB. Split:
 
-When a later failed attempt would exceed the **per-run** 32 MiB budget:
+- **Allowlisted content:** `execute.log`, `phase_evidence.json`,
+  `intent-status.txt`, `summaries.json`, `hashes.json`, keep-workspaces
+  snapshots, current-attempt `model-io/`.
+- **Stub/metadata:** `truncation.json` only.
+
+The parent `--output` JSON does not count.
+
+Reserve `262144` bytes (256 KiB) of the 32 MiB from run start exclusively
+for stubs. Content cap is `33292288` bytes. Each stub is at most `4096`
+bytes and is written only from the reserved pool. Content files never
+consume the stub pool.
+
+Per-attempt overflow drops lowest-priority **content** files inside that
+attempt (still within remaining content budget) and writes truncation
+metadata.
+
+When remaining content budget cannot hold the next failed attempt's
+content (even after in-attempt lowest-priority drops):
 
 - do not rewrite or delete earlier attempts' files
-- still create the later attempt directory
-- write at least `truncation.json` with `omission_reason:
-  run_budget_exhausted`, omitted names, and bytes used vs cap
+- write **no** new allowlisted content files for that attempt
+- still create the attempt directory
+- write `truncation.json` from the reserved stub pool with
+  `omission_reason: run_budget_exhausted`, omitted names, `content_bytes`,
+  `stub_bytes`, `cap_bytes`, `stub_pool_bytes`
 - inline hashes, intent status, validator/verifier summaries, and phase
   evidence in the parent report `run_retention` object
 - set `evidence_persistence: partial` (not `failed`)
 - `--ci` does not treat run-budget truncation as infrastructure failure
+
+Invariant: `content_bytes + stub_bytes <= 33554432`,
+`content_bytes <= 33292288`, `stub_bytes <= 262144`. Overflow must not
+exceed the 32 MiB total.
 
 Truncation metadata is mandatory when dropping bytes or files:
 `truncated`, `original_bytes`, `retained_bytes`, `omitted_files`.
@@ -665,7 +691,7 @@ satisfy the product repair or retention scenarios.
 
 | Product scenario | Automated, E2E, manual, or review evidence |
 | --- | --- |
-| Failed attempt retains evidence after TempDir lifecycle | Integration test uses the execute fixture, fails after execute, drops TempDir, asserts surviving `execute.log`, graph hashes, `intent-status.txt` (or equivalent) with terminal intent status, validator/verifier summaries, and report `artifact_paths`. Default flags, no `--keep-workspaces`. |
+| Failed attempt retains evidence after TempDir lifecycle | Integration test uses the execute fixture, fails after execute, with remaining content budget able to hold the allowlist; drops TempDir; asserts surviving `execute.log`, graph hashes, `intent-status.txt` (or equivalent) with terminal intent status, validator/verifier summaries, report `artifact_paths`, and `evidence_persistence=complete`. Default flags, no `--keep-workspaces`. |
 | Repair-entered failure / no patch | Execute fixture enters repair, applies no patch, fails. Both runner reports: `repair_attempted=true`, `repair_applied=false`, `first_pass_success=false`, `repair_success=false`. Does not scrape replaced short error strings. |
 | Repair applies a patch and still fails | Execute fixture writes a repair patch then fails verification. Assert `repair_applied=true`, `repair_success=false`. |
 | Repair converts the attempt to success | Execute fixture fails first pass, repair patch, verifier pass. Assert `success=true`, `repair_success=true`, `root_cause` null. |
@@ -680,7 +706,7 @@ satisfy the product repair or retention scenarios.
 | Capture × keep-workspaces matrix | All flag×outcome rows in PRODUCT. Snapshots **never** copy prior `model-io/`/`prompts/`/`responses/`, including when capture is on. |
 | Default failed retention without flags | Assert allowlisted files including intent status and validator/verifier summaries; no graph snapshot; no model-io. |
 | Persistence failure | After execution class is `schema_graph_validation`, inject copy failure. Assert `root_cause` unchanged and `evidence_persistence` failed/partial; JSON report still written. |
-| Run-budget exhaustion | Multiple oversized failed attempts. Later attempts have `truncation.json`; parent report inlines hashes/intent/summaries/phase evidence; `partial`; not a `--ci` infra failure; earlier files kept. |
+| Run-budget exhaustion | Multiple oversized failed attempts so remaining content budget cannot hold the next allowlist. Later attempts have `truncation.json` and **no** new content files; parent report inlines hashes/intent/summaries/phase evidence; `partial`; not a `--ci` infra failure; earlier files kept. Assert measured `content_bytes + stub_bytes <= 33554432`, `content_bytes <= 33292288`, and `stub_bytes <= 262144` (sum of actual file sizes under the run artifact tree, not stub presence alone). |
 | Infra Err after repair began | Fixture enters repair then returns execute `Err`. Assert `repair_attempted=true` and partial evidence survives. |
 | Missing credentials excluded | Provider route with absent credentials. Assert `provider_or_infrastructure` **and** graph-failure totals/histograms/denominators do not increment. Relabel-only implementations fail this test. |
 | Symlink escape | Workspace symlink pointing outside TempDir is omitted; truncation metadata lists it; outside files unchanged. |
@@ -940,8 +966,10 @@ Locked (not Stage 10 choices):
   `--capture-model-io` writes current-attempt `model-io/` when payloads
   exist. `--keep-workspaces` adds the graph/intent snapshot only.
 - Workspace snapshots never copy pre-existing payload caches.
-- Failed attempts persist the allowlist, or `truncation.json` plus inlined
-  report fields when the 32 MiB run budget is exhausted (`partial`).
+- Failed attempts persist the allowlist when content budget remains, or
+  reserved-pool `truncation.json` plus inlined report fields when content
+  budget is exhausted (`partial`). `content_bytes + stub_bytes` never
+  exceeds 32 MiB.
 - `ErrorCategory` does **not** gain `Unknown`. Unknown failures serialize
   `"error_category": null` with `"root_cause": "unknown"`.
   `control_flow_or_ssa` → `schema_error`; `cross_module_resolution` →

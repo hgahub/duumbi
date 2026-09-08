@@ -353,8 +353,9 @@ File persistence differs by outcome and flags:
 
 - **Failed attempts** persist the failed-attempt allowlist under a local
   artifact directory so inspection does not depend on remembering a flag.
-  If the 32 MiB per-run budget is exhausted, later failed attempts still
-  persist a minimum on-disk stub (see Size And Count Limits).
+  If the per-run content budget is exhausted, later failed attempts still
+  persist a reserved-pool `truncation.json` stub (see Size And Count
+  Limits). The 32 MiB total is never exceeded.
 - **Success attempts** persist hashes and summaries in JSON
   (`evidence_persistence: json_only`, `artifact_paths` empty) unless a
   success file exception applies:
@@ -413,28 +414,56 @@ undocumented limits):
 - sanitized `execute.log`: 256 KiB
 - model I/O: 256 KiB per file after redaction
 - per-attempt file count: 32 default, 64 with `--keep-workspaces`
-- per-attempt total bytes: 1 MiB default, 8 MiB with `--keep-workspaces`
-- per-run total across attempts: 32 MiB
+- per-attempt total **content** bytes: 1 MiB default, 8 MiB with
+  `--keep-workspaces`
+- per-run retained-evidence total: 32 MiB (`33554432` bytes)
 
-Overflow must write truncation metadata (`truncated: true`,
-`original_bytes`, `retained_bytes`, `omitted_files`) and drop lowest-priority
-files rather than exceeding the cap. Priority: hashes/summaries/phase
-evidence, then `execute.log`, then graph/intent snapshot, then model I/O.
+**What counts toward the 32 MiB total:** every file under
+`<artifact-dir>/<run-id>/` after `TempDir` drop. That tree splits into:
 
-Per-attempt caps shrink files inside one attempt. The **per-run 32 MiB
-cap** must not leave a failed attempt with zero files:
+- **Allowlisted content:** `execute.log`, `phase_evidence.json`,
+  `intent-status.txt`, `summaries.json`, `hashes.json`, keep-workspaces
+  graph/intent snapshots, and current-attempt `model-io/` files.
+- **Stub/metadata:** only `truncation.json` (or an equivalently named
+  per-attempt omission-metadata file).
 
-- Already-written earlier attempts are not rewritten or shrunk when a later
-  attempt would exceed the run budget.
-- Each later failed attempt still creates its attempt directory and writes
-  at least `truncation.json` (omission metadata: `run_budget_exhausted`,
-  omitted file names, bytes used vs cap).
+The parent `--output` JSON report does **not** count toward the 32 MiB
+(it is the run report, not attempt-tree evidence).
+
+**Reserved stub pool (picked rule):** from the start of the run, reserve
+`262144` bytes (256 KiB) of the 32 MiB exclusively for stub/metadata
+files. Allowlisted content may use at most
+`33554432 - 262144 = 33292288` bytes. Each `truncation.json` is at most
+`4096` bytes. Stubs are written only from this pool. Content files never
+consume the stub pool.
+
+Per-attempt overflow (still inside one attempt, still inside the remaining
+content budget) writes truncation metadata and drops lowest-priority
+**content** files rather than exceeding that attempt's content cap.
+Priority: hashes/summaries/phase evidence, then `execute.log`, then
+graph/intent snapshot, then model I/O.
+
+The **per-run** budget must stay implementable when later failed attempts
+need a nonempty stub and earlier files cannot shrink:
+
+- Already-written earlier attempts are not rewritten or shrunk.
+- Before copying the next attempt's allowlisted content, compute remaining
+  content budget (`33292288 - content_bytes_already_written`). If that
+  remainder cannot hold the next attempt's content (even after
+  lowest-priority drops inside the attempt), write **no** new content
+  files for that attempt.
+- Still create the attempt directory and write `truncation.json` from the
+  reserved stub pool (`omission_reason: run_budget_exhausted`, omitted
+  names, `content_bytes`, `stub_bytes`, `cap_bytes`, `stub_pool_bytes`).
 - Classification, hashes, intent status, validator/verifier summaries, and
   phase evidence for that attempt remain in the parent `--output` JSON
-  (`run_retention` object: `bytes_used`, `cap_bytes`, omitted paths).
+  (`run_retention` with those same byte fields plus omitted paths).
 - `evidence_persistence` is `partial`, not `failed`. Run-budget truncation
   is not an infrastructure `--ci` failure. Copy I/O errors remain `failed`.
 - `artifact_paths` points at the stub that survived.
+- Invariant: `content_bytes + stub_bytes <= 33554432`,
+  `content_bytes <= 33292288`, `stub_bytes <= 262144`. Overflow must not
+  exceed the 32 MiB total.
 
 #### Flag Matrix
 
@@ -718,11 +747,14 @@ Feature: Scaled write-path attempt evidence and failure classification
     Scenario: Failed attempt retains evidence after TempDir lifecycle
       Given a benchmark or determinism attempt runs in an isolated TempDir
       And intent execute finishes with failure
+      And remaining per-run allowlisted content budget can hold the
+      failed-attempt allowlist
       When the isolated TempDir is dropped
       Then the attempt evidence still exists under the configured artifact dir
       And the evidence includes graph hashes, sanitized execution transcript,
       intent status, and validator or verifier summaries
       And the report points at those surviving artifact paths
+      And `evidence_persistence` is `complete`
 
   Rule: Repair telemetry is typed and accurate on failure
 
@@ -884,14 +916,20 @@ Feature: Scaled write-path attempt evidence and failure classification
     Scenario: Run-budget exhaustion still leaves a failed-attempt stub
       Given a run with multiple failed attempts whose full allowlists would
       exceed the 32 MiB per-run cap
+      And remaining allowlisted content budget cannot hold the next
+      failed-attempt allowlist
       When later failed attempts are finalized
       Then each later attempt directory still contains `truncation.json`
+      And no new allowlisted content files are written for those attempts
       And the parent report inlines that attempt's hashes, intent status,
       validator or verifier summaries, and phase evidence
       And `evidence_persistence` is `partial`
       And `--ci` does not treat run-budget truncation as infrastructure
       failure
       And earlier attempts' already-written files are not deleted
+      And measured `content_bytes + stub_bytes` is <= `33554432`
+      And measured `content_bytes` is <= `33292288`
+      And measured `stub_bytes` is <= `262144`
 
     Scenario: Symlink escape is not copied
       Given the temp workspace contains a symlink pointing outside itself
@@ -926,8 +964,9 @@ Feature: Scaled write-path attempt evidence and failure classification
 3. Copy bounded allowlisted evidence out of `TempDir` before drop; add
    compatible `--artifact-dir` / `--keep-workspaces` to benchmark.
 4. Add `--capture-model-io` as local opt-in with a provider capture seam and
-   redaction. Exclude prior prompt/response caches from snapshots unless
-   the flag is on.
+   redaction. Workspace snapshots never copy prior prompt/response caches,
+   in any flag combination. `--capture-model-io` writes only current-attempt
+   capture-seam payloads under `model-io/`.
 5. Add deterministic `root_cause` plus terminal/recovered `phase_evidence`,
    keeping `error_category` as specified in JSON Compatibility.
 6. Version report schemas additively and update baseline docs.
@@ -973,7 +1012,8 @@ Independently testable acceptance criteria:
    `evidence_persistence`.
 8. Run-budget exhaustion fixture: later failed attempts still have
    `truncation.json` plus inlined report evidence; `partial`; not a `--ci`
-   infra failure.
+   infra failure; measured `content_bytes + stub_bytes <= 33554432`,
+   `content_bytes <= 33292288`, and `stub_bytes <= 262144`.
 9. Each required `root_cause` serializes to exactly the locked
    `error_category` in the JSON Compatibility table.
 10. `cargo fmt --check`, focused tests, and `cargo clippy --all-targets -- -D
@@ -1008,8 +1048,9 @@ Resolved in this spec:
   `mutation_failed`.
 - Success without flags is `json_only`. Success + `--capture-model-io`
   writes current-attempt `model-io/` files when payloads exist. Failed
-  attempts persist the allowlist, or a `truncation.json` stub if the run
-  budget is exhausted.
+  attempts persist the allowlist when content budget remains, or a
+  reserved-pool `truncation.json` stub if the content budget is exhausted
+  (`content_bytes + stub_bytes` never exceeds 32 MiB).
 - Workspace snapshots never copy pre-existing payload caches.
 - Retention caps, allowlist, flag matrix, symlink/collision, and capture
   seam are locked above.
