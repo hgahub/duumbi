@@ -33,6 +33,38 @@ test("stage approval merges only reviewed spec PRs for Stage 7 and Stage 9 appro
   assert.match(workflow, /checkRuns\.push\(\.\.\.pageRuns\)/);
 });
 
+test("project-status workflow is merge-free and isolated from Stage 7/9 spec PR validation", () => {
+  const workflow = readRepoFile(".github/workflows/project-status.yml");
+  const stageApproval = readRepoFile(".github/workflows/stage-approval.yml");
+
+  assert.match(workflow, /repository_dispatch:\s*\n\s+types:\s*\[project-status\]/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /DUUMBI_PROJECT_NUMBER/);
+  assert.match(workflow, /ready-for-build/);
+  assert.match(workflow, /undo-done/);
+  assert.equal(workflow.includes("pulls.merge"), false);
+  assert.equal(workflow.includes("validateAndMergeSpecPr"), false);
+  assert.equal(/issues\.update|state:\s*["']open["']/.test(workflow), false);
+  assert.match(workflow, /contents:\s+read/);
+  assert.match(workflow, /issues:\s+write/);
+  assert.doesNotMatch(workflow, /pull-requests:\s+write/);
+
+  assert.ok(stageApproval.includes("files[0].filename.match(/^specs\\/DUUMBI-(\\d+)\\/PRODUCT\\.md$/)"));
+  assert.ok(stageApproval.includes("files[0].filename.match(/^specs\\/DUUMBI-(\\d+)\\/TECHNICAL\\.md$/)"));
+  assert.match(stageApproval, /must change only \$\{policy\.expectedPath\}/);
+  assert.match(stageApproval, /pulls\.merge/);
+});
+
+test("ready-for-build handoff gates Project Status buttons and listens for correction events", () => {
+  const workflow = readRepoFile(".github/workflows/ready-for-build-handoff.yml");
+  assert.match(workflow, /types:\s*\[labeled, reopened\]/);
+  assert.match(workflow, /pull_request:\s*\n\s+types:\s*\[closed\]/);
+  assert.match(workflow, /DUUMBI_PROJECT_STATUS_SLACK_BUTTONS/);
+  assert.match(workflow, /project-status-handoff\.mjs/);
+  assert.equal(workflow.includes("pulls.merge"), false);
+  assert.equal(workflow.includes("validateAndMergeSpecPr"), false);
+});
+
 test("product spec Slack review requests wait for review-clean PRs", () => {
   const workflow = readRepoFile(".github/workflows/spec-review-request.yml");
 
