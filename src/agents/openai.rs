@@ -10,7 +10,7 @@ use std::pin::Pin;
 use reqwest::Client;
 use serde_json::json;
 
-use crate::agents::{AgentError, LlmProvider};
+use crate::agents::{AgentError, CapturePayloadStatus, CapturedProviderCall, LlmProvider};
 use crate::patch::PatchOp;
 use crate::tools::{OpenAiToolCall, openai_tools, patch_op_from_openai};
 
@@ -159,6 +159,17 @@ impl OpenAiClient {
         system_prompt: &str,
         user_message: &str,
     ) -> Result<Vec<PatchOp>, AgentError> {
+        self.do_call_with_tools_raw(system_prompt, user_message, false)
+            .await
+            .map(|(ops, _)| ops)
+    }
+
+    async fn do_call_with_tools_raw(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        retain_body: bool,
+    ) -> Result<(Vec<PatchOp>, Option<String>), AgentError> {
         let tools = openai_tools();
         let tools_json = serde_json::to_value(&tools)
             .map_err(|e| AgentError::Parse(format!("Failed to serialize tools: {e}")))?;
@@ -193,8 +204,13 @@ impl OpenAiClient {
             });
         }
 
-        let response: serde_json::Value = resp.json().await?;
-        parse_openai_response(&response)
+        let body_text = resp.text().await.unwrap_or_default();
+        let response: serde_json::Value = serde_json::from_str(&body_text).map_err(|error| {
+            AgentError::Parse(format!("Failed to parse provider JSON: {error}"))
+        })?;
+        let ops = parse_openai_response(&response)?;
+        let raw = retain_body.then_some(body_text);
+        Ok((ops, raw))
     }
 
     /// Sends a plain text message without graph-mutation tools.
@@ -267,6 +283,24 @@ impl LlmProvider for OpenAiClient {
         // Dual-path: if the model returns tool calls, parse them as PatchOps.
         // If it returns plain text (e.g. intent create), pass it through on_text.
         Box::pin(self.do_call_with_text_fallback(system_prompt, user_message, on_text))
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (ops, raw_response) = self
+                .do_call_with_tools_raw(system_prompt, user_message, true)
+                .await?;
+            Ok(CapturedProviderCall {
+                ops,
+                request_prompt: format!("{system_prompt}\n\n{user_message}"),
+                raw_response,
+                payload_status: CapturePayloadStatus::Captured,
+            })
+        })
     }
 
     fn answer<'a>(

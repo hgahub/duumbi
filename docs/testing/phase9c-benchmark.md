@@ -270,6 +270,45 @@ Az automatizált tesztek lefedik:
 
 ---
 
+## T12 — Scaled write-path evidence (#779)
+
+Failed attempts now retain allowlisted evidence after the isolated `TempDir`
+is dropped. Success attempts stay JSON-only unless `--keep-workspaces` or
+`--capture-model-io` is set.
+
+```bash
+duumbi benchmark \
+  --suite scaled --smoke --attempts 1 \
+  --artifact-dir .duumbi/benchmark/attempts \
+  --keep-workspaces \
+  --capture-model-io \
+  --output /tmp/duumbi-779-bench.json
+
+duumbi determinism replay \
+  --suite scaled --smoke --attempts 1 \
+  --artifact-dir .duumbi/determinism \
+  --capture-model-io \
+  --json-output /tmp/duumbi-779-replay.json
+```
+
+Defaults and bounds:
+
+- `--artifact-dir` for benchmark: `.duumbi/benchmark/attempts`
+- `--keep-workspaces` and `--capture-model-io` default off
+- Per-run retained evidence never exceeds **32 MiB** (`content_bytes + stub_bytes`)
+- Content budget: 32 MiB minus a 256 KiB reserved stub pool
+- Content exhaustion writes `truncation.json` (`partial`, `content_budget_exhausted`)
+- Stub-pool exhaustion writes no new run-tree files (`json_only`, `stub_pool_exhausted`) and stops further artifact-producing attempts
+- `--keep-workspaces` copies graph/intent snapshots only; it never copies `model-io/`, `prompts/`, or `responses/` caches
+- `--capture-model-io` writes redacted current-attempt `model-io/` files from the capture seam only
+- `--ci` treats `evidence_persistence: failed` as infrastructure CI failure, not a graph-failure kill
+
+Cleanup: delete local `.duumbi/benchmark/attempts` and `.duumbi/determinism` trees after inspection. Never commit retained workspaces, raw model I/O, secrets, or large logs.
+
+`error_category` counts may shift because unclassified `Ok(false)` rows no longer become catch-all `logic_error`. That is a diagnostic correction, not a kill-criterion change. Unknown failures serialize `"error_category": null` with `"root_cause": "unknown"`.
+
+---
+
 ## Cleanup
 
 ```bash

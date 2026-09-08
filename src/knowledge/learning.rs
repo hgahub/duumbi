@@ -223,20 +223,52 @@ pub fn query_combined_failures(workspace: &Path, limit: usize) -> Vec<FailureRec
         .collect()
 }
 
+fn is_secret_bearing_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("authorization:")
+        || lower.contains("api-key")
+        || lower.contains("api_key")
+        || lower.contains("bearer ")
+        || lower.contains("x-api-key")
+        || lower.contains("sk-")
+        || lower.contains("\"secret\"")
+}
+
+fn redact_configured_secret_values(text: &str) -> String {
+    let mut redacted = text.to_string();
+    const ENV_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "XAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROK_API_KEY",
+    ];
+    for key in ENV_KEYS {
+        if let Ok(value) = std::env::var(key)
+            && value.len() >= 8
+        {
+            redacted = redacted.replace(&value, "[redacted]");
+        }
+    }
+    redacted
+}
+
+/// Removes secret-bearing lines and credential values without length truncation.
+#[must_use]
+pub fn redact_secret_text(text: &str) -> String {
+    let filtered = text
+        .lines()
+        .filter(|line| !is_secret_bearing_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    redact_configured_secret_values(&filtered)
+}
+
 /// Sanitizes provider-facing failure text before it is stored in learning logs.
 #[must_use]
 pub fn sanitize_error_summary(summary: &str) -> String {
-    let mut sanitized = summary
-        .lines()
-        .filter(|line| {
-            let lower = line.to_ascii_lowercase();
-            !lower.contains("authorization:")
-                && !lower.contains("api-key")
-                && !lower.contains("api_key")
-                && !lower.contains("bearer ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut sanitized = redact_secret_text(summary);
 
     const MAX_SUMMARY_CHARS: usize = 800;
     if sanitized.len() > MAX_SUMMARY_CHARS {
@@ -491,5 +523,16 @@ mod tests {
 
         append_success(tmp.path(), &SuccessRecord::new("r", "t")).expect("append");
         assert!(learning_dir.exists());
+    }
+
+    #[test]
+    fn redact_secret_text_drops_key_lines_and_env_values() {
+        let original = "ok line\nAuthorization: Bearer supersecret\napi_key=abc\nsk-live-example-token\nvisible";
+        let redacted = redact_secret_text(original);
+        assert!(redacted.contains("ok line"));
+        assert!(redacted.contains("visible"));
+        assert!(!redacted.to_ascii_lowercase().contains("authorization:"));
+        assert!(!redacted.contains("sk-live-example-token"));
+        assert!(!redacted.contains("api_key=abc"));
     }
 }

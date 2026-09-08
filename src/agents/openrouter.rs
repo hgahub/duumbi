@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::agents::openai::OpenAiClient;
-use crate::agents::{AgentError, LlmProvider};
+use crate::agents::{AgentError, CapturedProviderCall, LlmProvider};
 use crate::patch::PatchOp;
 
 const OPENROUTER_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -74,6 +74,14 @@ impl LlmProvider for OpenRouterClient {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         self.0
             .call_with_tools_streaming(system_prompt, user_message, on_text)
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        self.0.call_with_tools_captured(system_prompt, user_message)
     }
 
     fn answer<'a>(

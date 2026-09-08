@@ -50,6 +50,16 @@ fn sample_attempt(attempt: u32, exact: &str, semantic: &str) -> ReplayAttempt {
         benchmark_evidence: None,
         artifact_paths: vec!["attempts/calculator/mock/1".to_string()],
         duration_secs: 0.1,
+        repair_attempted: false,
+        repair_applied: false,
+        repair_success: None,
+        first_pass_success: None,
+        root_cause: None,
+        root_cause_attribution: None,
+        evidence_persistence: None,
+        phase_evidence: None,
+        executed: Some(true),
+        graph_failure: None,
     }
 }
 
@@ -81,6 +91,7 @@ fn determinism_replay_cli_exposes_reviewable_options_without_provider_calls() {
     assert!(stdout.contains("--markdown-output"));
     assert!(stdout.contains("--min-exact-agreement"));
     assert!(stdout.contains("--keep-workspaces"));
+    assert!(stdout.contains("--capture-model-io"));
 }
 
 #[test]

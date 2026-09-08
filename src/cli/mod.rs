@@ -312,6 +312,18 @@ pub enum Commands {
         /// Compare against a previous report JSON for regression detection.
         #[arg(long)]
         baseline: Option<std::path::PathBuf>,
+
+        /// Root directory for retained attempt evidence.
+        #[arg(long, default_value = ".duumbi/benchmark/attempts")]
+        artifact_dir: std::path::PathBuf,
+
+        /// Retain sanitized graph/intent snapshots for each attempt.
+        #[arg(long)]
+        keep_workspaces: bool,
+
+        /// Write redacted current-attempt model I/O under the artifact dir.
+        #[arg(long)]
+        capture_model_io: bool,
     },
 
     /// Measure determinism of provider-backed intent replay.
@@ -546,6 +558,10 @@ pub enum DeterminismSubcommand {
         /// Retain isolated attempt workspaces inside the replay bundle.
         #[arg(long)]
         keep_workspaces: bool,
+
+        /// Write redacted current-attempt model I/O under the artifact dir.
+        #[arg(long)]
+        capture_model_io: bool,
     },
 }
 
