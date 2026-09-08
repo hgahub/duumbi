@@ -167,6 +167,49 @@ pub trait LlmProvider: Send + Sync {
         let _ = (system_prompt, user_message, on_text);
         Box::pin(async { Err(AgentError::NoToolCalls) })
     }
+
+    /// Tool-call path that can retain the raw response body for opt-in capture.
+    ///
+    /// The default implementation does not retain a raw body. OpenAI, Anthropic,
+    /// and wrappers used by bench/replay override this when capture is enabled
+    /// via the capturing decorator.
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let ops = self.call_with_tools(system_prompt, user_message).await?;
+            Ok(CapturedProviderCall {
+                ops,
+                request_prompt: user_message.to_string(),
+                raw_response: None,
+                payload_status: CapturePayloadStatus::Unavailable,
+            })
+        })
+    }
+}
+
+/// Whether a captured provider call exposed an on-wire response body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturePayloadStatus {
+    /// Raw response body was retained for this call.
+    Captured,
+    /// Provider did not expose a raw body.
+    Unavailable,
+}
+
+/// Result of [`LlmProvider::call_with_tools_captured`].
+#[derive(Debug, Clone)]
+pub struct CapturedProviderCall {
+    /// Parsed patch operations.
+    pub ops: Vec<PatchOp>,
+    /// Provider request text (system+user or user message).
+    pub request_prompt: String,
+    /// Raw HTTP/SSE body when the provider exposed one.
+    pub raw_response: Option<String>,
+    /// Whether `raw_response` was obtained.
+    pub payload_status: CapturePayloadStatus,
 }
 
 /// Type alias for a boxed LLM provider — the primary way callers hold providers.
@@ -219,5 +262,13 @@ impl LlmProvider for Box<dyn LlmProvider> {
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send + 'a>> {
         (**self).answer_streaming(system_prompt, user_message, on_text)
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        (**self).call_with_tools_captured(system_prompt, user_message)
     }
 }

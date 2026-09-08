@@ -4,9 +4,8 @@
 //! tasks via the Coordinator, runs each task through the mutation orchestrator
 //! with 3-step retry, then verifies test cases with the Verifier Agent.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -130,8 +129,11 @@ impl std::fmt::Display for StructuredExecuteError {
 
 impl std::error::Error for StructuredExecuteError {}
 
-#[cfg(test)]
-pub(crate) static FAIL_IO_AFTER_REPAIR: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Test hook: inject an infrastructure error after repair is entered.
+    /// Thread-local so parallel tests cannot steal the flag from each other.
+    pub(crate) static FAIL_IO_AFTER_REPAIR: Cell<bool> = const { Cell::new(false) };
+}
 
 fn structured_execute_error(
     mut collector: OutcomeCollector,
@@ -793,8 +795,7 @@ pub async fn run_execute_structured_with_progress(
         collector.repair_attempted = true;
         collector.push_event("repair", PhaseEventStatus::Informational, None);
         collector.retries_remaining = Some(agent_policy.repair_retries);
-        #[cfg(test)]
-        if FAIL_IO_AFTER_REPAIR.swap(false, Ordering::SeqCst) {
+        if FAIL_IO_AFTER_REPAIR.with(|flag| flag.replace(false)) {
             return Err(structured_execute_error(
                 collector,
                 "injected infrastructure error after repair began",

@@ -16,6 +16,7 @@ use crate::agents::LlmProvider;
 use crate::bench::report::ErrorCategory;
 use crate::determinism::digest::{exact_graph_digest, safe_artifact_key, sha256_hex_bytes};
 use crate::hash;
+use crate::intent::capture::CapturingProvider;
 use crate::intent::execute::{
     ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, StructuredExecuteError,
     run_execute_structured,
@@ -167,6 +168,8 @@ pub struct AttemptRequest<'a> {
     pub process_evidence_status: Option<&'a str>,
     /// Inject a copy failure after execute (tests).
     pub force_persist_failure: bool,
+    /// Inject an infrastructure error after repair is entered (tests).
+    pub force_io_after_repair: bool,
     /// Whether provider credentials were missing.
     pub credentials_missing: bool,
     /// Current-attempt captured model I/O payloads (already redacted).
@@ -283,7 +286,7 @@ pub fn generate_run_id() -> String {
 /// Runs one isolated attempt and copies bounded evidence out of the TempDir.
 #[must_use = "attempt evidence should be recorded in the parent report"]
 pub async fn run_isolated_attempt<F>(
-    request: AttemptRequest<'_>,
+    mut request: AttemptRequest<'_>,
     init_workspace: &F,
     retention: &Mutex<RunRetentionState>,
 ) -> AttemptEvidence
@@ -375,7 +378,7 @@ where
         return evidence;
     }
 
-    match run_execute_structured(request.provider, workspace, request.slug, &mut log).await {
+    match execute_structured(&mut request, workspace, &mut log).await {
         Ok(executed) => {
             outcome = executed;
             persist_error = None;
@@ -426,6 +429,26 @@ where
     }
     drop(tmp);
     evidence
+}
+
+async fn execute_structured(
+    request: &mut AttemptRequest<'_>,
+    workspace: &Path,
+    log: &mut Vec<String>,
+) -> anyhow::Result<IntentExecutionOutcome> {
+    if request.force_io_after_repair {
+        crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(true));
+    }
+    let result = if request.capture_model_io {
+        let capturing = CapturingProvider::new(request.provider);
+        let result = run_execute_structured(&capturing, workspace, request.slug, log).await;
+        request.captured_model_io = capturing.take_payloads();
+        result
+    } else {
+        run_execute_structured(request.provider, workspace, request.slug, log).await
+    };
+    crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(false));
+    result
 }
 
 fn json_only_unexecuted(
@@ -1109,6 +1132,7 @@ mod tests {
             execute: true,
             process_evidence_status: None,
             force_persist_failure: false,
+            force_io_after_repair: false,
             credentials_missing: false,
             captured_model_io: Vec::new(),
         }
@@ -1346,6 +1370,7 @@ mod tests {
             execute: true,
             process_evidence_status: None,
             force_persist_failure: false,
+            force_io_after_repair: false,
             credentials_missing: false,
             captured_model_io: Vec::new(),
         }
@@ -1433,24 +1458,17 @@ mod tests {
 
     #[tokio::test]
     async fn infra_err_after_repair_keeps_repair_attempted() {
-        use crate::intent::execute::FAIL_IO_AFTER_REPAIR;
         use crate::intent::test_support::{
             RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
         };
-        use std::sync::atomic::Ordering;
 
-        FAIL_IO_AFTER_REPAIR.store(true, Ordering::SeqCst);
         let artifacts = tempfile::TempDir::new().expect("artifacts");
         let spec = repair_fixture_spec();
         let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
         let retention = Mutex::new(RunRetentionState::default());
-        let evidence = run_isolated_attempt(
-            repair_request("run-infra-repair", &spec, &provider, artifacts.path()),
-            &init_skeleton_workspace,
-            &retention,
-        )
-        .await;
-        FAIL_IO_AFTER_REPAIR.store(false, Ordering::SeqCst);
+        let mut req = repair_request("run-infra-repair", &spec, &provider, artifacts.path());
+        req.force_io_after_repair = true;
+        let evidence = run_isolated_attempt(req, &init_skeleton_workspace, &retention).await;
 
         assert!(!evidence.outcome.success);
         assert!(evidence.outcome.repair_attempted);
@@ -1465,5 +1483,105 @@ mod tests {
                     .iter()
                     .any(|line| line.contains("Repair"))
         );
+    }
+
+    #[tokio::test]
+    async fn capture_exposing_provider_writes_redacted_model_io_on_success() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::exposing(RepairScript::RepairedSuccess);
+        let retention = Mutex::new(RunRetentionState::default());
+        let mut req = repair_request("run-capture", &spec, &provider, artifacts.path());
+        req.capture_model_io = true;
+        let evidence = run_isolated_attempt(req, &init_skeleton_workspace, &retention).await;
+
+        assert!(evidence.outcome.success);
+        assert_eq!(evidence.model_io_status, ModelIoStatus::Captured);
+        assert_eq!(evidence.evidence_persistence, EvidencePersistence::Complete);
+        assert!(
+            evidence
+                .artifact_paths
+                .iter()
+                .all(|path| path.contains("model-io/")),
+            "{:?}",
+            evidence.artifact_paths
+        );
+        assert!(
+            !evidence
+                .artifact_paths
+                .iter()
+                .any(|path| path.contains("workspace/"))
+        );
+        let joined = evidence
+            .artifact_paths
+            .iter()
+            .map(|relative| fs::read_to_string(artifacts.path().join(relative)).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!joined.contains("sk-test-not-a-real-key"));
+    }
+
+    #[tokio::test]
+    async fn capture_non_exposing_success_stays_json_only() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::RepairedSuccess);
+        let retention = Mutex::new(RunRetentionState::default());
+        let mut req = repair_request("run-nocapture-body", &spec, &provider, artifacts.path());
+        req.capture_model_io = true;
+        let evidence = run_isolated_attempt(req, &init_skeleton_workspace, &retention).await;
+
+        assert!(evidence.outcome.success);
+        assert_eq!(evidence.model_io_status, ModelIoStatus::Unavailable);
+        assert_eq!(evidence.evidence_persistence, EvidencePersistence::JsonOnly);
+        assert!(evidence.artifact_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn keep_workspaces_does_not_copy_payload_caches() {
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
+        let retention = Mutex::new(RunRetentionState::default());
+        let mut req = repair_request("run-keep", &spec, &provider, artifacts.path());
+        req.keep_workspace = true;
+        let evidence = run_isolated_attempt(
+            req,
+            &|path: &Path| {
+                init_skeleton_workspace(path)?;
+                for dir in ["model-io", "prompts", "responses"] {
+                    let hidden = path.join(".duumbi").join(dir);
+                    fs::create_dir_all(&hidden)?;
+                    fs::write(hidden.join("secret.txt"), "uncaptured-payload")?;
+                }
+                Ok(())
+            },
+            &retention,
+        )
+        .await;
+
+        assert!(!evidence.outcome.success);
+        let joined = evidence.artifact_paths.join(" ");
+        assert!(!joined.contains("model-io"));
+        assert!(!joined.contains("prompts"));
+        assert!(!joined.contains("responses"));
+        let bodies: String = evidence
+            .artifact_paths
+            .iter()
+            .filter_map(|relative| fs::read_to_string(artifacts.path().join(relative)).ok())
+            .collect();
+        assert!(!bodies.contains("uncaptured-payload"));
     }
 }

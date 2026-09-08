@@ -25,6 +25,8 @@ pub mod attempt;
 /// BDD/Gherkin companion artifact support for runtime intents.
 pub mod bdd;
 pub mod benchmarks;
+/// Opt-in capturing decorator for `--capture-model-io`.
+pub mod capture;
 pub mod coordinator;
 pub mod create;
 pub mod execute;

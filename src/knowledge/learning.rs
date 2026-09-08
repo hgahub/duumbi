@@ -230,6 +230,8 @@ fn is_secret_bearing_line(line: &str) -> bool {
         || lower.contains("api_key")
         || lower.contains("bearer ")
         || lower.contains("x-api-key")
+        || lower.contains("sk-")
+        || lower.contains("\"secret\"")
 }
 
 fn redact_configured_secret_values(text: &str) -> String {
@@ -521,5 +523,16 @@ mod tests {
 
         append_success(tmp.path(), &SuccessRecord::new("r", "t")).expect("append");
         assert!(learning_dir.exists());
+    }
+
+    #[test]
+    fn redact_secret_text_drops_key_lines_and_env_values() {
+        let original = "ok line\nAuthorization: Bearer supersecret\napi_key=abc\nsk-live-example-token\nvisible";
+        let redacted = redact_secret_text(original);
+        assert!(redacted.contains("ok line"));
+        assert!(redacted.contains("visible"));
+        assert!(!redacted.to_ascii_lowercase().contains("authorization:"));
+        assert!(!redacted.contains("sk-live-example-token"));
+        assert!(!redacted.contains("api_key=abc"));
     }
 }

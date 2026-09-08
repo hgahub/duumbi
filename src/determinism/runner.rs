@@ -2,26 +2,21 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::Mutex;
 
 use crate::agents::LlmProvider;
 use crate::agents::factory;
 use crate::bench::report::{
     BenchmarkEvidence, ErrorCategory, ProviderUsageSummary, categorize_error,
 };
-use crate::bench::runner::{
-    extract_error_codes, filter_providers, load_archived_intent, provider_name,
-};
+use crate::bench::runner::{extract_error_codes, filter_providers, provider_name};
 use crate::bench::showcases::{self, Showcase, ShowcaseSuite, ShowcaseVerification};
 use crate::config::ProviderConfig;
-use crate::hash;
-use crate::intent;
+use crate::intent::attempt::{AttemptRequest, RunRetentionState, run_isolated_attempt};
 use crate::intent::bdd::{DEFAULT_BDD_CONTEXT_LIMIT, load_bdd_report, render_bdd_prompt_context};
 use crate::intent::spec::{IntentSpec, IntentStatus};
 
-use super::digest::{
-    exact_graph_digest, safe_artifact_key, sha256_hex_bytes, workspace_state_hashes,
-};
+use super::digest::{safe_artifact_key, sha256_hex_bytes, workspace_state_hashes};
 use super::evidence::{
     LedgerEvent, LedgerEventKind, ModelIdentity, PromptHashes, ReplayAttempt, ReplayEnvironment,
     ReplayInputs, ReplayMetrics, ReplayReport, ReplayTask,
@@ -158,6 +153,7 @@ where
         environment,
     );
 
+    let retention = Mutex::new(RunRetentionState::default());
     let mut sequence = 2u64;
     for showcase in showcase_refs {
         let spec = showcases::parse_showcase(showcase)?;
@@ -222,6 +218,10 @@ where
                 )?;
                 sequence += 1;
 
+                let execute = {
+                    let state = retention.lock().expect("invariant: retention mutex");
+                    !state.stop_artifact_attempts
+                };
                 let replay_attempt = run_single_replay(SingleReplayRequest {
                     showcase,
                     provider: provider.as_ref(),
@@ -229,9 +229,13 @@ where
                     provider_route: &provider_route,
                     spec: &spec,
                     attempt,
-                    attempt_dir: &attempt_dir,
+                    run_id: &config.run_id,
+                    artifact_dir: &config.artifact_dir,
                     keep_workspace: config.keep_workspaces,
+                    capture_model_io: config.capture_model_io,
                     init_workspace: &init_workspace,
+                    retention: &retention,
+                    execute,
                 })
                 .await;
 
@@ -292,9 +296,13 @@ where
     provider_route: &'a str,
     spec: &'a IntentSpec,
     attempt: u32,
-    attempt_dir: &'a Path,
+    run_id: &'a str,
+    artifact_dir: &'a Path,
     keep_workspace: bool,
+    capture_model_io: bool,
     init_workspace: &'a F,
+    retention: &'a Mutex<RunRetentionState>,
+    execute: bool,
 }
 
 async fn run_single_replay<F>(request: SingleReplayRequest<'_, F>) -> ReplayAttempt
@@ -308,126 +316,63 @@ where
         provider_route,
         spec,
         attempt,
-        attempt_dir,
+        run_id,
+        artifact_dir,
         keep_workspace,
+        capture_model_io,
         init_workspace,
+        retention,
+        execute,
     } = request;
 
-    let start = Instant::now();
-    if let ShowcaseVerification::ProcessEvidence {
-        evidence_kind,
-        expected_route,
-        expected_json_fields,
-        verification_gap,
-    } = showcase.verification
-    {
-        return replay_attempt_from_parts(ReplayAttemptParts {
-            success: false,
-            tests_passed: 0,
-            tests_total: spec.test_cases.len(),
-            error_category: Some(ErrorCategory::EvidenceRequired),
-            dominant_error_code: Some("broader_evidence_required".to_string()),
-            benchmark_evidence: Some(BenchmarkEvidence {
-                kind: evidence_kind.to_string(),
-                status: "broader_evidence_required".to_string(),
-                detail: verification_gap.to_string(),
-                command: None,
-                expected_route: Some(expected_route.to_string()),
-                expected_json_fields: expected_json_fields
-                    .iter()
-                    .map(|field| (*field).to_string())
-                    .collect(),
-                verification_gap: Some(verification_gap.to_string()),
-                artifact_path: None,
-            }),
-            duration_secs: start.elapsed().as_secs_f64(),
-            ..ReplayAttemptParts::new(showcase, provider_route, model_identity, attempt)
-        });
-    }
-
-    let tmp = match tempfile::TempDir::new() {
-        Ok(tmp) => tmp,
-        Err(error) => {
-            return replay_attempt_from_error(
-                showcase,
-                provider_route,
-                model_identity,
-                attempt,
-                spec.test_cases.len(),
-                format!("tempdir creation failed: {error}"),
-                start.elapsed().as_secs_f64(),
-            );
-        }
+    let process_evidence_status = match showcase.verification {
+        ShowcaseVerification::ProcessEvidence { .. } => Some("broader_evidence_required"),
+        _ => None,
     };
-    let workspace = tmp.path();
-    if let Err(error) = init_workspace(workspace) {
-        return replay_attempt_from_error(
-            showcase,
-            provider_route,
-            model_identity,
+    let evidence = run_isolated_attempt(
+        AttemptRequest {
+            run_id,
+            task_id: showcase.name,
+            spec,
+            provider,
+            provider_key: provider_route,
             attempt,
-            spec.test_cases.len(),
-            format!("init failed: {error}"),
-            start.elapsed().as_secs_f64(),
-        );
-    }
+            artifact_dir,
+            keep_workspace,
+            capture_model_io,
+            slug: "determinism-replay",
+            execute,
+            process_evidence_status,
+            force_persist_failure: false,
+            force_io_after_repair: false,
+            credentials_missing: false,
+            captured_model_io: Vec::new(),
+        },
+        init_workspace,
+        retention,
+    )
+    .await;
 
-    let graph_dir = workspace.join(".duumbi/graph");
-    let initial_graph_exact_hash = exact_graph_digest(&graph_dir).ok();
-    let initial_graph_semantic_hash = hash::semantic_hash(&graph_dir).ok();
-
-    let slug = "determinism-replay";
-    let mut run_spec = spec.clone();
-    run_spec.status = IntentStatus::Pending;
-    if let Err(error) = intent::save_intent(workspace, slug, &run_spec) {
-        return replay_attempt_from_error(
-            showcase,
-            provider_route,
-            model_identity,
-            attempt,
-            spec.test_cases.len(),
-            format!("failed to save intent: {error}"),
-            start.elapsed().as_secs_f64(),
-        );
-    }
-    let context_hashes =
-        replay_context_hashes(showcase, provider_route, &run_spec, workspace, slug);
-
-    let mut log = Vec::new();
-    let execute_result = intent::execute::run_execute(provider, workspace, slug, &mut log).await;
-    let final_spec = intent::load_intent(workspace, slug)
-        .or_else(|_| load_archived_intent(workspace, slug))
-        .ok();
-    let tests_total = spec.test_cases.len();
-    let tests_passed = final_spec
+    let hash_tmp = tempfile::TempDir::new().ok();
+    let hash_path = hash_tmp
         .as_ref()
-        .and_then(|loaded| loaded.execution.as_ref())
-        .map_or(0, |execution| execution.tests_passed);
-    let final_graph_exact_hash = exact_graph_digest(&graph_dir).ok();
-    let final_graph_semantic_hash = hash::semantic_hash(&graph_dir).ok();
-    let error_text = execute_result.as_ref().err().map(ToString::to_string);
-    let dominant_error_code = extract_error_codes(&log.join("\n"))
-        .into_iter()
-        .next()
-        .or_else(|| {
-            error_text
-                .as_ref()
-                .and_then(|text| extract_error_codes(text).into_iter().next())
-        });
-    let success = execute_result.unwrap_or(false) && tests_passed == tests_total;
-    let error_category = if success {
-        None
+        .map_or(Path::new("/nonexistent-duumbi-779-bdd"), |tmp| tmp.path());
+    let context_hashes = replay_context_hashes(
+        showcase,
+        provider_route,
+        spec,
+        hash_path,
+        "determinism-replay",
+    );
+
+    let tests_total = if evidence.outcome.tests_total == 0 {
+        spec.test_cases.len()
     } else {
-        Some(
-            error_text
-                .as_deref()
-                .map_or(ErrorCategory::LogicError, categorize_error),
-        )
+        evidence.outcome.tests_total
     };
-    let mut artifact_paths = retain_attempt_log(attempt_dir, &log);
-    if keep_workspace {
-        artifact_paths.extend(retain_workspace_snapshot(workspace, attempt_dir));
-    }
+    let tests_passed = evidence.outcome.tests_passed;
+    let success = evidence.outcome.success;
+    let error_category = evidence.error_category;
     let behavior_signature = Some(format!(
         "success={success};tests={tests_passed}/{tests_total};error={}",
         error_category
@@ -435,7 +380,7 @@ where
             .unwrap_or_else(|| "none".to_string())
     ));
 
-    ReplayAttempt {
+    let mut replay = ReplayAttempt {
         task_id: showcase.name.to_string(),
         suite: showcase.suite.as_str().to_string(),
         tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
@@ -443,10 +388,10 @@ where
         model_identity,
         attempt,
         workspace_strategy: "isolated_tempdir".to_string(),
-        initial_graph_exact_hash,
-        initial_graph_semantic_hash,
-        final_graph_exact_hash,
-        final_graph_semantic_hash,
+        initial_graph_exact_hash: evidence.hashes.initial_graph_exact,
+        initial_graph_semantic_hash: evidence.hashes.initial_graph_semantic,
+        final_graph_exact_hash: evidence.hashes.final_graph_exact,
+        final_graph_semantic_hash: evidence.hashes.final_graph_semantic,
         intent_spec_hash: context_hashes.intent_spec_hash,
         bdd_context_hash: context_hashes.bdd_context_hash,
         context_pack_hash: context_hashes.context_pack_hash,
@@ -458,12 +403,47 @@ where
         bdd_coverage: context_hashes.bdd_coverage,
         behavior_signature,
         error_category,
-        dominant_error_code,
+        dominant_error_code: evidence.outcome.dominant_error_code,
         provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
         benchmark_evidence: None,
-        artifact_paths,
-        duration_secs: start.elapsed().as_secs_f64(),
+        artifact_paths: evidence.artifact_paths,
+        duration_secs: evidence.duration_secs,
+        repair_attempted: evidence.outcome.repair_attempted,
+        repair_applied: evidence.outcome.repair_applied,
+        repair_success: evidence.outcome.repair_success,
+        first_pass_success: Some(evidence.outcome.first_pass_success),
+        root_cause: evidence.root_cause,
+        root_cause_attribution: evidence.root_cause_attribution,
+        evidence_persistence: Some(evidence.evidence_persistence),
+        phase_evidence: Some(evidence.phase_evidence),
+        executed: Some(evidence.executed),
+        graph_failure: Some(evidence.graph_failure),
+    };
+
+    if let ShowcaseVerification::ProcessEvidence {
+        evidence_kind,
+        expected_route,
+        expected_json_fields,
+        verification_gap,
+    } = showcase.verification
+    {
+        replay.benchmark_evidence = Some(BenchmarkEvidence {
+            kind: evidence_kind.to_string(),
+            status: "broader_evidence_required".to_string(),
+            detail: verification_gap.to_string(),
+            command: None,
+            expected_route: Some(expected_route.to_string()),
+            expected_json_fields: expected_json_fields
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect(),
+            verification_gap: Some(verification_gap.to_string()),
+            artifact_path: replay.artifact_paths.first().cloned(),
+        });
+        replay.dominant_error_code = Some("broader_evidence_required".to_string());
     }
+
+    replay
 }
 
 struct ReplayContextHashes {
@@ -649,9 +629,20 @@ fn replay_attempt_from_parts(parts: ReplayAttemptParts<'_>) -> ReplayAttempt {
         benchmark_evidence: parts.benchmark_evidence,
         artifact_paths: Vec::new(),
         duration_secs: parts.duration_secs,
+        repair_attempted: false,
+        repair_applied: false,
+        repair_success: None,
+        first_pass_success: None,
+        root_cause: None,
+        root_cause_attribution: None,
+        evidence_persistence: None,
+        phase_evidence: None,
+        executed: None,
+        graph_failure: None,
     }
 }
 
+#[allow(dead_code)]
 fn replay_attempt_from_error(
     showcase: &Showcase,
     provider_route: &str,
@@ -671,6 +662,7 @@ fn replay_attempt_from_error(
     })
 }
 
+#[allow(dead_code)]
 fn retain_attempt_log(attempt_dir: &Path, log: &[String]) -> Vec<String> {
     if log.is_empty() {
         return Vec::new();
@@ -683,6 +675,7 @@ fn retain_attempt_log(attempt_dir: &Path, log: &[String]) -> Vec<String> {
     }
 }
 
+#[allow(dead_code)]
 fn retain_workspace_snapshot(workspace: &Path, attempt_dir: &Path) -> Vec<String> {
     let source = workspace.join(".duumbi");
     let destination = attempt_dir.join("workspace").join(".duumbi");
@@ -964,5 +957,51 @@ mod tests {
                 "{event_name} events should use their emission timestamp"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn replay_single_attempt_reuses_shared_executor_through_repair() {
+        use crate::bench::showcases::{Showcase, ShowcaseSuite, ShowcaseVerification};
+        use crate::intent::attempt::RunRetentionState;
+        use crate::intent::test_support::{
+            RepairScript, ScriptedRepairProvider, init_skeleton_workspace, repair_fixture_spec,
+        };
+
+        const FIXTURE_SHOWCASE: Showcase = Showcase {
+            name: "repair_fixture",
+            yaml: "",
+            suite: ShowcaseSuite::Core,
+            smoke: true,
+            tags: &["fixture"],
+            verification: ShowcaseVerification::I64Tests,
+        };
+
+        let artifacts = tempfile::TempDir::new().expect("artifacts");
+        let spec = repair_fixture_spec();
+        let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
+        let retention = Mutex::new(RunRetentionState::default());
+        let replay = run_single_replay(SingleReplayRequest {
+            showcase: &FIXTURE_SHOWCASE,
+            provider: &provider,
+            model_identity: ModelIdentity::unavailable("fixture"),
+            provider_route: "mock",
+            spec: &spec,
+            attempt: 1,
+            run_id: "run-det-repair",
+            artifact_dir: artifacts.path(),
+            keep_workspace: false,
+            capture_model_io: false,
+            init_workspace: &init_skeleton_workspace,
+            retention: &retention,
+            execute: true,
+        })
+        .await;
+
+        assert!(!replay.success);
+        assert!(replay.repair_attempted);
+        assert!(!replay.repair_applied);
+        assert_eq!(replay.repair_success, Some(false));
+        assert!(!replay.artifact_paths.is_empty());
+        assert_eq!(replay.executed, Some(true));
     }
 }

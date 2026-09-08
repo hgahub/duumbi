@@ -267,6 +267,7 @@ where
             execute: options.execute,
             process_evidence_status,
             force_persist_failure: false,
+            force_io_after_repair: false,
             credentials_missing: false,
             captured_model_io: Vec::new(),
         },

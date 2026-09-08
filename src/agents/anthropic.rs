@@ -9,7 +9,7 @@ use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::agents::{AgentError, LlmProvider};
+use crate::agents::{AgentError, CapturePayloadStatus, CapturedProviderCall, LlmProvider};
 use crate::patch::PatchOp;
 use crate::tools::{AnthropicToolCall, anthropic_tools, patch_op_from_anthropic};
 
@@ -61,6 +61,17 @@ impl AnthropicClient {
         system_prompt: &str,
         user_message: &str,
     ) -> Result<Vec<PatchOp>, AgentError> {
+        self.do_call_with_tools_raw(system_prompt, user_message, false)
+            .await
+            .map(|(ops, _)| ops)
+    }
+
+    async fn do_call_with_tools_raw(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        retain_body: bool,
+    ) -> Result<(Vec<PatchOp>, Option<String>), AgentError> {
         let tools = anthropic_tools();
         let tools_json = serde_json::to_value(&tools)
             .map_err(|e| AgentError::Parse(format!("Failed to serialize tools: {e}")))?;
@@ -91,8 +102,12 @@ impl AnthropicClient {
             });
         }
 
-        let response: serde_json::Value = resp.json().await?;
-        parse_anthropic_response(&response)
+        let body_text = resp.text().await.unwrap_or_default();
+        let response: serde_json::Value = serde_json::from_str(&body_text).map_err(|error| {
+            AgentError::Parse(format!("Failed to parse provider JSON: {error}"))
+        })?;
+        let ops = parse_anthropic_response(&response)?;
+        Ok((ops, retain_body.then_some(body_text)))
     }
 
     /// Sends a streaming message to Claude (internal).
@@ -196,6 +211,24 @@ impl LlmProvider for AnthropicClient {
         on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         Box::pin(self.do_call_with_tools_streaming(system_prompt, user_message, on_text))
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (ops, raw_response) = self
+                .do_call_with_tools_raw(system_prompt, user_message, true)
+                .await?;
+            Ok(CapturedProviderCall {
+                ops,
+                request_prompt: format!("{system_prompt}\n\n{user_message}"),
+                raw_response,
+                payload_status: CapturePayloadStatus::Captured,
+            })
+        })
     }
 
     fn answer<'a>(

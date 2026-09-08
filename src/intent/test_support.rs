@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 
-use crate::agents::{AgentError, LlmProvider};
+use crate::agents::{AgentError, CapturePayloadStatus, CapturedProviderCall, LlmProvider};
 use crate::intent::spec::{IntentModules, IntentSpec, IntentStatus, TestCase};
 use crate::patch::PatchOp;
 
@@ -149,6 +149,7 @@ pub(crate) enum RepairScript {
 /// Deterministic provider that drives mutation then optional repair.
 pub(crate) struct ScriptedRepairProvider {
     script: RepairScript,
+    expose_payloads: bool,
     /// Number of provider calls observed.
     pub calls: AtomicUsize,
 }
@@ -159,6 +160,17 @@ impl ScriptedRepairProvider {
     pub(crate) fn new(script: RepairScript) -> Self {
         Self {
             script,
+            expose_payloads: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// Same script, but `call_with_tools_captured` retains a fake raw body.
+    #[must_use]
+    pub(crate) fn exposing(script: RepairScript) -> Self {
+        Self {
+            script,
+            expose_payloads: true,
             calls: AtomicUsize::new(0),
         }
     }
@@ -198,5 +210,35 @@ impl LlmProvider for ScriptedRepairProvider {
         _on_text: &'a (dyn Fn(&str) + Send + Sync),
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PatchOp>, AgentError>> + Send + 'a>> {
         self.call_with_tools(system_prompt, user_message)
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        let result = self.ops_for(user_message);
+        let expose = self.expose_payloads;
+        let prompt = format!("{system_prompt}\n\n{user_message}");
+        Box::pin(async move {
+            let ops = result?;
+            if expose {
+                Ok(CapturedProviderCall {
+                    ops,
+                    request_prompt: prompt,
+                    raw_response: Some(
+                        r#"{"id":"fixture","secret":"sk-test-not-a-real-key"}"#.to_string(),
+                    ),
+                    payload_status: CapturePayloadStatus::Captured,
+                })
+            } else {
+                Ok(CapturedProviderCall {
+                    ops,
+                    request_prompt: prompt,
+                    raw_response: None,
+                    payload_status: CapturePayloadStatus::Unavailable,
+                })
+            }
+        })
     }
 }
