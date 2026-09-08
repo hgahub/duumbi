@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use owo_colors::OwoColorize;
@@ -35,6 +36,162 @@ use crate::knowledge::types::{FailureRecord, SuccessRecord};
 use crate::snapshot;
 
 // ---------------------------------------------------------------------------
+// Structured execution outcome (DUUMBI-779)
+// ---------------------------------------------------------------------------
+
+/// Status of one recorded execute-phase event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseEventStatus {
+    /// The attempt ended in this phase.
+    Terminal,
+    /// The phase failed or retried and a later phase superseded it.
+    Recovered,
+    /// Observed fact that did not fail the attempt.
+    Informational,
+}
+
+/// One ordered phase event from intent execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionPhaseEvent {
+    /// Phase name such as `preflight`, `mutation`, `verify`, `repair`, or `complete`.
+    pub phase: String,
+    /// Whether this event is terminal, recovered, or informational.
+    pub status: PhaseEventStatus,
+    /// Diagnostic or error code for this event, JSON name `error_code`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+/// A captured diagnostic from validation, compilation, or verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapturedDiagnostic {
+    /// Structured error code when one is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Human-readable diagnostic text.
+    pub message: String,
+}
+
+/// Typed outcome of one intent execute run.
+///
+/// Repair telemetry is recorded here rather than inferred from log text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentExecutionOutcome {
+    /// Whether final verification passed (or there were no tests).
+    pub success: bool,
+    /// Whether verification passed before any repair cycle.
+    pub first_pass_success: bool,
+    /// Whether the verifier-driven repair cycle was entered.
+    pub repair_attempted: bool,
+    /// Whether at least one repair patch was written.
+    pub repair_applied: bool,
+    /// Whether repair was attempted and final verification passed.
+    pub repair_success: Option<bool>,
+    /// Mutation retry count when the execute path exposed one.
+    pub mutation_retry_count: Option<u32>,
+    /// Repair retry count when the execute path exposed one.
+    pub repair_retry_count: Option<u32>,
+    /// Remaining retry budget recorded when the attempt ended.
+    pub retries_remaining: Option<u32>,
+    /// Verifier tests that passed.
+    pub tests_passed: usize,
+    /// Verifier tests selected.
+    pub tests_total: usize,
+    /// Terminal intent/execute status label.
+    pub terminal_status: String,
+    /// Ordered phase events, including recovered and informational facts.
+    pub phase_events: Vec<ExecutionPhaseEvent>,
+    /// Captured diagnostics from the run.
+    pub diagnostics: Vec<CapturedDiagnostic>,
+    /// Dominant error code when one is known.
+    pub dominant_error_code: Option<String>,
+}
+
+#[derive(Default)]
+struct OutcomeCollector {
+    events: Vec<ExecutionPhaseEvent>,
+    diagnostics: Vec<CapturedDiagnostic>,
+    first_pass_success: bool,
+    repair_attempted: bool,
+    repair_applied: bool,
+    repair_success: Option<bool>,
+    mutation_retry_count: u32,
+    mutation_retry_seen: bool,
+    repair_retry_count: u32,
+    repair_retry_seen: bool,
+    retries_remaining: Option<u32>,
+    tests_passed: usize,
+    tests_total: usize,
+}
+
+impl OutcomeCollector {
+    fn push_event(&mut self, phase: &str, status: PhaseEventStatus, error_code: Option<&str>) {
+        self.events.push(ExecutionPhaseEvent {
+            phase: phase.to_string(),
+            status,
+            error_code: error_code.map(str::to_string),
+        });
+        if let Some(code) = error_code {
+            self.diagnostics.push(CapturedDiagnostic {
+                code: Some(code.to_string()),
+                message: format!("{phase}: {code}"),
+            });
+        }
+    }
+
+    fn push_diagnostic(&mut self, code: Option<&str>, message: impl Into<String>) {
+        self.diagnostics.push(CapturedDiagnostic {
+            code: code.map(str::to_string),
+            message: message.into(),
+        });
+    }
+
+    fn note_mutation_retries(&mut self, retry_count: u32) {
+        self.mutation_retry_seen = true;
+        self.mutation_retry_count = self.mutation_retry_count.saturating_add(retry_count);
+    }
+
+    fn note_repair_retries(&mut self, retry_count: u32) {
+        self.repair_retry_seen = true;
+        self.repair_retry_count = self.repair_retry_count.saturating_add(retry_count);
+    }
+
+    fn finish(self, success: bool, terminal_status: impl Into<String>) -> IntentExecutionOutcome {
+        let dominant_error_code = self
+            .events
+            .iter()
+            .rev()
+            .find(|event| event.status == PhaseEventStatus::Terminal)
+            .and_then(|event| event.error_code.clone())
+            .or_else(|| {
+                self.diagnostics
+                    .iter()
+                    .rev()
+                    .find_map(|diagnostic| diagnostic.code.clone())
+            });
+        IntentExecutionOutcome {
+            success,
+            first_pass_success: self.first_pass_success,
+            repair_attempted: self.repair_attempted,
+            repair_applied: self.repair_applied,
+            repair_success: self.repair_success,
+            mutation_retry_count: self
+                .mutation_retry_seen
+                .then_some(self.mutation_retry_count),
+            repair_retry_count: self.repair_retry_seen.then_some(self.repair_retry_count),
+            retries_remaining: self.retries_remaining,
+            tests_passed: self.tests_passed,
+            tests_total: self.tests_total,
+            terminal_status: terminal_status.into(),
+            phase_events: self.events,
+            diagnostics: self.diagnostics,
+            dominant_error_code,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Execution entry point
 // ---------------------------------------------------------------------------
 
@@ -58,7 +215,23 @@ pub async fn run_execute(
     slug: &str,
     log: &mut Vec<String>,
 ) -> Result<bool> {
-    run_execute_with_progress(client, workspace, slug, log, &|_| {}).await
+    Ok(run_execute_structured(client, workspace, slug, log)
+        .await?
+        .success)
+}
+
+/// Executes an intent spec and returns typed phase and repair telemetry.
+///
+/// Existing CLI/REPL/workflow callers should keep using [`run_execute`].
+/// Benchmark and determinism replay consume this structured outcome.
+#[must_use = "the structured outcome should be recorded"]
+pub async fn run_execute_structured(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+) -> Result<IntentExecutionOutcome> {
+    run_execute_structured_with_progress(client, workspace, slug, log, &|_| {}).await
 }
 
 /// Runs the provider-free execute preflight block check.
@@ -140,6 +313,22 @@ pub async fn run_execute_with_progress(
     log: &mut Vec<String>,
     on_progress: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<bool> {
+    Ok(
+        run_execute_structured_with_progress(client, workspace, slug, log, on_progress)
+            .await?
+            .success,
+    )
+}
+
+/// Like [`run_execute_structured`] with a real-time progress callback.
+#[must_use = "the structured outcome should be recorded"]
+pub async fn run_execute_structured_with_progress(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+    on_progress: &(dyn Fn(&str) + Send + Sync),
+) -> Result<IntentExecutionOutcome> {
     // Helper: push to log AND emit via callback for real-time display.
     macro_rules! emit {
         ($msg:expr) => {{
@@ -149,6 +338,7 @@ pub async fn run_execute_with_progress(
         }};
     }
 
+    let mut collector = OutcomeCollector::default();
     let graph_path = workspace.join(".duumbi/graph/main.jsonld");
 
     // 1. Load spec
@@ -158,10 +348,17 @@ pub async fn run_execute_with_progress(
     for line in render_preflight_report(&preflight) {
         emit!(line);
     }
+    collector.tests_total = spec.test_cases.len();
     if preflight.is_blocking() {
         emit!("Preflight blocked execution before mutation side effects.".to_string());
-        return Ok(false);
+        collector.push_event(
+            "preflight",
+            PhaseEventStatus::Terminal,
+            Some("preflight_blocked"),
+        );
+        return Ok(collector.finish(false, "preflight_blocked"));
     }
+    collector.push_event("preflight", PhaseEventStatus::Informational, None);
     let bdd_prompt_context = render_bdd_prompt_context(&bdd_report, DEFAULT_BDD_CONTEXT_LIMIT);
     for line in render_bdd_report(&bdd_report) {
         emit!(line);
@@ -330,9 +527,19 @@ pub async fn run_execute_with_progress(
                     .map_err(|ie: IntentError| anyhow::anyhow!("{ie}"))?;
 
                 emit!(format!("Intent failed at task {}/{}.", task.id, total));
-                return Ok(false);
+                collector.push_event(
+                    "mutation",
+                    PhaseEventStatus::Terminal,
+                    Some("clarification_needed"),
+                );
+                collector.retries_remaining = Some(agent_policy.mutation_retries);
+                return Ok(collector.finish(false, "clarification_needed"));
             }
             Ok(orchestrator::MutationOutcome::Success(mut mutation_result)) => {
+                collector.note_mutation_retries(mutation_result.retry_count);
+                if mutation_result.retry_count > 0 {
+                    collector.push_event("mutation", PhaseEventStatus::Recovered, None);
+                }
                 if is_create_module {
                     let expected_fns = expected_exports_for_module(&spec, &task.kind);
                     if let TaskKind::CreateModule { module_name } = &task.kind {
@@ -460,7 +667,11 @@ pub async fn run_execute_with_progress(
 
                 emit!(format!("Intent failed at task {}/{}.", task.id, total));
                 emit!("(Use `duumbi undo` to revert the graph to before this intent.)".to_string());
-                return Ok(false);
+                let category = classify_failure_category(&summary);
+                collector.push_event("mutation", PhaseEventStatus::Terminal, Some(&category));
+                collector.push_diagnostic(Some(&category), &summary);
+                collector.retries_remaining = Some(agent_policy.mutation_retries);
+                return Ok(collector.finish(false, "mutation_failed"));
             }
         }
     }
@@ -474,7 +685,12 @@ pub async fn run_execute_with_progress(
     if spec.test_cases.is_empty() {
         emit!("No test cases defined — skipping verification.".to_string());
         archive_success(workspace, slug, tasks_completed, 0, 0)?;
-        return Ok(true);
+        collector.first_pass_success = true;
+        collector.tests_passed = 0;
+        collector.tests_total = 0;
+        collector.push_event("verify", PhaseEventStatus::Informational, None);
+        collector.push_event("complete", PhaseEventStatus::Terminal, None);
+        return Ok(collector.finish(true, "completed"));
     }
 
     emit!(format!(
@@ -484,9 +700,19 @@ pub async fn run_execute_with_progress(
     ));
     let mut report = verifier::run_tests(&spec, workspace);
     emit!(report.display());
+    collector.tests_passed = report.passed;
+    collector.tests_total = report.passed + report.failed;
 
     // --- Repair cycle: if some tests failed, attempt one LLM repair ---
     if !report.all_passed() && report.failed > 0 {
+        collector.first_pass_success = false;
+        collector.push_event("verify", PhaseEventStatus::Recovered, None);
+        for result in report.results.iter().filter(|result| !result.passed) {
+            if let Some(ref err) = result.error {
+                let codes = extract_error_codes_from_text(err);
+                collector.push_diagnostic(codes.first().map(String::as_str), err.clone());
+            }
+        }
         let failed_details: Vec<String> = report
             .results
             .iter()
@@ -523,6 +749,9 @@ pub async fn run_execute_with_progress(
             "[Repair] Attempting repair for {} failed test(s)…",
             report.failed
         ));
+        collector.repair_attempted = true;
+        collector.push_event("repair", PhaseEventStatus::Informational, None);
+        collector.retries_remaining = Some(agent_policy.repair_retries);
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
         let repair_prompt =
@@ -555,12 +784,14 @@ pub async fn run_execute_with_progress(
             drain_stream_chunks(log, &repair_log);
 
             if let Ok(orchestrator::MutationOutcome::Success(mut mr)) = repair_result {
+                collector.note_repair_retries(mr.retry_count);
                 cleanup_repaired_module_output(&mut mr.patched, &graph_dir, &path, &spec);
                 let patched_str = serde_json::to_string_pretty(&mr.patched)
                     .context("Serialize repaired graph")?;
                 std::fs::write(&path, &patched_str)
                     .with_context(|| format!("Write repaired '{}'", path.display()))?;
                 repaired = true;
+                collector.repair_applied = true;
                 emit!(format!(
                     "  {} Repair applied to {} ({} op{}).",
                     "\u{2713}".green().bold(),
@@ -575,8 +806,20 @@ pub async fn run_execute_with_progress(
             emit!("[Repair] Re-running tests…".to_string());
             report = verifier::run_tests(&spec, workspace);
             emit!(report.display());
+            collector.tests_passed = report.passed;
+            collector.tests_total = report.passed + report.failed;
+            collector.push_event(
+                "reverify",
+                if report.all_passed() {
+                    PhaseEventStatus::Informational
+                } else {
+                    PhaseEventStatus::Terminal
+                },
+                None,
+            );
         } else {
             emit!("  No repair patches applied.".to_string());
+            collector.push_event("repair", PhaseEventStatus::Terminal, None);
             let summary = failed_details.join("; ");
             record_intent_failure(
                 workspace,
@@ -591,9 +834,15 @@ pub async fn run_execute_with_progress(
                 intent_functions(&spec),
             );
         }
+    } else if report.all_passed() {
+        collector.first_pass_success = true;
+        collector.push_event("verify", PhaseEventStatus::Informational, None);
     }
 
     let all_passed = report.all_passed();
+    if collector.repair_attempted {
+        collector.repair_success = Some(all_passed);
+    }
     archive_success(
         workspace,
         slug,
@@ -604,6 +853,8 @@ pub async fn run_execute_with_progress(
 
     if all_passed {
         emit!("Intent completed successfully.".to_string());
+        collector.push_event("complete", PhaseEventStatus::Terminal, None);
+        return Ok(collector.finish(true, "completed"));
     } else {
         // Record failure patterns for future learning.
         let error_codes: Vec<String> = report
@@ -665,9 +916,16 @@ pub async fn run_execute_with_progress(
             "Intent failed: {} test(s) did not pass.",
             report.failed
         ));
+        if !collector
+            .events
+            .iter()
+            .any(|event| event.status == PhaseEventStatus::Terminal)
+        {
+            collector.push_event("verify", PhaseEventStatus::Terminal, None);
+        }
+        collector.push_event("complete", PhaseEventStatus::Informational, None);
+        return Ok(collector.finish(false, "verifier_failed"));
     }
-
-    Ok(all_passed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,6 +1661,117 @@ mod tests {
         assert_eq!(
             crate::snapshot::snapshot_count(tmp.path()).expect("snapshot count"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_structured_preflight_block_records_typed_outcome() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let provider = CountingProvider::default();
+        let spec = IntentSpec {
+            intent: "Weak spec".to_string(),
+            version: 1,
+            status: IntentStatus::Pending,
+            acceptance_criteria: Vec::new(),
+            modules: IntentModules::default(),
+            test_cases: Vec::new(),
+            dependencies: Vec::new(),
+            bdd: Default::default(),
+            context: None,
+            created_at: None,
+            execution: None,
+        };
+        save_intent(tmp.path(), "weak", &spec).expect("save intent");
+        write_main_graph(
+            tmp.path(),
+            r#"{"@type":"duumbi:Module","duumbi:name":"main"}"#,
+        );
+        let mut log = Vec::new();
+
+        let outcome = run_execute_structured(&provider, tmp.path(), "weak", &mut log)
+            .await
+            .expect("blocked preflight returns structured outcome");
+
+        assert!(!outcome.success);
+        assert!(!outcome.repair_attempted);
+        assert!(!outcome.first_pass_success);
+        assert_eq!(outcome.terminal_status, "preflight_blocked");
+        assert!(
+            outcome
+                .phase_events
+                .iter()
+                .any(|event| event.phase == "preflight"
+                    && event.status == PhaseEventStatus::Terminal)
+        );
+        assert_eq!(provider.call_count(), 0);
+        assert_eq!(
+            run_execute(&provider, tmp.path(), "weak", &mut Vec::new())
+                .await
+                .expect("boolean wrapper"),
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_structured_mutation_failure_does_not_infer_repair() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let provider = CountingProvider::default();
+        let spec = executable_spec();
+        save_intent(tmp.path(), "calc", &spec).expect("save intent");
+        write_main_graph(
+            tmp.path(),
+            r#"{"@context":{"duumbi":"https://duumbi.dev/ns/core#"},"@type":"duumbi:Module","@id":"duumbi:main","duumbi:name":"main","duumbi:functions":[]}"#,
+        );
+        let mut log = Vec::new();
+
+        let outcome = run_execute_structured(&provider, tmp.path(), "calc", &mut log)
+            .await
+            .expect("mutation failure is an unsuccessful execute, not an Err");
+
+        assert!(!outcome.success);
+        assert!(!outcome.repair_attempted);
+        assert!(!outcome.repair_applied);
+        assert_eq!(outcome.repair_success, None);
+        assert_eq!(outcome.terminal_status, "mutation_failed");
+        assert!(
+            outcome.phase_events.iter().any(
+                |event| event.phase == "mutation" && event.status == PhaseEventStatus::Terminal
+            )
+        );
+        assert!(
+            !log.iter()
+                .any(|line| line.contains("[Repair] Attempting repair"))
+        );
+        assert!(provider.call_count() > 0);
+    }
+
+    #[test]
+    fn outcome_collector_records_repair_attempted_without_log_scan() {
+        let mut collector = OutcomeCollector::default();
+        collector.repair_attempted = true;
+        collector.repair_applied = false;
+        collector.first_pass_success = false;
+        collector.tests_passed = 0;
+        collector.tests_total = 4;
+        collector.push_event("verify", PhaseEventStatus::Recovered, None);
+        collector.push_event("repair", PhaseEventStatus::Informational, None);
+        collector.push_event("reverify", PhaseEventStatus::Terminal, None);
+        collector.repair_success = Some(false);
+        collector.retries_remaining = Some(2);
+
+        let outcome = collector.finish(false, "verifier_failed");
+
+        assert!(outcome.repair_attempted);
+        assert!(!outcome.repair_applied);
+        assert_eq!(outcome.repair_success, Some(false));
+        assert!(!outcome.first_pass_success);
+        assert_eq!(outcome.retries_remaining, Some(2));
+        assert_eq!(outcome.tests_total, 4);
+        assert!(
+            outcome
+                .phase_events
+                .iter()
+                .any(|event| event.phase == "repair")
         );
     }
 
