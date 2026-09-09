@@ -104,8 +104,12 @@ Manual deployment (same result, needs Azure Functions Core Tools):
 ```sh
 cd scripts/slack-approval-bridge
 npm ci --omit=dev
-func azure functionapp publish func-duumbi-slack-bridge
+func azure functionapp publish func-duumbi-slack-bridge --javascript
 ```
+
+`--javascript` is required: a clean checkout has no `local.settings.json`, so
+Core Tools cannot infer the worker runtime and fails with "Can't determine
+project language from files".
 
 ### Health check
 
@@ -131,8 +135,8 @@ Rollout:
 1. Merge the Function + `project-status.yml` code with repository variable
    `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS` unset or `false` (default: buttons
    off; Ready-for-Build and correction/entry posts stay text-only).
-2. Deploy the Function with the command above, or the duumbi-infra publish
-   path that targets `func-duumbi-slack-bridge`.
+2. Deploy the Function with the command above, or by merging a bridge change
+   to `main` so `deploy-slack-bridge.yml` publishes it.
 3. Verify a signed `project_status` click (or a local `node --test` plus a
    Function smoke) routes to `project-status`.
 4. Only then set `DUUMBI_PROJECT_STATUS_SLACK_BUTTONS=true` so new Slack
