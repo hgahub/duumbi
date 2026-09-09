@@ -1,0 +1,113 @@
+name: Deploy Slack Bridge
+
+# Publishes scripts/slack-approval-bridge to the Azure Function App that backs
+# every Slack interactive button (Stage 5/7/9 approvals, Stage 10
+# authorization, Project Status, Slack intake).
+#
+# The Function App itself (plan, storage, app settings, DNS) is owned by
+# hgahub/duumbi-infra (Pulumi, stack-platform.ts). Only the code is deployed
+# from here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/slack-approval-bridge/**'
+      - '.github/workflows/deploy-slack-bridge.yml'
+  pull_request:
+    paths:
+      - 'scripts/slack-approval-bridge/**'
+      - '.github/workflows/deploy-slack-bridge.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-slack-bridge
+  cancel-in-progress: false
+
+env:
+  FUNCTION_APP_NAME: func-duumbi-slack-bridge
+  PACKAGE_PATH: scripts/slack-approval-bridge
+  NODE_VERSION: '22'
+
+jobs:
+  test:
+    name: Test bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.PACKAGE_PATH }}/package-lock.json
+      - name: Install dependencies
+        working-directory: ${{ env.PACKAGE_PATH }}
+        run: npm ci
+      - name: Run bridge tests
+        working-directory: ${{ env.PACKAGE_PATH }}
+        run: npm test
+
+  deploy:
+    name: Publish to Azure
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check publish credentials
+        id: preflight
+        env:
+          PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+        run: |
+          if [ -z "$PUBLISH_PROFILE" ]; then
+            echo "::warning::AZURE_FUNCTIONAPP_PUBLISH_PROFILE is not set — skipping deploy. See scripts/slack-approval-bridge/README.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.preflight.outputs.ready == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.preflight.outputs.ready == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.PACKAGE_PATH }}/package-lock.json
+
+      - name: Install runtime dependencies
+        if: steps.preflight.outputs.ready == 'true'
+        working-directory: ${{ env.PACKAGE_PATH }}
+        run: npm ci --omit=dev
+
+      - name: Publish function app
+        if: steps.preflight.outputs.ready == 'true'
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTION_APP_NAME }}
+          package: ${{ env.PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          respect-funcignore: true
+
+      # An unsigned POST must be rejected by the function itself (401).
+      # A 404 means the host loaded no functions — typically because
+      # WEBSITE_RUN_FROM_PACKAGE was dropped from the app settings by an
+      # unrelated `pulumi up` in hgahub/duumbi-infra.
+      - name: Smoke test the route
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            status="$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
+              "https://${FUNCTION_APP_NAME}.azurewebsites.net/api/slack-approval" || echo 000)"
+            echo "attempt ${attempt}: HTTP ${status}"
+            if [ "$status" = "401" ]; then
+              echo "Bridge is serving; unsigned requests rejected as expected."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Bridge did not answer 401 after deploy (last status ${status}). Check WEBSITE_RUN_FROM_PACKAGE on ${FUNCTION_APP_NAME}."
+          exit 1
