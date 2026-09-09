@@ -302,7 +302,10 @@ fn make_result(showcase: &str, provider: &str, attempt: u32, success: bool) -> B
         success,
         first_pass_success: Some(success),
         repair_attempted: false,
+        repair_applied: false,
         repair_success: None,
+        root_cause: None,
+        root_cause_attribution: None,
         error_category: if success {
             None
         } else {
@@ -319,6 +322,15 @@ fn make_result(showcase: &str, provider: &str, attempt: u32, success: bool) -> B
         total_retry_count: Some(0),
         provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
         evidence: None,
+        phase_evidence: None,
+        evidence_persistence: None,
+        artifact_paths: Vec::new(),
+        hashes: None,
+        model_io_status: None,
+        omission_reason: None,
+        executed: Some(true),
+        persistence_error: None,
+        graph_failure: Some(!success),
         tests_passed: if success { 4 } else { 2 },
         tests_total: 4,
         duration_secs: 3.5,

@@ -1,43 +1,49 @@
-name: Ready For Build Handoff
+name: Project Status
 
 on:
-  issues:
-    types: [labeled, reopened]
-  pull_request:
-    types: [closed]
-  schedule:
-    - cron: "0 * * * *"
+  repository_dispatch:
+    types: [project-status]
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Optional issue number to notify if it is Ready for Build or needs a Project Status correction/entry
+        description: GitHub issue number
+        required: true
+        type: number
+      decision:
+        description: Project Status decision
+        required: true
+        type: choice
+        options: ['ready-for-build', 'undo-done']
+      rationale:
+        description: Short rationale for the decision
         required: false
         type: string
-        default: ""
+      reviewer:
+        description: Reviewer identity; defaults to github.actor
+        required: false
+        type: string
 
 permissions:
   contents: read
   issues: write
-  pull-requests: read
 
 concurrency:
-  group: ready-for-build-handoff
+  group: project-status-${{ github.event.inputs.issue_number || github.event.client_payload.issue_number || 'dispatch' }}
   cancel-in-progress: false
 
 jobs:
-  notify:
-    name: Notify Stage 10 handoff
-    if: >
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'issues' && (github.event.action == 'reopened' || github.event.label.name == 'tech-spec-approved'))
+  execute:
+    name: Set Ready for Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Check out helper
         uses: actions/checkout@v7
 
-      - name: Send Ready for Build handoff
+      - name: Update DUUMBI Project Status
+        id: decision
         uses: actions/github-script@v9
         env:
           GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
@@ -46,13 +52,12 @@ jobs:
           DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}
           DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
           DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE }}
-          DUUMBI_PROJECT_STATUS_SLACK_BUTTONS: ${{ vars.DUUMBI_PROJECT_STATUS_SLACK_BUTTONS }}
           DUUMBI_METRICS_PATH: duumbi-workflow-metrics.json
         with:
           script: |
             const fs = require("fs");
-            const handoff = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/project-status-handoff.mjs`);
-            await handoff.runReadyForBuildHandoff({
+            const mod = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/project-status.mjs`);
+            const recorded = await mod.runProjectStatusJob({
               github,
               context,
               core,
@@ -60,12 +65,15 @@ jobs:
               fetchImpl: globalThis.fetch,
               fs,
             });
+            core.setOutput("issue_number", String(recorded.inputs?.issueNumber || ""));
+            core.setOutput("decision", recorded.inputs?.decision || "");
+            core.setOutput("outcome", recorded.outcome || "failed");
 
       - name: Upload DUUMBI workflow metrics
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: duumbi-workflow-metrics-ready-for-build-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          name: duumbi-workflow-metrics-project-status-${{ github.run_id }}-${{ github.run_attempt }}
           path: duumbi-workflow-metrics.json
           if-no-files-found: warn

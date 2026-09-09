@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 
-use crate::agents::{AgentError, LlmProvider};
+use crate::agents::{AgentError, CapturedProviderCall, LlmProvider};
 use crate::patch::PatchOp;
 
 /// A chain of LLM providers with automatic fallback on transient errors.
@@ -195,6 +195,42 @@ impl LlmProvider for ProviderChain {
                         }
                         eprintln!(
                             "Provider '{}' failed (transient: {}), trying '{}'...",
+                            provider.name(),
+                            e,
+                            self.providers[i + 1].name()
+                        );
+                        last_error = Some(e);
+                    }
+                }
+            }
+
+            Err(last_error.expect("invariant: at least one provider must have been tried"))
+        })
+    }
+
+    fn call_with_tools_captured<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CapturedProviderCall, AgentError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut last_error: Option<AgentError> = None;
+
+            for (i, provider) in self.providers.iter().enumerate() {
+                match provider
+                    .call_with_tools_captured(system_prompt, user_message)
+                    .await
+                {
+                    Ok(captured) => {
+                        self.remember_success(provider.as_ref());
+                        return Ok(captured);
+                    }
+                    Err(e) => {
+                        if !e.is_transient() || i + 1 == self.providers.len() {
+                            return Err(e);
+                        }
+                        eprintln!(
+                            "Provider '{}' failed (transient: {}), trying '{}'…",
                             provider.name(),
                             e,
                             self.providers[i + 1].name()

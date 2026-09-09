@@ -306,6 +306,36 @@ pub struct ReplayAttempt {
     pub artifact_paths: Vec<String>,
     /// Wall-clock duration in seconds.
     pub duration_secs: f64,
+    /// Whether a repair cycle was attempted.
+    #[serde(default)]
+    pub repair_attempted: bool,
+    /// Whether a repair patch was written.
+    #[serde(default)]
+    pub repair_applied: bool,
+    /// Whether repair converted the run into a success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_success: Option<bool>,
+    /// Whether verification passed before repair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_pass_success: Option<bool>,
+    /// Fine-grained root cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_cause: Option<crate::intent::taxonomy::RootCauseClass>,
+    /// Rule attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_cause_attribution: Option<crate::intent::taxonomy::RootCauseAttribution>,
+    /// Evidence persistence status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_persistence: Option<crate::intent::attempt::EvidencePersistence>,
+    /// Observed phase events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_evidence: Option<crate::intent::attempt::PhaseEvidence>,
+    /// Whether execute ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed: Option<bool>,
+    /// Whether this row counts as a graph failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_failure: Option<bool>,
 }
 
 /// Aggregate replay metrics.
@@ -617,6 +647,16 @@ mod tests {
             benchmark_evidence: None,
             artifact_paths: Vec::new(),
             duration_secs: 0.1,
+            repair_attempted: false,
+            repair_applied: false,
+            repair_success: None,
+            first_pass_success: None,
+            root_cause: None,
+            root_cause_attribution: None,
+            evidence_persistence: None,
+            phase_evidence: None,
+            executed: None,
+            graph_failure: None,
         }
     }
 
@@ -708,6 +748,16 @@ mod tests {
                 benchmark_evidence: None,
                 artifact_paths: Vec::new(),
                 duration_secs: 0.1,
+                repair_attempted: false,
+                repair_applied: false,
+                repair_success: None,
+                first_pass_success: None,
+                root_cause: None,
+                root_cause_attribution: None,
+                evidence_persistence: None,
+                phase_evidence: None,
+                executed: None,
+                graph_failure: None,
             },
             ReplayAttempt {
                 task_id: "calculator".to_string(),
@@ -739,6 +789,16 @@ mod tests {
                 benchmark_evidence: None,
                 artifact_paths: Vec::new(),
                 duration_secs: 0.1,
+                repair_attempted: false,
+                repair_applied: false,
+                repair_success: None,
+                first_pass_success: None,
+                root_cause: None,
+                root_cause_attribution: None,
+                evidence_persistence: None,
+                phase_evidence: None,
+                executed: None,
+                graph_failure: None,
             },
         ];
 
