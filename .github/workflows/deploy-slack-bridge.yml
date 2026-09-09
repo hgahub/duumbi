@@ -55,14 +55,21 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # The federated credential in duumbi-infra trusts exactly this subject:
+    # repo:hgahub/duumbi:environment:production. Renaming the environment, or
+    # deploying from a job without it, stops Entra ID issuing a token.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Check publish credentials
+      - name: Check deploy identity
         id: preflight
         env:
-          PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
-          if [ -z "$PUBLISH_PROFILE" ]; then
-            echo "::warning::AZURE_FUNCTIONAPP_PUBLISH_PROFILE is not set — skipping deploy. See scripts/slack-approval-bridge/README.md."
+          if [ -z "$AZURE_CLIENT_ID" ]; then
+            echo "::warning::AZURE_CLIENT_ID is not set — skipping deploy. See scripts/slack-approval-bridge/README.md."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -83,13 +90,24 @@ jobs:
         working-directory: ${{ env.PACKAGE_PATH }}
         run: npm ci --omit=dev
 
+      # OIDC: GitHub signs a token for this run, Entra ID exchanges it for a
+      # ~1 hour Azure credential. Nothing deployable is stored in this
+      # repository — AZURE_* are identifiers, and they are variables, not
+      # secrets, because without the matching subject claim they grant nothing.
+      - name: Azure login
+        if: steps.preflight.outputs.ready == 'true'
+        uses: Azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Publish function app
         if: steps.preflight.outputs.ready == 'true'
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ env.FUNCTION_APP_NAME }}
           package: ${{ env.PACKAGE_PATH }}
-          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
           respect-funcignore: true
 
       # An unsigned POST must be rejected by the function itself (401).
