@@ -34,6 +34,19 @@
         "major"
       ],
       "automerge": false
+    },
+    {
+      "description": "Slack approval bridge runs on Azure Functions Node 22; keep engines on that major",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "allowedVersions": "<23"
     }
   ]
 }

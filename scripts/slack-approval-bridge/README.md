@@ -48,15 +48,30 @@ identifiers to GitHub workflows for agent handoff.
 
 ## Infrastructure
 
-The Azure Function App is provisioned via Pulumi in the
-[duumbi-infra](https://github.com/hgahub/duumbi-infra) repository
-(`stack-platform.ts`). The infra creates:
+Ownership is split, and the split matters:
 
-- Azure Function App (Consumption plan, Node.js 20, West Europe)
-- App Settings: `SLACK_SIGNING_SECRET`, `GITHUB_TOKEN`, `GITHUB_REPO`
+| Layer | Owner | How it changes |
+|---|---|---|
+| Function App, plan, storage, app settings, DNS | [duumbi-infra](https://github.com/hgahub/duumbi-infra) (`stack-platform.ts`) | `pulumi up` |
+| Function code (this directory) | this repository | `.github/workflows/deploy-slack-bridge.yml`, or `func azure functionapp publish` |
+
+Pulumi never deploys the code. The infra creates:
+
+- Azure Function App (Consumption plan, Node.js 22, West Europe)
+- App Settings: `SLACK_SIGNING_SECRET`, `GITHUB_TOKEN`, `GITHUB_REPO`,
+  `WEBSITE_RUN_FROM_PACKAGE`
 - DNS CNAME: `slack-bridge.duumbi.dev` → Function App hostname (optional)
 
 Secrets are managed via Doppler → Azure Key Vault (existing pipeline).
+
+### `WEBSITE_RUN_FROM_PACKAGE` is load-bearing
+
+The published code is uploaded as a zip to `/home/data/SitePackages` and is
+only mounted while `WEBSITE_RUN_FROM_PACKAGE=1` is set. `stack-platform.ts`
+declares the app settings as a complete list, so any `pulumi up` on the
+Function App replaces them: if that setting is not declared there, the
+deployed code silently disappears and every Slack button gets HTTP 404.
+This happened between 2026-09-07 (token rotation) and 2026-09-09.
 
 ## Local Development
 
@@ -71,16 +86,38 @@ Use ngrok or Slack's socket mode to test locally.
 
 ## Deployment
 
-Deployment is handled via `func azure functionapp publish`:
+`.github/workflows/deploy-slack-bridge.yml` runs the tests and publishes this
+directory to `func-duumbi-slack-bridge` on every push to `main` that touches
+`scripts/slack-approval-bridge/**`, and on `workflow_dispatch`. It requires the
+repository secret `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`; without it the deploy job
+warns and skips instead of failing. Refresh that secret with:
+
+```sh
+az functionapp deployment list-publishing-profiles \
+  -g rg-duumbi-platform -n func-duumbi-slack-bridge --xml
+```
+
+and store the XML with `gh secret set AZURE_FUNCTIONAPP_PUBLISH_PROFILE`.
+
+Manual deployment (same result, needs Azure Functions Core Tools):
 
 ```sh
 cd scripts/slack-approval-bridge
-npm install --production
+npm ci --omit=dev
 func azure functionapp publish func-duumbi-slack-bridge
 ```
 
-Or via the [duumbi-infra](https://github.com/hgahub/duumbi-infra) Pulumi stack
-(`stack-platform.ts`) / GitHub Actions CI in that repo.
+### Health check
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  https://func-duumbi-slack-bridge.azurewebsites.net/api/slack-approval
+```
+
+`401` is healthy — the request is unsigned, so the function itself rejects it.
+`404` means the host loaded no functions at all; see
+`WEBSITE_RUN_FROM_PACKAGE` above. The deploy workflow runs this check after
+every publish.
 
 ### Function-first Project Status buttons (DUUMBI-789)
 
@@ -132,6 +169,7 @@ input is omitted. That path posts channel-only to `SLACK_REVIEW_CHANNEL_ID`.
 | `SLACK_SIGNING_SECRET` | Slack app → Basic Information → Signing Secret | Verify Slack requests |
 | `GITHUB_TOKEN` | GitHub → Settings → PATs | Trigger `repository_dispatch` |
 | `GITHUB_REPO` | Static: `hgahub/duumbi` | Target repository |
+| `WEBSITE_RUN_FROM_PACKAGE` | Static: `1` | Mounts the published zip from `/home/data/SitePackages`; without it the host serves no functions |
 
 ## Fallback
 
