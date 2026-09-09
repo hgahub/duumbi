@@ -88,16 +88,38 @@ Use ngrok or Slack's socket mode to test locally.
 
 `.github/workflows/deploy-slack-bridge.yml` runs the tests and publishes this
 directory to `func-duumbi-slack-bridge` on every push to `main` that touches
-`scripts/slack-approval-bridge/**`, and on `workflow_dispatch`. It requires the
-repository secret `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`; without it the deploy job
-warns and skips instead of failing. Refresh that secret with:
+`scripts/slack-approval-bridge/**`, and on `workflow_dispatch`.
 
-```sh
-az functionapp deployment list-publishing-profiles \
-  -g rg-duumbi-platform -n func-duumbi-slack-bridge --xml
+### Deploy authentication (OIDC)
+
+The deploy job stores **no credential**. It runs in the `production`
+environment, GitHub signs a token for that run, and Entra ID exchanges it for a
+~1 hour Azure credential — but only when the run's subject claim matches the
+federated credential declared in
+[duumbi-infra](https://github.com/hgahub/duumbi-infra) `stack-platform.ts`:
+
+```text
+repo:hgahub/duumbi:environment:production
 ```
 
-and store the XML with `gh secret set AZURE_FUNCTIONAPP_PUBLISH_PROFILE`.
+A run from another branch, a fork, or another repository presents a different
+subject and receives no token. The identity holds *Website Contributor scoped to
+the Function App resource alone*, so it can publish and restart the bridge and
+nothing else.
+
+Three repository **variables** carry the identifiers (not secrets — without the
+matching subject claim they grant nothing); the deploy job warns and skips when
+`AZURE_CLIENT_ID` is absent:
+
+| Variable | Source |
+|---|---|
+| `AZURE_CLIENT_ID` | `pulumi stack output slackBridgeDeployClientId` |
+| `AZURE_TENANT_ID` | `pulumi stack output slackBridgeDeployTenantId` |
+| `AZURE_SUBSCRIPTION_ID` | `pulumi stack output slackBridgeDeploySubscriptionId` |
+
+Renaming the `production` environment, or deploying from a job without it,
+breaks the subject match — update the federated credential in duumbi-infra
+first.
 
 Manual deployment (same result, needs Azure Functions Core Tools):
 
