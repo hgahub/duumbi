@@ -54,6 +54,31 @@ cargo test --all                     # All tests (~817 tests)
 cargo clippy --all-targets -- -D warnings  # Zero-warning lint policy
 cargo fmt --check                    # Format check
 
+## Cursor Cloud specific instructions
+Cloud Agents need **Rust 1.95+**. `edition = "2024"` only sets the parser floor
+(1.85); the effective workspace MSRV comes from the locked `cranelift-* 0.135.1`
+and `wasmtime-internal-core 48.0.1`, which declare `rust-version = "1.95.0"`.
+The default Cloud image ships `rustc 1.83.0`, which cannot even parse
+`Cargo.toml`. Verified working: 1.98.1.
+
+`rust-toolchain.toml` selects the `stable` **channel** (plus rustfmt and clippy)
+for every rustup user in this repo, not just Cloud Agents. It does not pin an
+exact version, and the file alone never upgrades an already-installed, outdated
+`stable` toolchain. The `.cursor/environment.json` install step refreshes it with
+`rustup toolchain install stable`; outside Cloud, run `rustup update stable`
+yourself when `rustc --version` reports below 1.95.
+
+`.cursor/environment.json` is a repo-level Cursor config and takes precedence
+over personal and team saved environments. Its install step also adds
+`libcurl4-openssl-dev`, required to compile and link the DUUMBI C runtime
+(`runtime/duumbi_runtime.c` includes `curl/curl.h`; `src/compiler/linker.rs`
+links `-lcurl`), matching `.github/workflows/ci.yml`.
+
+Do not put `duumbi studio` in the environment `start` command. The repo root
+is not a DUUMBI workspace; Studio expects an initialized `.duumbi` directory.
+Start Studio only after `duumbi init` in a temp workspace, or from a checked-out
+example that already has one.
+
 ## Code standards
 - Use `thiserror` per module, `anyhow` at application boundaries only
 - NEVER `.unwrap()` in library code; `.expect("invariant: ...")` for true invariants
