@@ -372,6 +372,19 @@ pub async fn run_execute_structured_with_progress(
     log: &mut Vec<String>,
     on_progress: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<IntentExecutionOutcome> {
+    run_execute_with_process_verifier(client, workspace, slug, log, on_progress, None).await
+}
+
+/// Runs the normal mutation and repair path with optional bounded process checks.
+#[must_use = "the structured outcome should be recorded"]
+pub(crate) async fn run_execute_with_process_verifier(
+    client: &dyn LlmProvider,
+    workspace: &Path,
+    slug: &str,
+    log: &mut Vec<String>,
+    on_progress: &(dyn Fn(&str) + Send + Sync),
+    mut process: Option<&mut crate::bench::process::ProcessVerifier>,
+) -> Result<IntentExecutionOutcome> {
     // Helper: push to log AND emit via callback for real-time display.
     macro_rules! emit {
         ($msg:expr) => {{
@@ -387,7 +400,19 @@ pub async fn run_execute_structured_with_progress(
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    let (preflight, bdd_report) = run_preflight_for_intent_with_bdd(&spec, workspace, slug);
+    let (mut preflight, bdd_report) = run_preflight_for_intent_with_bdd(&spec, workspace, slug);
+    if process.is_some() {
+        // Only replace the i64-check requirement. All other preflight and BDD
+        // gates still apply to process-verified executable intents.
+        preflight
+            .issues
+            .retain(|issue| issue.code != "E_NO_TEST_CASES");
+        preflight = crate::intent::preflight::IntentPreflightReport::from_parts(
+            preflight.issues,
+            preflight.reuse_candidates,
+            preflight.decomposition_hints,
+        );
+    }
     for line in render_preflight_report(&preflight) {
         emit!(line);
     }
@@ -725,7 +750,7 @@ pub async fn run_execute_structured_with_progress(
     ));
 
     // 5. Run verifier
-    if spec.test_cases.is_empty() {
+    if spec.test_cases.is_empty() && process.is_none() {
         emit!("No test cases defined — skipping verification.".to_string());
         archive_success(workspace, slug, tasks_completed, 0, 0)?;
         collector.first_pass_success = true;
@@ -736,18 +761,26 @@ pub async fn run_execute_structured_with_progress(
         return Ok(collector.finish(true, "completed"));
     }
 
-    emit!(format!(
-        "Running {} test{}…",
-        spec.test_cases.len(),
-        if spec.test_cases.len() == 1 { "" } else { "s" }
-    ));
-    let mut report = verifier::run_tests(&spec, workspace);
+    if process.is_some() {
+        emit!("Running bounded HTTP/SQLite/JSON process verification…".to_string());
+    } else {
+        emit!(format!(
+            "Running {} test{}…",
+            spec.test_cases.len(),
+            if spec.test_cases.len() == 1 { "" } else { "s" }
+        ));
+    }
+    let mut report = match process.as_deref_mut() {
+        Some(checker) => checker.verify(workspace).await,
+        None => verifier::run_tests(&spec, workspace),
+    };
     emit!(report.display());
     collector.tests_passed = report.passed;
     collector.tests_total = report.passed + report.failed;
 
     // --- Repair cycle: if some tests failed, attempt one LLM repair ---
-    if !report.all_passed() && report.failed > 0 {
+    if !report.all_passed() && report.failed > 0 && process.as_ref().is_none_or(|p| p.repairable())
+    {
         collector.first_pass_success = false;
         collector.push_event("verify", PhaseEventStatus::Recovered, None);
         for result in report.results.iter().filter(|result| !result.passed) {
@@ -803,8 +836,12 @@ pub async fn run_execute_structured_with_progress(
         }
         emit!(format!("  Calling LLM (provider: {})…", client.name()));
 
-        let repair_prompt =
+        let mut repair_prompt =
             build_repair_prompt_with_bdd_context(&spec, &failed_details, &bdd_prompt_context);
+        if process.is_some() {
+            repair_prompt.push_str("\n\nProcess verification contract:\n");
+            repair_prompt.push_str(&spec.acceptance_criteria.join("\n"));
+        }
 
         // Attempt repair on all module files (bug may be in library or main)
         let mut repaired = false;
@@ -879,7 +916,10 @@ pub async fn run_execute_structured_with_progress(
 
         if repaired {
             emit!("[Repair] Re-running tests…".to_string());
-            report = verifier::run_tests(&spec, workspace);
+            report = match process {
+                Some(checker) => checker.verify(workspace).await,
+                None => verifier::run_tests(&spec, workspace),
+            };
             emit!(report.display());
             collector.tests_passed = report.passed;
             collector.tests_total = report.passed + report.failed;

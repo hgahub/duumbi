@@ -19,7 +19,7 @@ use crate::hash;
 use crate::intent::capture::CapturingProvider;
 use crate::intent::execute::{
     ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, StructuredExecuteError,
-    run_execute_structured,
+    run_execute_with_process_verifier,
 };
 use crate::intent::spec::{IntentSpec, IntentStatus};
 use crate::intent::taxonomy::{
@@ -164,8 +164,8 @@ pub struct AttemptRequest<'a> {
     pub slug: &'a str,
     /// When `false`, skip TempDir execute (JSON-only remaining rows).
     pub execute: bool,
-    /// Process-evidence status for taxonomy (`unsupported`, `broader_evidence_required`).
-    pub process_evidence_status: Option<&'a str>,
+    /// Run the bounded HTTP/SQLite/JSON contract after mutation and after repair.
+    pub process_verification: bool,
     /// Inject a copy failure after execute (tests).
     pub force_persist_failure: bool,
     /// Inject an infrastructure error after repair is entered (tests).
@@ -228,6 +228,9 @@ pub struct AttemptEvidence {
     pub graph_failure: bool,
     /// Captured diagnostics copied from the outcome.
     pub diagnostics: Vec<CapturedDiagnostic>,
+    /// Structured build and process checks, including recovered verification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_evidence: Vec<crate::bench::process::ProcessEvidence>,
 }
 
 /// Per-run retention counters.
@@ -300,10 +303,6 @@ where
         }
     }
 
-    if request.process_evidence_status == Some("broader_evidence_required") {
-        return process_evidence_row(request, model_identity, start.elapsed().as_secs_f64());
-    }
-
     let tmp = match tempfile::TempDir::new() {
         Ok(tmp) => tmp,
         Err(error) => {
@@ -317,6 +316,21 @@ where
     };
     let workspace = tmp.path();
 
+    let mut process = if request.process_verification {
+        match crate::bench::process::ProcessVerifier::for_current_executable() {
+            Ok(process) => Some(process),
+            Err(error) => {
+                return finalize_without_workspace(
+                    request,
+                    model_identity,
+                    error.to_string(),
+                    start.elapsed().as_secs_f64(),
+                );
+            }
+        }
+    } else {
+        None
+    };
     let mut log = Vec::new();
     let mut hashes = AttemptHashes {
         prompt_hash_status: "partial".to_string(),
@@ -333,6 +347,19 @@ where
         hashes.initial_graph_semantic = hash::semantic_hash(&graph_dir).ok();
         let mut run_spec = request.spec.clone();
         run_spec.status = IntentStatus::Pending;
+        if let Some(checker) = &process {
+            checker.prepare_spec(&mut run_spec);
+            // These embedded stdlib modules are installed locally by init.
+            // Declaring them here avoids a registry install or provider-written config.
+            let mut config = crate::config::load_config(workspace).map_err(|e| e.to_string())?;
+            for dependency in &run_spec.dependencies {
+                config
+                    .dependencies
+                    .entry(dependency.clone())
+                    .or_insert_with(|| crate::config::DependencyConfig::Version("1.0.0".into()));
+            }
+            crate::config::save_config(workspace, &config).map_err(|e| e.to_string())?;
+        }
         save_intent(workspace, request.slug, &run_spec)
             .map_err(|error| format!("failed to save intent: {error}"))?;
         hashes.intent_spec = serde_yaml::to_string(&run_spec)
@@ -368,7 +395,7 @@ where
         return evidence;
     }
 
-    match execute_structured(&mut request, workspace, &mut log).await {
+    match execute_structured(&mut request, workspace, &mut log, process.as_mut()).await {
         Ok(executed) => {
             outcome = executed;
             persist_error = None;
@@ -407,6 +434,13 @@ where
         persist_error,
         start.elapsed().as_secs_f64(),
     );
+    if let Some(checker) = process {
+        evidence.process_evidence = checker.evidence;
+        classify_process_failure(&mut evidence);
+        evidence.hashes.transcript = Some(sha256_hex_bytes(
+            evidence.sanitized_log.join("\n").as_bytes(),
+        ));
+    }
     {
         let mut state = retention.lock().expect("invariant: retention mutex");
         persist_according_to_policy(
@@ -425,17 +459,34 @@ async fn execute_structured(
     request: &mut AttemptRequest<'_>,
     workspace: &Path,
     log: &mut Vec<String>,
+    process: Option<&mut crate::bench::process::ProcessVerifier>,
 ) -> anyhow::Result<IntentExecutionOutcome> {
     if request.force_io_after_repair {
         crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(true));
     }
     let result = if request.capture_model_io {
         let capturing = CapturingProvider::new(request.provider);
-        let result = run_execute_structured(&capturing, workspace, request.slug, log).await;
+        let result = run_execute_with_process_verifier(
+            &capturing,
+            workspace,
+            request.slug,
+            log,
+            &|_| {},
+            process,
+        )
+        .await;
         request.captured_model_io = capturing.take_payloads();
         result
     } else {
-        run_execute_structured(request.provider, workspace, request.slug, log).await
+        run_execute_with_process_verifier(
+            request.provider,
+            workspace,
+            request.slug,
+            log,
+            &|_| {},
+            process,
+        )
+        .await
     };
     crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(false));
     result
@@ -476,35 +527,8 @@ fn json_only_unexecuted(
         duration_secs,
         graph_failure: false,
         diagnostics: Vec::new(),
+        process_evidence: Vec::new(),
     }
-}
-
-fn process_evidence_row(
-    request: AttemptRequest<'_>,
-    model_identity: ModelIdentityEvidence,
-    duration_secs: f64,
-) -> AttemptEvidence {
-    let mut outcome = blank_outcome("process_evidence_required");
-    outcome.success = false;
-    outcome.tests_total = request.spec.test_cases.len();
-    outcome.phase_events.push(ExecutionPhaseEvent {
-        phase: "preflight".to_string(),
-        status: PhaseEventStatus::Terminal,
-        error_code: Some("broader_evidence_required".to_string()),
-    });
-    assemble_evidence(
-        &request,
-        outcome,
-        model_identity,
-        AttemptHashes {
-            prompt_hash_status: "unavailable".to_string(),
-            ..AttemptHashes::default()
-        },
-        &[],
-        "pending".to_string(),
-        None,
-        duration_secs,
-    )
 }
 
 fn finalize_without_workspace(
@@ -527,6 +551,44 @@ fn finalize_without_workspace(
         Some(redact_secret_text(&error)),
         duration_secs,
     )
+}
+
+/// Process deadlines are generated-program failures, not provider timeouts.
+fn classify_process_failure(evidence: &mut AttemptEvidence) {
+    use crate::bench::process::{ProcessFailureKind, ProcessStage};
+    if evidence.outcome.success || evidence.outcome.terminal_status != "verifier_failed" {
+        return;
+    }
+    let Some(failure) = evidence
+        .process_evidence
+        .last()
+        .and_then(|p| p.failure.as_ref())
+    else {
+        return;
+    };
+    let class = if failure.kind == ProcessFailureKind::Infrastructure {
+        RootCauseClass::ProviderOrInfrastructure
+    } else {
+        match failure.stage {
+            ProcessStage::Assertion => RootCauseClass::ProductLogicMismatch,
+            ProcessStage::Setup => RootCauseClass::ProviderOrInfrastructure,
+            _ => RootCauseClass::CompilerOrRuntime,
+        }
+    };
+    let code = format!("process_{:?}", failure.stage).to_ascii_lowercase();
+    let event = ExecutionPhaseEvent {
+        phase: "process_verify".into(),
+        status: PhaseEventStatus::Terminal,
+        error_code: Some(code.clone()),
+    };
+    evidence.outcome.phase_events.push(event.clone());
+    evidence.phase_evidence.events.push(event);
+    evidence.outcome.dominant_error_code = Some(code);
+    evidence.root_cause = Some(class);
+    evidence.root_cause_attribution = Some(RootCauseAttribution::MatchedRule);
+    evidence.error_category = crate::intent::taxonomy::error_category_for(class);
+    evidence.graph_failure = class != RootCauseClass::ProviderOrInfrastructure;
+    evidence.sanitized_log.push(failure.to_string());
 }
 
 fn blank_outcome(terminal_status: &str) -> IntentExecutionOutcome {
@@ -589,7 +651,7 @@ fn assemble_evidence(
         tests_total: outcome.tests_total,
         terminal_status: &outcome.terminal_status,
         log_text: &sanitized_log.join("\n"),
-        process_evidence_status: request.process_evidence_status,
+        process_evidence_status: None,
         graph_compiled,
         credentials_missing: request.credentials_missing,
     });
@@ -605,6 +667,7 @@ fn assemble_evidence(
         ModelIoStatus::Captured
     };
     AttemptEvidence {
+        process_evidence: Vec::new(),
         phase_evidence: PhaseEvidence {
             events: outcome.phase_events.clone(),
         },
@@ -661,7 +724,7 @@ fn persist_according_to_policy(
         && !request.captured_model_io.is_empty()
         && evidence.model_io_status == ModelIoStatus::Captured;
 
-    if success && !write_snapshot && !write_model_io {
+    if success && !write_snapshot && !write_model_io && evidence.process_evidence.is_empty() {
         evidence.evidence_persistence = EvidencePersistence::JsonOnly;
         evidence.artifact_paths.clear();
         return;
@@ -732,6 +795,13 @@ fn planned_files(
     model_io: bool,
 ) -> Vec<PlannedFile> {
     let mut files = Vec::new();
+    if !evidence.process_evidence.is_empty() {
+        files.push(PlannedFile {
+            relative: "process-evidence.json".to_string(),
+            body: serde_json::to_vec_pretty(&evidence.process_evidence).unwrap_or_default(),
+            is_stub: false,
+        });
+    }
     if failed_allowlist {
         files.push(PlannedFile {
             relative: "phase_evidence.json".to_string(),
@@ -1121,7 +1191,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_evidence_status: None,
+            process_verification: false,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -1215,6 +1285,7 @@ mod tests {
             duration_secs: 0.1,
             graph_failure: true,
             diagnostics: Vec::new(),
+            process_evidence: Vec::new(),
         };
         persist_according_to_policy(
             &request("run-budget", &spec, &provider, artifacts.path()),
@@ -1283,6 +1354,7 @@ mod tests {
             duration_secs: 0.1,
             graph_failure: true,
             diagnostics: Vec::new(),
+            process_evidence: Vec::new(),
         };
         persist_according_to_policy(
             &request("run-stub", &spec, &provider, artifacts.path()),
@@ -1359,7 +1431,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_evidence_status: None,
+            process_verification: false,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,

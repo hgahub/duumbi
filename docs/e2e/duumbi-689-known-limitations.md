@@ -2,6 +2,10 @@
 
 Related to #689.
 
+Update: [DUUMBI-780](duumbi-780-process-evidence.md) adds automated bounded
+process verification for new HTTP/SQLite/JSON benchmark and replay attempts.
+The historical results below remain unchanged; they did not run that verifier.
+
 The scaled intent-execute smoke evidence from 2026-06-16 should be treated as
 preview risk evidence, not as a passing benchmark claim.
 

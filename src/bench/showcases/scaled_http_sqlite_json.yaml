@@ -3,10 +3,16 @@ version: 1
 status: pending
 acceptance_criteria:
   - "The program binds only to loopback"
-  - "The program uses in-memory SQLite to store a deterministic fact"
+  - "Open a fresh in-memory SQLite database and create table facts(name text not null)"
+  - "Read one line from stdin using ReadLine or stdlib-io read_line; execute that line as a parameter-free SQL INSERT into facts"
+  - "Query SELECT name FROM facts ORDER BY rowid; derive count from the returned rows and first_fact from the first row"
+  - "Return status 200 and JSON values service=scaled-http-sqlite-json, route=/facts, storage=sqlite-memory, count as a JSON integer, and first_fact as a JSON string"
+  - "The verifier supplies different INSERT statements on separate fresh launches; do not hard-code count or first_fact"
+  - "The verifier adds the selected ephemeral loopback port to these criteria before authoring"
+  - "Use constant listener host and port values, optionally forwarded through function parameters, so the verifier can check the binding before launch"
   - "The program returns JSON with service, route, count, first_fact, and storage fields"
   - "The program serves one bounded request on /facts"
-  - "The eval report records process evidence or an explicit verification gap until HTTP JSON verification is automated"
+  - "Close resources and exit successfully after exactly one request; startup and serving must be bounded"
 modules:
   create:
     - "services/facts"
@@ -14,6 +20,7 @@ modules:
     - "app/main"
 test_cases: []
 dependencies:
+  - "@duumbi/stdlib-io"
   - "@duumbi/stdlib-db"
   - "@duumbi/stdlib-json"
   - "@duumbi/stdlib-server"

@@ -1,0 +1,200 @@
+{
+  "showcase": "scaled_http_sqlite_json",
+  "task_id": "scaled_http_sqlite_json",
+  "suite": "scaled",
+  "tags": [
+    "scaled",
+    "http",
+    "sqlite",
+    "json",
+    "process_evidence"
+  ],
+  "provider": "offline-process-fixture",
+  "attempt": 1,
+  "success": true,
+  "first_pass_success": false,
+  "repair_attempted": true,
+  "repair_applied": true,
+  "repair_success": true,
+  "error_category": null,
+  "mutation_retry_count": 0,
+  "repair_retry_count": 0,
+  "total_retry_count": 0,
+  "provider_usage": {
+    "available": false,
+    "unavailable_reason": "provider_response_did_not_expose_usage"
+  },
+  "evidence": {
+    "kind": "loopback_http_sqlite_json",
+    "status": "passed",
+    "detail": "Built and verified two fresh SQLite datasets over loopback HTTP",
+    "command": "duumbi build --output .duumbi/build/output",
+    "expected_route": "/facts",
+    "expected_json_fields": [
+      "service",
+      "route",
+      "count",
+      "first_fact",
+      "storage"
+    ],
+    "artifact_path": "run-1789046931027747000-59088/scaled-http-sqlite-json-f9375c9cb817/offline-process-fixture-210957e1f006/1/process-evidence.json",
+    "process": [
+      {
+        "contract": "duumbi.http-sqlite-json.v1",
+        "build_command": "duumbi build --output .duumbi/build/output",
+        "build": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmprV1aMu/.duumbi/build/output"
+        },
+        "scenarios": [
+          {
+            "scenario": "one_row",
+            "port": 62844,
+            "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+            "route": "/facts",
+            "status": 200,
+            "response": "{\"service\":\"wrong-service\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+            "expected": {
+              "count": 1,
+              "first_fact": "Ada Lovelace",
+              "route": "/facts",
+              "service": "scaled-http-sqlite-json",
+              "storage": "sqlite-memory"
+            },
+            "assertions_passed": false,
+            "process": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": ""
+            },
+            "failure": {
+              "stage": "assertion",
+              "kind": "program",
+              "detail": "JSON field service did not match the SQL-backed expected value \"scaled-http-sqlite-json\""
+            }
+          }
+        ],
+        "failure": {
+          "stage": "assertion",
+          "kind": "program",
+          "detail": "JSON field service did not match the SQL-backed expected value \"scaled-http-sqlite-json\""
+        }
+      },
+      {
+        "contract": "duumbi.http-sqlite-json.v1",
+        "build_command": "duumbi build --output .duumbi/build/output",
+        "build": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmprV1aMu/.duumbi/build/output"
+        },
+        "scenarios": [
+          {
+            "scenario": "one_row",
+            "port": 62844,
+            "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+            "route": "/facts",
+            "status": 200,
+            "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+            "expected": {
+              "count": 1,
+              "first_fact": "Ada Lovelace",
+              "route": "/facts",
+              "service": "scaled-http-sqlite-json",
+              "storage": "sqlite-memory"
+            },
+            "assertions_passed": true,
+            "process": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": ""
+            },
+            "failure": null
+          },
+          {
+            "scenario": "two_rows",
+            "port": 62844,
+            "input_sql": "INSERT INTO facts(name) VALUES ('Grace Hopper'), ('Katherine Johnson')",
+            "route": "/facts",
+            "status": 200,
+            "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":2,\"first_fact\":\"Grace Hopper\",\"storage\":\"sqlite-memory\"}",
+            "expected": {
+              "count": 2,
+              "first_fact": "Grace Hopper",
+              "route": "/facts",
+              "service": "scaled-http-sqlite-json",
+              "storage": "sqlite-memory"
+            },
+            "assertions_passed": true,
+            "process": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": ""
+            },
+            "failure": null
+          }
+        ],
+        "failure": null
+      }
+    ]
+  },
+  "phase_evidence": {
+    "events": [
+      {
+        "phase": "preflight",
+        "status": "informational"
+      },
+      {
+        "phase": "verify",
+        "status": "recovered"
+      },
+      {
+        "phase": "repair",
+        "status": "informational"
+      },
+      {
+        "phase": "reverify",
+        "status": "informational"
+      },
+      {
+        "phase": "complete",
+        "status": "terminal"
+      }
+    ]
+  },
+  "evidence_persistence": "complete",
+  "artifact_paths": [
+    "run-1789046931027747000-59088/scaled-http-sqlite-json-f9375c9cb817/offline-process-fixture-210957e1f006/1/process-evidence.json"
+  ],
+  "hashes": {
+    "initial_graph_exact": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+    "initial_graph_semantic": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+    "final_graph_exact": "51d428d2deb4882dd02713f62b8626efa919fb0d173649cbe27cc69168c2cb11",
+    "final_graph_semantic": "d49af13cc2296d24183a4c4810d9f17728d745e34662185b417a3fc3176c2bfe",
+    "intent_spec": "0a91014cf3e4c52a7231fc96b19b0f0d5f01992eac5bde2e35af160576dfe073",
+    "transcript": "67be0263ee210329f6c057b555ebd4e30ec7ee0bffd0ef9abf1f4ce2aef13c19",
+    "prompt_hash_status": "partial"
+  },
+  "model_io_status": "not_requested",
+  "executed": true,
+  "graph_failure": false,
+  "tests_passed": 1,
+  "tests_total": 1,
+  "duration_secs": 3.965327333
+}

@@ -30,7 +30,7 @@ impl ShowcaseSuite {
 pub enum ShowcaseVerification {
     /// Verify with existing i64 intent test cases.
     I64Tests,
-    /// Requires broader process evidence beyond the current i64 verifier.
+    /// Verify a generated service with the bounded local process harness.
     ProcessEvidence {
         /// Evidence kind written to benchmark reports.
         evidence_kind: &'static str,
@@ -38,8 +38,6 @@ pub enum ShowcaseVerification {
         expected_route: &'static str,
         /// JSON fields expected in process evidence.
         expected_json_fields: &'static [&'static str],
-        /// Current verification gap to report until automated process checks exist.
-        verification_gap: &'static str,
     },
 }
 
@@ -192,7 +190,6 @@ pub const SCALED_SHOWCASES: &[Showcase] = &[
             evidence_kind: "loopback_http_sqlite_json",
             expected_route: "/facts",
             expected_json_fields: &["service", "route", "count", "first_fact", "storage"],
-            verification_gap: "current verifier does not check HTTP JSON payload semantics",
         },
     },
 ];

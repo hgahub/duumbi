@@ -76,7 +76,12 @@ where
     .await
 }
 
-async fn run_replay_with_provider_factory<F, P>(
+/// Runs replay with an injected provider factory for deterministic offline evidence.
+///
+/// # Errors
+/// Returns an error when inputs, artifacts, or provider construction fail.
+#[must_use = "replay evidence should be retained"]
+pub async fn run_replay_with_provider_factory<F, P>(
     config: &ReplayConfig,
     init_workspace: F,
     create_provider: P,
@@ -325,10 +330,10 @@ where
         execute,
     } = request;
 
-    let process_evidence_status = match showcase.verification {
-        ShowcaseVerification::ProcessEvidence { .. } => Some("broader_evidence_required"),
-        _ => None,
-    };
+    let process_verification = matches!(
+        showcase.verification,
+        ShowcaseVerification::ProcessEvidence { .. }
+    );
     let evidence = run_isolated_attempt(
         AttemptRequest {
             run_id,
@@ -342,7 +347,7 @@ where
             capture_model_io,
             slug: "determinism-replay",
             execute,
-            process_evidence_status,
+            process_verification,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -380,7 +385,8 @@ where
             .unwrap_or_else(|| "none".to_string())
     ));
 
-    let mut replay = ReplayAttempt {
+    let process_evidence = crate::bench::runner::process_benchmark_evidence(showcase, &evidence);
+    ReplayAttempt {
         task_id: showcase.name.to_string(),
         suite: showcase.suite.as_str().to_string(),
         tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
@@ -405,7 +411,7 @@ where
         error_category,
         dominant_error_code: evidence.outcome.dominant_error_code,
         provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
-        benchmark_evidence: None,
+        benchmark_evidence: process_evidence,
         artifact_paths: evidence.artifact_paths,
         duration_secs: evidence.duration_secs,
         repair_attempted: evidence.outcome.repair_attempted,
@@ -418,32 +424,7 @@ where
         phase_evidence: Some(evidence.phase_evidence),
         executed: Some(evidence.executed),
         graph_failure: Some(evidence.graph_failure),
-    };
-
-    if let ShowcaseVerification::ProcessEvidence {
-        evidence_kind,
-        expected_route,
-        expected_json_fields,
-        verification_gap,
-    } = showcase.verification
-    {
-        replay.benchmark_evidence = Some(BenchmarkEvidence {
-            kind: evidence_kind.to_string(),
-            status: "broader_evidence_required".to_string(),
-            detail: verification_gap.to_string(),
-            command: None,
-            expected_route: Some(expected_route.to_string()),
-            expected_json_fields: expected_json_fields
-                .iter()
-                .map(|field| (*field).to_string())
-                .collect(),
-            verification_gap: Some(verification_gap.to_string()),
-            artifact_path: replay.artifact_paths.first().cloned(),
-        });
-        replay.dominant_error_code = Some("broader_evidence_required".to_string());
     }
-
-    replay
 }
 
 struct ReplayContextHashes {
