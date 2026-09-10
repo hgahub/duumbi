@@ -1081,6 +1081,64 @@ mod tests {
             ProcessFailureKind::Infrastructure
         );
     }
+
+    #[cfg(unix)]
+    async fn unix_process_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 only probes existence; it does not signal.
+        if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            return std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // Container PID 1 may leave dead, orphaned descendants as zombies.
+            // A zombie still has a PID but cannot execute or retain open pipes.
+            // Field 3 follows the parenthesized comm, which can contain spaces
+            // and parentheses: https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html
+            match tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await {
+                Ok(stat) => !matches!(
+                    stat.rsplit_once(')')
+                        .and_then(|(_, fields)| fields.split_whitespace().next()),
+                    Some("Z" | "X")
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => panic!("cannot inspect child process state: {error}"),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        true
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn liveness_probe_excludes_an_unreaped_zombie() {
+        // std::process::Child does not reap on drop or through Tokio's reaper,
+        // so this exercises a real zombie independently of PID 1's behavior.
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("fixture binary"))
+                .args([
+                    "--exact",
+                    "bench::process::tests::process_child_fixture",
+                    "--nocapture",
+                ])
+                .env("DUUMBI_780_CHILD_MODE", "hang")
+                .spawn()
+                .expect("child");
+        let pid = child.id();
+        let was_alive = unix_process_alive(pid).await;
+        child.kill().expect("terminate fixture");
+        let terminated = timeout(Duration::from_secs(3), async {
+            while unix_process_alive(pid).await {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Reap even if the probe was wrong, before asserting its result.
+        child.wait().expect("reap fixture");
+        assert!(was_alive, "running child must be detected");
+        terminated.expect("unreaped zombie must count as terminated");
+        assert!(!unix_process_alive(pid).await, "reaped child is absent");
+    }
+
     #[tokio::test]
     async fn cancellation_kills_the_child_and_its_descendants() {
         let tmp = tempfile::tempdir().expect("pid directory");
@@ -1117,11 +1175,8 @@ mod tests {
         timeout(Duration::from_secs(3), async {
             loop {
                 #[cfg(unix)]
-                // SAFETY: signal 0 only probes existence; it does not signal.
-                let alive = unsafe {
-                    libc::kill(parent_pid as i32, 0) == 0
-                        || libc::kill(descendant_pid as i32, 0) == 0
-                };
+                let alive = unix_process_alive(parent_pid).await
+                    || unix_process_alive(descendant_pid).await;
                 #[cfg(windows)]
                 let alive =
                     windows::process_alive(parent_pid) || windows::process_alive(descendant_pid);
@@ -1132,6 +1187,6 @@ mod tests {
             }
         })
         .await
-        .expect("process tree removed after cancellation");
+        .expect("process tree terminated after cancellation");
     }
 }

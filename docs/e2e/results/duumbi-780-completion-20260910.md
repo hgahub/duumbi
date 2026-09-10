@@ -100,3 +100,14 @@ failed bind became available within 250 ms, with no active listener observed.
 The pre-launch probe now retries AddrInUse asynchronously for that bounded
 window; a persistent occupied port still fails without launching the service.
 The temporary socket-ownership diagnostic code was removed before commit.
+
+The full local suite after these lifecycle fixes passed **3062 tests**, with
+**0 failures** and **1 existing ignored test**; the focused suite passed **138**.
+A second review reproduced a Linux-container-only test failure: `kill(pid, 0)`
+counts an unreaped zombie as present. The test's Linux liveness probe now reads
+the process state asynchronously, treating dead/zombie states as terminated.
+A Linux regression deliberately retains a killed child until after the probe,
+so it verifies this behavior without depending on PID 1's reaping policy.
+Production cleanup is unchanged by this final test correction. Local process
+tests (**13 passed**), all-target clippy, and pre-commit checks pass; final-head
+Ubuntu and Windows execution evidence is recorded in the PR.
