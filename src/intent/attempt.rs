@@ -331,7 +331,7 @@ where
     let persist_error: Option<String>;
     let outcome;
 
-    let init_result = (|| {
+    let init_result = async {
         init_workspace(workspace).map_err(|error| format!("init failed: {error}"))?;
         let graph_dir = workspace.join(".duumbi/graph");
         hashes.initial_graph_exact = exact_graph_digest(&graph_dir).ok();
@@ -341,17 +341,22 @@ where
         if let Some(checker) = &process {
             checker.prepare_spec(&mut run_spec);
         }
-        log.extend(materialize_declared_dependencies(
-            workspace,
-            &run_spec.dependencies,
-        )?);
+        let dependency_workspace = workspace.to_path_buf();
+        let dependencies = run_spec.dependencies.clone();
+        let notes = tokio::task::spawn_blocking(move || {
+            materialize_declared_dependencies(&dependency_workspace, &dependencies)
+        })
+        .await
+        .map_err(|error| format!("dependency preparation task failed: {error}"))??;
+        log.extend(notes);
         save_intent(workspace, request.slug, &run_spec)
             .map_err(|error| format!("failed to save intent: {error}"))?;
         hashes.intent_spec = serde_yaml::to_string(&run_spec)
             .ok()
             .map(|yaml| sha256_hex_bytes(yaml.as_bytes()));
         Ok::<(), String>(())
-    })();
+    }
+    .await;
 
     if let Err(error) = init_result {
         outcome = infra_outcome("init", &error);

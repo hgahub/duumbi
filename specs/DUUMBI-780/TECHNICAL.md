@@ -22,7 +22,9 @@ After initialization, the intent clone receives the run's port before saving,
 hashing, and provider mutation. Declared dependencies already in config are
 preserved. Missing declarations are materialized from the highest valid SemVer
 under `.duumbi/cache/<scope>/<module>@<version>/graph`, with one execution-log
-note per added or unavailable dependency. No registry request is made.
+note per added or unavailable dependency. The complete materialization routine
+runs on `spawn_blocking`, keeping filesystem I/O off the async worker. No
+registry request is made.
 
 `run_preflight_for_intent_with_external_verifier` replaces only `E_NO_TEST_CASES`
 with Info `I_EXTERNAL_VERIFICATION` naming the verifier. All other preflight and
@@ -45,7 +47,7 @@ by the harness. The flagship is an API reference, not a passing solution.
 | --- | --- |
 | Build | Local `duumbi build --output .duumbi/build/output` subprocess, 30 seconds; initialized workspace/vendor/cache dependencies only |
 | Binding analysis | `src/bench/process/bindings.rs` resolves listener arguments through local function calls, parameter loads, and string concatenation; requires `127.0.0.1` and the run port |
-| Port handoff | Release initial reservation; bind/release the same port before **every** launch, including second dataset, repair, and subsequent attempts; occupied port is Start infrastructure failure |
+| Port handoff | Release initial reservation; bind/release the same port before **every** launch, including second dataset, repair, and subsequent attempts; occupied port after a 250 ms async handoff window is Start infrastructure failure |
 | Start | Fresh generated child; write one SQL line and close stdin; connect within 5 seconds, polling early child exit |
 | Request | The readiness connection is the actual GET socket, avoiding consumption of a one-request server; 2-second write deadline |
 | Response | 2-second read deadline; maximum 16 KiB including headers; validate HTTP framing, status 200, JSON and exact values/types |
@@ -53,7 +55,11 @@ by the harness. The flagship is an API reference, not a passing solution.
 | Cleanup | Kill process tree and reap child, separate 2-second reap deadline; pipe collection bounded to 1 second each |
 
 Unix uses a dedicated process group; Windows uses an owned Job Object with
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Error, timeout, normal completion and
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Windows creates children with
+`CREATE_SUSPENDED`, attaches the job, and only then resumes the initial thread;
+[Windows documents that suspended creation prevents execution](https://learn.microsoft.com/en-us/windows/win32/procthread/suspending-thread-execution).
+A read-only, bounded IPv4/IPv6 TCP table snapshot distinguishes stale TIME_WAIT
+from active listeners before a Windows reuse-enabled bind probe. Error, timeout, normal completion and
 cancellation clean up the owned tree. Output pipes drain continuously and retain
 at most 8 KiB each. Generated children inherit only PATH and SystemRoot; build
 children additionally inherit compiler configuration and use workspace-local

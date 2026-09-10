@@ -4,6 +4,10 @@
 //! launch. No graph IDs, module layout, or generated constants are rewritten.
 
 mod bindings;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::WindowsJob;
 
 use crate::intent::external_verifier::ExternalVerifier;
 use std::future::Future;
@@ -410,7 +414,7 @@ impl ProcessVerifier {
         // Bind and release before every launch, including repaired passes and
         // subsequent attempts. A port taken by another process is infrastructure,
         // and must never be mistaken for a generated-program assertion failure.
-        if let Err(error) = check_port_available(self.port) {
+        if let Err(error) = wait_for_port_handoff(self.port).await {
             evidence.failure = Some(infrastructure(ProcessStage::Start, error));
             return evidence;
         }
@@ -509,15 +513,38 @@ impl ExternalVerifier for ProcessVerifier {
     }
 }
 
-/// Check the same bind the runtime will use without treating Unix TIME_WAIT
-/// from the preceding dataset as a live listener. Windows must not enable
-/// SO_REUSEADDR: it permits hijacking an active listener there.
+/// Give a just-released reservation a short, bounded handoff window. Concurrent
+/// native launches can briefly delay socket release; never connect to the port
+/// as a probe or launch while another listener still owns it.
+async fn wait_for_port_handoff(port: u16) -> std::io::Result<()> {
+    let end = tokio::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        match check_port_available(port) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse
+                    && tokio::time::Instant::now() < end =>
+            {
+                sleep(Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Check the runtime bind without confusing a preceding connection's TIME_WAIT
+/// with a live listener. No connection is opened to another application's port.
 fn check_port_available(port: u16) -> std::io::Result<()> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    #[cfg(unix)]
-    socket.set_reuseaddr(true)?;
-    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        windows::check_port_available(port)
+    }
+    #[cfg(not(windows))]
+    {
+        let socket = tokio::net::TcpSocket::new_v4()?;
+        socket.set_reuseaddr(true)?;
+        socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
+        Ok(())
+    }
 }
 
 async fn deadline<T>(
@@ -702,7 +729,10 @@ impl ManagedChild {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(not(windows))]
         let mut child = command.spawn()?;
+        #[cfg(windows)]
+        let mut child = WindowsJob::spawn_suspended(command)?;
         #[cfg(unix)]
         let pid = Some(
             child
@@ -711,6 +741,8 @@ impl ManagedChild {
         );
         #[cfg(windows)]
         let job = WindowsJob::attach(&child)?;
+        #[cfg(windows)]
+        job.resume(&child)?;
         let stdout = tokio::spawn(drain(
             child.stdout.take().expect("invariant: stdout is piped"),
         ));
@@ -785,55 +817,6 @@ impl Drop for ManagedChild {
         let _ = self.child.start_kill();
         self.stdout.abort();
         self.stderr.abort();
-    }
-}
-
-/// Windows job ownership makes cancellation close the entire child process tree.
-#[cfg(windows)]
-struct WindowsJob(std::os::windows::io::OwnedHandle);
-
-#[cfg(windows)]
-impl WindowsJob {
-    fn attach(child: &Child) -> std::io::Result<Self> {
-        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-        use windows_sys::Win32::System::JobObjects::*;
-        // SAFETY: null attributes/name request an unnamed job; the returned
-        // handle is checked and transferred exactly once into OwnedHandle.
-        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if raw.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        // SAFETY: limits is the documented structure and size for this class;
-        // both handles remain live across configuration and assignment.
-        let configured = unsafe {
-            SetInformationJobObject(
-                handle.as_raw_handle(),
-                JobObjectExtendedLimitInformation,
-                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                std::mem::size_of_val(&limits) as u32,
-            )
-        };
-        if configured == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let process = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("child exited before job assignment"))?;
-        if unsafe { AssignProcessToJobObject(handle.as_raw_handle(), process) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self(handle))
-    }
-
-    fn terminate(&self) {
-        use std::os::windows::io::AsRawHandle;
-        // SAFETY: this owned job contains only this verifier's process tree.
-        unsafe {
-            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0.as_raw_handle(), 1);
-        }
     }
 }
 
@@ -928,6 +911,20 @@ mod tests {
         .expect_err("deadline");
         assert_eq!(failure.stage, ProcessStage::Response);
         assert_eq!(failure.kind, ProcessFailureKind::Program);
+    }
+
+    #[tokio::test]
+    async fn port_handoff_waits_for_delayed_release() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("port");
+        let port = listener.local_addr().expect("address").port();
+        let release = tokio::spawn(async move {
+            sleep(Duration::from_millis(40)).await;
+            drop(listener);
+        });
+        wait_for_port_handoff(port)
+            .await
+            .expect("released within handoff bound");
+        release.await.expect("release task");
     }
 
     #[tokio::test]
@@ -1084,7 +1081,6 @@ mod tests {
             ProcessFailureKind::Infrastructure
         );
     }
-    #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_kills_the_child_and_its_descendants() {
         let tmp = tempfile::tempdir().expect("pid directory");
@@ -1120,11 +1116,15 @@ mod tests {
         assert!(wait.await.expect_err("cancelled").is_cancelled());
         timeout(Duration::from_secs(3), async {
             loop {
+                #[cfg(unix)]
                 // SAFETY: signal 0 only probes existence; it does not signal.
                 let alive = unsafe {
                     libc::kill(parent_pid as i32, 0) == 0
                         || libc::kill(descendant_pid as i32, 0) == 0
                 };
+                #[cfg(windows)]
+                let alive =
+                    windows::process_alive(parent_pid) || windows::process_alive(descendant_pid);
                 if !alive {
                     break;
                 }

@@ -56,7 +56,9 @@ an OS security sandbox for arbitrary hostile programs.
   are redacted; control characters and a truncated final log line are removed.
 
 Unix children run in dedicated process groups. Windows children belong to an
-owned Job Object with kill-on-close semantics. Completion, errors, deadlines,
+owned Job Object with kill-on-close semantics. Windows children are created
+suspended, assigned to the configured job, and only then resumed using their
+initial thread handle found through the documented Tool Help snapshot API. Completion, errors, deadlines,
 and cancellation terminate the owned process tree. Generated services inherit
 only PATH and SystemRoot; build children additionally receive the required
 compiler settings, with temporary build files confined to the attempt.
@@ -85,7 +87,8 @@ original authoring error with `evidence_required`.
 The injected port is an execution input and appears in the recorded intent and
 process evidence. The port is reserved once per benchmark/replay run and shared across sequential
 process attempts, including providers. Each launch first checks port availability;
-a conflict is a Start infrastructure failure. Intent and graph hashes now remain
+a persistent conflict after a 250 ms async handoff window is a Start
+infrastructure failure. Intent and graph hashes now remain
 comparable within a run; separate invocations can still select different ports.
 Replay behavior signatures append `;process=<status>[:<stage>]`.
 

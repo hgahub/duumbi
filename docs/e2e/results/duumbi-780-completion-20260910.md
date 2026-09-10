@@ -36,7 +36,10 @@ LLM calls and prove the harness, not model authoring performance.
 
 The real native test caught a macOS TIME_WAIT issue in a plain bind probe.
 The corrected availability check uses SO_REUSEADDR on Unix, matching the
-runtime; Windows leaves it off to avoid allowing an active-listener takeover.
+runtime. Following automated review, Windows uses a bounded, read-only TCP-table
+check before permitting a reuse bind for stale TIME_WAIT, rejecting live IPv4
+and IPv6 endpoints. Suspended child creation now ensures Job Object assignment
+precedes execution, with explicit suspension/membership/cancellation tests.
 A dedicated portable test keeps a real port occupied and verifies Start
 infrastructure attribution without launching a child or requesting graph repair.
 
@@ -82,3 +85,18 @@ cache version selection, failure attribution, lifecycle cleanup and the
 accepted stdin-SQL burden. Additional stage timings and per-field assertion
 records (optional decision item 9) remain deferred; the existing versioned
 contract, failure kind/stage and ordered process records are retained.
+
+### Automated-review follow-up
+
+The initial head `cb14c80` passed both CI platforms and coverage. Codex identified
+three actionable findings, addressed in the follow-up: Windows TCP TIME_WAIT
+inspection before port reuse, suspended creation before Job Object assignment,
+and cache materialization on `spawn_blocking`. The Windows-specific helper and
+tests also passed an isolated cross-target clippy check using Rust's Windows GNU
+target; actual Windows execution is still validated by PR CI.
+
+Concurrent local native tests exposed a transient socket-release handoff: a
+failed bind became available within 250 ms, with no active listener observed.
+The pre-launch probe now retries AddrInUse asynchronously for that bounded
+window; a persistent occupied port still fails without launching the service.
+The temporary socket-ownership diagnostic code was removed before commit.
