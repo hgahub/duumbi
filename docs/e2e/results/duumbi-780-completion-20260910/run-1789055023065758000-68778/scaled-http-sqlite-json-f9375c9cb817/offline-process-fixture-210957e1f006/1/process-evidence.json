@@ -1,0 +1,115 @@
+[
+  {
+    "contract": "duumbi.http-sqlite-json.v1",
+    "build_command": "duumbi build --output .duumbi/build/output",
+    "build": {
+      "exit_code": 0,
+      "timed_out": false,
+      "killed": false,
+      "reaped": true,
+      "stdout": "",
+      "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmpNPe2jG/.duumbi/build/output"
+    },
+    "scenarios": [
+      {
+        "scenario": "one_row",
+        "port": 51261,
+        "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+        "route": "/facts",
+        "status": 200,
+        "response": "{\"service\":\"wrong-service\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+        "expected": {
+          "count": 1,
+          "first_fact": "Ada Lovelace",
+          "route": "/facts",
+          "service": "scaled-http-sqlite-json",
+          "storage": "sqlite-memory"
+        },
+        "assertions_passed": false,
+        "process": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": ""
+        },
+        "failure": {
+          "stage": "assertion",
+          "kind": "program",
+          "detail": "JSON field service did not match the SQL-backed expected value \"scaled-http-sqlite-json\""
+        }
+      }
+    ],
+    "failure": {
+      "stage": "assertion",
+      "kind": "program",
+      "detail": "JSON field service did not match the SQL-backed expected value \"scaled-http-sqlite-json\""
+    }
+  },
+  {
+    "contract": "duumbi.http-sqlite-json.v1",
+    "build_command": "duumbi build --output .duumbi/build/output",
+    "build": {
+      "exit_code": 0,
+      "timed_out": false,
+      "killed": false,
+      "reaped": true,
+      "stdout": "",
+      "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmpNPe2jG/.duumbi/build/output"
+    },
+    "scenarios": [
+      {
+        "scenario": "one_row",
+        "port": 51261,
+        "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+        "route": "/facts",
+        "status": 200,
+        "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+        "expected": {
+          "count": 1,
+          "first_fact": "Ada Lovelace",
+          "route": "/facts",
+          "service": "scaled-http-sqlite-json",
+          "storage": "sqlite-memory"
+        },
+        "assertions_passed": true,
+        "process": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": ""
+        },
+        "failure": null
+      },
+      {
+        "scenario": "two_rows",
+        "port": 51261,
+        "input_sql": "INSERT INTO facts(name) VALUES ('Grace Hopper'), ('Katherine Johnson')",
+        "route": "/facts",
+        "status": 200,
+        "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":2,\"first_fact\":\"Grace Hopper\",\"storage\":\"sqlite-memory\"}",
+        "expected": {
+          "count": 2,
+          "first_fact": "Grace Hopper",
+          "route": "/facts",
+          "service": "scaled-http-sqlite-json",
+          "storage": "sqlite-memory"
+        },
+        "assertions_passed": true,
+        "process": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": ""
+        },
+        "failure": null
+      }
+    ],
+    "failure": null
+  }
+]

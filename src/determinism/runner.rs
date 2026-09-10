@@ -76,7 +76,12 @@ where
     .await
 }
 
-async fn run_replay_with_provider_factory<F, P>(
+/// Runs replay with an injected provider factory for deterministic offline evidence.
+///
+/// # Errors
+/// Returns an error when inputs, artifacts, or provider construction fail.
+#[must_use = "replay evidence should be retained"]
+pub async fn run_replay_with_provider_factory<F, P>(
     config: &ReplayConfig,
     init_workspace: F,
     create_provider: P,
@@ -153,6 +158,19 @@ where
         environment,
     );
 
+    let mut process = if showcase_refs.iter().any(|showcase| {
+        matches!(
+            showcase.verification,
+            ShowcaseVerification::ProcessEvidence { .. }
+        )
+    }) {
+        Some(
+            crate::bench::process::ProcessVerifier::for_current_executable()
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
     let retention = Mutex::new(RunRetentionState::default());
     let mut sequence = 2u64;
     for showcase in showcase_refs {
@@ -224,6 +242,14 @@ where
                 };
                 let replay_attempt = run_single_replay(SingleReplayRequest {
                     showcase,
+                    process: if matches!(
+                        showcase.verification,
+                        ShowcaseVerification::ProcessEvidence { .. }
+                    ) {
+                        process.as_mut()
+                    } else {
+                        None
+                    },
                     provider: provider.as_ref(),
                     model_identity: model_identity.clone(),
                     provider_route: &provider_route,
@@ -303,6 +329,7 @@ where
     init_workspace: &'a F,
     retention: &'a Mutex<RunRetentionState>,
     execute: bool,
+    process: Option<&'a mut crate::bench::process::ProcessVerifier>,
 }
 
 async fn run_single_replay<F>(request: SingleReplayRequest<'_, F>) -> ReplayAttempt
@@ -323,12 +350,13 @@ where
         init_workspace,
         retention,
         execute,
+        process,
     } = request;
 
-    let process_evidence_status = match showcase.verification {
-        ShowcaseVerification::ProcessEvidence { .. } => Some("broader_evidence_required"),
-        _ => None,
-    };
+    let mut prepared_spec = spec.clone();
+    if let Some(checker) = process.as_ref() {
+        checker.prepare_spec(&mut prepared_spec);
+    }
     let evidence = run_isolated_attempt(
         AttemptRequest {
             run_id,
@@ -342,7 +370,7 @@ where
             capture_model_io,
             slug: "determinism-replay",
             execute,
-            process_evidence_status,
+            process_verifier: process,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -360,7 +388,7 @@ where
     let context_hashes = replay_context_hashes(
         showcase,
         provider_route,
-        spec,
+        &prepared_spec,
         hash_path,
         "determinism-replay",
     );
@@ -373,14 +401,27 @@ where
     let tests_passed = evidence.outcome.tests_passed;
     let success = evidence.outcome.success;
     let error_category = evidence.error_category;
+    let process_evidence = crate::bench::runner::process_benchmark_evidence(showcase, &evidence);
+    let process_signature = process_evidence
+        .as_ref()
+        .map(|e| {
+            let stage = e
+                .process
+                .last()
+                .and_then(|p| p.failure.as_ref())
+                .map(|f| format!(":{}", f.stage.as_str()))
+                .unwrap_or_default();
+            format!(";process={}{stage}", e.status)
+        })
+        .unwrap_or_default();
     let behavior_signature = Some(format!(
-        "success={success};tests={tests_passed}/{tests_total};error={}",
+        "success={success};tests={tests_passed}/{tests_total};error={}{process_signature}",
         error_category
             .map(|category| category.to_string())
             .unwrap_or_else(|| "none".to_string())
     ));
 
-    let mut replay = ReplayAttempt {
+    ReplayAttempt {
         task_id: showcase.name.to_string(),
         suite: showcase.suite.as_str().to_string(),
         tags: showcase.tags.iter().map(|tag| (*tag).to_string()).collect(),
@@ -405,7 +446,7 @@ where
         error_category,
         dominant_error_code: evidence.outcome.dominant_error_code,
         provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
-        benchmark_evidence: None,
+        benchmark_evidence: process_evidence,
         artifact_paths: evidence.artifact_paths,
         duration_secs: evidence.duration_secs,
         repair_attempted: evidence.outcome.repair_attempted,
@@ -418,32 +459,7 @@ where
         phase_evidence: Some(evidence.phase_evidence),
         executed: Some(evidence.executed),
         graph_failure: Some(evidence.graph_failure),
-    };
-
-    if let ShowcaseVerification::ProcessEvidence {
-        evidence_kind,
-        expected_route,
-        expected_json_fields,
-        verification_gap,
-    } = showcase.verification
-    {
-        replay.benchmark_evidence = Some(BenchmarkEvidence {
-            kind: evidence_kind.to_string(),
-            status: "broader_evidence_required".to_string(),
-            detail: verification_gap.to_string(),
-            command: None,
-            expected_route: Some(expected_route.to_string()),
-            expected_json_fields: expected_json_fields
-                .iter()
-                .map(|field| (*field).to_string())
-                .collect(),
-            verification_gap: Some(verification_gap.to_string()),
-            artifact_path: replay.artifact_paths.first().cloned(),
-        });
-        replay.dominant_error_code = Some("broader_evidence_required".to_string());
     }
-
-    replay
 }
 
 struct ReplayContextHashes {
@@ -981,6 +997,7 @@ mod tests {
         let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
         let retention = Mutex::new(RunRetentionState::default());
         let replay = run_single_replay(SingleReplayRequest {
+            process: None,
             showcase: &FIXTURE_SHOWCASE,
             provider: &provider,
             model_identity: ModelIdentity::unavailable("fixture"),

@@ -14,13 +14,15 @@ use serde_json::json;
 
 use crate::agents::LlmProvider;
 use crate::bench::report::ErrorCategory;
+use crate::config::DependencyConfig;
 use crate::determinism::digest::{exact_graph_digest, safe_artifact_key, sha256_hex_bytes};
 use crate::hash;
 use crate::intent::capture::CapturingProvider;
 use crate::intent::execute::{
     ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, StructuredExecuteError,
-    run_execute_structured,
+    run_execute_with_external_verifier,
 };
+use crate::intent::external_verifier::ExternalVerifier;
 use crate::intent::spec::{IntentSpec, IntentStatus};
 use crate::intent::taxonomy::{
     ClassifyInput, RootCauseAttribution, RootCauseClass, classify, counts_as_graph_failure,
@@ -164,8 +166,8 @@ pub struct AttemptRequest<'a> {
     pub slug: &'a str,
     /// When `false`, skip TempDir execute (JSON-only remaining rows).
     pub execute: bool,
-    /// Process-evidence status for taxonomy (`unsupported`, `broader_evidence_required`).
-    pub process_evidence_status: Option<&'a str>,
+    /// Run the bounded HTTP/SQLite/JSON contract after mutation and after repair.
+    pub process_verifier: Option<&'a mut crate::bench::process::ProcessVerifier>,
     /// Inject a copy failure after execute (tests).
     pub force_persist_failure: bool,
     /// Inject an infrastructure error after repair is entered (tests).
@@ -228,6 +230,9 @@ pub struct AttemptEvidence {
     pub graph_failure: bool,
     /// Captured diagnostics copied from the outcome.
     pub diagnostics: Vec<CapturedDiagnostic>,
+    /// Structured build and process checks, including recovered verification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_evidence: Vec<crate::bench::process::ProcessEvidence>,
 }
 
 /// Per-run retention counters.
@@ -300,10 +305,6 @@ where
         }
     }
 
-    if request.process_evidence_status == Some("broader_evidence_required") {
-        return process_evidence_row(request, model_identity, start.elapsed().as_secs_f64());
-    }
-
     let tmp = match tempfile::TempDir::new() {
         Ok(tmp) => tmp,
         Err(error) => {
@@ -317,6 +318,10 @@ where
     };
     let workspace = tmp.path();
 
+    let mut process = request.process_verifier.take();
+    if let Some(checker) = process.as_deref_mut() {
+        checker.evidence.clear();
+    }
     let mut log = Vec::new();
     let mut hashes = AttemptHashes {
         prompt_hash_status: "partial".to_string(),
@@ -326,20 +331,32 @@ where
     let persist_error: Option<String>;
     let outcome;
 
-    let init_result = (|| {
+    let init_result = async {
         init_workspace(workspace).map_err(|error| format!("init failed: {error}"))?;
         let graph_dir = workspace.join(".duumbi/graph");
         hashes.initial_graph_exact = exact_graph_digest(&graph_dir).ok();
         hashes.initial_graph_semantic = hash::semantic_hash(&graph_dir).ok();
         let mut run_spec = request.spec.clone();
         run_spec.status = IntentStatus::Pending;
+        if let Some(checker) = &process {
+            checker.prepare_spec(&mut run_spec);
+        }
+        let dependency_workspace = workspace.to_path_buf();
+        let dependencies = run_spec.dependencies.clone();
+        let notes = tokio::task::spawn_blocking(move || {
+            materialize_declared_dependencies(&dependency_workspace, &dependencies)
+        })
+        .await
+        .map_err(|error| format!("dependency preparation task failed: {error}"))??;
+        log.extend(notes);
         save_intent(workspace, request.slug, &run_spec)
             .map_err(|error| format!("failed to save intent: {error}"))?;
         hashes.intent_spec = serde_yaml::to_string(&run_spec)
             .ok()
             .map(|yaml| sha256_hex_bytes(yaml.as_bytes()));
         Ok::<(), String>(())
-    })();
+    }
+    .await;
 
     if let Err(error) = init_result {
         outcome = infra_outcome("init", &error);
@@ -368,7 +385,7 @@ where
         return evidence;
     }
 
-    match execute_structured(&mut request, workspace, &mut log).await {
+    match execute_structured(&mut request, workspace, &mut log, process.as_deref_mut()).await {
         Ok(executed) => {
             outcome = executed;
             persist_error = None;
@@ -407,6 +424,13 @@ where
         persist_error,
         start.elapsed().as_secs_f64(),
     );
+    if let Some(checker) = process {
+        evidence.process_evidence = std::mem::take(&mut checker.evidence);
+        classify_process_failure(&mut evidence);
+        evidence.hashes.transcript = Some(sha256_hex_bytes(
+            evidence.sanitized_log.join("\n").as_bytes(),
+        ));
+    }
     {
         let mut state = retention.lock().expect("invariant: retention mutex");
         persist_according_to_policy(
@@ -421,21 +445,103 @@ where
     evidence
 }
 
+/// Adds the intent's declared dependencies to the isolated workspace config
+/// when `init` cached them, so generated stdlib imports can resolve.
+///
+/// `intent execute` itself does not read `IntentSpec::dependencies`; this is
+/// benchmark workspace preparation, not an execute behavior change.
+fn materialize_declared_dependencies(
+    workspace: &Path,
+    dependencies: &[String],
+) -> Result<Vec<String>, String> {
+    if dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !workspace.join(".duumbi/config.toml").is_file() {
+        return Ok(vec![
+            "Declared dependencies not materialized: workspace has no config.toml.".to_string(),
+        ]);
+    }
+    let mut config = crate::config::load_config(workspace)
+        .map_err(|error| format!("load workspace config: {error}"))?;
+    let mut notes = Vec::new();
+    let mut changed = false;
+    for name in dependencies {
+        if config.dependencies.contains_key(name) {
+            continue;
+        }
+        match cached_module_version(workspace, name) {
+            Some(version) => {
+                notes.push(format!(
+                    "Declared dependency {name}@{version} added from the workspace cache."
+                ));
+                config
+                    .dependencies
+                    .insert(name.clone(), DependencyConfig::Version(version));
+                changed = true;
+            }
+            None => notes.push(format!(
+                "Declared dependency {name} is not in the workspace cache; its imports may not resolve."
+            )),
+        }
+    }
+    if changed {
+        crate::config::save_config(workspace, &config)
+            .map_err(|error| format!("save workspace config: {error}"))?;
+    }
+    Ok(notes)
+}
+
+/// Returns the highest cached version of a scoped module such as `@duumbi/stdlib-db`.
+fn cached_module_version(workspace: &Path, name: &str) -> Option<String> {
+    let (scope, module) = name.split_once('/')?;
+    let prefix = format!("{module}@");
+    fs::read_dir(workspace.join(".duumbi/cache").join(scope))
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().join("graph").is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let version = name.to_str()?.strip_prefix(&prefix)?;
+            semver::Version::parse(version).ok()
+        })
+        .max()
+        .map(|version| version.to_string())
+}
+
 async fn execute_structured(
     request: &mut AttemptRequest<'_>,
     workspace: &Path,
     log: &mut Vec<String>,
+    process: Option<&mut crate::bench::process::ProcessVerifier>,
 ) -> anyhow::Result<IntentExecutionOutcome> {
+    let process = process.map(|checker| checker as &mut dyn ExternalVerifier);
     if request.force_io_after_repair {
         crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(true));
     }
     let result = if request.capture_model_io {
         let capturing = CapturingProvider::new(request.provider);
-        let result = run_execute_structured(&capturing, workspace, request.slug, log).await;
+        let result = run_execute_with_external_verifier(
+            &capturing,
+            workspace,
+            request.slug,
+            log,
+            &|_| {},
+            process,
+        )
+        .await;
         request.captured_model_io = capturing.take_payloads();
         result
     } else {
-        run_execute_structured(request.provider, workspace, request.slug, log).await
+        run_execute_with_external_verifier(
+            request.provider,
+            workspace,
+            request.slug,
+            log,
+            &|_| {},
+            process,
+        )
+        .await
     };
     crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(false));
     result
@@ -476,35 +582,8 @@ fn json_only_unexecuted(
         duration_secs,
         graph_failure: false,
         diagnostics: Vec::new(),
+        process_evidence: Vec::new(),
     }
-}
-
-fn process_evidence_row(
-    request: AttemptRequest<'_>,
-    model_identity: ModelIdentityEvidence,
-    duration_secs: f64,
-) -> AttemptEvidence {
-    let mut outcome = blank_outcome("process_evidence_required");
-    outcome.success = false;
-    outcome.tests_total = request.spec.test_cases.len();
-    outcome.phase_events.push(ExecutionPhaseEvent {
-        phase: "preflight".to_string(),
-        status: PhaseEventStatus::Terminal,
-        error_code: Some("broader_evidence_required".to_string()),
-    });
-    assemble_evidence(
-        &request,
-        outcome,
-        model_identity,
-        AttemptHashes {
-            prompt_hash_status: "unavailable".to_string(),
-            ..AttemptHashes::default()
-        },
-        &[],
-        "pending".to_string(),
-        None,
-        duration_secs,
-    )
 }
 
 fn finalize_without_workspace(
@@ -527,6 +606,44 @@ fn finalize_without_workspace(
         Some(redact_secret_text(&error)),
         duration_secs,
     )
+}
+
+/// Process deadlines are generated-program failures, not provider timeouts.
+fn classify_process_failure(evidence: &mut AttemptEvidence) {
+    use crate::bench::process::{ProcessFailureKind, ProcessStage};
+    if evidence.outcome.success || evidence.outcome.terminal_status != "verifier_failed" {
+        return;
+    }
+    let Some(failure) = evidence
+        .process_evidence
+        .last()
+        .and_then(|p| p.failure.as_ref())
+    else {
+        return;
+    };
+    let class = if failure.kind == ProcessFailureKind::Infrastructure {
+        RootCauseClass::ProviderOrInfrastructure
+    } else {
+        match failure.stage {
+            ProcessStage::Assertion => RootCauseClass::ProductLogicMismatch,
+            ProcessStage::Setup => RootCauseClass::ProviderOrInfrastructure,
+            _ => RootCauseClass::CompilerOrRuntime,
+        }
+    };
+    let code = format!("process_{}", failure.stage.as_str());
+    let event = ExecutionPhaseEvent {
+        phase: "process_verify".into(),
+        status: PhaseEventStatus::Terminal,
+        error_code: Some(code.clone()),
+    };
+    evidence.outcome.phase_events.push(event.clone());
+    evidence.phase_evidence.events.push(event);
+    evidence.outcome.dominant_error_code = Some(code);
+    evidence.root_cause = Some(class);
+    evidence.root_cause_attribution = Some(RootCauseAttribution::MatchedRule);
+    evidence.error_category = crate::intent::taxonomy::error_category_for(class);
+    evidence.graph_failure = class != RootCauseClass::ProviderOrInfrastructure;
+    evidence.sanitized_log.push(failure.to_string());
 }
 
 fn blank_outcome(terminal_status: &str) -> IntentExecutionOutcome {
@@ -589,7 +706,7 @@ fn assemble_evidence(
         tests_total: outcome.tests_total,
         terminal_status: &outcome.terminal_status,
         log_text: &sanitized_log.join("\n"),
-        process_evidence_status: request.process_evidence_status,
+        process_evidence_status: None,
         graph_compiled,
         credentials_missing: request.credentials_missing,
     });
@@ -605,6 +722,7 @@ fn assemble_evidence(
         ModelIoStatus::Captured
     };
     AttemptEvidence {
+        process_evidence: Vec::new(),
         phase_evidence: PhaseEvidence {
             events: outcome.phase_events.clone(),
         },
@@ -661,7 +779,7 @@ fn persist_according_to_policy(
         && !request.captured_model_io.is_empty()
         && evidence.model_io_status == ModelIoStatus::Captured;
 
-    if success && !write_snapshot && !write_model_io {
+    if success && !write_snapshot && !write_model_io && evidence.process_evidence.is_empty() {
         evidence.evidence_persistence = EvidencePersistence::JsonOnly;
         evidence.artifact_paths.clear();
         return;
@@ -732,6 +850,13 @@ fn planned_files(
     model_io: bool,
 ) -> Vec<PlannedFile> {
     let mut files = Vec::new();
+    if !evidence.process_evidence.is_empty() {
+        files.push(PlannedFile {
+            relative: "process-evidence.json".to_string(),
+            body: serde_json::to_vec_pretty(&evidence.process_evidence).unwrap_or_default(),
+            is_stub: false,
+        });
+    }
     if failed_allowlist {
         files.push(PlannedFile {
             relative: "phase_evidence.json".to_string(),
@@ -1121,7 +1246,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_evidence_status: None,
+            process_verifier: None,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -1180,6 +1305,53 @@ mod tests {
     }
 
     #[test]
+    fn cached_dependencies_select_highest_valid_semver_graph() {
+        let tmp = tempfile::tempdir().expect("workspace");
+        for version in ["1.9.0", "1.10.0", "1.10.0-rc.1", "garbage"] {
+            fs::create_dir_all(
+                tmp.path()
+                    .join(format!(".duumbi/cache/@duumbi/stdlib-db@{version}/graph")),
+            )
+            .expect("cache");
+        }
+        fs::create_dir_all(tmp.path().join(".duumbi/cache/@duumbi/stdlib-db@9.0.0"))
+            .expect("incomplete cache");
+        assert_eq!(
+            cached_module_version(tmp.path(), "@duumbi/stdlib-db").as_deref(),
+            Some("1.10.0")
+        );
+    }
+
+    #[test]
+    fn declared_dependencies_are_materialized_from_cache_once() {
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let duumbi = tmp.path().join(".duumbi");
+        fs::create_dir_all(duumbi.join("cache/@duumbi/stdlib-db@1.0.0/graph")).expect("cache");
+        fs::write(
+            duumbi.join("config.toml"),
+            "[workspace]\nname = \"bench\"\nnamespace = \"bench\"\n",
+        )
+        .expect("config");
+        let declared = vec![
+            "@duumbi/stdlib-db".to_string(),
+            "@duumbi/stdlib-missing".to_string(),
+        ];
+
+        let notes = materialize_declared_dependencies(tmp.path(), &declared).expect("materialize");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        let config = crate::config::load_config(tmp.path()).expect("reload config");
+        assert!(matches!(
+            config.dependencies.get("@duumbi/stdlib-db"),
+            Some(DependencyConfig::Version(version)) if version == "1.0.0"
+        ));
+        assert!(!config.dependencies.contains_key("@duumbi/stdlib-missing"));
+
+        let again =
+            materialize_declared_dependencies(tmp.path(), &declared[..1]).expect("idempotent");
+        assert!(again.is_empty());
+    }
+
+    #[test]
     fn content_budget_exhaustion_writes_stub_only() {
         let artifacts = tempfile::TempDir::new().expect("artifacts");
         let spec = sample_spec();
@@ -1215,6 +1387,7 @@ mod tests {
             duration_secs: 0.1,
             graph_failure: true,
             diagnostics: Vec::new(),
+            process_evidence: Vec::new(),
         };
         persist_according_to_policy(
             &request("run-budget", &spec, &provider, artifacts.path()),
@@ -1283,6 +1456,7 @@ mod tests {
             duration_secs: 0.1,
             graph_failure: true,
             diagnostics: Vec::new(),
+            process_evidence: Vec::new(),
         };
         persist_according_to_policy(
             &request("run-stub", &spec, &provider, artifacts.path()),
@@ -1359,7 +1533,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_evidence_status: None,
+            process_verifier: None,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,

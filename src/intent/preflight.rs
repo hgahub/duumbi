@@ -226,6 +226,49 @@ pub fn run_preflight_for_intent_with_bdd(
     )
 }
 
+/// Runs slug-aware preflight for a caller that judges behavior with a verifier
+/// other than i64 test cases, such as the DUUMBI-780 bounded process check.
+///
+/// Identical to [`run_preflight_for_intent_with_bdd`] except that the
+/// `E_NO_TEST_CASES` error becomes the informational `I_EXTERNAL_VERIFICATION`
+/// issue naming `external_verifier`. Every other rule is unchanged.
+#[must_use]
+pub fn run_preflight_for_intent_with_external_verifier(
+    spec: &IntentSpec,
+    workspace: &Path,
+    slug: &str,
+    external_verifier: &str,
+) -> (IntentPreflightReport, BddReadinessReport) {
+    let (report, bdd_report) = run_preflight_for_intent_with_bdd(spec, workspace, slug);
+    let issues = report
+        .issues
+        .into_iter()
+        .map(|issue| {
+            if issue.code == "E_NO_TEST_CASES" {
+                IntentPreflightIssue::new(
+                    "I_EXTERNAL_VERIFICATION",
+                    IntentPreflightSeverity::Info,
+                    "test_cases",
+                    format!(
+                        "no i64 test cases; behavior is verified by {external_verifier} during execution and repair"
+                    ),
+                    "keep the external verifier contract in sync with the acceptance criteria",
+                )
+            } else {
+                issue
+            }
+        })
+        .collect();
+    (
+        IntentPreflightReport::from_parts(
+            issues,
+            report.reuse_candidates,
+            report.decomposition_hints,
+        ),
+        bdd_report,
+    )
+}
+
 fn collect_spec_issues(spec: &IntentSpec) -> Vec<IntentPreflightIssue> {
     let mut issues = Vec::new();
 

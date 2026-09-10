@@ -30,7 +30,7 @@ impl ShowcaseSuite {
 pub enum ShowcaseVerification {
     /// Verify with existing i64 intent test cases.
     I64Tests,
-    /// Requires broader process evidence beyond the current i64 verifier.
+    /// Verify a generated service with the bounded local process harness.
     ProcessEvidence {
         /// Evidence kind written to benchmark reports.
         evidence_kind: &'static str,
@@ -38,8 +38,6 @@ pub enum ShowcaseVerification {
         expected_route: &'static str,
         /// JSON fields expected in process evidence.
         expected_json_fields: &'static [&'static str],
-        /// Current verification gap to report until automated process checks exist.
-        verification_gap: &'static str,
     },
 }
 
@@ -192,7 +190,6 @@ pub const SCALED_SHOWCASES: &[Showcase] = &[
             evidence_kind: "loopback_http_sqlite_json",
             expected_route: "/facts",
             expected_json_fields: &["service", "route", "count", "first_fact", "storage"],
-            verification_gap: "current verifier does not check HTTP JSON payload semantics",
         },
     },
 ];
@@ -252,6 +249,49 @@ pub fn filter_showcases_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_showcase_reaches_mutation_only_with_its_external_verifier() {
+        use crate::intent::preflight::{
+            run_preflight_for_intent_with_bdd, run_preflight_for_intent_with_external_verifier,
+        };
+
+        let showcase = SCALED_SHOWCASES
+            .iter()
+            .find(|showcase| showcase.name == "scaled_http_sqlite_json")
+            .expect("process showcase exists");
+        let spec = parse_showcase(showcase).expect("process showcase parses");
+        let workspace = tempfile::TempDir::new().expect("workspace");
+
+        let (plain, _) = run_preflight_for_intent_with_bdd(&spec, workspace.path(), "showcase");
+        assert!(plain.is_blocking());
+        assert!(
+            plain
+                .issues
+                .iter()
+                .any(|issue| issue.code == "E_NO_TEST_CASES")
+        );
+
+        let (waived, _) = run_preflight_for_intent_with_external_verifier(
+            &spec,
+            workspace.path(),
+            "showcase",
+            "bounded HTTP/SQLite/JSON process",
+        );
+        assert!(!waived.is_blocking(), "{:#?}", waived.issues);
+        assert!(
+            waived
+                .issues
+                .iter()
+                .any(|issue| issue.code == "I_EXTERNAL_VERIFICATION")
+        );
+        assert!(
+            waived
+                .issues
+                .iter()
+                .all(|issue| issue.code != "E_NO_TEST_CASES")
+        );
+    }
 
     #[test]
     fn all_showcases_parse() {

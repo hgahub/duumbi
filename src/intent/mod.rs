@@ -30,6 +30,7 @@ pub mod capture;
 pub mod coordinator;
 pub mod create;
 pub mod execute;
+pub mod external_verifier;
 pub mod modify;
 /// Deterministic provider-free readiness reports for intent specifications.
 pub mod preflight;

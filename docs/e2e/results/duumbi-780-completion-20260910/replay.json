@@ -1,0 +1,384 @@
+{
+  "schema_version": "duumbi.determinism.replay_report.v1",
+  "run_id": "duumbi-780-offline",
+  "started_at": "2026-09-10T00:00:00Z",
+  "finished_at": "2026-09-10T15:43:49Z",
+  "duumbi_version": "0.4.1-preview",
+  "source_commit": "offline-fixture",
+  "inputs": {
+    "suite": "core",
+    "smoke": false,
+    "showcases": [
+      "scaled_http_sqlite_json"
+    ],
+    "providers": [
+      "openai:fixture"
+    ],
+    "attempts": 2
+  },
+  "environment": {
+    "provider_source": "injected",
+    "registry_state_hash": "736d42b0f7e25c996849916f0e8ef7c0e72eabcb09f31295a9227eb94a853ba2",
+    "lockfile_hash": "absent",
+    "workspace_dependency_config_hash": "absent"
+  },
+  "tasks": [
+    {
+      "task_id": "scaled_http_sqlite_json",
+      "suite": "scaled",
+      "tags": [
+        "scaled",
+        "http",
+        "sqlite",
+        "json",
+        "process_evidence"
+      ]
+    }
+  ],
+  "attempts": [
+    {
+      "task_id": "scaled_http_sqlite_json",
+      "suite": "scaled",
+      "tags": [
+        "scaled",
+        "http",
+        "sqlite",
+        "json",
+        "process_evidence"
+      ],
+      "provider": "openai:fixture",
+      "model_identity": {
+        "status": "unavailable",
+        "reason": "provider did not expose resolved model"
+      },
+      "attempt": 1,
+      "workspace_strategy": "isolated_tempdir",
+      "initial_graph_exact_hash": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+      "initial_graph_semantic_hash": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+      "final_graph_exact_hash": "a26e3512ff43ac84277d151c51d9e77d7e454ebe323950373f3d341c171e0bcd",
+      "final_graph_semantic_hash": "6bb21c81db9a8cfca699ef5b1ea35abb9e0b835f44624f3000fa91fba47e178d",
+      "intent_spec_hash": "24516e6237a52dab1b8ae388ba1f2ea0f8bcde6ee2bffedfd0f4e9456c725475",
+      "bdd_context_hash": "8c351c57ffebaaba627e190624d90814f854d87bfa1ccd8b273870453b5dcb09",
+      "context_pack_hash": "7a8c2ec51327611b44335e8c0cf0490ee701d2acf65426e8a6b71d55e06f2956",
+      "prompt_hashes": {
+        "status": "partial",
+        "reason": "final provider prompt capture is not exposed by intent execute",
+        "hashes": {
+          "bdd_context": "8c351c57ffebaaba627e190624d90814f854d87bfa1ccd8b273870453b5dcb09",
+          "context_pack": "7a8c2ec51327611b44335e8c0cf0490ee701d2acf65426e8a6b71d55e06f2956",
+          "intent_spec": "24516e6237a52dab1b8ae388ba1f2ea0f8bcde6ee2bffedfd0f4e9456c725475"
+        }
+      },
+      "success": true,
+      "tests_passed": 1,
+      "tests_total": 1,
+      "bdd_readiness": "warning",
+      "bdd_coverage": [],
+      "behavior_signature": "success=true;tests=1/1;error=none;process=passed",
+      "error_category": null,
+      "dominant_error_code": null,
+      "provider_usage": {
+        "available": false,
+        "unavailable_reason": "provider_response_did_not_expose_usage"
+      },
+      "benchmark_evidence": {
+        "kind": "loopback_http_sqlite_json",
+        "status": "passed",
+        "detail": "Built and verified two fresh SQLite datasets over loopback HTTP",
+        "command": "duumbi build --output .duumbi/build/output",
+        "expected_route": "/facts",
+        "expected_json_fields": [
+          "service",
+          "route",
+          "count",
+          "first_fact",
+          "storage"
+        ],
+        "artifact_path": "duumbi-780-offline/scaled-http-sqlite-json-f9375c9cb817/openai-fixture-43a5859f3365/1/process-evidence.json",
+        "process": [
+          {
+            "contract": "duumbi.http-sqlite-json.v1",
+            "build_command": "duumbi build --output .duumbi/build/output",
+            "build": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmpiA9zTK/.duumbi/build/output"
+            },
+            "scenarios": [
+              {
+                "scenario": "one_row",
+                "port": 51262,
+                "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+                "route": "/facts",
+                "status": 200,
+                "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+                "expected": {
+                  "count": 1,
+                  "first_fact": "Ada Lovelace",
+                  "route": "/facts",
+                  "service": "scaled-http-sqlite-json",
+                  "storage": "sqlite-memory"
+                },
+                "assertions_passed": true,
+                "process": {
+                  "exit_code": 0,
+                  "timed_out": false,
+                  "killed": false,
+                  "reaped": true,
+                  "stdout": "",
+                  "stderr": ""
+                },
+                "failure": null
+              },
+              {
+                "scenario": "two_rows",
+                "port": 51262,
+                "input_sql": "INSERT INTO facts(name) VALUES ('Grace Hopper'), ('Katherine Johnson')",
+                "route": "/facts",
+                "status": 200,
+                "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":2,\"first_fact\":\"Grace Hopper\",\"storage\":\"sqlite-memory\"}",
+                "expected": {
+                  "count": 2,
+                  "first_fact": "Grace Hopper",
+                  "route": "/facts",
+                  "service": "scaled-http-sqlite-json",
+                  "storage": "sqlite-memory"
+                },
+                "assertions_passed": true,
+                "process": {
+                  "exit_code": 0,
+                  "timed_out": false,
+                  "killed": false,
+                  "reaped": true,
+                  "stdout": "",
+                  "stderr": ""
+                },
+                "failure": null
+              }
+            ],
+            "failure": null
+          }
+        ]
+      },
+      "artifact_paths": [
+        "duumbi-780-offline/scaled-http-sqlite-json-f9375c9cb817/openai-fixture-43a5859f3365/1/process-evidence.json"
+      ],
+      "duration_secs": 5.114565542,
+      "repair_attempted": false,
+      "repair_applied": false,
+      "first_pass_success": true,
+      "evidence_persistence": "complete",
+      "phase_evidence": {
+        "events": [
+          {
+            "phase": "preflight",
+            "status": "informational"
+          },
+          {
+            "phase": "verify",
+            "status": "informational"
+          },
+          {
+            "phase": "complete",
+            "status": "terminal"
+          }
+        ]
+      },
+      "executed": true,
+      "graph_failure": false
+    },
+    {
+      "task_id": "scaled_http_sqlite_json",
+      "suite": "scaled",
+      "tags": [
+        "scaled",
+        "http",
+        "sqlite",
+        "json",
+        "process_evidence"
+      ],
+      "provider": "openai:fixture",
+      "model_identity": {
+        "status": "unavailable",
+        "reason": "provider did not expose resolved model"
+      },
+      "attempt": 2,
+      "workspace_strategy": "isolated_tempdir",
+      "initial_graph_exact_hash": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+      "initial_graph_semantic_hash": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+      "final_graph_exact_hash": "a26e3512ff43ac84277d151c51d9e77d7e454ebe323950373f3d341c171e0bcd",
+      "final_graph_semantic_hash": "6bb21c81db9a8cfca699ef5b1ea35abb9e0b835f44624f3000fa91fba47e178d",
+      "intent_spec_hash": "24516e6237a52dab1b8ae388ba1f2ea0f8bcde6ee2bffedfd0f4e9456c725475",
+      "bdd_context_hash": "8c351c57ffebaaba627e190624d90814f854d87bfa1ccd8b273870453b5dcb09",
+      "context_pack_hash": "7a8c2ec51327611b44335e8c0cf0490ee701d2acf65426e8a6b71d55e06f2956",
+      "prompt_hashes": {
+        "status": "partial",
+        "reason": "final provider prompt capture is not exposed by intent execute",
+        "hashes": {
+          "bdd_context": "8c351c57ffebaaba627e190624d90814f854d87bfa1ccd8b273870453b5dcb09",
+          "context_pack": "7a8c2ec51327611b44335e8c0cf0490ee701d2acf65426e8a6b71d55e06f2956",
+          "intent_spec": "24516e6237a52dab1b8ae388ba1f2ea0f8bcde6ee2bffedfd0f4e9456c725475"
+        }
+      },
+      "success": true,
+      "tests_passed": 1,
+      "tests_total": 1,
+      "bdd_readiness": "warning",
+      "bdd_coverage": [],
+      "behavior_signature": "success=true;tests=1/1;error=none;process=passed",
+      "error_category": null,
+      "dominant_error_code": null,
+      "provider_usage": {
+        "available": false,
+        "unavailable_reason": "provider_response_did_not_expose_usage"
+      },
+      "benchmark_evidence": {
+        "kind": "loopback_http_sqlite_json",
+        "status": "passed",
+        "detail": "Built and verified two fresh SQLite datasets over loopback HTTP",
+        "command": "duumbi build --output .duumbi/build/output",
+        "expected_route": "/facts",
+        "expected_json_fields": [
+          "service",
+          "route",
+          "count",
+          "first_fact",
+          "storage"
+        ],
+        "artifact_path": "duumbi-780-offline/scaled-http-sqlite-json-f9375c9cb817/openai-fixture-43a5859f3365/2/process-evidence.json",
+        "process": [
+          {
+            "contract": "duumbi.http-sqlite-json.v1",
+            "build_command": "duumbi build --output .duumbi/build/output",
+            "build": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmpcJ1PyJ/.duumbi/build/output"
+            },
+            "scenarios": [
+              {
+                "scenario": "one_row",
+                "port": 51262,
+                "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+                "route": "/facts",
+                "status": 200,
+                "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+                "expected": {
+                  "count": 1,
+                  "first_fact": "Ada Lovelace",
+                  "route": "/facts",
+                  "service": "scaled-http-sqlite-json",
+                  "storage": "sqlite-memory"
+                },
+                "assertions_passed": true,
+                "process": {
+                  "exit_code": 0,
+                  "timed_out": false,
+                  "killed": false,
+                  "reaped": true,
+                  "stdout": "",
+                  "stderr": ""
+                },
+                "failure": null
+              },
+              {
+                "scenario": "two_rows",
+                "port": 51262,
+                "input_sql": "INSERT INTO facts(name) VALUES ('Grace Hopper'), ('Katherine Johnson')",
+                "route": "/facts",
+                "status": 200,
+                "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":2,\"first_fact\":\"Grace Hopper\",\"storage\":\"sqlite-memory\"}",
+                "expected": {
+                  "count": 2,
+                  "first_fact": "Grace Hopper",
+                  "route": "/facts",
+                  "service": "scaled-http-sqlite-json",
+                  "storage": "sqlite-memory"
+                },
+                "assertions_passed": true,
+                "process": {
+                  "exit_code": 0,
+                  "timed_out": false,
+                  "killed": false,
+                  "reaped": true,
+                  "stdout": "",
+                  "stderr": ""
+                },
+                "failure": null
+              }
+            ],
+            "failure": null
+          }
+        ]
+      },
+      "artifact_paths": [
+        "duumbi-780-offline/scaled-http-sqlite-json-f9375c9cb817/openai-fixture-43a5859f3365/2/process-evidence.json"
+      ],
+      "duration_secs": 1.4389898749999999,
+      "repair_attempted": false,
+      "repair_applied": false,
+      "first_pass_success": true,
+      "evidence_persistence": "complete",
+      "phase_evidence": {
+        "events": [
+          {
+            "phase": "preflight",
+            "status": "informational"
+          },
+          {
+            "phase": "verify",
+            "status": "informational"
+          },
+          {
+            "phase": "complete",
+            "status": "terminal"
+          }
+        ]
+      },
+      "executed": true,
+      "graph_failure": false
+    }
+  ],
+  "metrics": {
+    "attempts_total": 2,
+    "attempts_completed": 2,
+    "exact_graph_agreement_rate": {
+      "status": "available",
+      "rate": 1.0,
+      "comparable_attempt_count": 2,
+      "largest_equivalence_group_count": 2,
+      "dominant_key": "grouped_by=task_id/provider;groups=1"
+    },
+    "semantic_graph_agreement_rate": {
+      "status": "available",
+      "rate": 1.0,
+      "comparable_attempt_count": 2,
+      "largest_equivalence_group_count": 2,
+      "dominant_key": "grouped_by=task_id/provider;groups=1"
+    },
+    "behavioral_agreement_rate": {
+      "status": "available",
+      "rate": 1.0,
+      "comparable_attempt_count": 2,
+      "largest_equivalence_group_count": 2,
+      "dominant_key": "grouped_by=task_id/provider;groups=1"
+    },
+    "failure_category_agreement_rate": {
+      "status": "unavailable",
+      "reason": "no comparable attempts produced failure category evidence",
+      "comparable_attempt_count": 0
+    },
+    "divergence_examples": []
+  },
+  "rewrite_comparison": {
+    "status": "not_yet_comparable",
+    "reason": "no constrained LLM rewrite mutation strategy for this task"
+  },
+  "warnings": []
+}

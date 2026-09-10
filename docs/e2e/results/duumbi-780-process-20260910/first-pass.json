@@ -1,0 +1,142 @@
+{
+  "showcase": "scaled_http_sqlite_json",
+  "task_id": "scaled_http_sqlite_json",
+  "suite": "scaled",
+  "tags": [
+    "scaled",
+    "http",
+    "sqlite",
+    "json",
+    "process_evidence"
+  ],
+  "provider": "offline-process-fixture",
+  "attempt": 1,
+  "success": true,
+  "first_pass_success": true,
+  "repair_attempted": false,
+  "repair_applied": false,
+  "error_category": null,
+  "mutation_retry_count": 0,
+  "total_retry_count": 0,
+  "provider_usage": {
+    "available": false,
+    "unavailable_reason": "provider_response_did_not_expose_usage"
+  },
+  "evidence": {
+    "kind": "loopback_http_sqlite_json",
+    "status": "passed",
+    "detail": "Built and verified two fresh SQLite datasets over loopback HTTP",
+    "command": "duumbi build --output .duumbi/build/output",
+    "expected_route": "/facts",
+    "expected_json_fields": [
+      "service",
+      "route",
+      "count",
+      "first_fact",
+      "storage"
+    ],
+    "artifact_path": "run-1789046931027718000-59088/scaled-http-sqlite-json-f9375c9cb817/offline-process-fixture-210957e1f006/1/process-evidence.json",
+    "process": [
+      {
+        "contract": "duumbi.http-sqlite-json.v1",
+        "build_command": "duumbi build --output .duumbi/build/output",
+        "build": {
+          "exit_code": 0,
+          "timed_out": false,
+          "killed": false,
+          "reaped": true,
+          "stdout": "",
+          "stderr": "✓ Build successful: /var/folders/j9/9_t_gcr50cjfr942mkywtn400000gn/T/.tmpc7n7cY/.duumbi/build/output"
+        },
+        "scenarios": [
+          {
+            "scenario": "one_row",
+            "port": 62845,
+            "input_sql": "INSERT INTO facts(name) VALUES ('Ada Lovelace')",
+            "route": "/facts",
+            "status": 200,
+            "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":1,\"first_fact\":\"Ada Lovelace\",\"storage\":\"sqlite-memory\"}",
+            "expected": {
+              "count": 1,
+              "first_fact": "Ada Lovelace",
+              "route": "/facts",
+              "service": "scaled-http-sqlite-json",
+              "storage": "sqlite-memory"
+            },
+            "assertions_passed": true,
+            "process": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": ""
+            },
+            "failure": null
+          },
+          {
+            "scenario": "two_rows",
+            "port": 62845,
+            "input_sql": "INSERT INTO facts(name) VALUES ('Grace Hopper'), ('Katherine Johnson')",
+            "route": "/facts",
+            "status": 200,
+            "response": "{\"service\":\"scaled-http-sqlite-json\",\"route\":\"/facts\",\"count\":2,\"first_fact\":\"Grace Hopper\",\"storage\":\"sqlite-memory\"}",
+            "expected": {
+              "count": 2,
+              "first_fact": "Grace Hopper",
+              "route": "/facts",
+              "service": "scaled-http-sqlite-json",
+              "storage": "sqlite-memory"
+            },
+            "assertions_passed": true,
+            "process": {
+              "exit_code": 0,
+              "timed_out": false,
+              "killed": false,
+              "reaped": true,
+              "stdout": "",
+              "stderr": ""
+            },
+            "failure": null
+          }
+        ],
+        "failure": null
+      }
+    ]
+  },
+  "phase_evidence": {
+    "events": [
+      {
+        "phase": "preflight",
+        "status": "informational"
+      },
+      {
+        "phase": "verify",
+        "status": "informational"
+      },
+      {
+        "phase": "complete",
+        "status": "terminal"
+      }
+    ]
+  },
+  "evidence_persistence": "complete",
+  "artifact_paths": [
+    "run-1789046931027718000-59088/scaled-http-sqlite-json-f9375c9cb817/offline-process-fixture-210957e1f006/1/process-evidence.json"
+  ],
+  "hashes": {
+    "initial_graph_exact": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+    "initial_graph_semantic": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+    "final_graph_exact": "ce19b98d1a4aef03fd6147c322e1e4b3753ed0bb7c1667179c696548bdea983d",
+    "final_graph_semantic": "d321c52be87e33acac8a8b1bb04d1ee206c7ac48d8fd6e99230ff1bc93b005f4",
+    "intent_spec": "acaa16463290bdf19f8578aefb609427366e69ec07fa6cbed3db468c95ff286a",
+    "transcript": "a2b3f92a78babcf3be6a948f8e2cf4443e90866b11b0fa0da2d4c64e87b44936",
+    "prompt_hash_status": "partial"
+  },
+  "model_io_status": "not_requested",
+  "executed": true,
+  "graph_failure": false,
+  "tests_passed": 1,
+  "tests_total": 1,
+  "duration_secs": 2.786039959
+}

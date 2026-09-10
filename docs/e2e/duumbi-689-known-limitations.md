@@ -2,6 +2,10 @@
 
 Related to #689.
 
+Update: [DUUMBI-780](duumbi-780-process-evidence.md) adds automated bounded
+process verification for new HTTP/SQLite/JSON benchmark and replay attempts.
+The historical results below remain unchanged; they did not run that verifier.
+
 The scaled intent-execute smoke evidence from 2026-06-16 should be treated as
 preview risk evidence, not as a passing benchmark claim.
 
@@ -43,7 +47,14 @@ Evidence source:
 1. Scaled i64 task verifier failures need sampled generated-workspace evidence
    so follow-up work can distinguish wrong decomposition, missing exports,
    cross-module call resolution, and logic mistakes.
-2. HTTP + SQLite + JSON needs a bounded process evidence checker before the
-   scaled benchmark can validate service output directly.
+2. HTTP + SQLite + JSON now has a bounded process evidence checker (#780);
+   generated-service reliability still requires live authoring evidence.
 3. Provider usage telemetry needs integration into benchmark results before
    preview cost claims are supported.
+
+Generated-service reliability is still not proven by offline fixtures. The other
+implementation's live MiniMax run on 2026-09-10 hit HTTP 429 before graph
+generation (recorded in the [#780 decision](https://github.com/hgahub/duumbi/issues/780#issuecomment-5620459440)).
+Only a live row with `evidence.status = passed` establishes an authoring success.
+Generated solutions must guard `ResultUnwrap` with `ResultIsOk` (E034 in the write
+path); the hand-written flagship graph does not and is only an API reference.

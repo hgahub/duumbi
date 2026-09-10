@@ -1222,6 +1222,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "indicatif",
+ "libc",
  "owo-colors",
  "petgraph",
  "pulldown-cmark",
@@ -1244,6 +1245,7 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
  "wiremock",
 ]
 

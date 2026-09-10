@@ -130,6 +130,20 @@ where
         config.artifact_dir.clone()
     };
     let retention = Arc::new(Mutex::new(RunRetentionState::default()));
+    // One port per invocation. Process attempts across providers share the
+    // verifier under an async lock; ordinary i64 showcases stay concurrent.
+    let process = if showcase_refs.iter().any(|showcase| {
+        matches!(
+            showcase.verification,
+            ShowcaseVerification::ProcessEvidence { .. }
+        )
+    }) {
+        Some(Arc::new(tokio::sync::Mutex::new(
+            super::process::ProcessVerifier::for_current_executable().map_err(|e| e.to_string())?,
+        )))
+    } else {
+        None
+    };
 
     let mut all_results: Vec<BenchmarkResult> = Vec::with_capacity(total_runs);
 
@@ -154,6 +168,14 @@ where
             let retention = Arc::clone(&retention);
             let keep_workspaces = config.keep_workspaces;
             let capture_model_io = config.capture_model_io;
+            let process = if matches!(
+                showcase.verification,
+                ShowcaseVerification::ProcessEvidence { .. }
+            ) {
+                process.clone()
+            } else {
+                None
+            };
 
             let handle = tokio::spawn(async move {
                 let mut results = Vec::with_capacity(attempts as usize);
@@ -178,18 +200,24 @@ where
                             execute,
                             provider_key: &prov_name,
                             retention: Arc::clone(&retention),
+                            process: process.clone(),
                         },
                     )
                     .await;
 
+                    let process_note = result
+                        .evidence
+                        .as_ref()
+                        .map(|e| format!(", process evidence {}", e.status))
+                        .unwrap_or_default();
                     if result.success {
                         eprintln!(
-                            "    ✓ passed ({}/{} tests, {:.1}s)",
+                            "    ✓ passed ({}/{} tests, {:.1}s){process_note}",
                             result.tests_passed, result.tests_total, result.duration_secs,
                         );
                     } else {
                         eprintln!(
-                            "    ✗ failed: {} ({})",
+                            "    ✗ failed: {} ({}){process_note}",
                             result
                                 .error_category
                                 .as_ref()
@@ -234,6 +262,7 @@ struct SingleAttemptOptions<'a> {
     execute: bool,
     provider_key: &'a str,
     retention: Arc<Mutex<RunRetentionState>>,
+    process: Option<Arc<tokio::sync::Mutex<super::process::ProcessVerifier>>>,
 }
 
 /// Runs a single benchmark attempt in an isolated temp workspace.
@@ -248,9 +277,9 @@ async fn run_single<F>(
 where
     F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync,
 {
-    let process_evidence_status = match showcase.verification {
-        ShowcaseVerification::ProcessEvidence { .. } => Some("broader_evidence_required"),
-        _ => None,
+    let mut process = match &options.process {
+        Some(process) => Some(process.lock().await),
+        None => None,
     };
     let evidence = run_isolated_attempt(
         AttemptRequest {
@@ -265,7 +294,7 @@ where
             capture_model_io: options.capture_model_io,
             slug: "benchmark-showcase",
             execute: options.execute,
-            process_evidence_status,
+            process_verifier: process.as_deref_mut(),
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -276,31 +305,53 @@ where
     )
     .await;
 
-    let mut result =
-        benchmark_result_from_evidence(showcase, provider.name(), attempt, spec, evidence);
-    if let ShowcaseVerification::ProcessEvidence {
+    benchmark_result_from_evidence(showcase, provider.name(), attempt, spec, evidence)
+}
+
+pub(crate) fn process_benchmark_evidence(
+    showcase: &Showcase,
+    evidence: &crate::intent::attempt::AttemptEvidence,
+) -> Option<BenchmarkEvidence> {
+    let ShowcaseVerification::ProcessEvidence {
         evidence_kind,
         expected_route,
         expected_json_fields,
-        verification_gap,
     } = showcase.verification
-    {
-        result.evidence = Some(BenchmarkEvidence {
-            kind: evidence_kind.to_string(),
-            status: "broader_evidence_required".to_string(),
-            detail: verification_gap.to_string(),
-            command: None,
-            expected_route: Some(expected_route.to_string()),
-            expected_json_fields: expected_json_fields
-                .iter()
-                .map(|field| (*field).to_string())
-                .collect(),
-            verification_gap: Some(verification_gap.to_string()),
-            artifact_path: result.artifact_paths.first().cloned(),
-        });
-        result.dominant_error_code = Some("broader_evidence_required".to_string());
-    }
-    result
+    else {
+        return None;
+    };
+    let last = evidence.process_evidence.last();
+    Some(BenchmarkEvidence {
+        kind: evidence_kind.into(),
+        status: match last {
+            None => "not_run",
+            Some(p) if p.failure.is_none() => "passed",
+            Some(_) => "failed",
+        }
+        .into(),
+        detail: match last {
+            None => "Process verification was not reached; inspect the authoring/preflight outcome"
+                .into(),
+            Some(p) => p.failure.as_ref().map_or_else(
+                || "Built and verified two fresh SQLite datasets over loopback HTTP".into(),
+                ToString::to_string,
+            ),
+        },
+        command: last.map(|p| p.build_command.clone()),
+        expected_route: Some(expected_route.into()),
+        expected_json_fields: expected_json_fields.iter().map(|f| (*f).into()).collect(),
+        verification_gap: None,
+        artifact_path: evidence
+            .artifact_paths
+            .iter()
+            .find(|p| {
+                Path::new(p)
+                    .file_name()
+                    .is_some_and(|name| name == "process-evidence.json")
+            })
+            .cloned(),
+        process: evidence.process_evidence.clone(),
+    })
 }
 
 fn benchmark_result_from_evidence(
@@ -315,6 +366,7 @@ fn benchmark_result_from_evidence(
     } else {
         evidence.outcome.tests_total
     };
+    let process_evidence = process_benchmark_evidence(showcase, &evidence);
     BenchmarkResult {
         showcase: showcase.name.to_string(),
         task_id: Some(showcase.name.to_string()),
@@ -354,7 +406,7 @@ fn benchmark_result_from_evidence(
             (None, None) => None,
         },
         provider_usage: ProviderUsageSummary::unavailable("provider_response_did_not_expose_usage"),
-        evidence: None,
+        evidence: process_evidence,
         phase_evidence: Some(evidence.phase_evidence),
         evidence_persistence: Some(evidence.evidence_persistence),
         artifact_paths: evidence.artifact_paths,
@@ -550,6 +602,7 @@ mod tests {
                 execute: true,
                 provider_key: "mock",
                 retention,
+                process: None,
             },
         )
         .await;
@@ -592,6 +645,7 @@ mod tests {
                 execute: true,
                 provider_key: "mock",
                 retention,
+                process: None,
             },
         )
         .await;

@@ -188,6 +188,9 @@ pub struct BenchmarkEvidence {
     /// Path to retained evidence artifact, when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_path: Option<String>,
+    /// Build/start/request/response/assertion records, including repaired passes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process: Vec<crate::bench::process::ProcessEvidence>,
 }
 
 /// Broad failure category for error breakdown.
