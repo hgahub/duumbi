@@ -211,6 +211,17 @@ async fn benchmark(behavior: FixtureBehavior) -> duumbi::bench::report::Benchmar
         "process rows must invoke authoring"
     );
     let result = results.into_iter().next().expect("result");
+    if matches!(behavior, FixtureBehavior::Unrepaired) {
+        let log = result
+            .artifact_paths
+            .iter()
+            .find(|p| p.ends_with("execute.log"))
+            .map(|p| std::fs::read_to_string(artifacts.path().join(p)).expect("execute log"))
+            .expect("retained execute log");
+        assert!(log.contains("@duumbi/stdlib-server@1.0.0 added from the workspace cache"));
+        assert!(log.contains("I_EXTERNAL_VERIFICATION"));
+        assert!(!log.contains("E_NO_TEST_CASES"));
+    }
     if matches!(behavior, FixtureBehavior::Pass | FixtureBehavior::Repair) {
         if !result.success {
             let log = result
@@ -316,7 +327,7 @@ async fn determinism_replay_runs_the_same_process_contract() {
     let calls = Arc::new(AtomicUsize::new(0));
     let config = ReplayConfig {
         run_id: "duumbi-780-offline".into(),
-        attempts: 1,
+        attempts: 2,
         providers: vec![provider_config()],
         showcase_filter: Some(vec!["scaled_http_sqlite_json".into()]),
         provider_filter: None,
@@ -351,6 +362,36 @@ async fn determinism_replay_runs_the_same_process_contract() {
     );
     assert_eq!(attempt.tests_total, 1);
     assert!(attempt.dominant_error_code.is_none());
+    assert_eq!(report.attempts.len(), 2);
+    let second = &report.attempts[1];
+    assert!(second.success, "{second:#?}");
+    assert!(attempt.intent_spec_hash.is_some());
+    assert_eq!(attempt.intent_spec_hash, second.intent_spec_hash);
+    assert!(attempt.final_graph_semantic_hash.is_some());
+    assert_eq!(
+        attempt.final_graph_semantic_hash,
+        second.final_graph_semantic_hash
+    );
+    assert_eq!(
+        attempt.final_graph_exact_hash,
+        second.final_graph_exact_hash
+    );
+    for row in &report.attempts {
+        assert!(
+            row.behavior_signature
+                .as_deref()
+                .expect("signature")
+                .ends_with(";process=passed")
+        );
+    }
+    if let Some(path) = std::env::var_os("DUUMBI_780_EVIDENCE_DIR") {
+        std::fs::create_dir_all(&path).expect("manual artifact directory");
+        std::fs::write(
+            Path::new(&path).join("replay.json"),
+            serde_json::to_vec_pretty(&report).expect("replay JSON"),
+        )
+        .expect("manual replay evidence");
+    }
 }
 
 #[tokio::test]

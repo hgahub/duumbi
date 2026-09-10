@@ -372,18 +372,18 @@ pub async fn run_execute_structured_with_progress(
     log: &mut Vec<String>,
     on_progress: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<IntentExecutionOutcome> {
-    run_execute_with_process_verifier(client, workspace, slug, log, on_progress, None).await
+    run_execute_with_external_verifier(client, workspace, slug, log, on_progress, None).await
 }
 
-/// Runs the normal mutation and repair path with optional bounded process checks.
+/// Runs the normal mutation and repair path with optional external behavioral checks.
 #[must_use = "the structured outcome should be recorded"]
-pub(crate) async fn run_execute_with_process_verifier(
+pub(crate) async fn run_execute_with_external_verifier(
     client: &dyn LlmProvider,
     workspace: &Path,
     slug: &str,
     log: &mut Vec<String>,
     on_progress: &(dyn Fn(&str) + Send + Sync),
-    mut process: Option<&mut crate::bench::process::ProcessVerifier>,
+    mut process: Option<&mut dyn crate::intent::external_verifier::ExternalVerifier>,
 ) -> Result<IntentExecutionOutcome> {
     // Helper: push to log AND emit via callback for real-time display.
     macro_rules! emit {
@@ -400,19 +400,15 @@ pub(crate) async fn run_execute_with_process_verifier(
     // 1. Load spec
     let mut spec = load_intent(workspace, slug).map_err(|e: IntentError| anyhow::anyhow!("{e}"))?;
 
-    let (mut preflight, bdd_report) = run_preflight_for_intent_with_bdd(&spec, workspace, slug);
-    if process.is_some() {
-        // Only replace the i64-check requirement. All other preflight and BDD
-        // gates still apply to process-verified executable intents.
-        preflight
-            .issues
-            .retain(|issue| issue.code != "E_NO_TEST_CASES");
-        preflight = crate::intent::preflight::IntentPreflightReport::from_parts(
-            preflight.issues,
-            preflight.reuse_candidates,
-            preflight.decomposition_hints,
-        );
-    }
+    let (preflight, bdd_report) = match process.as_ref() {
+        Some(checker) => crate::intent::preflight::run_preflight_for_intent_with_external_verifier(
+            &spec,
+            workspace,
+            slug,
+            checker.kind(),
+        ),
+        None => run_preflight_for_intent_with_bdd(&spec, workspace, slug),
+    };
     for line in render_preflight_report(&preflight) {
         emit!(line);
     }
@@ -761,8 +757,8 @@ pub(crate) async fn run_execute_with_process_verifier(
         return Ok(collector.finish(true, "completed"));
     }
 
-    if process.is_some() {
-        emit!("Running bounded HTTP/SQLite/JSON process verification…".to_string());
+    if let Some(checker) = process.as_ref() {
+        emit!(format!("Running {} verification…", checker.kind()));
     } else {
         emit!(format!(
             "Running {} test{}…",

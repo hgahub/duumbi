@@ -5,9 +5,11 @@
 
 mod bindings;
 
+use crate::intent::external_verifier::ExternalVerifier;
 use std::future::Future;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -42,6 +44,22 @@ pub enum ProcessStage {
     Assertion,
     /// The program did not exit successfully after serving one request.
     Exit,
+}
+
+impl ProcessStage {
+    /// Stable lowercase stage name used in signatures and failure codes.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Build => "build",
+            Self::Start => "start",
+            Self::Request => "request",
+            Self::Response => "response",
+            Self::Assertion => "assertion",
+            Self::Exit => "exit",
+        }
+    }
 }
 
 /// Separates generated-program defects from verifier infrastructure failures.
@@ -233,7 +251,7 @@ impl ProcessVerifier {
 
     /// Adds the selected port to the intent before any provider mutation.
     pub fn prepare_spec(&self, spec: &mut IntentSpec) {
-        spec.acceptance_criteria.push(format!("Bind only to 127.0.0.1 on TCP port {}. This port is reserved for this attempt; use it as the server port.", self.port));
+        spec.acceptance_criteria.push(format!("Bind only to 127.0.0.1 on TCP port {}. This port is fixed for this run; use it as the server port.", self.port));
     }
 
     /// Whether repairing the generated graph could address the latest failure.
@@ -389,6 +407,13 @@ impl ProcessVerifier {
             process: ProcessOutput::default(),
             failure: None,
         };
+        // Bind and release before every launch, including repaired passes and
+        // subsequent attempts. A port taken by another process is infrastructure,
+        // and must never be mistaken for a generated-program assertion failure.
+        if let Err(error) = check_port_available(self.port) {
+            evidence.failure = Some(infrastructure(ProcessStage::Start, error));
+            return evidence;
+        }
         let mut command = Command::new(executable);
         // Generated children receive no provider credentials or proxy settings.
         command.current_dir(workspace).env_clear();
@@ -461,6 +486,38 @@ impl ProcessVerifier {
         }
         evidence
     }
+}
+
+impl ExternalVerifier for ProcessVerifier {
+    fn prepare_spec(&self, spec: &mut IntentSpec) {
+        ProcessVerifier::prepare_spec(self, spec);
+    }
+
+    fn verify<'a>(
+        &'a mut self,
+        workspace: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = TestReport> + Send + 'a>> {
+        Box::pin(ProcessVerifier::verify(self, workspace))
+    }
+
+    fn repairable(&self) -> bool {
+        ProcessVerifier::repairable(self)
+    }
+
+    fn kind(&self) -> &str {
+        "bounded HTTP/SQLite/JSON process"
+    }
+}
+
+/// Check the same bind the runtime will use without treating Unix TIME_WAIT
+/// from the preceding dataset as a live listener. Windows must not enable
+/// SO_REUSEADDR: it permits hijacking an active listener there.
+fn check_port_available(port: u16) -> std::io::Result<()> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    #[cfg(unix)]
+    socket.set_reuseaddr(true)?;
+    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
+    Ok(())
 }
 
 async fn deadline<T>(
@@ -871,6 +928,35 @@ mod tests {
         .expect_err("deadline");
         assert_eq!(failure.stage, ProcessStage::Response);
         assert_eq!(failure.kind, ProcessFailureKind::Program);
+    }
+
+    #[tokio::test]
+    async fn occupied_run_port_is_start_infrastructure_without_launching() {
+        let mut verifier = ProcessVerifier::new(PathBuf::from("missing"), ProcessLimits::default())
+            .expect("verifier");
+        let _conflict = verifier.reservation.take().expect("occupied port");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let scenario = verifier
+            .scenario(
+                workspace.path(),
+                Path::new("must-not-launch"),
+                "one_row",
+                "INSERT",
+                expected(),
+            )
+            .await;
+        let failure = scenario.failure.as_ref().expect("port conflict");
+        assert_eq!(failure.stage, ProcessStage::Start);
+        assert_eq!(failure.kind, ProcessFailureKind::Infrastructure);
+        assert!(!scenario.process.reaped);
+        verifier.evidence.push(ProcessEvidence {
+            contract: "test".into(),
+            build_command: String::new(),
+            build: ProcessOutput::default(),
+            failure: scenario.failure.clone(),
+            scenarios: vec![scenario],
+        });
+        assert!(!verifier.repairable());
     }
 
     #[test]

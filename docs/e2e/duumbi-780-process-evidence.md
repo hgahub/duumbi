@@ -83,8 +83,11 @@ before verification is reported as process `not_run`, without replacing the
 original authoring error with `evidence_required`.
 
 The injected port is an execution input and appears in the recorded intent and
-process evidence. Raw graph hashes can differ between attempts because the
-port differs; do not interpret that variation alone as an authoring defect.
+process evidence. The port is reserved once per benchmark/replay run and shared across sequential
+process attempts, including providers. Each launch first checks port availability;
+a conflict is a Start infrastructure failure. Intent and graph hashes now remain
+comparable within a run; separate invocations can still select different ports.
+Replay behavior signatures append `;process=<status>[:<stage>]`.
 
 ## Offline checks and local evidence
 
@@ -108,6 +111,8 @@ DUUMBI_780_EVIDENCE_DIR=docs/e2e/results/duumbi-780-process-20260910 \
   cargo test --test integration_duumbi780_process_evidence -- --nocapture
 ```
 
-See [the local evidence record](results/duumbi-780-process-20260910.md).
+See [the original local evidence record](results/duumbi-780-process-20260910.md)
+and [the completion evidence](results/duumbi-780-completion-20260910.md), including
+two-attempt replay hashes and the requested live model attempt.
 The scripted provider verifies the execution machinery; it does not measure a
 live model's ability to author this service.

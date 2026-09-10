@@ -130,6 +130,20 @@ where
         config.artifact_dir.clone()
     };
     let retention = Arc::new(Mutex::new(RunRetentionState::default()));
+    // One port per invocation. Process attempts across providers share the
+    // verifier under an async lock; ordinary i64 showcases stay concurrent.
+    let process = if showcase_refs.iter().any(|showcase| {
+        matches!(
+            showcase.verification,
+            ShowcaseVerification::ProcessEvidence { .. }
+        )
+    }) {
+        Some(Arc::new(tokio::sync::Mutex::new(
+            super::process::ProcessVerifier::for_current_executable().map_err(|e| e.to_string())?,
+        )))
+    } else {
+        None
+    };
 
     let mut all_results: Vec<BenchmarkResult> = Vec::with_capacity(total_runs);
 
@@ -154,6 +168,14 @@ where
             let retention = Arc::clone(&retention);
             let keep_workspaces = config.keep_workspaces;
             let capture_model_io = config.capture_model_io;
+            let process = if matches!(
+                showcase.verification,
+                ShowcaseVerification::ProcessEvidence { .. }
+            ) {
+                process.clone()
+            } else {
+                None
+            };
 
             let handle = tokio::spawn(async move {
                 let mut results = Vec::with_capacity(attempts as usize);
@@ -178,18 +200,24 @@ where
                             execute,
                             provider_key: &prov_name,
                             retention: Arc::clone(&retention),
+                            process: process.clone(),
                         },
                     )
                     .await;
 
+                    let process_note = result
+                        .evidence
+                        .as_ref()
+                        .map(|e| format!(", process evidence {}", e.status))
+                        .unwrap_or_default();
                     if result.success {
                         eprintln!(
-                            "    ✓ passed ({}/{} tests, {:.1}s)",
+                            "    ✓ passed ({}/{} tests, {:.1}s){process_note}",
                             result.tests_passed, result.tests_total, result.duration_secs,
                         );
                     } else {
                         eprintln!(
-                            "    ✗ failed: {} ({})",
+                            "    ✗ failed: {} ({}){process_note}",
                             result
                                 .error_category
                                 .as_ref()
@@ -234,6 +262,7 @@ struct SingleAttemptOptions<'a> {
     execute: bool,
     provider_key: &'a str,
     retention: Arc<Mutex<RunRetentionState>>,
+    process: Option<Arc<tokio::sync::Mutex<super::process::ProcessVerifier>>>,
 }
 
 /// Runs a single benchmark attempt in an isolated temp workspace.
@@ -248,10 +277,10 @@ async fn run_single<F>(
 where
     F: Fn(&Path) -> Result<(), anyhow::Error> + Send + Sync,
 {
-    let process_verification = matches!(
-        showcase.verification,
-        ShowcaseVerification::ProcessEvidence { .. }
-    );
+    let mut process = match &options.process {
+        Some(process) => Some(process.lock().await),
+        None => None,
+    };
     let evidence = run_isolated_attempt(
         AttemptRequest {
             run_id: options.run_id,
@@ -265,7 +294,7 @@ where
             capture_model_io: options.capture_model_io,
             slug: "benchmark-showcase",
             execute: options.execute,
-            process_verification,
+            process_verifier: process.as_deref_mut(),
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -573,6 +602,7 @@ mod tests {
                 execute: true,
                 provider_key: "mock",
                 retention,
+                process: None,
             },
         )
         .await;
@@ -615,6 +645,7 @@ mod tests {
                 execute: true,
                 provider_key: "mock",
                 retention,
+                process: None,
             },
         )
         .await;

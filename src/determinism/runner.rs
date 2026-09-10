@@ -158,6 +158,19 @@ where
         environment,
     );
 
+    let mut process = if showcase_refs.iter().any(|showcase| {
+        matches!(
+            showcase.verification,
+            ShowcaseVerification::ProcessEvidence { .. }
+        )
+    }) {
+        Some(
+            crate::bench::process::ProcessVerifier::for_current_executable()
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
     let retention = Mutex::new(RunRetentionState::default());
     let mut sequence = 2u64;
     for showcase in showcase_refs {
@@ -229,6 +242,14 @@ where
                 };
                 let replay_attempt = run_single_replay(SingleReplayRequest {
                     showcase,
+                    process: if matches!(
+                        showcase.verification,
+                        ShowcaseVerification::ProcessEvidence { .. }
+                    ) {
+                        process.as_mut()
+                    } else {
+                        None
+                    },
                     provider: provider.as_ref(),
                     model_identity: model_identity.clone(),
                     provider_route: &provider_route,
@@ -308,6 +329,7 @@ where
     init_workspace: &'a F,
     retention: &'a Mutex<RunRetentionState>,
     execute: bool,
+    process: Option<&'a mut crate::bench::process::ProcessVerifier>,
 }
 
 async fn run_single_replay<F>(request: SingleReplayRequest<'_, F>) -> ReplayAttempt
@@ -328,12 +350,13 @@ where
         init_workspace,
         retention,
         execute,
+        process,
     } = request;
 
-    let process_verification = matches!(
-        showcase.verification,
-        ShowcaseVerification::ProcessEvidence { .. }
-    );
+    let mut prepared_spec = spec.clone();
+    if let Some(checker) = process.as_ref() {
+        checker.prepare_spec(&mut prepared_spec);
+    }
     let evidence = run_isolated_attempt(
         AttemptRequest {
             run_id,
@@ -347,7 +370,7 @@ where
             capture_model_io,
             slug: "determinism-replay",
             execute,
-            process_verification,
+            process_verifier: process,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -365,7 +388,7 @@ where
     let context_hashes = replay_context_hashes(
         showcase,
         provider_route,
-        spec,
+        &prepared_spec,
         hash_path,
         "determinism-replay",
     );
@@ -378,14 +401,26 @@ where
     let tests_passed = evidence.outcome.tests_passed;
     let success = evidence.outcome.success;
     let error_category = evidence.error_category;
+    let process_evidence = crate::bench::runner::process_benchmark_evidence(showcase, &evidence);
+    let process_signature = process_evidence
+        .as_ref()
+        .map(|e| {
+            let stage = e
+                .process
+                .last()
+                .and_then(|p| p.failure.as_ref())
+                .map(|f| format!(":{}", f.stage.as_str()))
+                .unwrap_or_default();
+            format!(";process={}{stage}", e.status)
+        })
+        .unwrap_or_default();
     let behavior_signature = Some(format!(
-        "success={success};tests={tests_passed}/{tests_total};error={}",
+        "success={success};tests={tests_passed}/{tests_total};error={}{process_signature}",
         error_category
             .map(|category| category.to_string())
             .unwrap_or_else(|| "none".to_string())
     ));
 
-    let process_evidence = crate::bench::runner::process_benchmark_evidence(showcase, &evidence);
     ReplayAttempt {
         task_id: showcase.name.to_string(),
         suite: showcase.suite.as_str().to_string(),
@@ -962,6 +997,7 @@ mod tests {
         let provider = ScriptedRepairProvider::new(RepairScript::NoPatch);
         let retention = Mutex::new(RunRetentionState::default());
         let replay = run_single_replay(SingleReplayRequest {
+            process: None,
             showcase: &FIXTURE_SHOWCASE,
             provider: &provider,
             model_identity: ModelIdentity::unavailable("fixture"),

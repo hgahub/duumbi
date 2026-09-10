@@ -238,7 +238,7 @@ api_key_env = "OPENAI_API_KEY"
 | 11.1 | `$DUUMBI benchmark --suite scaled --smoke --provider minimax:auto:primary:MINIMAX_API_KEY --attempts 1 --output scaled-smoke.json` | A scaled smoke subset fut: `scaled_math_pipeline`, `scaled_cross_module_stats`, `scaled_http_sqlite_json` | | |
 | 11.2 | `cat scaled-smoke.json \| jq .summary` | Summary tartalmaz first-pass, repair, retry, usage, dominant error, top failure pattern mezőket | | |
 | 11.3 | `cat scaled-smoke.json \| jq '.results[] | {task_id,success,first_pass_success,repair_attempted,error_category,provider_usage,evidence}'` | Minden task-nál látszik a pass/fail, repair és usage evidence | | |
-| 11.4 | HTTP/SQLite/JSON sor | `error_category == "evidence_required"` amíg nincs automatizált process evidence checker | | |
+| 11.4 | HTTP/SQLite/JSON sor | `evidence.status` is `passed`/`failed`/`not_run`, with `evidence.process[]` stage/kind evidence (#780, see T13) | | |
 
 Current committed #689 evidence:
 
@@ -306,6 +306,49 @@ Defaults and bounds:
 Cleanup: delete local `.duumbi/benchmark/attempts` and `.duumbi/determinism` trees after inspection. Never commit retained workspaces, raw model I/O, secrets, or large logs.
 
 `error_category` counts may shift because unclassified `Ok(false)` rows no longer become catch-all `logic_error`. That is a diagnostic correction, not a kill-criterion change. Unknown failures serialize `"error_category": null` with `"root_cause": "unknown"`.
+
+---
+
+## T13 — Bounded HTTP/SQLite/JSON process evidence (#780)
+
+The process showcase runs authoring and normal repair, with native build and
+behavioral verification inside the repair cycle. It starts two fresh services
+using different stdin SQL datasets on a port fixed for the run, checking status
+200, exact JSON values/types and exit code 0. See
+[the technical spec](../../specs/DUUMBI-780/TECHNICAL.md).
+
+In the throwaway workspace, configure the explicit test model (the provider
+filter selects an existing configuration; it does not create one):
+
+```toml
+[[providers]]
+provider = "openai"
+model = "gpt-5.6-luna"
+role = "primary"
+api_key_env = "OPENAI_API_KEY"
+```
+
+```sh
+duumbi benchmark --showcase scaled_http_sqlite_json --attempts 1 \
+  --provider openai:gpt-5.6-luna \
+  --output /tmp/duumbi-780-live.json
+jq '.results[0] | {success,error_category,dominant_error_code,evidence}' /tmp/duumbi-780-live.json
+```
+
+| # | Check | Expected |
+| --- | --- | --- |
+| 13.1 | `evidence.status` | `passed`, `failed`, or `not_run`; never `evidence_required` |
+| 13.2 | `evidence.process[]` | Initial and repaired passes in order, build output and `scenarios[]` |
+| 13.3 | Failed verification | `.failure.stage`, `.failure.kind`, `.failure.detail`; durable `process-evidence.json` subject to retention caps |
+| 13.4 | `.scenarios[].port` | Same ephemeral port throughout a run; pre-launch conflict is infrastructure |
+| 13.5 | Infrastructure failure | `provider_or_infrastructure`, excluded from graph failures |
+| 13.6 | Two offline replay attempts | Equal intent and semantic graph hashes; signatures end with `;process=passed` |
+| 13.7 | Live result | Record separately; fixture success does not establish live authoring reliability |
+
+```sh
+cargo test --lib bench::process
+cargo test --test integration_duumbi780_process_evidence
+```
 
 ---
 

@@ -14,13 +14,15 @@ use serde_json::json;
 
 use crate::agents::LlmProvider;
 use crate::bench::report::ErrorCategory;
+use crate::config::DependencyConfig;
 use crate::determinism::digest::{exact_graph_digest, safe_artifact_key, sha256_hex_bytes};
 use crate::hash;
 use crate::intent::capture::CapturingProvider;
 use crate::intent::execute::{
     ExecutionPhaseEvent, IntentExecutionOutcome, PhaseEventStatus, StructuredExecuteError,
-    run_execute_with_process_verifier,
+    run_execute_with_external_verifier,
 };
+use crate::intent::external_verifier::ExternalVerifier;
 use crate::intent::spec::{IntentSpec, IntentStatus};
 use crate::intent::taxonomy::{
     ClassifyInput, RootCauseAttribution, RootCauseClass, classify, counts_as_graph_failure,
@@ -165,7 +167,7 @@ pub struct AttemptRequest<'a> {
     /// When `false`, skip TempDir execute (JSON-only remaining rows).
     pub execute: bool,
     /// Run the bounded HTTP/SQLite/JSON contract after mutation and after repair.
-    pub process_verification: bool,
+    pub process_verifier: Option<&'a mut crate::bench::process::ProcessVerifier>,
     /// Inject a copy failure after execute (tests).
     pub force_persist_failure: bool,
     /// Inject an infrastructure error after repair is entered (tests).
@@ -316,21 +318,10 @@ where
     };
     let workspace = tmp.path();
 
-    let mut process = if request.process_verification {
-        match crate::bench::process::ProcessVerifier::for_current_executable() {
-            Ok(process) => Some(process),
-            Err(error) => {
-                return finalize_without_workspace(
-                    request,
-                    model_identity,
-                    error.to_string(),
-                    start.elapsed().as_secs_f64(),
-                );
-            }
-        }
-    } else {
-        None
-    };
+    let mut process = request.process_verifier.take();
+    if let Some(checker) = process.as_deref_mut() {
+        checker.evidence.clear();
+    }
     let mut log = Vec::new();
     let mut hashes = AttemptHashes {
         prompt_hash_status: "partial".to_string(),
@@ -349,17 +340,11 @@ where
         run_spec.status = IntentStatus::Pending;
         if let Some(checker) = &process {
             checker.prepare_spec(&mut run_spec);
-            // These embedded stdlib modules are installed locally by init.
-            // Declaring them here avoids a registry install or provider-written config.
-            let mut config = crate::config::load_config(workspace).map_err(|e| e.to_string())?;
-            for dependency in &run_spec.dependencies {
-                config
-                    .dependencies
-                    .entry(dependency.clone())
-                    .or_insert_with(|| crate::config::DependencyConfig::Version("1.0.0".into()));
-            }
-            crate::config::save_config(workspace, &config).map_err(|e| e.to_string())?;
         }
+        log.extend(materialize_declared_dependencies(
+            workspace,
+            &run_spec.dependencies,
+        )?);
         save_intent(workspace, request.slug, &run_spec)
             .map_err(|error| format!("failed to save intent: {error}"))?;
         hashes.intent_spec = serde_yaml::to_string(&run_spec)
@@ -395,7 +380,7 @@ where
         return evidence;
     }
 
-    match execute_structured(&mut request, workspace, &mut log, process.as_mut()).await {
+    match execute_structured(&mut request, workspace, &mut log, process.as_deref_mut()).await {
         Ok(executed) => {
             outcome = executed;
             persist_error = None;
@@ -435,7 +420,7 @@ where
         start.elapsed().as_secs_f64(),
     );
     if let Some(checker) = process {
-        evidence.process_evidence = checker.evidence;
+        evidence.process_evidence = std::mem::take(&mut checker.evidence);
         classify_process_failure(&mut evidence);
         evidence.hashes.transcript = Some(sha256_hex_bytes(
             evidence.sanitized_log.join("\n").as_bytes(),
@@ -455,18 +440,83 @@ where
     evidence
 }
 
+/// Adds the intent's declared dependencies to the isolated workspace config
+/// when `init` cached them, so generated stdlib imports can resolve.
+///
+/// `intent execute` itself does not read `IntentSpec::dependencies`; this is
+/// benchmark workspace preparation, not an execute behavior change.
+fn materialize_declared_dependencies(
+    workspace: &Path,
+    dependencies: &[String],
+) -> Result<Vec<String>, String> {
+    if dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !workspace.join(".duumbi/config.toml").is_file() {
+        return Ok(vec![
+            "Declared dependencies not materialized: workspace has no config.toml.".to_string(),
+        ]);
+    }
+    let mut config = crate::config::load_config(workspace)
+        .map_err(|error| format!("load workspace config: {error}"))?;
+    let mut notes = Vec::new();
+    let mut changed = false;
+    for name in dependencies {
+        if config.dependencies.contains_key(name) {
+            continue;
+        }
+        match cached_module_version(workspace, name) {
+            Some(version) => {
+                notes.push(format!(
+                    "Declared dependency {name}@{version} added from the workspace cache."
+                ));
+                config
+                    .dependencies
+                    .insert(name.clone(), DependencyConfig::Version(version));
+                changed = true;
+            }
+            None => notes.push(format!(
+                "Declared dependency {name} is not in the workspace cache; its imports may not resolve."
+            )),
+        }
+    }
+    if changed {
+        crate::config::save_config(workspace, &config)
+            .map_err(|error| format!("save workspace config: {error}"))?;
+    }
+    Ok(notes)
+}
+
+/// Returns the highest cached version of a scoped module such as `@duumbi/stdlib-db`.
+fn cached_module_version(workspace: &Path, name: &str) -> Option<String> {
+    let (scope, module) = name.split_once('/')?;
+    let prefix = format!("{module}@");
+    fs::read_dir(workspace.join(".duumbi/cache").join(scope))
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().join("graph").is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let version = name.to_str()?.strip_prefix(&prefix)?;
+            semver::Version::parse(version).ok()
+        })
+        .max()
+        .map(|version| version.to_string())
+}
+
 async fn execute_structured(
     request: &mut AttemptRequest<'_>,
     workspace: &Path,
     log: &mut Vec<String>,
     process: Option<&mut crate::bench::process::ProcessVerifier>,
 ) -> anyhow::Result<IntentExecutionOutcome> {
+    let process = process.map(|checker| checker as &mut dyn ExternalVerifier);
     if request.force_io_after_repair {
         crate::intent::execute::FAIL_IO_AFTER_REPAIR.with(|flag| flag.set(true));
     }
     let result = if request.capture_model_io {
         let capturing = CapturingProvider::new(request.provider);
-        let result = run_execute_with_process_verifier(
+        let result = run_execute_with_external_verifier(
             &capturing,
             workspace,
             request.slug,
@@ -478,7 +528,7 @@ async fn execute_structured(
         request.captured_model_io = capturing.take_payloads();
         result
     } else {
-        run_execute_with_process_verifier(
+        run_execute_with_external_verifier(
             request.provider,
             workspace,
             request.slug,
@@ -575,7 +625,7 @@ fn classify_process_failure(evidence: &mut AttemptEvidence) {
             _ => RootCauseClass::CompilerOrRuntime,
         }
     };
-    let code = format!("process_{:?}", failure.stage).to_ascii_lowercase();
+    let code = format!("process_{}", failure.stage.as_str());
     let event = ExecutionPhaseEvent {
         phase: "process_verify".into(),
         status: PhaseEventStatus::Terminal,
@@ -1191,7 +1241,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_verification: false,
+            process_verifier: None,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,
@@ -1247,6 +1297,53 @@ mod tests {
             evidence.root_cause,
             Some(RootCauseClass::TaskDecompositionOrMissingFunction)
         );
+    }
+
+    #[test]
+    fn cached_dependencies_select_highest_valid_semver_graph() {
+        let tmp = tempfile::tempdir().expect("workspace");
+        for version in ["1.9.0", "1.10.0", "1.10.0-rc.1", "garbage"] {
+            fs::create_dir_all(
+                tmp.path()
+                    .join(format!(".duumbi/cache/@duumbi/stdlib-db@{version}/graph")),
+            )
+            .expect("cache");
+        }
+        fs::create_dir_all(tmp.path().join(".duumbi/cache/@duumbi/stdlib-db@9.0.0"))
+            .expect("incomplete cache");
+        assert_eq!(
+            cached_module_version(tmp.path(), "@duumbi/stdlib-db").as_deref(),
+            Some("1.10.0")
+        );
+    }
+
+    #[test]
+    fn declared_dependencies_are_materialized_from_cache_once() {
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let duumbi = tmp.path().join(".duumbi");
+        fs::create_dir_all(duumbi.join("cache/@duumbi/stdlib-db@1.0.0/graph")).expect("cache");
+        fs::write(
+            duumbi.join("config.toml"),
+            "[workspace]\nname = \"bench\"\nnamespace = \"bench\"\n",
+        )
+        .expect("config");
+        let declared = vec![
+            "@duumbi/stdlib-db".to_string(),
+            "@duumbi/stdlib-missing".to_string(),
+        ];
+
+        let notes = materialize_declared_dependencies(tmp.path(), &declared).expect("materialize");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        let config = crate::config::load_config(tmp.path()).expect("reload config");
+        assert!(matches!(
+            config.dependencies.get("@duumbi/stdlib-db"),
+            Some(DependencyConfig::Version(version)) if version == "1.0.0"
+        ));
+        assert!(!config.dependencies.contains_key("@duumbi/stdlib-missing"));
+
+        let again =
+            materialize_declared_dependencies(tmp.path(), &declared[..1]).expect("idempotent");
+        assert!(again.is_empty());
     }
 
     #[test]
@@ -1431,7 +1528,7 @@ mod tests {
             capture_model_io: false,
             slug: "benchmark-showcase",
             execute: true,
-            process_verification: false,
+            process_verifier: None,
             force_persist_failure: false,
             force_io_after_repair: false,
             credentials_missing: false,

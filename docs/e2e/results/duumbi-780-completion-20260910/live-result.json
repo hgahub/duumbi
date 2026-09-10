@@ -1,0 +1,136 @@
+{
+  "started_at": "2026-09-10T15:41:12Z",
+  "finished_at": "2026-09-10T15:41:14Z",
+  "schema_version": "duumbi.benchmark.report.v2",
+  "duumbi_version": "0.4.1-preview",
+  "attempts_per_run": 1,
+  "showcases": [
+    {
+      "name": "scaled_http_sqlite_json",
+      "total_attempts": 1,
+      "successes": 0,
+      "success_rate": 0.0,
+      "providers": [
+        {
+          "name": "openai",
+          "attempts": 1,
+          "successes": 0,
+          "success_rate": 0.0,
+          "error_categories": {
+            "schema_error": 1
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_results": 1,
+    "successes": 0,
+    "first_pass_attempts": 1,
+    "first_pass_successes": 0,
+    "repair_attempts": 0,
+    "repair_successes": 0,
+    "unrecovered_failures": 1,
+    "total_retry_count": 0,
+    "usage_available": 0,
+    "usage_unavailable": 1,
+    "usage_unavailable_reasons": {
+      "provider_response_did_not_expose_usage": 1
+    },
+    "dominant_error_codes": {
+      "mutation_failed": 1
+    },
+    "top_failure_patterns": [
+      {
+        "pattern": "mutation_failed",
+        "count": 1
+      }
+    ],
+    "graph_failures": 1,
+    "graph_class_histogram": {
+      "control_flow_or_ssa": 1
+    },
+    "infra_failures": 0
+  },
+  "results": [
+    {
+      "showcase": "scaled_http_sqlite_json",
+      "task_id": "scaled_http_sqlite_json",
+      "suite": "scaled",
+      "tags": [
+        "scaled",
+        "http",
+        "sqlite",
+        "json",
+        "process_evidence"
+      ],
+      "provider": "openai",
+      "attempt": 1,
+      "success": false,
+      "first_pass_success": false,
+      "repair_attempted": false,
+      "repair_applied": false,
+      "root_cause": "control_flow_or_ssa",
+      "root_cause_attribution": "matched_rule",
+      "error_category": "schema_error",
+      "error_message": "(Use `duumbi undo` to revert the graph to before this intent.)",
+      "dominant_error_code": "mutation_failed",
+      "provider_usage": {
+        "available": false,
+        "unavailable_reason": "provider_response_did_not_expose_usage"
+      },
+      "evidence": {
+        "kind": "loopback_http_sqlite_json",
+        "status": "not_run",
+        "detail": "Process verification was not reached; inspect the authoring/preflight outcome",
+        "expected_route": "/facts",
+        "expected_json_fields": [
+          "service",
+          "route",
+          "count",
+          "first_fact",
+          "storage"
+        ]
+      },
+      "phase_evidence": {
+        "events": [
+          {
+            "phase": "preflight",
+            "status": "informational"
+          },
+          {
+            "phase": "mutation",
+            "status": "terminal",
+            "error_code": "mutation_failed"
+          }
+        ]
+      },
+      "evidence_persistence": "complete",
+      "artifact_paths": [
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/phase_evidence.json",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/summaries.json",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/intent-status.txt",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/hashes.json",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/execute.log",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/workspace/.duumbi/graph/main.jsonld",
+        "run-1789054872434003000-63517/scaled-http-sqlite-json-f9375c9cb817/openai-7d3194f79e64/1/workspace/.duumbi/intents/benchmark-showcase.yaml"
+      ],
+      "hashes": {
+        "initial_graph_exact": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+        "initial_graph_semantic": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+        "final_graph_exact": "96509cc0b9e23f9739c21b3aa929f67110622774bce5aee502abab60a3f522f7",
+        "final_graph_semantic": "a3e214652eff20ca843c8266cb3b4c292291a4ce7bfbc4a3b170b02458300fbe",
+        "intent_spec": "bdead9f88157d957d98cc663f2c51b55ea7366468ecdd05ddb5991daa2a1625e",
+        "transcript": "b4b06a0b13a442d6c0ec4128c04c7c71a57065220e90b2d7e51d393d47e5d4fe",
+        "prompt_hash_status": "partial"
+      },
+      "model_io_status": "not_requested",
+      "executed": true,
+      "graph_failure": true,
+      "tests_passed": 0,
+      "tests_total": 0,
+      "duration_secs": 1.8743023330000002
+    }
+  ],
+  "kill_criterion_met": false
+}

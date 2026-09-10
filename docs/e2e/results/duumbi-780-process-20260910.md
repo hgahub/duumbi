@@ -2,6 +2,9 @@
 
 Issue: <https://github.com/hgahub/duumbi/issues/780>
 
+Historical evidence from the initial branch. See the [completion record](duumbi-780-completion-20260910.md)
+for stable per-run ports, two-attempt replay and the live provider attempt.
+
 The benchmark and replay runners exercised real native HTTP/SQLite/JSON
 processes after deterministic provider mutations. The first-pass and repaired
 benchmark runs both passed. This validates the execution and verification

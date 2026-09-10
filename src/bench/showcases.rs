@@ -251,6 +251,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn process_showcase_reaches_mutation_only_with_its_external_verifier() {
+        use crate::intent::preflight::{
+            run_preflight_for_intent_with_bdd, run_preflight_for_intent_with_external_verifier,
+        };
+
+        let showcase = SCALED_SHOWCASES
+            .iter()
+            .find(|showcase| showcase.name == "scaled_http_sqlite_json")
+            .expect("process showcase exists");
+        let spec = parse_showcase(showcase).expect("process showcase parses");
+        let workspace = tempfile::TempDir::new().expect("workspace");
+
+        let (plain, _) = run_preflight_for_intent_with_bdd(&spec, workspace.path(), "showcase");
+        assert!(plain.is_blocking());
+        assert!(
+            plain
+                .issues
+                .iter()
+                .any(|issue| issue.code == "E_NO_TEST_CASES")
+        );
+
+        let (waived, _) = run_preflight_for_intent_with_external_verifier(
+            &spec,
+            workspace.path(),
+            "showcase",
+            "bounded HTTP/SQLite/JSON process",
+        );
+        assert!(!waived.is_blocking(), "{:#?}", waived.issues);
+        assert!(
+            waived
+                .issues
+                .iter()
+                .any(|issue| issue.code == "I_EXTERNAL_VERIFICATION")
+        );
+        assert!(
+            waived
+                .issues
+                .iter()
+                .all(|issue| issue.code != "E_NO_TEST_CASES")
+        );
+    }
+
+    #[test]
     fn all_showcases_parse() {
         for showcase in ALL_SHOWCASES {
             let spec = parse_showcase(showcase)
