@@ -1453,11 +1453,7 @@ fn join_diagnostics(diagnostics: &[crate::errors::Diagnostic]) -> String {
 }
 
 fn candidate_binary_file_name() -> String {
-    if cfg!(windows) {
-        "repair-candidate.exe".to_string()
-    } else {
-        "repair-candidate".to_string()
-    }
+    "repair-candidate".to_string()
 }
 
 fn is_candidate_aware_test_command(command: &str) -> bool {
@@ -3585,25 +3581,6 @@ mod tests {
 
         assert_eq!(resolved.artifact_dir, override_dir);
         assert!(resolved.artifact_dir_overridden);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn telemetry_trace_validation_rejects_windows_path_prefixes() {
-        let workspace = TempDir::new().expect("invariant: temp dir creation must succeed");
-        let section = TelemetrySection {
-            artifact_dir: Some(PathBuf::from(r"C:telemetry")),
-            ..TelemetrySection::default()
-        };
-
-        let err = section
-            .resolve_for_trace(workspace.path())
-            .expect_err("Windows path prefixes must fail");
-
-        assert!(matches!(
-            err,
-            TelemetryValidationError::InvalidArtifactDir { .. }
-        ));
     }
 
     #[test]

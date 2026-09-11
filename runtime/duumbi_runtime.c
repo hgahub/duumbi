@@ -14,18 +14,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#if defined(_WIN32)
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <direct.h>
-#include <io.h>
-#include <process.h>
-#include <windows.h>
-#define DUUMBI_MKDIR(path) _mkdir(path)
-#define DUUMBI_PATH_SEP '\\'
-#define DUUMBI_REALPATH(path, resolved) _fullpath((resolved), (path), DUUMBI_PATH_BUFFER_LEN)
-#define DUUMBI_PROCESS_ID() _getpid()
-#else
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -36,34 +24,13 @@
 #define DUUMBI_PATH_SEP '/'
 #define DUUMBI_REALPATH(path, resolved) realpath((path), (resolved))
 #define DUUMBI_PROCESS_ID() getpid()
-#endif
 
 #include <curl/curl.h>
 
 #define SQLITE_OMIT_LOAD_EXTENSION 1
 #include "third_party/sqlite/sqlite3.c"
 
-#ifndef S_IFMT
-#define S_IFMT _S_IFMT
-#endif
-#ifndef S_IFREG
-#define S_IFREG _S_IFREG
-#endif
-#ifndef S_IFDIR
-#define S_IFDIR _S_IFDIR
-#endif
-#ifndef S_ISREG
-#define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
-#endif
-#ifndef S_ISDIR
-#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
-#endif
-
-#if defined(_MSC_VER)
-#define DUUMBI_THREAD_LOCAL __declspec(thread)
-#else
 #define DUUMBI_THREAD_LOCAL _Thread_local
-#endif
 
 #define DUUMBI_TELEMETRY_DIR_ENV "DUUMBI_TELEMETRY_DIR"
 #define DUUMBI_DEFAULT_TELEMETRY_DIR ".duumbi/telemetry"
@@ -79,11 +46,7 @@
 #define DUUMBI_DB_MAX_CELL_BYTES (8 * 1024 * 1024)
 #define DUUMBI_DB_MAX_COLUMNS 256
 
-#if defined(_WIN32)
-#define DUUMBI_TEMP_WRITE_MODE "wb"
-#else
 #define DUUMBI_TEMP_WRITE_MODE "wbx"
-#endif
 
 /* ── Internal types ────────────────────────────────────────────────── */
 
@@ -127,21 +90,13 @@ static DUUMBI_THREAD_LOCAL size_t duumbi_block_id_stack_overflow = 0;
 static volatile int duumbi_curl_init_state = DUUMBI_CURL_INIT_UNINITIALIZED;
 
 static int duumbi_atomic_load_int(volatile int *value) {
-#if defined(_WIN32)
-    return (int)InterlockedCompareExchange((volatile LONG *)value, 0, 0);
-#else
     __sync_synchronize();
     return *value;
-#endif
 }
 
 static void duumbi_atomic_store_int(volatile int *value, int new_value) {
-#if defined(_WIN32)
-    InterlockedExchange((volatile LONG *)value, (LONG)new_value);
-#else
     __sync_lock_test_and_set(value, new_value);
     __sync_synchronize();
-#endif
 }
 
 static int duumbi_atomic_compare_exchange_int(
@@ -149,23 +104,14 @@ static int duumbi_atomic_compare_exchange_int(
     int expected,
     int desired
 ) {
-#if defined(_WIN32)
-    return InterlockedCompareExchange((volatile LONG *)value, (LONG)desired, (LONG)expected) ==
-           (LONG)expected;
-#else
     return __sync_bool_compare_and_swap(value, expected, desired);
-#endif
 }
 
 static void duumbi_yield_while_initializing(void) {
-#if defined(_WIN32)
-    Sleep(0);
-#else
     struct timespec delay;
     delay.tv_sec = 0;
     delay.tv_nsec = 1000000L;
     nanosleep(&delay, NULL);
-#endif
 }
 
 static void duumbi_push_trace_id(int64_t *stack,
@@ -208,36 +154,6 @@ static int duumbi_is_path_sep(char ch) {
 }
 
 static size_t duumbi_path_root_len(const char *path) {
-#if defined(_WIN32)
-    size_t len = strlen(path);
-    if (len >= 2 &&
-        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
-        path[1] == ':') {
-        if (len >= 3 && duumbi_is_path_sep(path[2])) {
-            return 3;
-        }
-        return 2;
-    }
-
-    if (len >= 2 && duumbi_is_path_sep(path[0]) && duumbi_is_path_sep(path[1])) {
-        const char *cursor = path + 2;
-        while (*cursor != '\0' && !duumbi_is_path_sep(*cursor)) {
-            cursor++;
-        }
-        if (*cursor == '\0') {
-            return len;
-        }
-        cursor++;
-        while (*cursor != '\0' && !duumbi_is_path_sep(*cursor)) {
-            cursor++;
-        }
-        if (*cursor == '\0') {
-            return len;
-        }
-        return (size_t)(cursor - path + 1);
-    }
-#endif
-
     if (duumbi_is_path_sep(path[0])) {
         return 1;
     }
@@ -1522,39 +1438,6 @@ void *duumbi_json_array_get(void *value, int64_t index) {
 
 /* ── TCP (opaque socket and listener resources) ───────────────────── */
 
-#if defined(_WIN32)
-typedef SOCKET DuumbiSocketHandle;
-#define DUUMBI_INVALID_SOCKET INVALID_SOCKET
-#define DUUMBI_SOCKET_ERROR SOCKET_ERROR
-static int duumbi_socket_close_handle(DuumbiSocketHandle handle) {
-    return closesocket(handle);
-}
-static int duumbi_socket_last_error(void) {
-    return WSAGetLastError();
-}
-static int duumbi_socket_would_block(int err) {
-    return err == WSAEWOULDBLOCK || err == WSAEINPROGRESS || err == WSAEALREADY;
-}
-static BOOL CALLBACK duumbi_socket_init_once(
-    PINIT_ONCE init_once,
-    PVOID parameter,
-    PVOID *context
-) {
-    (void)init_once;
-    (void)parameter;
-    (void)context;
-    WSADATA data;
-    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-}
-static int duumbi_socket_init(void) {
-    static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
-    return InitOnceExecuteOnce(&init_once, duumbi_socket_init_once, NULL, NULL) != 0;
-}
-static int duumbi_socket_set_nonblocking(DuumbiSocketHandle handle) {
-    u_long mode = 1;
-    return ioctlsocket(handle, FIONBIO, &mode) == 0;
-}
-#else
 typedef int DuumbiSocketHandle;
 #define DUUMBI_INVALID_SOCKET (-1)
 #define DUUMBI_SOCKET_ERROR (-1)
@@ -1575,7 +1458,6 @@ static int duumbi_socket_set_nonblocking(DuumbiSocketHandle handle) {
     if (flags < 0) return 0;
     return fcntl(handle, F_SETFL, flags | O_NONBLOCK) == 0;
 }
-#endif
 
 typedef struct {
     DuumbiSocketHandle handle;
@@ -1617,15 +1499,11 @@ static int duumbi_tcp_validate_port(int64_t port) {
 }
 
 static uint64_t duumbi_tcp_now_ms(void) {
-#if defined(_WIN32)
-    return (uint64_t)GetTickCount64();
-#else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         return 0;
     }
     return ((uint64_t)ts.tv_sec * 1000) + ((uint64_t)ts.tv_nsec / 1000000);
-#endif
 }
 
 static int64_t duumbi_tcp_remaining_timeout(uint64_t start_ms, int64_t timeout_ms) {
@@ -1636,16 +1514,6 @@ static int64_t duumbi_tcp_remaining_timeout(uint64_t start_ms, int64_t timeout_m
 }
 
 static int duumbi_tcp_wait(DuumbiSocketHandle handle, int for_write, int64_t timeout_ms) {
-#if defined(_WIN32)
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(handle, &fds);
-    struct timeval tv;
-    tv.tv_sec = (long)(timeout_ms / 1000);
-    tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
-    int ready = select(0, for_write ? NULL : &fds, for_write ? &fds : NULL, NULL, &tv);
-    return ready > 0 ? 1 : ready == 0 ? 0 : -1;
-#else
     struct pollfd pfd;
     pfd.fd = handle;
     pfd.events = for_write ? POLLOUT : POLLIN;
@@ -1655,18 +1523,12 @@ static int duumbi_tcp_wait(DuumbiSocketHandle handle, int for_write, int64_t tim
     if (pfd.revents & (for_write ? POLLOUT : POLLIN)) return 1;
     if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
     return 0;
-#endif
 }
 
 static int duumbi_tcp_check_connect(DuumbiSocketHandle handle) {
     int err = 0;
-#if defined(_WIN32)
-    int len = sizeof(err);
-    if (getsockopt(handle, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0) return 0;
-#else
     socklen_t len = sizeof(err);
     if (getsockopt(handle, SOL_SOCKET, SO_ERROR, &err, &len) != 0) return 0;
-#endif
     return err == 0;
 }
 
@@ -1906,11 +1768,7 @@ void *duumbi_tcp_write(void *socket_ptr, void *data_ptr, int64_t timeout_ms) {
         int chunk = remaining_bytes > (uint64_t)INT32_MAX
             ? INT32_MAX
             : (int)remaining_bytes;
-#if defined(_WIN32)
-        int n = send(socket_resource->handle, data->data + sent, chunk, 0);
-#else
         ssize_t n = send(socket_resource->handle, data->data + sent, (size_t)chunk, 0);
-#endif
         if (n > 0) {
             sent += (uint64_t)n;
             continue;
@@ -2205,14 +2063,8 @@ static const char *duumbi_http_status_text(int64_t status) {
 static int duumbi_http_send_all(DuumbiSocketHandle handle, const char *data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-#if defined(_WIN32)
-        int n = send(handle, data + sent, (int)(len - sent), 0);
-#else
         ssize_t n = send(handle, data + sent, len - sent, 0);
-#endif
-#if !defined(_WIN32)
         if (n < 0 && errno == EINTR) continue;
-#endif
         if (n <= 0) return 0;
         sent += (size_t)n;
     }
@@ -2276,11 +2128,7 @@ static int duumbi_http_handle_client(
     if (ready <= 0) return 0;
 
     char request[DUUMBI_HTTP_MAX_REQUEST_BYTES + 1];
-#if defined(_WIN32)
-    int n = recv(client, request, DUUMBI_HTTP_MAX_REQUEST_BYTES, 0);
-#else
     ssize_t n = recv(client, request, DUUMBI_HTTP_MAX_REQUEST_BYTES, 0);
-#endif
     if (n <= 0) return 0;
     request[n] = '\0';
     char method[32];
@@ -2766,11 +2614,7 @@ static int duumbi_temp_write_path(const char *path, char *out, size_t out_len) {
 }
 
 static int duumbi_replace_file(const char *tmp_path, const char *target_path) {
-#if defined(_WIN32)
-    return MoveFileExA(tmp_path, target_path, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
-#else
     return rename(tmp_path, target_path) == 0 ? 0 : -1;
-#endif
 }
 
 void *duumbi_read_line(void) {
@@ -3051,29 +2895,6 @@ void *duumbi_list_dir(void *path_ptr) {
         return duumbi_err_cstr("io_error: out of memory");
     }
 
-#if defined(_WIN32)
-    char pattern[DUUMBI_PATH_BUFFER_LEN];
-    int written = snprintf(pattern, sizeof(pattern), "%s\\*", path);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        free(names);
-        return duumbi_err_cstr("path_policy: directory path is too long");
-    }
-
-    WIN32_FIND_DATAA data;
-    HANDLE handle = FindFirstFileA(pattern, &data);
-    if (handle == INVALID_HANDLE_VALUE) {
-        free(names);
-        return duumbi_err_cstr("io_error: failed to open directory");
-    }
-    do {
-        if (duumbi_collect_dir_name(&names, &count, &capacity, data.cFileName) != 0) {
-            FindClose(handle);
-            duumbi_free_dir_names(names, count);
-            return duumbi_err_cstr("invalid_utf8: failed to read directory entry");
-        }
-    } while (FindNextFileA(handle, &data) != 0);
-    FindClose(handle);
-#else
     DIR *dir = opendir(path);
     if (dir == NULL) {
         free(names);
@@ -3089,7 +2910,6 @@ void *duumbi_list_dir(void *path_ptr) {
         }
     }
     closedir(dir);
-#endif
     qsort(names, count, sizeof(char *), duumbi_compare_names);
 
     void *array = duumbi_array_new(8);

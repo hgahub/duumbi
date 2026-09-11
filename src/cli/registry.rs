@@ -453,7 +453,7 @@ fn open_browser(url: &str) {
     #[cfg(target_os = "linux")]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 
-    // On other platforms (e.g. Windows) we skip the auto-open.
+    // Other targets skip the best-effort browser launch.
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let _ = url;
 }

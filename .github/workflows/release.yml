@@ -177,6 +177,11 @@ jobs:
           cat >> artifacts/release-body.md <<'BODY'
           | `*-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 | Required preview target |
           | `*-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 | Extra preview target |
+
+          Native Windows is unsupported. The final source snapshot with Windows
+          support is preserved at
+          [`windows-support-final-2026-09-10`](https://github.com/hgahub/duumbi/tree/windows-support-final-2026-09-10);
+          it is not a Windows binary release or a maintained branch.
           BODY
 
           if [ "${GITHUB_REF_NAME}" = "v0.4.0-preview" ] || [ "${GITHUB_REF_NAME}" = "v0.4.1-preview" ]; then
@@ -184,7 +189,7 @@ jobs:
 
           macOS Intel (`x86_64-apple-darwin`) is not included in this
           developer preview. Build from source on Intel Macs if needed.
-          No macOS Intel or Windows preview archive is published for this
+          No macOS Intel preview archive is published for this
           release path.
           BODY
           fi

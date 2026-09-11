@@ -1,5 +1,9 @@
 # DUUMBI-780 completion evidence — 2026-09-10
 
+Historical platform evidence: native Windows support was subsequently retired
+in [#800](https://github.com/hgahub/duumbi/issues/800). The results below describe
+the source preserved at `windows-support-final-2026-09-10`, not current support.
+
 Related to [#780](https://github.com/hgahub/duumbi/issues/780), implementing the
 [accepted branch decision](https://github.com/hgahub/duumbi/issues/780#issuecomment-5620459440).
 This supersedes the per-attempt-port limitation in the earlier local evidence.

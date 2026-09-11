@@ -6,18 +6,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn native_output_path(path: &std::path::Path) -> std::path::PathBuf {
-    if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
-        return path.to_path_buf();
-    }
-
-    std::path::PathBuf::from(format!(
-        "{}{}",
-        path.display(),
-        std::env::consts::EXE_SUFFIX
-    ))
-}
-
 fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
     let tmp_dir = std::env::temp_dir().join("duumbi_379_tests");
     std::fs::create_dir_all(&tmp_dir).expect("invariant: temp dir must be creatable");
@@ -43,7 +31,7 @@ fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
         String::from_utf8_lossy(&duumbi_output.stderr)
     );
 
-    native_output_path(&output_binary)
+    output_binary
 }
 
 #[test]
@@ -331,11 +319,7 @@ fn tcp_connect_refused_is_bounded_error() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(lines, vec!["false"]);
-    let max_elapsed = if cfg!(windows) {
-        Duration::from_secs(10)
-    } else {
-        Duration::from_secs(5)
-    };
+    let max_elapsed = Duration::from_secs(5);
     assert!(
         elapsed < max_elapsed,
         "refused connect took {elapsed:?}; expected under {max_elapsed:?}"

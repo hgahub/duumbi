@@ -78,12 +78,9 @@ fn command_failure_details(output: &Output) -> String {
 /// command, causing `ld` to emit "no platform load command found" warnings.
 /// This is a known Cranelift limitation — the generated binaries work correctly.
 /// On macOS we suppress linker warnings with `-Wl,-w` to avoid confusing users.
-/// HTTP/HTTPS runtime support requires libcurl linkage. On Windows, TCP
-/// runtime support requires Winsock linkage.
+/// HTTP/HTTPS runtime support requires libcurl linkage.
 fn platform_link_args() -> Vec<&'static str> {
-    if cfg!(target_os = "windows") {
-        vec!["-lm", "-lws2_32", "-lcurl"]
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         vec!["-Wl,-w", "-lm", "-lcurl"]
     } else {
         vec!["-lm", "-lcurl", "-ldl", "-lpthread"]
@@ -323,9 +320,6 @@ mod tests {
 
         #[cfg(not(target_os = "macos"))]
         assert!(!args.contains(&"-Wl,-w"));
-
-        #[cfg(target_os = "windows")]
-        assert!(args.contains(&"-lws2_32"));
     }
 
     #[test]
@@ -355,12 +349,7 @@ mod tests {
 
         let binary = tmp_dir.path().join("duumbi_dependency_link_probe");
         link(&main_o, &runtime_o, &binary).expect("runtime dependency link must succeed");
-        #[cfg(target_os = "windows")]
-        let binary_exists = binary.exists() || binary.with_extension("exe").exists();
-        #[cfg(not(target_os = "windows"))]
-        let binary_exists = binary.exists();
-
-        assert!(binary_exists, "linked probe binary should exist");
+        assert!(binary.exists(), "linked probe binary should exist");
     }
 
     #[test]

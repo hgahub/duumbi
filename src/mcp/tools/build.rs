@@ -212,7 +212,7 @@ mod tests {
         let _guard = BUILD_TEST_LOCK.lock().expect("build test lock");
         let dir = setup_workspace();
         // This is a successful-run smoke test, not a latency test. Use the
-        // normal run budget so loaded Windows CI runners can start the newly
+        // normal run budget so loaded CI runners can start the newly
         // compiled binary; timeout enforcement is covered in workspace tests.
         let result =
             build_run(dir.path(), &serde_json::json!({ "offline": true })).expect("run succeeds");
