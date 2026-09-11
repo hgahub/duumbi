@@ -76,31 +76,6 @@ async function handleSlackApproval(request, context, deps = {}) {
     return { status: 400, jsonBody: { text: "Invalid Slack payload." } };
   }
 
-  if (payload.type === "message_action" || payload.type === "shortcut") {
-    const responseUrl = payload.response_url;
-    const githubRepo = env.GITHUB_REPO || "hgahub/duumbi";
-    const clientPayload = {
-      surface: "Slack",
-      callback_id: payload.callback_id || "",
-      channel_id: payload.channel?.id || payload.channel_id || "",
-      message_ts: payload.message?.ts || payload.message_ts || "",
-      thread_ts: payload.message?.thread_ts || payload.message?.ts || "",
-      user_id: payload.user?.id || "",
-      user_name: payload.user?.username || payload.user?.name || "",
-    };
-    const work = dispatchGenericAsync(
-      githubRepo,
-      "slack-intake",
-      clientPayload,
-      responseUrl,
-      "Slack intake",
-      context,
-      { fetch: fetchImpl, env },
-    );
-    if (deps.awaitDispatch) await work;
-    return { status: 200, body: "" };
-  }
-
   if (payload.type !== "block_actions") {
     return { jsonBody: { text: "Unsupported interaction type." } };
   }
@@ -262,42 +237,6 @@ async function dispatchAsync(githubRepo, eventType, clientPayload, responseUrl, 
     }
   } catch (err) {
     context.error("dispatchAsync error:", err);
-  }
-}
-
-async function dispatchGenericAsync(githubRepo, eventType, clientPayload, responseUrl, label, context, deps = {}) {
-  const fetchImpl = deps.fetch || globalThis.fetch;
-  const env = deps.env || process.env;
-  try {
-    const res = await fetchImpl(
-      `https://api.github.com/repos/${githubRepo}/dispatches`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "Content-Type": "application/json",
-          "User-Agent": "duumbi-slack-approval-bridge/1.0",
-        },
-        body: JSON.stringify({ event_type: eventType, client_payload: clientPayload }),
-      },
-    );
-
-    if (responseUrl) {
-      await fetchImpl(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          replace_original: false,
-          text: res.ok
-            ? `⏳ ${label} triggered — GitHub Actions workflow running…`
-            : `⚠️ ${label} workflow trigger failed (HTTP ${res.status}).`,
-        }),
-      });
-    }
-  } catch (err) {
-    context.error("dispatchGenericAsync error:", err);
   }
 }
 

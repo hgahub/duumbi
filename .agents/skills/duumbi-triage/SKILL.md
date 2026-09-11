@@ -38,7 +38,7 @@ Every execution or mixed item must end in GitHub with `Needs Human Acceptance` f
 - GitHub Issues, PRs, CI, review threads, and Project fields hold execution state.
 - Obsidian Atlas stores durable product, architecture, workflow, glossary, source-backed knowledge, and reusable agent guidance.
 - Inbox notes are raw material; successfully triaged Inbox notes must not remain in `Duumbi/00 Inbox (ToProcess)/`.
-- Slack and Codex are communication and capture surfaces, not durable state.
+- Codex is a communication and capture surface; Slack is for clarification, notifications, and approvals. Neither holds durable state.
 - Agent skills store repeatable operating behavior.
 - Repository `AGENTS.md` stores source-repo-specific agent constraints.
 

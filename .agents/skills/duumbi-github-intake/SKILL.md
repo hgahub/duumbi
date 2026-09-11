@@ -36,7 +36,7 @@ If a GitHub Discussion looks actionable, recommend conversion during Stage 4 tri
 - GitHub Issues, PRs, CI, review threads, and Project fields hold execution state.
 - GitHub Discussions under Ideas hold open-ended product input and early discussion.
 - Obsidian Atlas stores durable product, architecture, workflow, glossary, source, and skill knowledge after triage.
-- `Duumbi/00 Inbox (ToProcess)/` is for raw Slack, Codex, or manual captures; do not create Inbox notes for Stage 3 GitHub-origin items.
+- `Duumbi/00 Inbox (ToProcess)/` is for raw Codex or manual captures, including historical Slack captures; do not create Inbox notes for Stage 3 GitHub-origin items.
 - Repository `AGENTS.md` holds source-repo agent instructions.
 
 ## Language Rules

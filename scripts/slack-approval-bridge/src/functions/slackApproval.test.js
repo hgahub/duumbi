@@ -369,3 +369,31 @@ test("valid project_status click dispatches project-status without forwarding re
   assert.ok(slackCall, "valid-signature follow-up may use response_url inside the Function only");
   assert.match(JSON.parse(slackCall.options.body).text, /Project Status update/);
 });
+
+for (const type of ["message_action", "shortcut"]) {
+  test(`retired ${type} intake cannot dispatch or send Slack callbacks`, async () => {
+    const now = 1_700_000_000;
+    const timestamp = String(now);
+    const body = new URLSearchParams({ payload: JSON.stringify({
+      type,
+      callback_id: "duumbi-idea",
+      response_url: "https://hooks.slack.com/actions/T/B/unused",
+      channel: { id: "C123" },
+      message: { ts: "123.456", text: "An idea" },
+      user: { id: "U123" },
+    }) }).toString();
+    const calls = [];
+    const result = await handleSlackApproval(
+      mockRequest({ body, timestamp, signature: signBody(body, timestamp) }),
+      mockContext(),
+      {
+        env: { SLACK_SIGNING_SECRET: SIGNING_SECRET, GITHUB_TOKEN: "test" },
+        nowSeconds: now,
+        awaitDispatch: true,
+        fetch: async (...args) => { calls.push(args); return { ok: true }; },
+      },
+    );
+    assert.deepEqual(result, { jsonBody: { text: "Unsupported interaction type." } });
+    assert.deepEqual(calls, []);
+  });
+}
