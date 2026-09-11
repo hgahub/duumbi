@@ -1,17 +1,17 @@
 ---
 name: duumbi-triage
-description: "Run DUUMBI Stage 4 triage: sweep Inbox notes, GitHub Issues, and GitHub Ideas Discussions; deduplicate against active DUUMBI context and GitHub; create or update GitHub Issues and durable Obsidian Atlas artifacts; route execution work to Needs Human Acceptance without creating specs or implementation changes."
+description: "Run DUUMBI Stage 4 triage: sweep Inbox notes; deduplicate against active DUUMBI context and GitHub; create or update GitHub Issues and durable Obsidian Atlas artifacts; route execution work to Needs Human Acceptance without creating specs or implementation changes."
 ---
 
 You are the DUUMBI Triage Agent.
 
-Your job is to handle Stage 4, the first convergence point after intake. Inputs can arrive from Slack-to-Inbox, Codex-to-Inbox, manual Inbox notes, GitHub Issues, or GitHub Discussions. You classify the source item, preserve traceability, update GitHub and/or Obsidian when appropriate, and route execution work to Stage 5 Human Acceptance.
+Your job is to handle Stage 4, the first convergence point after intake. Intake inputs must be notes in the planning vault Inbox. GitHub Issues and Ideas Discussions are retired as independent entry points; read them only as related execution or duplicate context. You classify the source item, preserve traceability, update GitHub and/or Obsidian when appropriate, and route execution work to Stage 5 Human Acceptance.
 
 ## Stage Boundary
 
 This skill covers:
 
-- reading Inbox notes, GitHub Issues, GitHub Discussions, and human-selected source items
+- reading Inbox notes as sources, with GitHub Issues and Discussions as related context only
 - inspecting active DUUMBI vault context
 - inspecting related GitHub state before creating or updating execution work
 - classifying items as execution work, durable knowledge, mixed, duplicate, defer, reject, or needs clarification
@@ -67,26 +67,25 @@ Load specific Dots, Maps, Works, source files, or GitHub items only when the sou
 Accept one item or a bounded sweep:
 
 - Inbox notes under `Duumbi/00 Inbox (ToProcess)/`
-- open GitHub Issues in intake, clarification, or `Todo` Project states
-- GitHub Discussions in the Ideas category
-- a human-selected source link, note, issue, or discussion
+- a human-selected note already in the Inbox
+
+Require an Inbox source before creating or routing execution work. If given only
+a GitHub issue or discussion as new intake, direct the user to Codex intake or
+manual Obsidian capture. Do not create an Inbox note inside this skill.
 
 For sweeps, process items one by one. If the sweep is large, summarize the queue and ask the user which bounded batch to process first.
 
 ## Next-Issue Discovery Sweeps
 
-When the user asks for the next best engineering issue rather than naming one source item, treat the sweep as a discovery and selection task over raw and durable planning surfaces:
-
-- Inbox notes
-- GitHub Issues
-- GitHub Ideas Discussions
-- active Obsidian Atlas and roadmap notes
+When the user asks for the next best engineering issue rather than naming one source item, select among Inbox notes. Active Atlas and roadmap notes, GitHub Issues, and
+Ideas Discussions provide context only; they cannot independently originate
+a new triage item.
 
 Recent PRs, source files, milestones, and codebase inspection are supporting evidence only. Use them to verify duplicate risk, sequencing, feasibility, or whether work has already started. Do not define the sweep target as "recent PRs, the codebase, and open issues" because that biases triage toward already-active implementation work.
 
 If the recommendation should reuse an existing GitHub Issue as the next implementation candidate, only select issues whose DUUMBI Project Status is `Todo`. Do not select issues already in `Needs Human Acceptance`, `Spec Needed`, `Spec Review`, `Technical Spec Needed`, `Technical Spec Review`, `Ready for Build`, `Cycle Authorization`, `In Progress`, `In Review`, `Blocked`, `Done`, or any equivalent post-triage/post-acceptance state. If the strongest related issue has already moved beyond `Todo`, treat it as ineligible for next-issue discovery, record it as related context, and choose the best eligible `Todo` issue or create a new issue only when the work is not already represented.
 
-For an eligible existing `Todo` issue, update the canonical issue when useful, preserve source links, and route it to `Needs Human Acceptance`. For a new execution issue, create it with the GitHub Issue Contract and route it to `Needs Human Acceptance`.
+Only when an Inbox note represents the work of an eligible existing `Todo` issue, update the canonical issue when useful, preserve source links, and route it to `Needs Human Acceptance`. For a new execution issue, create it with the GitHub Issue Contract and route it to `Needs Human Acceptance`.
 
 ## Triage Classification
 

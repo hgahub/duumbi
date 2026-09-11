@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  collectTriageContext,
   HUMAN_ACCEPTANCE_STATUS,
   TODO_STATUS,
   callDeepSeek,
@@ -791,6 +792,7 @@ test("runTriageQueueRefill closes a created issue when Project insertion fails",
 
 test("triage decision validation rejects malformed or unsafe model output", () => {
   const contextPayload = {
+    inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md" }],
     project: {
       eligible_todo_issues: [{ number: 7, item_id: "item-7" }],
     },
@@ -809,7 +811,7 @@ test("triage decision validation rejects malformed or unsafe model output", () =
     () => validateTriageDecision({
       action: "route_existing_issue",
       existing_issue_number: 99,
-      source_links: ["https://github.com/hgahub/duumbi/issues/99"],
+      source_links: ["Duumbi/00 Inbox (ToProcess)/candidate.md"],
     }, contextPayload),
     /not an eligible Todo issue/,
   );
@@ -829,4 +831,53 @@ test("triage decision validation rejects malformed or unsafe model output", () =
     }, contextPayload),
     /issue.body/,
   );
+});
+
+for (const action of ["create_issue", "route_existing_issue"]) {
+  test(`${action} rejects GitHub-only and fabricated Inbox sources`, () => {
+    const payload = {
+      inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md" }],
+      project: { eligible_todo_issues: [{ number: 7, item_id: "item-7" }] },
+    };
+    for (const source of [
+      "https://github.com/hgahub/duumbi/issues/7",
+      "https://github.com/hgahub/duumbi/discussions/8",
+      "Duumbi/00 Inbox (ToProcess)/invented.md",
+    ]) {
+      assert.throws(() => validateTriageDecision({
+        action,
+        existing_issue_number: 7,
+        issue: { title: "Candidate", body: "Description" },
+        source_links: [source],
+      }, payload), /matching a supplied Inbox note/);
+    }
+    assert.throws(() => validateTriageDecision({
+      action, existing_issue_number: 7,
+      issue: { title: "Candidate", body: "Description" },
+      source_links: ["Duumbi/00 Inbox (ToProcess)/candidate.md"],
+    }, { ...payload, inbox_notes: [] }), /matching a supplied Inbox note/);
+  });
+}
+
+test("triage context uses Inbox sources and does not fetch Ideas Discussions", async () => {
+  const workspace = makeWorkspace();
+  try {
+    let discussionCalls = 0;
+    const context = await collectTriageContext({
+      workspace,
+      project: projectWithItems([issueItem({ number: 7, status: TODO_STATUS })]),
+      api: {
+        owner: "hgahub", repo: "duumbi",
+        listIdeaDiscussions: async () => { discussionCalls += 1; return []; },
+      },
+      warnings: [],
+    });
+    assert.equal(discussionCalls, 0);
+    assert.equal("idea_discussions" in context, false);
+    assert.equal(context.inbox_notes.length, 1);
+    assert.equal(context.inbox_notes[0].path, "Duumbi/00 Inbox (ToProcess)/candidate.md");
+    assert.equal(context.project.eligible_todo_issues[0].number, 7);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });
