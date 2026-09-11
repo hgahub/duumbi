@@ -1,4 +1,4 @@
-name: Coverage
+name: Stage 10-11 - Test Coverage
 
 on:
   push:

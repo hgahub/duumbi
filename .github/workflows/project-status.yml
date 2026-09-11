@@ -1,4 +1,4 @@
-name: Project Status
+name: Stage 9-10 - Ready for Build Correction
 
 on:
   repository_dispatch:

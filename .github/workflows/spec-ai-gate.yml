@@ -1,4 +1,4 @@
-name: Spec AI Gate
+name: Stage 7,9 - Record AI Gate Decision
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: Triage Queue Refill
+name: Stage 4 - Triage Queue Refill
 
 on:
   schedule:

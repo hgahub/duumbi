@@ -1,4 +1,4 @@
-name: Stage Approval
+name: Stage 5,7,9 - Record Approval
 
 on:
   pull_request:

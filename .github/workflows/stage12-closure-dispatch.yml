@@ -1,4 +1,4 @@
-name: Stage 12 Closure Dispatch
+name: Stage 12 - Closure Handoff
 
 on:
   pull_request:
