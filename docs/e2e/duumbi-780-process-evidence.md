@@ -55,13 +55,15 @@ an OS security sandbox for arbitrary hostile programs.
   most 8 KiB per stream. Secret-bearing lines and configured credential values
   are redacted; control characters and a truncated final log line are removed.
 
-Unix children run in dedicated process groups. Windows children belong to an
-owned Job Object with kill-on-close semantics. Windows children are created
-suspended, assigned to the configured job, and only then resumed using their
-initial thread handle found through the documented Tool Help snapshot API. Completion, errors, deadlines,
-and cancellation terminate the owned process tree. Generated services inherit
-only PATH and SystemRoot; build children additionally receive the required
+Linux and macOS children run in dedicated Unix process groups. Completion,
+errors, deadlines and cancellation terminate the owned process tree. Generated
+services receive an empty environment; build children receive the required
 compiler settings, with temporary build files confined to the attempt.
+
+Native Windows support was retired in [#800](https://github.com/hgahub/duumbi/issues/800).
+The former Job Object implementation and its historical execution evidence
+remain available at tag `windows-support-final-2026-09-10`; they do not describe
+current platform support.
 
 ## Evidence and classification
 

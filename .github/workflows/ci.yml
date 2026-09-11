@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,7 +32,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
           changed_files="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)"
 
-          rust_relevant_pattern='^(src/|tests/|crates/|runtime/|Cargo\.toml$|Cargo\.lock$|\.cargo/|rust-toolchain(\.toml)?$|rustfmt\.toml$|clippy\.toml$|\.github/workflows/(ci|coverage)\.yml$)'
+          rust_relevant_pattern='^(src/|tests/|crates/|runtime/|build\.rs$|Cargo\.toml$|Cargo\.lock$|\.cargo/|rust-toolchain(\.toml)?$|rustfmt\.toml$|clippy\.toml$|\.github/workflows/(ci|coverage)\.yml$)'
 
           if [[ -z "$changed_files" ]]; then
             echo "run_rust_checks=true" >> "$GITHUB_OUTPUT"
@@ -49,40 +49,24 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install native runtime dependencies (Ubuntu)
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        if: steps.scope.outputs.run_rust_checks == 'true'
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
-      - name: Install native runtime dependencies (Windows)
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-curl
-          path-type: prepend
-      - name: Select DUUMBI runtime C compiler
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'windows-latest'
-        shell: msys2 {0}
-        run: |
-          mingw_prefix="$(cygpath -m /mingw64)"
-          gcc_path="$(cygpath -m "$(which gcc)")"
-          echo "DUUMBI_CC=${gcc_path}" >> "$GITHUB_ENV"
-          echo "DUUMBI_CFLAGS=-I${mingw_prefix}/include" >> "$GITHUB_ENV"
-          echo "DUUMBI_LDFLAGS=-L${mingw_prefix}/lib" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.run_rust_checks == 'true'
       - name: Format check
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        if: steps.scope.outputs.run_rust_checks == 'true'
         run: cargo fmt --check
       - name: Clippy
         if: steps.scope.outputs.run_rust_checks == 'true'
         run: cargo clippy --all-targets -- -D warnings
       - name: Install cargo-audit
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        if: steps.scope.outputs.run_rust_checks == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
           fallback: none
       - name: Dependency audit
-        if: steps.scope.outputs.run_rust_checks == 'true' && matrix.os == 'ubuntu-latest'
+        if: steps.scope.outputs.run_rust_checks == 'true'
         run: cargo audit
       - name: Install cargo-nextest
         if: steps.scope.outputs.run_rust_checks == 'true'
@@ -90,9 +74,7 @@ jobs:
         with:
           tool: cargo-nextest
           fallback: none
-      # nextest schedules tests from all test binaries in parallel; cargo test
-      # runs each integration-test binary serially, which dominated the
-      # windows-latest wall time (~6 min of serial test execution).
+      # nextest schedules tests from all test binaries in parallel.
       - name: Test
         if: steps.scope.outputs.run_rust_checks == 'true'
         run: cargo nextest run --workspace

@@ -8,18 +8,6 @@ fn duumbi_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_duumbi"))
 }
 
-fn native_output_path(path: &std::path::Path) -> std::path::PathBuf {
-    if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
-        return path.to_path_buf();
-    }
-
-    std::path::PathBuf::from(format!(
-        "{}{}",
-        path.display(),
-        std::env::consts::EXE_SUFFIX
-    ))
-}
-
 /// Helper: compile a fixture and return the output binary path.
 fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
     let tmp_dir = std::env::temp_dir().join("duumbi_phase1_tests");
@@ -45,7 +33,7 @@ fn compile_fixture(fixture: &str, output_name: &str) -> std::path::PathBuf {
         String::from_utf8_lossy(&duumbi_output.stderr)
     );
 
-    native_output_path(&output_binary)
+    output_binary
 }
 
 #[test]
@@ -86,7 +74,7 @@ fn phase1_trace_single_file_build_accepts_defaults() {
         "duumbi build --trace failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(native_output_path(&output_binary).exists());
+    assert!(output_binary.exists());
     assert!(!tmp.path().join(".duumbi/telemetry/traces.jsonl").exists());
     assert!(
         !tmp.path()
@@ -128,7 +116,7 @@ sample-rate = 2.0
         "default build should ignore telemetry semantic errors: {}",
         String::from_utf8_lossy(&default_output.stderr)
     );
-    assert!(native_output_path(&default_binary).exists());
+    assert!(default_binary.exists());
 
     let traced_binary = tmp.path().join("hello-traced");
     let traced_output = Command::new(duumbi_bin())
@@ -324,12 +312,9 @@ fn phase1_workspace_init_build_run() {
         .expect("invariant: cargo build must be runnable");
     assert!(build_status.status.success(), "cargo build failed");
 
-    let duumbi_bin = std::path::PathBuf::from(format!(
-        "target/debug/duumbi{}",
-        std::env::consts::EXE_SUFFIX
-    ))
-    .canonicalize()
-    .expect("invariant: duumbi binary must exist after build");
+    let duumbi_bin = std::path::PathBuf::from(env!("CARGO_BIN_EXE_duumbi"))
+        .canonicalize()
+        .expect("invariant: duumbi binary must exist after build");
 
     let tmp_dir = std::env::temp_dir().join("duumbi_workspace_test");
     let _ = std::fs::remove_dir_all(&tmp_dir);

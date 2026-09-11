@@ -283,10 +283,10 @@ fn workspace_run_uses_configured_telemetry_artifact_dir() {
     )
     .expect("invariant: workspace config must be written");
 
-    let output_path = format!(".duumbi/build/output{}", std::env::consts::EXE_SUFFIX);
+    let output_path = ".duumbi/build/output";
     let build = Command::new(duumbi)
         .args(["build", "--trace", "-o"])
-        .arg(&output_path)
+        .arg(output_path)
         .current_dir(&workspace)
         .env_remove("DUUMBI_TELEMETRY_DIR")
         .output()
@@ -378,9 +378,7 @@ fn traced_fixture_evidence(fixture: &str, binary_name: &str) -> TraceFixtureEvid
     let duumbi = env!("CARGO_BIN_EXE_duumbi");
     let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
     let telemetry_dir = tmp.path().join("telemetry");
-    let binary = tmp
-        .path()
-        .join(format!("{binary_name}{}", std::env::consts::EXE_SUFFIX));
+    let binary = tmp.path().join(binary_name);
 
     let build = Command::new(duumbi)
         .args(["build", "--trace", fixture, "-o"])
@@ -478,9 +476,7 @@ fn untraced_fixture_failure(fixture: &str, binary_name: &str) -> UntracedFailure
     let duumbi = env!("CARGO_BIN_EXE_duumbi");
     let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
     let telemetry_dir = tmp.path().join("telemetry");
-    let binary = tmp
-        .path()
-        .join(format!("{binary_name}{}", std::env::consts::EXE_SUFFIX));
+    let binary = tmp.path().join(binary_name);
 
     let build = Command::new(duumbi)
         .args(["build", fixture, "-o"])

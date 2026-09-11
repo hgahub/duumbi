@@ -628,9 +628,7 @@ fn traced_div_zero_records_node_attribution() {
     let tmp = tempfile::TempDir::new().expect("invariant: temp dir must be created");
     let telemetry_dir = tmp.path().join("telemetry");
     let fixture = format!("{FIXTURE_DIR}/div_zero_node_attribution.jsonld");
-    let binary = tmp
-        .path()
-        .join(format!("traced_div_zero{}", std::env::consts::EXE_SUFFIX));
+    let binary = tmp.path().join("traced_div_zero");
     let expected_node = "duumbi:backend_hardening/main/entry/div_zero";
 
     let build = Command::new(duumbi)

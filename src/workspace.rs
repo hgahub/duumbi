@@ -101,9 +101,7 @@ pub struct BinaryRunOutput {
 /// Returns the default native binary path for a workspace build.
 #[must_use]
 pub fn workspace_output_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".duumbi/build")
-        .join(format!("output{}", std::env::consts::EXE_SUFFIX))
+    workspace_root.join(".duumbi/build/output")
 }
 
 /// Compiles all modules in a workspace and links them into `output`.

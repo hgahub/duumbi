@@ -4,10 +4,6 @@
 //! launch. No graph IDs, module layout, or generated constants are rewritten.
 
 mod bindings;
-#[cfg(windows)]
-mod windows;
-#[cfg(windows)]
-use windows::WindowsJob;
 
 use crate::intent::external_verifier::ExternalVerifier;
 use std::future::Future;
@@ -248,7 +244,7 @@ impl ProcessVerifier {
         {
             path.pop();
             path.pop();
-            path.push(format!("duumbi{}", std::env::consts::EXE_SUFFIX));
+            path.push("duumbi");
         }
         Self::new(path, ProcessLimits::default())
     }
@@ -312,7 +308,6 @@ impl ProcessVerifier {
             "DUUMBI_LDFLAGS",
             "SDKROOT",
             "MACOSX_DEPLOYMENT_TARGET",
-            "SystemRoot",
         ] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -421,12 +416,6 @@ impl ProcessVerifier {
         let mut command = Command::new(executable);
         // Generated children receive no provider credentials or proxy settings.
         command.current_dir(workspace).env_clear();
-        // Windows runtime DLLs (including libcurl) are discovered via PATH.
-        for name in ["PATH", "SystemRoot"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
         let mut child = match ManagedChild::spawn(command) {
             Ok(child) => child,
             Err(e) => {
@@ -534,17 +523,10 @@ async fn wait_for_port_handoff(port: u16) -> std::io::Result<()> {
 /// Check the runtime bind without confusing a preceding connection's TIME_WAIT
 /// with a live listener. No connection is opened to another application's port.
 fn check_port_available(port: u16) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        windows::check_port_available(port)
-    }
-    #[cfg(not(windows))]
-    {
-        let socket = tokio::net::TcpSocket::new_v4()?;
-        socket.set_reuseaddr(true)?;
-        socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
-        Ok(())
-    }
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.set_reuseaddr(true)?;
+    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port)))?;
+    Ok(())
 }
 
 async fn deadline<T>(
@@ -714,8 +696,6 @@ struct ManagedChild {
     child: Child,
     #[cfg(unix)]
     pid: Option<u32>,
-    #[cfg(windows)]
-    job: WindowsJob,
     stdout: tokio::task::JoinHandle<Vec<u8>>,
     stderr: tokio::task::JoinHandle<Vec<u8>>,
 }
@@ -729,20 +709,13 @@ impl ManagedChild {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        #[cfg(not(windows))]
         let mut child = command.spawn()?;
-        #[cfg(windows)]
-        let mut child = WindowsJob::spawn_suspended(command)?;
         #[cfg(unix)]
         let pid = Some(
             child
                 .id()
                 .expect("invariant: freshly spawned child has a pid"),
         );
-        #[cfg(windows)]
-        let job = WindowsJob::attach(&child)?;
-        #[cfg(windows)]
-        job.resume(&child)?;
         let stdout = tokio::spawn(drain(
             child.stdout.take().expect("invariant: stdout is piped"),
         ));
@@ -753,8 +726,6 @@ impl ManagedChild {
             child,
             #[cfg(unix)]
             pid,
-            #[cfg(windows)]
-            job,
             stdout,
             stderr,
         })
@@ -806,8 +777,6 @@ impl ManagedChild {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
         }
-        #[cfg(windows)]
-        self.job.terminate();
     }
 }
 
@@ -1177,9 +1146,6 @@ mod tests {
                 #[cfg(unix)]
                 let alive = unix_process_alive(parent_pid).await
                     || unix_process_alive(descendant_pid).await;
-                #[cfg(windows)]
-                let alive =
-                    windows::process_alive(parent_pid) || windows::process_alive(descendant_pid);
                 if !alive {
                     break;
                 }

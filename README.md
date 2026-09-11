@@ -31,8 +31,9 @@ DUUMBI `v0.4.1-preview` is distributed as prebuilt GitHub Release archives for:
 | Linux ARM64 | `aarch64-unknown-linux-gnu` | Extra preview target |
 
 macOS Intel (`x86_64-apple-darwin`) is not included in this developer preview.
-Build from source on Intel Macs if needed. No macOS Intel or Windows preview
-archive is published for this release path.
+Build from source on Intel Macs if needed. No macOS Intel preview archive is
+published for this release path. Native Windows is unsupported; see the
+[platform policy and archival source tag](#supported-platforms).
 
 Preview write-path evidence is intentionally limited. The current scaled
 intent-execute smoke notes are tracked in
@@ -74,10 +75,11 @@ Keep the extracted release directory together. The CLI expects the packaged
 
 **Requirements:**
 
-- Rust stable 1.80+ through `rustup`.
+- Rust stable 1.95+ through `rustup` (required by the locked Cranelift dependencies).
 - macOS: Xcode Command Line Tools or an equivalent C compiler/linker.
-- Linux: `build-essential` or an equivalent C compiler/linker.
-- Windows native: Windows 10 version 1903+ on `x86_64-pc-windows-msvc`, the stable MSVC Rust toolchain, Visual Studio Build Tools or equivalent MSVC C++ tools, Windows SDK, and a usable linker/C compiler environment.
+- Linux: `build-essential` or an equivalent C compiler/linker, plus libcurl
+  development headers and library (`libcurl4-openssl-dev` on Ubuntu).
+- Native development requires Linux or macOS; Windows is unsupported.
 
 ```bash
 git clone git@github.com:hgahub/duumbi.git
@@ -175,11 +177,18 @@ cargo fmt
 | Platform | Architecture | Status |
 |----------|-------------|--------|
 | macOS | aarch64 (Apple Silicon) | Primary |
-| macOS | x86_64 | CI-tested |
+| macOS | x86_64 | Build from source; no current CI job |
 | Linux | x86_64 | CI-tested |
-| Windows | x86_64-pc-windows-msvc | Native target; MSVC tools required |
 
-Native Windows builds use the MSVC Rust target and do not require WSL2. The current Windows support boundary does not cover ARM64 Windows, MinGW, Cygwin, GNU Windows toolchains, installers, packaging, or release signing.
+Native Windows support has been retired to focus development and validation
+resources on Linux and macOS. We may revisit it when the product is more mature;
+there is no committed return date or WSL support commitment.
+
+The final source snapshot with Windows support is preserved by the annotated tag
+[`windows-support-final-2026-09-10`](https://github.com/hgahub/duumbi/tree/windows-support-final-2026-09-10)
+at commit `52931c91d9fc6f7a541e1c250e0837a9980dd46b`. This is an archival source
+snapshot, not a Windows binary release or an ongoing maintenance branch.
+See [#800](https://github.com/hgahub/duumbi/issues/800) for the retirement decision.
 
 ---
 

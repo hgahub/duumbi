@@ -48,6 +48,15 @@ tests/         # Integration tests with .jsonld fixtures
 crates/        # duumbi-studio (Leptos SSR web platform)
 
 ## Build and test
+
+Native DUUMBI development targets Linux and macOS. Windows support and its CI
+runner were retired in #800 to reduce maintenance and validation cost. Do not
+restore native Windows code or checks without a new product decision. The final
+source snapshot is the immutable tag `windows-support-final-2026-09-10` at
+`52931c91d9fc6f7a541e1c250e0837a9980dd46b`; this is not a maintained release.
+Do not remove upstream Windows metadata from vendored sources or transitive
+dependencies, or weaken generic path-security checks during platform cleanup.
+
 cargo build                          # Debug build
 cargo build --release                # Release
 cargo test --all                     # All tests (~817 tests)

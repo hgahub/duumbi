@@ -196,8 +196,6 @@ impl SessionManager {
 
         fs::write(&tmp_path, &json).map_err(|e| SessionError::Io(format!("writing tmp: {e}")))?;
 
-        // Remove destination first for Windows compatibility (rename fails if dest exists)
-        let _ = fs::remove_file(&current_path);
         fs::rename(&tmp_path, &current_path)
             .map_err(|e| SessionError::Io(format!("renaming tmp to current: {e}")))?;
 
@@ -332,6 +330,14 @@ mod tests {
         assert!(mgr2.has_pending_session());
         assert_eq!(mgr2.turns().len(), 1);
         assert_eq!(mgr2.turns()[0].request, "add multiply");
+
+        // A second save must replace the existing snapshot completely.
+        mgr.add_turn("add divide", "added function", "AddFunction");
+        mgr.save().expect("replace existing session");
+        let mgr3 = SessionManager::load_or_create(tmp.path()).expect("reload replacement");
+        assert_eq!(mgr3.turns().len(), 2);
+        assert_eq!(mgr3.turns()[1].request, "add divide");
+        assert!(!tmp.path().join(".duumbi/session/current.json.tmp").exists());
     }
 
     #[test]

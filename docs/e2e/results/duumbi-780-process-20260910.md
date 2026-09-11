@@ -1,5 +1,9 @@
 # DUUMBI-780 local process E2E evidence — 2026-09-10
 
+Historical platform evidence: native Windows support was subsequently retired
+in [#800](https://github.com/hgahub/duumbi/issues/800). See the archival tag
+`windows-support-final-2026-09-10` for the final source with Windows support.
+
 Issue: <https://github.com/hgahub/duumbi/issues/780>
 
 Historical evidence from the initial branch. See the [completion record](duumbi-780-completion-20260910.md)

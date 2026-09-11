@@ -468,18 +468,6 @@ const LOCALHOST_KEY_PEM: &str = concat!(
     "PRIVATE KEY-----",
 );
 
-fn native_output_path(path: &Path) -> std::path::PathBuf {
-    if path.exists() || std::env::consts::EXE_SUFFIX.is_empty() {
-        return path.to_path_buf();
-    }
-
-    std::path::PathBuf::from(format!(
-        "{}{}",
-        path.display(),
-        std::env::consts::EXE_SUFFIX
-    ))
-}
-
 fn compile_fixture(json: &str, output_name: &str) -> std::path::PathBuf {
     let module = parse_jsonld(json).expect("fixture must parse");
     let graph = build_graph(&module).expect("fixture must build");
@@ -501,7 +489,7 @@ fn compile_fixture(json: &str, output_name: &str) -> std::path::PathBuf {
     linker::compile_runtime(Path::new("runtime/duumbi_runtime.c"), &runtime_o)
         .expect("runtime must compile");
     linker::link(&object_path, &runtime_o, &binary).expect("binary must link");
-    native_output_path(&binary)
+    binary
 }
 
 fn http_get_fixture(port: u16) -> String {
