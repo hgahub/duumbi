@@ -11,7 +11,8 @@ or source-repo contracts that support it.
   state.
 - Obsidian stores raw intake and durable knowledge.
 - Slack is a notification, clarification, and approval surface. Idea intake uses
-  Codex (Stage 2), manual Obsidian Inbox (Stage 3), or GitHub. Stage 1 Slack
+  Codex (Stage 2) or manual Obsidian Inbox (Stage 3). GitHub Issues and
+  Ideas Discussions are retired as independent intake sources. Stage 1 Slack
   intake was retired on 2026-09-11; stage numbers remain unchanged.
 - GitHub Actions generally avoid direct model calls. The Stage 4
   `triage-queue-refill.yml` workflow is the explicit exception: it may call a
@@ -141,11 +142,15 @@ V2 with `GH_PROJECT_PAT`; if at least three open issues are already in
 `Needs Human Acceptance`, it exits without calling a model or posting Slack.
 
 When refill is needed, the workflow checks out `duumbi-vault`, builds bounded
-context from active Inbox notes, Ideas Discussions, Project V2 issue state, and
+context from active Inbox notes, Project V2 issue state, and
 active Atlas/runbook docs, and asks Z.ai/Zhipu for one strict JSON decision:
 `route_existing_issue`, `create_issue`, `needs_clarification`, or `no_action`.
 Only `route_existing_issue` and `create_issue` perform GitHub writes, and at
-most one issue is queued per run.
+most one issue is queued per run. Both actions require an exact source path
+matching an Inbox note supplied to the model; GitHub-only or fabricated sources
+are rejected before writes. Existing Todo issues may be reused only for work
+represented by an Inbox note. Ideas Discussions are no longer fetched as an
+intake queue. GitHub remains execution state and duplicate-check context.
 
 All GitHub writes use `GH_PROJECT_PAT` rather than `GITHUB_TOKEN`, so adding the
 existing `needs-human-review` label can trigger the separate Human Acceptance

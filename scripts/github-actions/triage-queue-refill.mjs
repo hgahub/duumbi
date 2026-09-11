@@ -241,13 +241,6 @@ export async function collectTriageContext({
     throw new Error(`DUUMBI vault root is unavailable at ${duumbiRoot}; failing closed.`);
   }
 
-  let ideaDiscussions = [];
-  try {
-    ideaDiscussions = await api.listIdeaDiscussions();
-  } catch (error) {
-    warnings.push(`GitHub Ideas Discussions context unavailable: ${truncateText(error.message, 180)}`);
-  }
-
   const inboxRoot = path.join(duumbiRoot, "00 Inbox (ToProcess)");
   const inboxNotes = readMarkdownNotes(fs, path, inboxRoot, vaultRoot, 8, 3500);
   const activeDocs = readVaultDocs(fs, path, vaultRoot, warnings);
@@ -272,13 +265,6 @@ export async function collectTriageContext({
     },
     project: buildProjectSnapshot(project, targetMinimum),
     inbox_notes: inboxNotes,
-    idea_discussions: ideaDiscussions.slice(0, 10).map((discussion) => ({
-      title: truncateText(discussion.title, 240),
-      url: discussion.url,
-      category: discussion.category?.name || null,
-      updated_at: discussion.updatedAt || null,
-      body: truncateText(discussion.body || "", 3000),
-    })),
     active_vault_docs: activeDocs,
   };
 }
@@ -297,7 +283,7 @@ export function buildTriageMessages(contextPayload) {
       risks: ["string"],
       open_questions: ["string"],
     },
-    source_links: ["non-empty source URLs or vault paths for route_existing_issue/create_issue"],
+    source_links: ["exact supplied Inbox note path required for route_existing_issue/create_issue; optional related URLs"],
     rationale: "short factual rationale",
   };
 
@@ -307,8 +293,9 @@ export function buildTriageMessages(contextPayload) {
       content: [
         "You are the DUUMBI Stage 4 triage refiller.",
         "Return exactly one valid json object and no markdown.",
-        "Choose at most one next item.",
-        "Prefer routing an eligible existing Todo issue when it already represents the work.",
+        "Choose at most one next item from inbox_notes. GitHub Issues, Discussions, and Atlas are context only, never independent intake sources.",
+        "Every create_issue or route_existing_issue decision must include the exact path of a supplied Inbox note in source_links.",
+        "For the selected Inbox note, prefer routing an eligible existing Todo issue when it already represents that same work.",
         `Only route existing issues listed under project.eligible_todo_issues, and route them to ${HUMAN_ACCEPTANCE_STATUS}.`,
         "Create a new issue only when no existing eligible Todo issue represents the next actionable work.",
         "Use no_action when no actionable item remains. Use needs_clarification when the next candidate cannot be routed safely.",
@@ -408,6 +395,13 @@ export function validateTriageDecision(decision, contextPayload) {
   }
 
   normalized.source_links = requireSourceLinks(decision);
+  const inboxPaths = new Set((contextPayload?.inbox_notes || []).map((note) => note.path));
+  const hasInboxSource = normalized.source_links.some((link) =>
+    inboxPaths.has(link.replace(/^duumbi-vault\//, "")),
+  );
+  if (!hasInboxSource) {
+    throw new Error("Triage writes require a source_links path matching a supplied Inbox note; GitHub-only intake is retired.");
+  }
 
   if (action === "route_existing_issue") {
     const issueNumber = Number(decision.existing_issue_number);
@@ -786,25 +780,6 @@ export function createGithubApi({ fetchImpl = fetch, token, owner, repo }) {
         cursor = pageInfo.endCursor;
       }
       return { id, title, fields, items: { nodes } };
-    },
-    async listIdeaDiscussions() {
-      const data = await graphql(`
-        query($owner: String!, $repo: String!) {
-          repository(owner: $owner, name: $repo) {
-            discussions(first: 20, orderBy: { field: UPDATED_AT, direction: DESC }) {
-              nodes {
-                title
-                url
-                body
-                updatedAt
-                category { name }
-              }
-            }
-          }
-        }`, { owner, repo });
-      return (data.repository?.discussions?.nodes || []).filter((discussion) =>
-        String(discussion.category?.name || "").toLowerCase() === "ideas",
-      );
     },
     async updateProjectStatus(project, itemId, statusName) {
       const statusField = findStatusField(project);
