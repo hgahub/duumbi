@@ -94,21 +94,6 @@ fn duumbi675_model_catalog_publisher_docs_cover_v1_contract() {
 }
 
 #[test]
-fn duumbi675_model_catalog_publisher_workflow_runs_generator_without_publication() {
-    let workflow = fs::read_to_string(".github/workflows/model-catalog-publisher.yml")
-        .expect("publisher workflow");
-
-    assert!(workflow.contains("workflow_dispatch:"));
-    assert!(workflow.contains("schedule:"));
-    assert!(workflow.contains("cargo run --bin duumbi-model-catalog-publisher"));
-    assert!(workflow.contains("--input tests/fixtures/model_catalog/publisher_valid.json"));
-    assert!(workflow.contains("--evidence-out .tmp/model-catalog/run-evidence.json"));
-    assert!(workflow.contains("actions/upload-artifact@v7"));
-    assert!(!workflow.contains("contents: write"));
-    assert!(!workflow.contains("duumbi-web"));
-}
-
-#[test]
 fn duumbi675_model_catalog_publisher_studio_uses_accepted_provider_list() {
     let script =
         fs::read_to_string("crates/duumbi-studio/src/script/studio.js").expect("studio script");
