@@ -5,7 +5,9 @@ Actions workflows via `repository_dispatch`.
 
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
 DUUMBI Slack notification triggers a deterministic GitHub Action instead of
-launching an agent directly. Slack shortcuts can also dispatch Stage 1 intake.
+launching an agent directly. Slack idea intake was retired on 2026-09-11;
+message and global shortcuts are unsupported. Submit ideas through Codex intake
+or the Obsidian Inbox.
 Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
 `stage-approval.yml`. Stage 10 resource authorization buttons that include
 `action_type: "stage_10_authorization"` route to `stage-10-authorization.yml`;
@@ -17,7 +19,7 @@ revalidates the linked spec PR and squash-merges it before advancing the issue.
 ## Architecture
 
 ```text
-Slack button click or shortcut
+Slack button click
   → Slack sends interaction payload to Azure Function URL
       → Function verifies Slack signing secret
         → Function POSTs repository_dispatch to GitHub
@@ -36,7 +38,6 @@ The bridge chooses the repository dispatch event from the button payload:
 | `10` + `action_type: "stage_10_authorization"` | `stage-10-authorization` | `stage-10-authorization.yml` |
 | `10` without `action_type` | `stage-10-authorization` | `stage-10-authorization.yml` |
 | `action_type: "project_status"` | `project-status` | `project-status.yml` |
-| Slack message/global shortcut | `slack-intake` | `slack-intake-dispatch.yml` |
 
 Unknown stage values fall back to `stage-approval`, where unsupported stages fail
 closed.
@@ -184,8 +185,7 @@ input is omitted. That path posts channel-only to `SLACK_REVIEW_CHANNEL_ID`.
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → DUUMBI app
 2. **Interactivity & Shortcuts** → toggle **On**
 3. Set **Request URL** to the Function URL (e.g. `https://func-duumbi-slack-bridge.azurewebsites.net/api/slack-approval`)
-4. Optional: create a message shortcut for DUUMBI idea capture. It will route to
-   `slack-intake-dispatch.yml`.
+4. Remove any old DUUMBI idea-capture shortcuts. Keep interactivity enabled for approval buttons.
 5. Save Changes
 
 ## App Settings

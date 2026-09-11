@@ -33,7 +33,7 @@ This skill does not:
 - `Duumbi/05 Archive/Processed Inbox/` stores processed raw material and must be searched for duplicates.
 - Obsidian Atlas stores durable knowledge, not live execution state.
 - GitHub Issues, Discussions, PRs, CI, and Project fields hold execution state.
-- Slack and Codex are capture surfaces only.
+- Codex is a capture surface; Slack is for clarification, notifications, and approvals, not idea intake.
 
 ## Language Rules
 

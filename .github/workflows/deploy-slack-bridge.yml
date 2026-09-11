@@ -2,7 +2,7 @@ name: Deploy Slack Bridge
 
 # Publishes scripts/slack-approval-bridge to the Azure Function App that backs
 # every Slack interactive button (Stage 5/7/9 approvals, Stage 10
-# authorization, Project Status, Slack intake).
+# authorization, Project Status).
 #
 # The Function App itself (plan, storage, app settings, DNS) is owned by
 # hgahub/duumbi-infra (Pulumi, stack-platform.ts). Only the code is deployed

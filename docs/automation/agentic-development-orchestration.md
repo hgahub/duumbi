@@ -10,7 +10,9 @@ or source-repo contracts that support it.
 - GitHub Issues, PRs, CI, review threads, and Project V2 status hold execution
   state.
 - Obsidian stores raw intake and durable knowledge.
-- Slack is a capture, notification, clarification, and approval surface.
+- Slack is a notification, clarification, and approval surface. Idea intake uses
+  Codex (Stage 2), manual Obsidian Inbox (Stage 3), or GitHub. Stage 1 Slack
+  intake was retired on 2026-09-11; stage numbers remain unchanged.
 - GitHub Actions generally avoid direct model calls. The Stage 4
   `triage-queue-refill.yml` workflow is the explicit exception: it may call a
   bounded Z.ai/Zhipu-backed triage step when the Project V2 `Needs Human Acceptance`
@@ -24,7 +26,7 @@ or source-repo contracts that support it.
   duplicates before Stage 4 triage.
 - `duumbi-delivery-autopilot` coordinates a single `Spec Needed` issue through
   Stage 6, Stage 7 AI gate, Stage 8, Stage 9 AI gate, and Stage 10 entry.
-- `duumbi-obsidian-capture` and `duumbi-codex-intake` now search active Inbox,
+- `duumbi-codex-intake` searches active Inbox,
   Processed Inbox, Atlas, and GitHub before creating duplicate notes.
 - `duumbi-spec-review` and `duumbi-tech-spec-review` now support bounded AI
   gates while still failing closed on missing checks, scope, unresolved
@@ -39,7 +41,6 @@ or source-repo contracts that support it.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `slack-intake-dispatch.yml` | Slack shortcut repository dispatch, manual | Dispatches Stage 1 Slack intake without requiring the developer to name the skill. |
 | `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Uses DeepSeek to enrich one unprocessed Inbox note in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Z.ai/Zhipu-backed Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
@@ -65,7 +66,7 @@ or source-repo contracts that support it.
   Ready-for-Build and correction/entry posts stay text-only.
 - Stage 11 merge, request-changes, clarification, and abandon decisions are made
   directly by the human reviewer in GitHub.
-- Slack shortcuts use `slack-intake` with Slack channel/thread identifiers only.
+- Slack message/global shortcuts are unsupported and do not dispatch workflows.
 
 Unknown stages fall back to `stage-approval`, where unsupported stages fail
 closed. Do not ship live `project_status` buttons against an undeployed
@@ -242,6 +243,5 @@ warnings.
 
 Slack capability URLs, including `response_url`, stay inside the Slack bridge
 function and are not forwarded through GitHub `repository_dispatch` payloads.
-Slack shortcut dispatches pass source identifiers instead of raw Slack message
-text; GitHub workflow summaries intentionally omit generated agent prompts that
-could contain user-provided Slack content.
+GitHub workflow summaries intentionally omit generated agent prompts that
+could contain user-provided content.
