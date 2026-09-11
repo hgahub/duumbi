@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { hasStatus, readIntake, withIntake, replaceEnrichment, intakeExcerpt } from "../intake/contract.mjs";
 import { execFileSync } from "node:child_process";
 import fsModule from "node:fs";
 import pathModule from "node:path";
@@ -13,25 +15,6 @@ import {
 export const WORKFLOW_FILE = ".github/workflows/inbox-enrichment-dispatch.yml";
 export const ENRICHMENT_MARKER_PREFIX = "<!-- duumbi-inbox-enrichment:v1";
 export const DEFAULT_SCAN_LIMIT = 200;
-
-const REQUIRED_ENRICHMENT_SECTIONS = [
-  "## Source",
-  "## Raw input",
-  "## Interpreted intent",
-  "## Developer summary",
-  "## UML overview",
-  "## Classification",
-  "## Clarifications",
-  "### Answered",
-  "### Open",
-  "## Relevant DUUMBI context",
-  "## Related GitHub context",
-  "## Initial routing recommendation",
-  "## Requested follow-up",
-  "## AI agent instructions",
-  "## Obsidian tags",
-  "## Enrichment result",
-];
 
 const ACTIVE_VAULT_DOCS = [
   "Duumbi/How to use.md",
@@ -159,9 +142,7 @@ export function hasProcessedMarker(text) {
 }
 
 export function isEnrichmentCandidateText(text) {
-  const value = String(text ?? "");
-  if (!normalizeText(value) || hasProcessedMarker(value)) return false;
-  return REQUIRED_ENRICHMENT_SECTIONS.some((section) => !value.includes(section));
+  return hasStatus(text, "captured");
 }
 
 function toVaultRelative(path, vaultRoot, absolutePath) {
@@ -306,7 +287,7 @@ export function buildEnrichmentContext({
     },
     candidate_note: {
       path: candidatePath,
-      text: truncateText(candidateText, 9000),
+      text: intakeExcerpt(candidateText),
     },
     active_vault_docs: readRelativeFiles(fs, path, vaultRoot, ACTIVE_VAULT_DOCS, warnings, 4500),
     source_code_context: readRelativeFiles(fs, path, workspace, SOURCE_CONTEXT_FILES, warnings, 3500),
@@ -329,10 +310,11 @@ export function buildDeepSeekMessages(contextPayload) {
     developer_summary: "clear implementation-oriented summary for humans",
     uml_diagram_mermaid: "Mermaid diagram body only; no markdown fences",
     clarifications_answered: ["facts already clear from the input/context"],
-    clarifications_open: ["questions a human may need to answer before implementation"],
+    clarifications_open: ["1-3 specific blocking questions when needs_clarification; otherwise nonblocking open questions"],
+    clarification_reason: "why human input is essential before triage; empty otherwise",
     relevant_duumbi_context: ["vault or source paths and why they matter"],
     related_github_context: "known related GitHub state, or say triage should verify later",
-    initial_routing_recommendation: "GitHub issue | GitHub Discussion | Dot/Map/Work | skill update | no action | needs clarification | duplicate",
+    initial_routing_recommendation: "GitHub issue | Dot/Map/Work | skill update | no action | needs clarification | duplicate",
     requested_follow_up: ["explicit requested next actions"],
     ai_agent_instructions: ["instructions for later agents that will create a GitHub issue"],
     scope_in: ["candidate scope"],
@@ -356,6 +338,8 @@ export function buildDeepSeekMessages(contextPayload) {
         "Include a concise UML-style Mermaid diagram body. Prefer classDiagram or sequenceDiagram when appropriate; use flowchart TD only when a task-flow diagram is clearer.",
         "Add practical AI-agent instructions for a later agent that will create a GitHub issue.",
         "Clearly separate facts, assumptions, risks, and open questions.",
+        "Resolve questions from supplied context first. Use needs_clarification only for essential human intent or missing evidence that blocks triage. Nonblocking uncertainty stays open in a ready_for_triage note.",
+        "A related topic is not necessarily a duplicate: preserve new requirements and evidence.",
         "Do not invent completed work, GitHub issue numbers, approvals, or implementation details that are not present in the supplied context.",
         "Do not create GitHub issues, specs, PRs, source changes, Atlas notes, or implementation work.",
         `Expected JSON schema example: ${JSON.stringify(schema)}`,
@@ -419,7 +403,11 @@ export function validateEnrichmentDecision(decision) {
   const businessValue = normalizeEnum(decision?.business_value, ESTIMATE_LEVELS, "medium");
   const importance = normalizeEnum(decision?.importance, ESTIMATE_LEVELS, "medium");
   const complexity = normalizeEnum(decision?.complexity, ESTIMATE_LEVELS, "medium");
-  const status = normalizeEnum(decision?.status, RESULT_STATUSES, "ready_for_triage");
+  const status = normalizeText(decision?.status);
+  if (!RESULT_STATUSES.has(status)) throw new Error("Invalid enrichment status");
+  if (status === "needs_clarification" && (!normalizeText(decision?.clarification_reason) || !Array.isArray(decision?.clarifications_open) || decision.clarifications_open.length < 1 || decision.clarifications_open.length > 3 || decision.clarifications_open.some((q) => !normalizeText(q)))) {
+    throw new Error("Clarification requires a blocking reason and 1-3 concrete questions");
+  }
   const developerSummary = truncateText(decision?.developer_summary, 4000);
   const interpretedIntent = truncateText(decision?.interpreted_intent, 2500);
 
@@ -439,6 +427,7 @@ export function validateEnrichmentDecision(decision) {
     complexity,
     developer_summary: developerSummary,
     uml_diagram_mermaid: stripMarkdownFence(decision?.uml_diagram_mermaid) || defaultDiagram(title),
+    clarification_reason: truncateText(decision?.clarification_reason, 1600),
     clarifications_answered: normalizeStringArray(decision?.clarifications_answered),
     clarifications_open: normalizeStringArray(decision?.clarifications_open),
     relevant_duumbi_context: normalizeStringArray(decision?.relevant_duumbi_context),
@@ -464,25 +453,21 @@ export function buildEnrichedNote({ originalText, decision, candidatePath, gener
   const statusLabel = decision.status.replace(/_/g, " ");
   const hashtagLine = decision.obsidian_tags.map((tag) => `#${tag}`).join(" ");
 
-  return [
-    "---",
-    "tags:",
-    ...decision.obsidian_tags.map((tag) => `  - ${tag}`),
-    "duumbi_inbox_enrichment: processed",
-    `duumbi_inbox_enrichment_generated_at: ${generatedAt}`,
-    "---",
-    "",
-    `# ${decision.title}`,
-    "",
-    `${ENRICHMENT_MARKER_PREFIX} status=processed generated_at=${generatedAt} -->`,
-    "",
-    "## Source",
-    "- Surface: Manual Obsidian edit",
-    `- Vault path: ${candidatePath}`,
-    "- Submitted by: unknown unless explicit in the raw input",
-    "",
-    "## Raw input",
-    markdownBlockquote(originalText),
+  const metadata = readIntake(originalText);
+  const nextStatus = decision.status === "needs_clarification" ? "needs_clarification" : "ready_for_triage";
+  const enriched = withIntake(originalText, {
+    intake_id: metadata.intake_id || randomUUID(),
+    source: metadata.source || "obsidian",
+    intake_owner: metadata.intake_owner || "unassigned",
+    intake_status: nextStatus,
+    enrichment_result: decision.status,
+    enriched_at: generatedAt,
+    intake_updated_at: generatedAt,
+  });
+  const block = [
+    "## Stage 3b preparation",
+    `- Prepared title: ${decision.title}`,
+    `- Blocking clarification reason: ${decision.clarification_reason || "none"}`,
     "",
     "## Interpreted intent",
     "",
@@ -554,6 +539,7 @@ export function buildEnrichedNote({ originalText, decision, candidatePath, gener
     markdownList(decision.recommendations, "  - none"),
     "",
   ].join("\n");
+  return replaceEnrichment(enriched, block);
 }
 
 function providerUsageNotCalled(reason) {
@@ -700,13 +686,13 @@ export function commitVaultChanges({
     return { committed: false, commitSha: null };
   }
 
-  git(["commit", "-m", "chore: enrich DUUMBI inbox note"], { cwd: vaultRoot });
+  git(["commit", "-m", "📝 chore: enrich DUUMBI inbox note"], { cwd: vaultRoot });
   const commitSha = normalizeText(git(["rev-parse", "HEAD"], { cwd: vaultRoot }));
   git(["push", "origin", "HEAD:main"], { cwd: vaultRoot });
   return { committed: true, commitSha };
 }
 
-async function postSlack({ fetchImpl, env, context, candidatePath, commitSha, workflowUrl, warnings }) {
+async function postSlack({ fetchImpl, env, context, candidatePath, commitSha, workflowUrl, warnings, decision, metadata }) {
   const token = env.SLACK_BOT_TOKEN;
   const channel = env.DUUMBI_AGENT_DISPATCH_CHANNEL_ID || env.SLACK_REVIEW_CHANNEL_ID;
   if (!token || !channel) {
@@ -714,6 +700,12 @@ async function postSlack({ fetchImpl, env, context, candidatePath, commitSha, wo
     return "not_configured";
   }
 
+  const needsClarification = decision?.status === "needs_clarification";
+  const owner = metadata?.intake_owner || env.DUUMBI_INBOX_OWNER || context.repo.owner;
+  const defaultOwner = env.DUUMBI_INBOX_OWNER || context.repo.owner;
+  const slackOwner = metadata?.intake_owner_slack_id || (owner === defaultOwner ? env.DUUMBI_INBOX_OWNER_SLACK_ID : "") || "";
+  const ownerLabel = /^[UW][A-Z0-9]+$/.test(slackOwner) ? `<@${slackOwner}>` : owner.replace(/[&<>]/g, "");
+  const noteUrl = `https://github.com/${context.repo.owner}/duumbi-vault/blob/main/${candidatePath.split("/").map(encodeURIComponent).join("/")}`;
   try {
     const response = await fetchImpl("https://slack.com/api/chat.postMessage", {
       method: "POST",
@@ -724,7 +716,14 @@ async function postSlack({ fetchImpl, env, context, candidatePath, commitSha, wo
       body: JSON.stringify({
         channel,
         text: [
-          "*DUUMBI Inbox Enrichment Complete*",
+          needsClarification ? "*DUUMBI Inbox — pontosítás szükséges*" : "*DUUMBI Inbox Enrichment Complete*",
+          `*Felelős:* ${ownerLabel}`,
+          `*Jegyzet:* ${noteUrl}`,
+          ...(needsClarification ? [
+            "A blokkoló kérdések és indoklás a jegyzet Stage 3b preparation szakaszában olvashatók.",
+            `*Codex folytatás:* /duumbi-codex-intake Pontosítsuk ezt a jegyzetet: ${candidatePath}`,
+            "Grokban ugyanazt a jegyzetet a mentett intake skillel folytasd.",
+          ] : []),
           `*Repository:* ${context.repo.owner}/${context.repo.repo}`,
           `*Vault note:* ${candidatePath}`,
           `*Vault commit:* ${commitSha || "committed"}`,
@@ -808,6 +807,8 @@ async function writeSummary(summary, result) {
     ["Inbox notes inspected", String(result.inspectedCount)],
     ["Candidate note", result.candidatePath || "none"],
     ["Updated note", result.updatedPath || "none"],
+    ["Intake status", result.intakeStatus || "unchanged"],
+    ["Owner", result.owner || "none"],
     ["Vault commit", result.commitSha || "none"],
     ["Slack dispatch", result.slackNotification || "not_needed"],
   ];
@@ -916,14 +917,18 @@ export async function runInboxEnrichment({
     const decision = validateEnrichmentDecision(parsedDecision);
     const candidateAbsolute = path.join(vaultRoot, candidatePath);
     const originalText = fs.readFileSync(candidateAbsolute, "utf8");
+    const metadata = readIntake(originalText);
+    const ownedText = withIntake(originalText, { intake_owner: metadata.intake_owner || env.DUUMBI_INBOX_OWNER || context.repo.owner });
     const nextText = buildEnrichedNote({
-      originalText,
+      originalText: ownedText,
       decision,
       candidatePath,
       generatedAt,
     });
     fs.writeFileSync(candidateAbsolute, nextText);
     result.updatedPath = candidatePath;
+    result.intakeStatus = readIntake(nextText).intake_status;
+    result.owner = readIntake(nextText).intake_owner;
 
     const commitResult = commitVaultChanges({
       vaultRoot,
@@ -941,6 +946,8 @@ export async function runInboxEnrichment({
         context,
         candidatePath,
         commitSha: commitResult.commitSha,
+        decision,
+        metadata: readIntake(nextText),
         workflowUrl,
         warnings,
       });

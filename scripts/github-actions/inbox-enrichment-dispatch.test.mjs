@@ -1,3 +1,4 @@
+import { readIntake, withIntake } from "../intake/contract.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -83,7 +84,7 @@ function makeWorkspace({ processed = false, secondRaw = false } = {}) {
         "# Already processed",
         `${ENRICHMENT_MARKER_PREFIX} status=processed -->`,
       ].join("\n")
-    : "# Raw idea\n\nMake the provider setup easier for new users.\n";
+    : "---\nintake_status: captured\nsource: codex\nintake_owner: hgahub\n---\n# Raw idea\n\nMake the provider setup easier for new users.\n";
 
   fs.writeFileSync(path.join(inboxRoot, "candidate.md"), candidateText);
   if (secondRaw) {
@@ -191,7 +192,8 @@ function makeGit() {
 }
 
 test("candidate detection ignores processed marker and processed tag", () => {
-  assert.equal(isEnrichmentCandidateText("# Raw\n\nPlease build something."), true);
+  assert.equal(isEnrichmentCandidateText("# Raw\n\nPlease build something."), false);
+  assert.equal(isEnrichmentCandidateText("---\nintake_status: captured\n---\n# Note"), true);
   assert.equal(isEnrichmentCandidateText(`${ENRICHMENT_MARKER_PREFIX} status=processed -->`), false);
   assert.equal(isEnrichmentCandidateText("---\ntags:\n  - duumbi/status/processed\n---\n# Done"), false);
 });
@@ -346,7 +348,8 @@ test("runInboxEnrichment enriches one note, commits to vault, and posts Slack", 
     path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)", "second.md"),
     "utf8",
   );
-  assert.match(updated, /duumbi-inbox-enrichment:v1/);
+  assert.equal(readIntake(updated).intake_status, "ready_for_triage");
+  assert.equal(readIntake(updated).source, "codex");
   assert.match(updated, /duumbi\/status\/processed/);
   assert.match(updated, /## Developer summary/);
   assert.match(updated, /## UML overview/);
@@ -359,4 +362,54 @@ test("runInboxEnrichment enriches one note, commits to vault, and posts Slack", 
   assert.equal(metrics.workflow.run_attempt, 7);
   assert.equal(metrics.counts.slack_notifications_attempted, 1);
   assert.equal(metrics.provider_usage.provider, "deepseek");
+});
+
+test("clarification roundtrip preserves source and answers; waiting notes do not call models or notify again", async () => {
+  const { workspace, inboxRoot } = makeWorkspace();
+  const file = path.join(inboxRoot, "candidate.md");
+  const original = fs.readFileSync(file, "utf8");
+  const decision = { status: "needs_clarification", clarification_reason: "The affected user group changes the scope.", clarifications_open: ["Desktop or CLI users?"] };
+  const { fetchImpl, calls } = makeFetch(decision);
+  const { git } = makeGit();
+  const args = { env: { GH_PROJECT_PAT: "pat", DEEPSEEK_API_KEY: "key", SLACK_BOT_TOKEN: "slack", SLACK_REVIEW_CHANNEL_ID: "C123" }, context: makeContext(), core: makeCore(), workspace, git, fetchImpl };
+  await runInboxEnrichment(args);
+  const blocked = fs.readFileSync(file, "utf8");
+  assert.equal(readIntake(blocked).intake_status, "needs_clarification");
+  assert.equal(readIntake(blocked).intake_owner, "hgahub");
+  assert.ok(blocked.includes(original.split("---\n").at(-1).trim()));
+  const slack = calls.find((call) => call.url.includes("slack.com"));
+  assert.match(slack.body.text, /pontosítás szükséges/);
+  assert.match(slack.body.text, /duumbi-codex-intake/);
+  assert.match(slack.body.text, /blob\/main\//);
+  const count = calls.length;
+  await runInboxEnrichment(args);
+  assert.equal(calls.length, count);
+  fs.writeFileSync(file, withIntake(blocked + "\n## User clarification\nDesktop users only.\n", { intake_status: "captured" }));
+  const ready = makeFetch();
+  await runInboxEnrichment({ ...args, fetchImpl: ready.fetchImpl });
+  const final = fs.readFileSync(file, "utf8");
+  assert.equal(readIntake(final).intake_status, "ready_for_triage");
+  assert.ok(final.includes("Desktop users only."));
+  assert.equal(final.split("<!-- duumbi-enrichment:start -->").length, 2);
+});
+
+test('clarification requires questions and does not mention the default Slack owner for another author', async () => {
+  const { workspace, inboxRoot } = makeWorkspace();
+  const file = path.join(inboxRoot, 'candidate.md');
+  try {
+    const original = withIntake(fs.readFileSync(file, 'utf8'), { intake_owner: 'other-author' });
+    fs.writeFileSync(file, original);
+    const bad = makeFetch({ status: 'needs_clarification', clarification_reason: '', clarifications_open: [] });
+    const { git } = makeGit();
+    const args = { env: { GH_PROJECT_PAT: 'pat', DEEPSEEK_API_KEY: 'key', SLACK_BOT_TOKEN: 'slack', SLACK_REVIEW_CHANNEL_ID: 'C123', DUUMBI_INBOX_OWNER_SLACK_ID: 'UDEFAULT' }, context: makeContext(), core: makeCore(), workspace, git };
+    const result = await runInboxEnrichment({ ...args, fetchImpl: bad.fetchImpl });
+    assert.equal(result.decision, 'enrichment_failed');
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    assert.equal(bad.calls.some((call) => call.url.includes('slack.com')), false);
+    const good = makeFetch({ status: 'needs_clarification', clarification_reason: 'User scope is missing.', clarifications_open: ['Which user?'] });
+    await runInboxEnrichment({ ...args, fetchImpl: good.fetchImpl });
+    const slack = good.calls.find((call) => call.url.includes('slack.com'));
+    assert.ok(slack.body.text.includes('other-author'));
+    assert.equal(slack.body.text.includes('<@UDEFAULT>'), false);
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
 });

@@ -1,3 +1,4 @@
+import { hasStatus, withIntake, intakeExcerpt } from "../intake/contract.mjs";
 import { execFileSync } from "node:child_process";
 import fsModule from "node:fs";
 import pathModule from "node:path";
@@ -180,6 +181,7 @@ export function buildProjectSnapshot(project, targetMinimum = DEFAULT_TARGET_HUM
 }
 
 function walkMarkdownFiles(fs, path, root, limit) {
+  if (!fs.existsSync(root)) return [];
   const results = [];
   const visit = (dir) => {
     if (results.length >= limit) return;
@@ -198,14 +200,6 @@ function walkMarkdownFiles(fs, path, root, limit) {
   };
   visit(root);
   return results;
-}
-
-function readMarkdownNotes(fs, path, root, baseRoot, limit, maxChars) {
-  if (!fs.existsSync(root)) return [];
-  return walkMarkdownFiles(fs, path, root, limit).map((absolutePath) => ({
-    path: path.relative(baseRoot, absolutePath).split(path.sep).join("/"),
-    text: truncateText(fs.readFileSync(absolutePath, "utf8"), maxChars),
-  }));
 }
 
 function readVaultDocs(fs, path, vaultRoot, warnings) {
@@ -242,7 +236,10 @@ export async function collectTriageContext({
   }
 
   const inboxRoot = path.join(duumbiRoot, "00 Inbox (ToProcess)");
-  const inboxNotes = readMarkdownNotes(fs, path, inboxRoot, vaultRoot, 8, 3500);
+  const inboxNotes = walkMarkdownFiles(fs, path, inboxRoot, 200)
+    .map((file) => ({ path: path.relative(vaultRoot, file).split(path.sep).join("/"), text: fs.readFileSync(file, "utf8") }))
+    .filter((note) => hasStatus(note.text, "ready_for_triage")).slice(0, 8)
+    .map((note) => ({ ...note, text: intakeExcerpt(note.text) }));
   const activeDocs = readVaultDocs(fs, path, vaultRoot, warnings);
 
   return {
@@ -395,13 +392,17 @@ export function validateTriageDecision(decision, contextPayload) {
   }
 
   normalized.source_links = requireSourceLinks(decision);
-  const inboxPaths = new Set((contextPayload?.inbox_notes || []).map((note) => note.path));
+  const inboxPaths = new Set((contextPayload?.inbox_notes || []).filter((note) => hasStatus(note.text, "ready_for_triage")).map((note) => note.path));
   const hasInboxSource = normalized.source_links.some((link) =>
     inboxPaths.has(link.replace(/^duumbi-vault\//, "")),
   );
   if (!hasInboxSource) {
     throw new Error("Triage writes require a source_links path matching a supplied Inbox note; GitHub-only intake is retired.");
   }
+  // Archive only a validated primary input, never arbitrary model-supplied paths.
+  const selectedInbox = [...new Set(normalized.source_links.map((link) => link.replace(/^duumbi-vault\//, "")).filter((link) => inboxPaths.has(link)))];
+  if (selectedInbox.length !== 1) throw new Error("Triage must select exactly one supplied ready Inbox note");
+  normalized.inbox_source = selectedInbox[0];
 
   if (action === "route_existing_issue") {
     const issueNumber = Number(decision.existing_issue_number);
@@ -616,11 +617,12 @@ export function archiveProcessedInboxNotes({
   const archived = [];
   for (const inboxPath of inboxPaths) {
     const original = fs.readFileSync(inboxPath, "utf8");
+    if (!hasStatus(original, "ready_for_triage")) throw new Error("Inbox source is no longer ready_for_triage");
     const triageResult = buildInboxTriageResult({ generatedAt, issueNumber, issueUrl, decision });
     const nextText = /^## Triage result$/m.test(original)
       ? original
       : `${original.trimEnd()}\n\n${triageResult}\n`;
-    fs.writeFileSync(inboxPath, nextText);
+    fs.writeFileSync(inboxPath, withIntake(nextText, { intake_status: "triaged", intake_updated_at: generatedAt }));
 
     const archivePath = uniqueArchivePath(fs, path, processedInboxRoot, path.basename(inboxPath));
     fs.renameSync(inboxPath, archivePath);
@@ -650,7 +652,7 @@ export function commitVaultChanges({
     return { committed: false, commitSha: null };
   }
 
-  git(["commit", "-m", "chore: archive processed DUUMBI inbox notes"], { cwd: vaultRoot });
+  git(["commit", "-m", "📝 chore: archive processed DUUMBI inbox notes"], { cwd: vaultRoot });
   const commitSha = normalizeText(git(["rev-parse", "HEAD"], { cwd: vaultRoot }));
   git(["push", "origin", "HEAD:main"], { cwd: vaultRoot });
   return { committed: true, commitSha };
@@ -1378,10 +1380,6 @@ export async function runTriageQueueRefill({
       return { ...result, decision: "not_needed" };
     }
 
-    if (!zhipuApiKey) {
-      throw new Error("ZHIPUAI_API_KEY is not configured; failing closed before triage refill.");
-    }
-
     const triageContext = await collectTriageContext({
       fs,
       path,
@@ -1391,6 +1389,20 @@ export async function runTriageQueueRefill({
       api,
       warnings,
     });
+    if (triageContext.inbox_notes.length === 0) {
+      const metrics = buildWorkflowMetrics({
+        context, conclusion: "success", decision: "no_ready_inbox",
+        counts: { issues_considered: project.items.nodes.length, issues_queued: 0, slack_notifications_attempted: 0 },
+        providerUsage: providerUsageNotCalled("no_ready_inbox"), warnings,
+      });
+      writeMetrics(metrics);
+      await writeSummary(summary, { ...result, decision: "no_ready_inbox" });
+      return { ...result, decision: "no_ready_inbox" };
+    }
+    if (!zhipuApiKey) {
+      throw new Error("ZHIPUAI_API_KEY is not configured; failing closed before triage refill.");
+    }
+
     const messages = buildTriageMessages(triageContext);
     const { parsedDecision, responses: modelResponses } = await getParsedTriageDecision({
       fetchImpl,
@@ -1413,7 +1425,7 @@ export async function runTriageQueueRefill({
       fs,
       path,
       workspace,
-      sourceLinks: decision.source_links,
+      sourceLinks: [decision.inbox_source],
       generatedAt: triageContext.generated_at,
       issueNumber: applied.issueNumber,
       issueUrl: applied.issueUrl,

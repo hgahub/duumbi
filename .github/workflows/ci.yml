@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Intake and workflow contract tests
+        run: node --test scripts/intake/*.test.mjs scripts/github-actions/*.test.mjs
       - name: Detect check scope
         id: scope
         shell: bash
