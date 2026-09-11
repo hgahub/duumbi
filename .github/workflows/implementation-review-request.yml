@@ -1,4 +1,4 @@
-name: Implementation Review Request
+name: Stage 11 - Implementation Review Handoff
 
 on:
   repository_dispatch:

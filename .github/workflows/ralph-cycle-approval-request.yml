@@ -1,4 +1,4 @@
-name: Ralph Cycle Approval Request
+name: Stage 10 - Cycle Authorization Request
 
 on:
   repository_dispatch:

@@ -1,4 +1,4 @@
-name: Deploy Slack Bridge
+name: Slack Bridge Deployment
 
 # Publishes scripts/slack-approval-bridge to the Azure Function App that backs
 # every Slack interactive button (Stage 5/7/9 approvals, Stage 10

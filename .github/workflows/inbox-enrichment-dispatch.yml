@@ -1,4 +1,4 @@
-name: Inbox Enrichment Dispatch
+name: Stage 3b - Inbox Enrichment
 
 on:
   schedule:

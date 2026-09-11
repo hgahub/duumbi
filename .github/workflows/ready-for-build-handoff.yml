@@ -1,4 +1,4 @@
-name: Ready For Build Handoff
+name: Stage 9-10 - Implementation Handoff
 
 on:
   issues:

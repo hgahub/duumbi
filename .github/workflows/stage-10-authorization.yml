@@ -1,4 +1,4 @@
-name: Stage 10 Authorization
+name: Stage 10 - Record Cycle Authorization
 
 on:
   workflow_dispatch:
