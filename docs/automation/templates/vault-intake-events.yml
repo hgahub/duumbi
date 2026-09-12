@@ -1,0 +1,27 @@
+name: Stage 3b - Inbox Change Listener
+
+on:
+  push:
+    branches: [main]
+    paths: ['Duumbi/00 Inbox (ToProcess)/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wake Stage 3b only for captured input
+        env:
+          INTAKE_BEFORE_SHA: ${{ github.event.before || '0000000000000000000000000000000000000000' }}
+          DUUMBI_INTAKE_DISPATCH_TOKEN: ${{ secrets.DUUMBI_INTAKE_DISPATCH_TOKEN }}
+          DUUMBI_SOURCE_REPOSITORY: hgahub/duumbi
+        run: node scripts/intake/vault-listener.mjs

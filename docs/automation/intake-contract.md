@@ -152,6 +152,28 @@ vault changes do not overlap. A concurrent human push is rejected safely by Git;
 reconcile before retrying. If GitHub writes succeeded but an archive push failed,
 inspect existing issues before retrying to avoid duplicate execution work.
 
+## Event-driven preparation
+
+A vault `main` push touching the Inbox runs `Stage 3b - Inbox Change Listener`.
+The listener examines added/modified/renamed notes in that push and sends one
+`duumbi-inbox-captured` repository dispatch only if at least one is `captured`.
+It sends no note text, path, or user-controlled instructions. The receiver ignores
+client payload and reads the latest vault main snapshot under shared concurrency.
+A stale/duplicate event is harmless once the note is no longer captured.
+
+The receiver processes at most five captured notes serially, with a separate
+verified push and notification per note. Explicit `target_path` remains single-note.
+It stops on the first error or uncommitted result; earlier successful notes remain
+completed. Per-note metrics are aggregated once into the uploaded workflow metrics.
+More than five candidates wait for the next event or the hourly `17 * * * *`
+sweep. No recursive self-dispatch or unbounded draining is used. Missing candidates
+cause no LLM call. Stage 4 retains its existing four-hour schedule.
+
+GitHub can coalesce pending runs and delay schedules; the hourly sweep reconciles
+missed wake-ups and backlog. A push made with a workflow's `GITHUB_TOKEN` may not
+produce a subsequent push workflow; the sweep covers this case too. The listener
+must use its own cross-repository token. See [deployment steps](intake-events-setup.md).
+
 ## Existing notes and rollout
 
 Legacy notes need one explicit metadata migration; they are not silently treated

@@ -2,7 +2,9 @@ name: Stage 3b - Inbox Enrichment
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'
+    - cron: '17 * * * *'
+  repository_dispatch:
+    types: [duumbi-inbox-captured]
   workflow_dispatch:
     inputs:
       target_path:
@@ -25,7 +27,7 @@ concurrency:
 
 jobs:
   dispatch:
-    name: Enrich one Inbox note
+    name: Enrich up to five Inbox notes
     runs-on: ubuntu-latest
     steps:
       - name: Check out source repository
@@ -58,7 +60,7 @@ jobs:
         with:
           script: |
             const enrichment = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/inbox-enrichment-dispatch.mjs`);
-            await enrichment.runInboxEnrichment({
+            await enrichment.runInboxEnrichmentBatch({
               env: process.env,
               context,
               core,

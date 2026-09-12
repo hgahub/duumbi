@@ -43,7 +43,7 @@ or source-repo contracts that support it.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Uses DeepSeek to enrich one `captured` Inbox note in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
+| `inbox-enrichment-dispatch.yml` | Vault capture event, hourly at minute 17 UTC, manual | Uses DeepSeek to enrich up to five `captured` Inbox notes serially in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Z.ai/Zhipu-backed Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
@@ -117,7 +117,7 @@ PRs, or source code.
 
 ## Inbox Enrichment Policy
 
-`inbox-enrichment-dispatch.yml` selects at most one note whose top-level
+`inbox-enrichment-dispatch.yml` selects at most five notes serially whose top-level
 frontmatter is `intake_status: captured`, regardless of Codex/Grok/Obsidian source.
 It preserves the original input and ownership, replacing only its delimited
 preparation block. Legacy processed tags do not determine eligibility.
