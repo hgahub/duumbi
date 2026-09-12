@@ -969,8 +969,9 @@ export async function callZhipu({
           model,
           messages: retryMessages,
           response_format: { type: "json_object" },
-          thinking: { type: "disabled" },
-          reasoning_effort: "none",
+          // GLM-5.3 rejects disabled thinking (provider error 1210).
+          thinking: { type: model === "glm-5.3" ? "enabled" : "disabled" },
+          reasoning_effort: model === "glm-5.3" ? "low" : "none",
           do_sample: false,
           temperature,
           max_tokens: maxTokens,
