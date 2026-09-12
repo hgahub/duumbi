@@ -11,15 +11,16 @@ or source-repo contracts that support it.
   state.
 - Obsidian stores raw intake and durable knowledge.
 - Slack is a notification, clarification, and approval surface. Idea intake uses
-  Codex (Stage 2) or manual Obsidian Inbox (Stage 3). GitHub Issues and
+  Codex or Grok Bot (Stage 2), or manual Obsidian Inbox (Stage 3). GitHub Issues and
   Ideas Discussions are retired as independent intake sources. Stage 1 Slack
   intake was retired on 2026-09-11; stage numbers remain unchanged.
-- GitHub Actions generally avoid direct model calls. The Stage 4
-  `triage-queue-refill.yml` workflow is the explicit exception: it may call a
-  bounded Z.ai/Zhipu-backed triage step when the Project V2 `Needs Human Acceptance`
-  queue drops below the configured minimum. Other scheduled workflows create
-  deterministic dispatch records and Slack handoffs for Codex Cloud, Codex App,
-  Codex CLI, or reviewed local agent runs.
+- Stage 3b calls DeepSeek for bounded Inbox preparation; Stage 4 calls Z.ai/Zhipu
+  for bounded execution routing. Other gates have their documented model or
+  dispatch policies. Spec and implementation work remain in Codex by default.
+- The [shared intake contract](intake-contract.md) defines authoritative metadata,
+  synchronization, ownership, and the clarification loop. The portable
+  [Grok recipe](grok-intake-skill.md) uses the same contract; see
+  [Grok setup](grok-intake-setup.md) for account-specific configuration.
 
 ## Skills Added Or Updated
 
@@ -42,7 +43,7 @@ or source-repo contracts that support it.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Uses DeepSeek to enrich one unprocessed Inbox note in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
+| `inbox-enrichment-dispatch.yml` | 06:00 UTC and 18:00 UTC, manual | Uses DeepSeek to enrich one `captured` Inbox note in `duumbi-vault/main`, then posts Slack only when a vault commit is created. |
 | `triage-queue-refill.yml` | every 4 hours, manual | Reads Project V2 `Needs Human Acceptance` count and uses a bounded Z.ai/Zhipu-backed Stage 4 triage refill when fewer than three issues are waiting. |
 | `clarification-routing.yml` | issue comment created, manual | Filters for explicit `@Clarification` comments on `needs-human-review` issues, uses DeepSeek for synthesis, posts a GitHub comment, and sends Slack. |
 | `spec-ai-gate.yml` | manual, repository dispatch | Records Stage 7/9 AI gate decisions and dispatches `stage-approval.yml` for clean approvals. |
@@ -116,24 +117,20 @@ PRs, or source code.
 
 ## Inbox Enrichment Policy
 
-`inbox-enrichment-dispatch.yml` scans `Duumbi/00 Inbox (ToProcess)/` in
-`duumbi-vault`, selects at most one unprocessed Markdown note per run, and asks
-DeepSeek for a bounded English enrichment using active vault docs plus selected
-source-code context. It rewrites only that Inbox note, commits directly to
-`duumbi-vault/main` with `GH_PROJECT_PAT`, and never creates GitHub issues,
-specs, PRs, Atlas notes, or implementation changes.
+`inbox-enrichment-dispatch.yml` selects at most one note whose top-level
+frontmatter is `intake_status: captured`, regardless of Codex/Grok/Obsidian source.
+It preserves the original input and ownership, replacing only its delimited
+preparation block. Legacy processed tags do not determine eligibility.
 
-The enriched note must include the original raw input, interpreted intent,
-developer summary, Mermaid UML-style overview, classification, business value,
-importance, complexity, scope, risks, open questions, and instructions for a
-later AI agent that will create a GitHub issue. The workflow marks completion
-with `duumbi/status/processed` and the `duumbi-inbox-enrichment:v1` marker, so
-later scheduled runs ignore the note.
+A usable note becomes `ready_for_triage`. Essential missing human intent becomes
+`needs_clarification`, with a reason and 1–3 questions. After the vault push, Slack
+links the note, identifies its owner, and gives a Codex/Grok continuation prompt.
+The owner answers in the same note and returns it to `captured` when resolved.
+Waiting notes do not trigger more model calls or duplicate notifications.
 
-Slack is commit-gated. If no candidate note exists, or if the selected note
-does not produce a vault diff, the workflow records metadata-only metrics and
-does not post Slack. If a note is committed and Slack secrets are configured,
-the workflow posts a short metadata-only completion notification.
+No candidate means no model call or Slack post. Failed notifications are visible
+in the workflow summary/metrics; do not re-enrich a waiting note to resend one.
+Stage 3b never creates GitHub issues, specs, PRs, Atlas notes, or implementation.
 
 ## Stage 4 Refill LLM Policy
 
@@ -142,7 +139,7 @@ V2 with `GH_PROJECT_PAT`; if at least three open issues are already in
 `Needs Human Acceptance`, it exits without calling a model or posting Slack.
 
 When refill is needed, the workflow checks out `duumbi-vault`, builds bounded
-context from active Inbox notes, Project V2 issue state, and
+context from `ready_for_triage` Inbox notes, Project V2 issue state, and
 active Atlas/runbook docs, and asks Z.ai/Zhipu for one strict JSON decision:
 `route_existing_issue`, `create_issue`, `needs_clarification`, or `no_action`.
 Only `route_existing_issue` and `create_issue` perform GitHub writes, and at
@@ -151,6 +148,13 @@ matching an Inbox note supplied to the model; GitHub-only or fabricated sources
 are rejected before writes. Existing Todo issues may be reused only for work
 represented by an Inbox note. Ideas Discussions are no longer fetched as an
 intake queue. GitHub remains execution state and duplicate-check context.
+
+With no ready note it exits before requiring an LLM key. After successful routing,
+it marks the selected note `triaged` and archives it with issue evidence. Stage 3b
+and Stage 4 share the `duumbi-vault-intake` concurrency group. The scheduled refill
+handles execution work; the manual `duumbi-triage` skill handles knowledge,
+duplicate, defer, and no-action dispositions. See the shared contract for rollout
+and partial-write recovery.
 
 All GitHub writes use `GH_PROJECT_PAT` rather than `GITHUB_TOKEN`, so adding the
 existing `needs-human-review` label can trigger the separate Human Acceptance

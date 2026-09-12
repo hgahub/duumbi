@@ -62,6 +62,19 @@ Start with:
 
 Load specific Dots, Maps, Works, source files, or GitHub items only when the source item needs them. Do not use archive notes as current guidance unless an active note explicitly points to them.
 
+## Inbox lifecycle gate
+
+Read [the shared intake contract](../../../docs/automation/intake-contract.md).
+Select only Inbox notes with top-level `intake_status: ready_for_triage`.
+`captured` belongs to Stage 3b; `needs_clarification` belongs to the owner and
+capture agent. Missing or invalid status is not implicit readiness.
+After successfully recording a triage outcome (GitHub issue, durable Atlas
+artifact, duplicate, deferred, or no action), set `triaged` and archive the note
+with links and rationale. Failed writes leave the note ready for reconciliation;
+check existing artifacts before retrying. Knowledge-only and non-execution
+outcomes are handled by this skill; the scheduled refill remains bounded to
+GitHub execution-queue work. Do not invent a GitHub issue merely to empty Inbox.
+
 ## Inputs
 
 Accept one item or a bounded sweep:
@@ -150,7 +163,8 @@ For `needs clarification`:
 
 - ask 1-3 targeted questions in the best source surface when available
 - do not route to `Needs Human Acceptance` until enough context exists
-- if the source is an Inbox note, append the clarification request and archive only when the raw note no longer needs to stay in the active Inbox
+- keep the Inbox note active, set `intake_status: needs_clarification`, and append the blocking reason and 1–3 questions under `## Stage 4 clarification` outside the generated block
+- identify the owner and hand the same note back to Codex/Grok intake; do not call this disposition complete or archive it
 
 For `defer` or `reject`:
 

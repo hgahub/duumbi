@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: triage-queue-refill
+  group: duumbi-vault-intake
   cancel-in-progress: false
 
 jobs:

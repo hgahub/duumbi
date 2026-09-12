@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readIntake, withIntake } from "../intake/contract.mjs";
 
 import {
   collectTriageContext,
@@ -137,7 +138,7 @@ function makeWorkspace() {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "duumbi-triage-refill-"));
   const inbox = path.join(workspace, "duumbi-vault", "Duumbi", "00 Inbox (ToProcess)");
   fs.mkdirSync(inbox, { recursive: true });
-  fs.writeFileSync(path.join(inbox, "candidate.md"), "# Candidate\n\nShip a useful next thing.\n");
+  fs.writeFileSync(path.join(inbox, "candidate.md"), "---\nintake_status: ready_for_triage\n---\n# Candidate\n\nShip a useful next thing.\n");
   return workspace;
 }
 
@@ -570,6 +571,7 @@ test("runTriageQueueRefill routes one eligible Todo issue to human acceptance", 
   assert.equal(fs.existsSync(inboxPath), false);
   assert.equal(fs.existsSync(archivedPath), true);
   const archivedText = fs.readFileSync(archivedPath, "utf8");
+  assert.equal(readIntake(archivedText).intake_status, "triaged");
   assert.match(archivedText, /## Triage result/);
   assert.match(archivedText, /Routed existing GitHub issue #10 to Needs Human Acceptance/);
   assert.equal(result.inboxNotesArchived, 1);
@@ -792,7 +794,7 @@ test("runTriageQueueRefill closes a created issue when Project insertion fails",
 
 test("triage decision validation rejects malformed or unsafe model output", () => {
   const contextPayload = {
-    inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md" }],
+    inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md", text: "---\nintake_status: ready_for_triage\n---\n# Ready" }],
     project: {
       eligible_todo_issues: [{ number: 7, item_id: "item-7" }],
     },
@@ -836,7 +838,7 @@ test("triage decision validation rejects malformed or unsafe model output", () =
 for (const action of ["create_issue", "route_existing_issue"]) {
   test(`${action} rejects GitHub-only and fabricated Inbox sources`, () => {
     const payload = {
-      inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md" }],
+      inbox_notes: [{ path: "Duumbi/00 Inbox (ToProcess)/candidate.md", text: "---\nintake_status: ready_for_triage\n---\n# Ready" }],
       project: { eligible_todo_issues: [{ number: 7, item_id: "item-7" }] },
     };
     for (const source of [
@@ -880,4 +882,32 @@ test("triage context uses Inbox sources and does not fetch Ideas Discussions", a
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
+});
+
+for (const status of ['captured', 'needs_clarification', 'triaged', null]) {
+  test(`Stage 4 skips ${status || 'unmarked'} notes without model access or writes`, async () => {
+    const workspace = makeWorkspace();
+    try {
+      const file = path.join(workspace, 'duumbi-vault', 'Duumbi', '00 Inbox (ToProcess)', 'candidate.md');
+      fs.writeFileSync(file, status ? withIntake('# Idea\n', { intake_status: status }) : '# Unmarked\n');
+      const { fetchImpl, calls } = makeFetch({ project: projectWithItems([issueItem({ number: 7, status: TODO_STATUS })]) });
+      const { git, calls: gitCalls } = makeGit();
+      const result = await runTriageQueueRefill({
+        env: { GH_PROJECT_PAT: 'pat', DUUMBI_PROJECT_NUMBER: '1' },
+        context: makeContext(), core: makeCore(), summary: makeSummary(), workspace, fetchImpl, git,
+      });
+      assert.equal(result.decision, 'no_ready_inbox');
+      assert.equal(result.ok, true);
+      assert.equal(gitCalls.length, 0);
+      assert.ok(calls.every((call) => call.url.endsWith('/graphql') && !call.body.query.includes('mutation')));
+      assert.ok(fs.existsSync(file));
+    } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+  });
+}
+
+test('triage archival source is limited to one supplied ready note', () => {
+  const note = 'Duumbi/00 Inbox (ToProcess)/ready.md';
+  const payload = { inbox_notes: [{ path: note, text: withIntake('# Ready', { intake_status: 'ready_for_triage' }) }] };
+  const result = validateTriageDecision({ action: 'create_issue', source_links: [note, 'Duumbi/00 Inbox (ToProcess)/unrelated.md'], issue: { title: 'Title', body: 'Body' } }, payload);
+  assert.equal(result.inbox_source, note);
 });

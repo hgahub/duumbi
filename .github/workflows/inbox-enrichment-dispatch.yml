@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: inbox-enrichment-dispatch
+  group: duumbi-vault-intake
   cancel-in-progress: false
 
 jobs:
@@ -47,6 +47,8 @@ jobs:
         uses: actions/github-script@v9
         env:
           GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          DUUMBI_INBOX_OWNER: ${{ vars.DUUMBI_INBOX_OWNER || github.repository_owner }}
+          DUUMBI_INBOX_OWNER_SLACK_ID: ${{ vars.DUUMBI_INBOX_OWNER_SLACK_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
