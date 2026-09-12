@@ -365,6 +365,38 @@ test("callZhipu uses Zhipu endpoint and default GLM model", async () => {
   assert.equal(calls[0].body.do_sample, false);
 });
 
+test("callZhipu enables required GLM-5.3 thinking on initial and retry requests", async () => {
+  const calls = [];
+  const result = await callZhipu({
+    apiKey: "zhipu-key",
+    model: "glm-5.3",
+    messages: [{ role: "user", content: "Return JSON" }],
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      if (body.thinking?.type !== "enabled" || body.reasoning_effort !== "low") {
+        return response({ error: { code: "1210", message: "This model always engages in thinking and cannot be disabled; please use low, high, or max" } }, 400);
+      }
+      return response({
+        model: "glm-5.3",
+        choices: [{ finish_reason: "stop", message: {
+          content: calls.length === 1 ? "" : '{"action":"no_action"}',
+        } }],
+        usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+      });
+    },
+  });
+  assert.equal(result.model, "glm-5.3");
+  assert.equal(result.content, '{"action":"no_action"}');
+  assert.equal(calls.length, 2);
+  for (const body of calls) {
+    assert.equal(body.model, "glm-5.3");
+    assert.deepEqual(body.thinking, { type: "enabled" });
+    assert.equal(body.reasoning_effort, "low");
+    assert.deepEqual(body.response_format, { type: "json_object" });
+  }
+});
+
 test("runTriageQueueRefill exits without model call when the queue is full", async () => {
   const project = projectWithItems([
     issueItem({ number: 1, status: HUMAN_ACCEPTANCE_STATUS }),
