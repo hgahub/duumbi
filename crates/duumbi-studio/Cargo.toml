@@ -17,7 +17,7 @@ tower-http = { version = "0.7.1", features = ["cors", "fs"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_yaml = { version = "0.9.34", optional = true }
-toml = { version = "1.1.5", optional = true }
+toml = { version = "1.1.6", optional = true }
 petgraph = { version = "0.8.3", optional = true }
 chrono = { version = "0.4.45", optional = true }
 anyhow = "1.0.104"
