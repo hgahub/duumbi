@@ -617,24 +617,31 @@ function combineDeepSeekUsage(responses) {
   };
 }
 
-async function getParsedEnrichmentDecision({ fetchImpl, apiKey, model, messages, core, warnings }) {
-  const responses = [];
+function parseEnrichmentResponse(response) {
+  if (response.finishReason === "length") {
+    throw new Error("DeepSeek enrichment response was truncated (finish_reason=length)");
+  }
+  return parseEnrichmentDecision(response.content);
+}
+
+async function getParsedEnrichmentDecision({ fetchImpl, apiKey, model, messages, core, warnings, responses }) {
   const firstResponse = await callDeepSeek({
     fetchImpl,
     apiKey,
     model,
     messages,
     maxTokens: 5000,
+    thinking: "disabled",
   });
   responses.push(firstResponse);
 
   try {
     return {
-      parsedDecision: parseEnrichmentDecision(firstResponse.content),
+      parsedDecision: parseEnrichmentResponse(firstResponse),
       responses,
     };
   } catch (error) {
-    const warning = `DeepSeek enrichment response was malformed; retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
+    const warning = `DeepSeek enrichment response was malformed (finish_reason=${firstResponse.finishReason || "unknown"}); retrying strict JSON repair once: ${truncateText(error.message, 240)}`;
     warnings.push(warning);
     core?.warning?.(warning);
     const repairResponse = await callDeepSeek({
@@ -647,10 +654,11 @@ async function getParsedEnrichmentDecision({ fetchImpl, apiKey, model, messages,
         parseError: error,
       }),
       maxTokens: 5000,
+      thinking: "disabled",
     });
     responses.push(repairResponse);
     return {
-      parsedDecision: parseEnrichmentDecision(repairResponse.content),
+      parsedDecision: parseEnrichmentResponse(repairResponse),
       responses,
     };
   }
@@ -836,6 +844,7 @@ export async function runInboxEnrichment({
   const inboxRoot = path.join(vaultRoot, "Duumbi", "00 Inbox (ToProcess)");
   const workflowUrl = `${context.serverUrl || "https://github.com"}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
   let providerUsage = providerUsageNotCalled("no_candidate_note");
+  const modelResponses = [];
   const result = {
     targetPath,
     scanLimit,
@@ -906,6 +915,7 @@ export async function runInboxEnrichment({
       messages,
       core,
       warnings,
+      responses: modelResponses,
     });
     const lastResponse = responses.at(-1);
     const combinedUsage = combineDeepSeekUsage(responses);
@@ -975,6 +985,13 @@ export async function runInboxEnrichment({
     return { ...result, changed: commitResult.committed, decision: metrics.correlation.decision };
   } catch (error) {
     const message = error?.message || String(error);
+    if (modelResponses.length) {
+      const combined = combineDeepSeekUsage(modelResponses);
+      providerUsage = providerUsageFromDeepSeek(
+        modelResponses.at(-1).model, combined.usage, combined.latencyMs, modelResponses.length,
+      );
+      providerUsage.failure_count = 1;
+    }
     warnings.push(`inbox_enrichment_failed:${truncateText(message, 240)}`);
     const metrics = buildWorkflowMetrics({
       env,

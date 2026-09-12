@@ -477,3 +477,37 @@ test('batch preserves GitHub Actions Context prototype getters without mutating 
     assert.equal(metrics.repository, 'hgahub/duumbi');
   } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
 });
+
+test('truncated model responses fail closed and retain usage for both bounded attempts', async () => {
+  const { workspace, inboxRoot } = makeWorkspace();
+  const file = path.join(inboxRoot, 'candidate.md');
+  const original = fs.readFileSync(file, 'utf8');
+  const requests = [];
+  try {
+    const result = await runInboxEnrichmentBatch({
+      env: { GH_PROJECT_PAT: 'pat', DEEPSEEK_API_KEY: 'key' },
+      context: makeContext(), core: makeCore(), workspace,
+      git: () => { throw new Error('Must not commit truncated output'); },
+      fetchImpl: async (url, options) => {
+        assert.equal(url, 'https://api.deepseek.com/chat/completions');
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        assert.deepEqual(body.thinking, { type: 'disabled' });
+        assert.equal(body.max_tokens, 5000);
+        return response({ model: 'deepseek-v4-pro',
+          choices: [{ finish_reason: 'length', message: { content: '{"title":"partial' } }],
+          usage: { prompt_tokens: 100, completion_tokens: 5000, total_tokens: 5100 },
+        });
+      },
+    });
+    assert.equal(result.decision, 'batch_failed');
+    assert.equal(requests.length, 2);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    const metrics = JSON.parse(fs.readFileSync(path.join(workspace, 'duumbi-workflow-metrics.json'), 'utf8'));
+    assert.equal(metrics.provider_usage.request_count, 2);
+    assert.equal(metrics.provider_usage.total_tokens, 10200);
+    assert.equal(metrics.provider_usage.failure_count, 1);
+    assert.ok(metrics.warnings.some((warning) => warning.includes('finish_reason=length')));
+    assert.equal(metrics.counts.slack_notifications_attempted, 0);
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+});

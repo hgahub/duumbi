@@ -837,6 +837,7 @@ export async function callDeepSeek({
   emptyContentRetries = 2,
   maxTokens = 2500,
   temperature = 0.2,
+  thinking,
 }) {
   const started = Date.now();
   const maxAttempts = Math.max(1, 1 + Number(emptyContentRetries || 0));
@@ -873,6 +874,7 @@ export async function callDeepSeek({
           response_format: { type: "json_object" },
           temperature,
           max_tokens: maxTokens,
+          ...(thinking ? { thinking: { type: thinking } } : {}),
         }),
         signal: controller.signal,
       });
@@ -886,6 +888,7 @@ export async function callDeepSeek({
         return {
           model: json.model || model,
           content,
+          finishReason: choice.finish_reason || null,
           usage: json.usage || {},
           latencyMs: Date.now() - started,
         };
