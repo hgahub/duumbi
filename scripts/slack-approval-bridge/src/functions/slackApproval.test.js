@@ -397,3 +397,80 @@ for (const type of ["message_action", "shortcut"]) {
     assert.deepEqual(calls, []);
   });
 }
+
+async function signedInteraction(payload, fetchImpl, env = {}) {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+  return handleSlackApproval(mockRequest({ body, timestamp, signature: signBody(body, timestamp) }), mockContext(), {
+    fetch: fetchImpl, env: { SLACK_SIGNING_SECRET: SIGNING_SECRET, SLACK_BOT_TOKEN: 'bot', GITHUB_TOKEN: 'gh', ...env },
+  });
+}
+function modalSubmission(decision, fields = {}) {
+  return { type: 'view_submission', user: { id: 'U123' }, view: {
+    id: 'V123', callback_id: 'duumbi_stage5_decision',
+    private_metadata: JSON.stringify({ stage: '5', issue_number: 123, decision }),
+    state: { values: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, { value: { value } }])) },
+  } };
+}
+
+for (const decision of ['reject', 'needs-clarification']) {
+  test(`Stage 5 ${decision} click opens a form without dispatching`, async () => {
+    const calls = [];
+    const result = await signedInteraction({ type: 'block_actions', trigger_id: 'trigger', actions: [{ value: JSON.stringify({ stage: '5', issue_number: 123, decision }) }] }, async (url, options) => {
+      calls.push(url);
+      const view = JSON.parse(options.body).view;
+      assert.equal(view.callback_id, 'duumbi_stage5_decision');
+      assert.equal(view.blocks.filter((b) => b.type === 'input').length, decision === 'reject' ? 1 : 3);
+      return { ok: true, json: async () => ({ ok: true }) };
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(calls, ['https://slack.com/api/views.open']);
+  });
+  test(`Stage 5 ${decision} refuses whitespace rationale without dispatch`, async () => {
+    const result = await signedInteraction(modalSubmission(decision, { rationale: '  ' }), () => assert.fail('No dispatch'));
+    assert.equal(result.jsonBody.response_action, 'errors');
+    assert.ok(result.jsonBody.errors.rationale);
+  });
+  test(`Stage 5 ${decision} dispatches collected details only on submission`, async () => {
+    let submitted;
+    const result = await signedInteraction(modalSubmission(decision, { rationale: 'Not ready', clarification_question: 'Which provider?', clarification_owner: '@hgahub' }), async (url, options) => {
+      assert.match(url, /github.com\/repos\/hgahub\/duumbi\/dispatches$/);
+      submitted = JSON.parse(options.body).client_payload;
+      return { status: 204 };
+    });
+    assert.equal(submitted.rationale, 'Not ready');
+    assert.equal(submitted.clarification_owner, 'hgahub');
+    assert.equal(submitted.decision_id, 'V123');
+    assert.equal(result.jsonBody.response_action, 'update');
+  });
+}
+test('missing clarification owner/question and invalid GitHub owner preserve the modal', async () => {
+  for (const owner of ['', 'not a user', 'user--name']) {
+    const result = await signedInteraction(modalSubmission('needs-clarification', { rationale: 'Scope unclear', clarification_owner: owner }), () => assert.fail('No dispatch'));
+    assert.ok(result.jsonBody.errors.clarification_owner);
+    assert.ok(result.jsonBody.errors.clarification_question);
+  }
+});
+test('GitHub rejection and uncertain timeout retain entered decision for recovery', async () => {
+  for (const fetchImpl of [async () => ({ status: 403 }), async () => { throw new Error('timeout'); }]) {
+    const result = await signedInteraction(modalSubmission('reject', { rationale: 'Out of scope' }), fetchImpl);
+    assert.equal(result.jsonBody.response_action, 'errors');
+    assert.ok(result.jsonBody.errors.rationale);
+  }
+});
+test('missing modal token and Slack API rejection never dispatch a decision', async () => {
+  const payload = { type: 'block_actions', trigger_id: 't', actions: [{ value: JSON.stringify({ stage: '5', issue_number: 1, decision: 'reject' }) }] };
+  const missing = await signedInteraction(payload, () => assert.fail('No request'), { SLACK_BOT_TOKEN: '' });
+  assert.match(missing.jsonBody.text, /No decision|no decision/);
+  const rejected = await signedInteraction(payload, async (url) => {
+    assert.equal(url, 'https://slack.com/api/views.open');
+    return { ok: true, json: async () => ({ ok: false }) };
+  });
+  assert.match(rejected.jsonBody.text, /No decision/);
+});
+test('unknown modal and tampered decision metadata cannot dispatch', async () => {
+  for (const payload of [modalSubmission('approve'), { ...modalSubmission('reject'), view: { callback_id: 'other' } }]) {
+    const result = await signedInteraction(payload, () => assert.fail('No dispatch'));
+    assert.equal(result.status, 400);
+  }
+});

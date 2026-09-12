@@ -8,6 +8,7 @@ try {
   app = { http: () => {} };
 }
 const crypto = require("node:crypto");
+const { decisionDetails } = require("../../lib/stage5Decision.js");
 
 /**
  * Slack Approval Bridge — Azure Function
@@ -76,6 +77,10 @@ async function handleSlackApproval(request, context, deps = {}) {
     return { status: 400, jsonBody: { text: "Invalid Slack payload." } };
   }
 
+  if (payload.type === "view_submission") {
+    return submitStage5Modal(payload, context, { fetch: fetchImpl, env });
+  }
+
   if (payload.type !== "block_actions") {
     return { jsonBody: { text: "Unsupported interaction type." } };
   }
@@ -90,6 +95,10 @@ async function handleSlackApproval(request, context, deps = {}) {
     actionData = JSON.parse(action.value);
   } catch {
     return { jsonBody: { text: "Invalid action payload." } };
+  }
+
+  if (String(actionData.stage) === "5" && actionTypeForAction(actionData) === "stage_approval" && ["reject", "needs-clarification"].includes(actionData.decision)) {
+    return openStage5Modal(payload, actionData, context, { fetch: fetchImpl, env });
   }
 
   const user = payload.user;
@@ -117,6 +126,83 @@ async function handleSlackApproval(request, context, deps = {}) {
   if (deps.awaitDispatch) await work;
 
   return { status: 200, body: "" };
+}
+
+const STAGE5_MODAL = "duumbi_stage5_decision";
+
+function buildStage5Modal(actionData) {
+  const clarification = actionData.decision === "needs-clarification";
+  const input = (id, label, multiline = false) => ({
+    type: "input", block_id: id, label: { type: "plain_text", text: label },
+    element: { type: "plain_text_input", action_id: "value", multiline, max_length: id === "clarification_owner" ? 40 : 2000 },
+  });
+  return {
+    type: "modal", callback_id: STAGE5_MODAL,
+    private_metadata: JSON.stringify({ stage: "5", issue_number: Number(actionData.issue_number), decision: actionData.decision }),
+    title: { type: "plain_text", text: clarification ? "Needs Clarification" : "Reject Issue" },
+    submit: { type: "plain_text", text: clarification ? "Request clarification" : "Reject issue" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      { type: "section", text: { type: "plain_text", text: `Issue #${actionData.issue_number}. ${clarification ? "Record the blocking question and who should answer it." : "Submitting this form closes the issue."}` } },
+      input("rationale", "Rationale", true),
+      ...(clarification ? [input("clarification_question", "Question to resolve", true), input("clarification_owner", "Owner (GitHub username)")] : []),
+    ],
+  };
+}
+
+async function openStage5Modal(payload, actionData, context, { fetch: fetchImpl, env }) {
+  if (!env.SLACK_BOT_TOKEN || !payload.trigger_id || !Number.isSafeInteger(Number(actionData.issue_number)) || Number(actionData.issue_number) < 1) {
+    return { status: 200, jsonBody: { response_type: "ephemeral", text: "Cannot open decision form. Check bridge SLACK_BOT_TOKEN configuration; no decision was submitted." } };
+  }
+  try {
+    const response = await fetchImpl("https://slack.com/api/views.open", {
+      method: "POST", headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ trigger_id: payload.trigger_id, view: buildStage5Modal(actionData) }),
+      signal: AbortSignal.timeout(2000),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error("Modal open failed");
+    return { status: 200, body: "" };
+  } catch {
+    context.error("Stage 5 modal could not be opened.");
+    return { status: 200, jsonBody: { response_type: "ephemeral", text: "Decision form could not open. No decision was submitted. Please try again." } };
+  }
+}
+
+async function submitStage5Modal(payload, context, { fetch: fetchImpl, env }) {
+  if (payload.view?.callback_id !== STAGE5_MODAL) return { status: 400, body: "Unknown modal" };
+  let action;
+  try { action = JSON.parse(payload.view.private_metadata); } catch { return { status: 400, body: "Invalid metadata" }; }
+  if (action?.stage !== "5" || !Number.isSafeInteger(action.issue_number) || action.issue_number < 1 || !["reject", "needs-clarification"].includes(action.decision)) return { status: 400, body: "Invalid decision" };
+  const values = payload.view.state?.values || {};
+  const { details, errors } = decisionDetails({ ...action,
+    rationale: values.rationale?.value?.value,
+    clarification_question: values.clarification_question?.value?.value,
+    clarification_owner: values.clarification_owner?.value?.value,
+  });
+  const errorResponse = (errors) => ({ status: 200, jsonBody: { response_action: "errors", errors } });
+  if (Object.keys(errors).length) return errorResponse(errors);
+  if (!env.GITHUB_TOKEN) return errorResponse({ rationale: "Bridge GitHub token is not configured. No decision was submitted." });
+  // Await GitHub acceptance before closing the modal; never fire-and-forget a decision.
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/${env.GITHUB_REPO || "hgahub/duumbi"}/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
+      body: JSON.stringify({ event_type: "stage-approval", client_payload: {
+        ...action, ...details, reviewer: `Slack (${payload.user?.id || "unknown"})`,
+        decision_id: payload.view.id,
+      } }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.status !== 204) return errorResponse({ rationale: "GitHub did not accept the decision. Your inputs are preserved; try again or use the manual workflow." });
+    return { status: 200, jsonBody: { response_action: "update", view: {
+      type: "modal", title: { type: "plain_text", text: "Decision submitted" }, close: { type: "plain_text", text: "Close" },
+      blocks: [{ type: "section", text: { type: "plain_text", text: "GitHub Actions accepted the request. Wait for its decision comment and Slack result before treating the change as complete." } }],
+    } } };
+  } catch {
+    context.error("Stage 5 dispatch outcome is unknown; retain the modal for recovery.");
+    return errorResponse({ rationale: "Dispatch outcome is unknown. Check GitHub Actions before retrying; the same form keeps its decision ID." });
+  }
 }
 
 function actionTypeForAction(actionData) {
@@ -266,6 +352,7 @@ function verifySlackSignature(body, timestamp, signature, signingSecret, nowSeco
 }
 
 module.exports = {
+  buildStage5Modal,
   actionTypeForAction,
   buildClientPayload,
   buildDispatchFailureText,

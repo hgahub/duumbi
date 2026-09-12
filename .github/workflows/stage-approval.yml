@@ -24,6 +24,16 @@ on:
         required: false
         type: string
         default: ''
+      clarification_question:
+        description: 'Stage 5 Needs Clarification: concrete blocking question'
+        required: false
+        type: string
+        default: ''
+      clarification_owner:
+        description: 'Stage 5 Needs Clarification: responsible GitHub username'
+        required: false
+        type: string
+        default: ''
       pr_number:
         description: 'Associated PR number (stages 7/9, 0 to auto-detect)'
         required: false
@@ -55,6 +65,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      - name: Check out decision policy
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Execute decision
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
@@ -84,6 +98,8 @@ jobs:
                   rationale: String(context.payload.inputs.rationale || ''),
                   pr_number: Number(context.payload.inputs.pr_number || 0),
                   reviewer: String(context.payload.inputs.reviewer || context.actor),
+                  clarification_question: String(context.payload.inputs.clarification_question || ''),
+                  clarification_owner: String(context.payload.inputs.clarification_owner || ''),
                 };
 
             let stage = String(raw.stage);
@@ -137,7 +153,7 @@ jobs:
                 approve: {
                   label: 'Accept',
                   add: ['accepted', 'needs-spec'],
-                  remove: ['needs-human-review'],
+                  remove: ['needs-human-review', 'needs-clarification'],
                   projectStatus: 'Spec Needed',
                   nextState: 'Spec Needed',
                   nextStage: 'Stage 6 Spec Preparation',
@@ -153,7 +169,7 @@ jobs:
                 reject: {
                   label: 'Reject',
                   add: [],
-                  remove: ['needs-human-review'],
+                  remove: ['needs-human-review', 'needs-clarification'],
                   projectStatus: 'Closed',
                   nextState: 'Closed',
                   nextStage: 'Closed',
@@ -236,6 +252,16 @@ jobs:
             const dc = stageConfig[decision];
             if (!dc) { core.setFailed(`"${decision}" not supported for Stage ${stage}`); return; }
 
+            const { decisionDetails, stage5CommentLines } = require(`${process.env.GITHUB_WORKSPACE}/scripts/slack-approval-bridge/lib/stage5Decision.js`);
+            const stage5Details = decisionDetails(raw);
+            if (stage === '5' && Object.keys(stage5Details.errors).length) {
+              core.setFailed(Object.values(stage5Details.errors).join(' '));
+              return;
+            }
+            const stage5Marker = stage === '5'
+              ? `<!-- duumbi-stage5-decision:${require('node:crypto').createHash('sha256').update(JSON.stringify([issueNumber, decision, stage5Details.details, reviewer, raw.decision_id || 'manual'])).digest('hex')} -->`
+              : null;
+
             // ── Fetch issue ─────────────────────────────────────────
             const { data: issue } = await github.rest.issues.get({
               owner, repo, issue_number: issueNumber,
@@ -246,6 +272,26 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number: issueNumber, per_page: 100,
             });
+
+            const existingStage5Decision = stage5Marker && comments.find((comment) => (comment.body || '').includes(stage5Marker));
+            if (stage === '5' && (issue.state !== 'open' || !labels.includes('needs-human-review'))) {
+              if (existingStage5Decision) {
+                core.info('Historical Stage 5 decision retry ignored: issue has already advanced.');
+                return;
+              }
+              core.setFailed('Stage 5 requires an open issue with needs-human-review; this decision may be stale.');
+              return;
+            }
+
+            if (stage === '5' && decision === 'needs-clarification' && !existingStage5Decision) {
+              try {
+                const { data: clarificationOwner } = await github.rest.users.getByUsername({ username: stage5Details.details.clarification_owner });
+                if (clarificationOwner.type !== 'User') throw new Error('Owner must be a GitHub user.');
+              } catch {
+                core.setFailed('Clarification owner could not be verified as a GitHub user. No decision was recorded.');
+                return;
+              }
+            }
 
             const extractUrls = (text) =>
               (text.match(/https:\/\/github\.com\/[^\s)>\]]+/gi) || [])
@@ -595,10 +641,8 @@ jobs:
             lines.push(`**Reviewer source:** ${reviewer}`);
 
             if (stage === '5') {
-              lines.push(`**Rationale:** ${rationale}`);
-              lines.push(`**Stage 4 recommendation considered:** yes`);
-              lines.push(`**Remaining open questions:** none`);
-              lines.push(`**Canonical duplicate:** none`);
+              lines.push(stage5Marker);
+              lines.push(...stage5CommentLines(decision, { ...stage5Details.details, rationale: stage5Details.details.rationale || rationale }));
               lines.push(`**Review date:** ${today}`);
             } else if (stage === '7') {
               lines.push(`**Spec artifact:** ${productSpecArtifact || 'not found'}`);
@@ -624,6 +668,7 @@ jobs:
 
             const matchingDecisionComment = (comment) => {
               const body = comment.body || '';
+              if (stage === '5') return body.includes(stage5Marker);
               return body.includes(`## ${stageConfig.title}`)
                 && body.includes(`**Decision:** ${dc.label}`)
                 && body.includes(`**Next state:** ${dc.nextState}`);
@@ -795,6 +840,7 @@ jobs:
             const summary = [
               `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
               `• Decision comment: ${posted.html_url}`,
+              stage === '5' && decision === 'needs-clarification' ? `• Owner: ${slackEscape(stage5Details.details.clarification_owner)}\n• Question: ${slackEscape(stage5Details.details.clarification_question)}\n• Continue: owner posts an @Clarification comment on the issue; human acceptance remains required.` : null,
               prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
               specPrMerge?.mergeSha ? `• Spec PR merged: ${specPrMerge.mergeSha}` : null,
               `• Labels: +[${dc.add.join(', ')}] −[${dc.remove.join(', ')}]`,

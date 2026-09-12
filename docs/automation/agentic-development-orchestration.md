@@ -254,3 +254,30 @@ Slack capability URLs, including `response_url`, stay inside the Slack bridge
 function and are not forwarded through GitHub `repository_dispatch` payloads.
 GitHub workflow summaries intentionally omit generated agent prompts that
 could contain user-provided content.
+
+
+## Stage 5 clarification and rejection details
+
+Stage 5 Slack **Needs Clarification** and **Reject** collect a rationale before
+submitting a decision. Clarification additionally requires the blocking question
+and the responsible GitHub username. The same requirements apply to manual
+`stage-approval.yml` dispatches (`rationale`, `clarification_question`,
+`clarification_owner`). Validation precedes writes. Opening/cancelling the form
+has no side effects on GitHub.
+
+The workflow records the supplied question and owner in the decision comment,
+keeps `needs-human-review`, and requests Project status `Needs Clarification`.
+The owner is recorded/mentioned, not automatically added to issue assignees.
+They answer on the issue with an `@Clarification` comment. The existing synthesis
+is advisory; it does not move status or grant approval. Accept requires a new
+human decision and removes `needs-clarification`; Reject records the rationale,
+closes the issue, and removes the review/clarification labels.
+
+Repeated submissions reuse the same evidence; different clarification rounds
+retain distinct comments. Stale decisions cannot move an accepted/closed issue
+backward. Project and Slack operations retain their existing best-effort failure
+reporting, so inspect the workflow result and Project state when either fails.
+
+See [bridge rollout instructions](../../scripts/slack-approval-bridge/README.md#rollout)
+for the Azure `SLACK_BOT_TOKEN` prerequisite, production deployment, and live
+smoke test. The interactivity URL is unchanged.
