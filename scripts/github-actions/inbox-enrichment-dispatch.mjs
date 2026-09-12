@@ -1023,7 +1023,11 @@ export async function runInboxEnrichmentBatch(options) {
     const metricsPath = output.replace(/\.json$/, '') + `-note-${index + 1}.json`;
     const result = await runInboxEnrichment({ ...options, summary: null,
       env: { ...env, DUUMBI_METRICS_PATH: metricsPath },
-      context: { ...context, payload: { ...context.payload, inputs: { ...inputs, target_path: candidate } } },
+      // Actions Context exposes repo via a prototype getter; spreading it loses repo.
+      // Override only this note's payload and keep the caller's context intact.
+      context: Object.assign(Object.create(context), {
+        payload: { ...context.payload, inputs: { ...inputs, target_path: candidate } },
+      }),
     });
     results.push(result);
     metrics.push(JSON.parse(fs.readFileSync(path.resolve(workspace, metricsPath), 'utf8')));

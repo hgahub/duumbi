@@ -452,3 +452,28 @@ test('batch stops after failure and targeted dispatch remains single-note', asyn
     assert.equal(good.calls.length, 1);
   } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
 });
+
+test('batch preserves GitHub Actions Context prototype getters without mutating caller inputs', async () => {
+  const { workspace } = makeWorkspace({ secondRaw: true });
+  try {
+    const base = makeContext();
+    delete base.repo;
+    base.payload.repository = { name: 'duumbi', owner: { login: 'hgahub' } };
+    const context = Object.assign(Object.create({
+      get repo() {
+        return { owner: this.payload.repository.owner.login, repo: this.payload.repository.name };
+      },
+    }), base);
+    const payloadBefore = JSON.stringify(context.payload);
+    const { git } = makeGit();
+    const { fetchImpl } = makeFetch();
+    const result = await runInboxEnrichmentBatch({
+      env: { GH_PROJECT_PAT: 'pat', DEEPSEEK_API_KEY: 'key' }, context, workspace, git, fetchImpl,
+    });
+    assert.equal(result.results.length, 2);
+    assert.ok(result.results.every((r) => r.changed));
+    assert.equal(JSON.stringify(context.payload), payloadBefore);
+    const metrics = JSON.parse(fs.readFileSync(path.join(workspace, 'duumbi-workflow-metrics.json')));
+    assert.equal(metrics.repository, 'hgahub/duumbi');
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+});
