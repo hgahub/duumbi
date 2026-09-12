@@ -22,8 +22,10 @@ evidence: record 1–3 concrete questions and why they block triage; set
 Otherwise set `ready_for_triage`; record duplicate/no-action recommendations in
 `enrichment_result` for Stage 4 disposition, not as approval or automatic deletion.
 
-The scheduled workflow handles at most one captured note per run, pushes its
-changes, then sends a Slack completion/clarification handoff. Use the note owner,
+The workflow wakes on a vault capture event, hourly at minute 17 UTC as a fallback,
+or manually. It handles at most five captured notes serially, pushing and notifying
+per note; a targeted invocation handles one. It stops on failure and leaves the
+remaining notes for a later event/sweep. Use the note owner,
 falling back to the configured Inbox owner. Clarification notifications link the
 note and explain continuation in Codex or Grok. Waiting notes must not repeat
 model calls or notifications on subsequent scheduled runs. A failed Slack send

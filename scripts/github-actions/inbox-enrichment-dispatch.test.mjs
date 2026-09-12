@@ -12,6 +12,7 @@ import {
   collectCandidatePaths,
   isEnrichmentCandidateText,
   runInboxEnrichment,
+  runInboxEnrichmentBatch,
 } from "./inbox-enrichment-dispatch.mjs";
 
 function response(body, status = 200) {
@@ -88,7 +89,7 @@ function makeWorkspace({ processed = false, secondRaw = false } = {}) {
 
   fs.writeFileSync(path.join(inboxRoot, "candidate.md"), candidateText);
   if (secondRaw) {
-    fs.writeFileSync(path.join(inboxRoot, "second.md"), "# Second raw idea\n\nAdd another thing.\n");
+    fs.writeFileSync(path.join(inboxRoot, "second.md"), "---\nintake_status: captured\n---\n# Second raw idea\n\nAdd another thing.\n");
   }
   fs.writeFileSync(path.join(processedRoot, "old.md"), "# Old processed note\n\nProvider setup background.\n");
   fs.writeFileSync(path.join(atlasRoot, "DUUMBI - PRD.md"), "# PRD\n\nDUUMBI is an AI-first semantic graph compiler.\n");
@@ -411,5 +412,43 @@ test('clarification requires questions and does not mention the default Slack ow
     const slack = good.calls.find((call) => call.url.includes('slack.com'));
     assert.ok(slack.body.text.includes('other-author'));
     assert.equal(slack.body.text.includes('<@UDEFAULT>'), false);
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+});
+
+test('batch caps at five, aggregates cost once, and later drains remaining captured notes', async () => {
+  const { workspace, inboxRoot } = makeWorkspace();
+  try {
+    for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(inboxRoot, `extra-${i}.md`), withIntake(`# Idea ${i}`, { intake_status: 'captured' }));
+    const { fetchImpl, calls } = makeFetch();
+    const { git, calls: gitCalls } = makeGit();
+    const args = { env: { GH_PROJECT_PAT: 'pat', DEEPSEEK_API_KEY: 'key' }, context: makeContext(), workspace, git, fetchImpl };
+    const result = await runInboxEnrichmentBatch(args);
+    assert.equal(result.results.length, 5);
+    assert.equal(gitCalls.filter((c) => c.args[0] === 'push').length, 5);
+    assert.equal(calls.length, 5);
+    const metrics = JSON.parse(fs.readFileSync(path.join(workspace, 'duumbi-workflow-metrics.json')));
+    assert.equal(metrics.counts.issues_queued, 5);
+    assert.equal(metrics.provider_usage.request_count, 5);
+    const remaining = await runInboxEnrichmentBatch(args);
+    assert.equal(remaining.results.length, 1);
+    const before = calls.length;
+    assert.equal((await runInboxEnrichmentBatch(args)).changed, false);
+    assert.equal(calls.length, before);
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+});
+
+test('batch stops after failure and targeted dispatch remains single-note', async () => {
+  const { workspace } = makeWorkspace({ secondRaw: true });
+  try {
+    const { git } = makeGit();
+    const bad = makeFetch({ status: 'invalid' });
+    const args = { env: { GH_PROJECT_PAT: 'pat', DEEPSEEK_API_KEY: 'key' }, context: makeContext(), workspace, git };
+    const result = await runInboxEnrichmentBatch({ ...args, fetchImpl: bad.fetchImpl });
+    assert.equal(result.decision, 'batch_failed');
+    assert.equal(result.results.length, 1);
+    const good = makeFetch();
+    const target = await runInboxEnrichmentBatch({ ...args, context: makeContext({ target_path: 'Duumbi/00 Inbox (ToProcess)/second.md' }), fetchImpl: good.fetchImpl });
+    assert.equal(target.results.length, 1);
+    assert.equal(good.calls.length, 1);
   } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
 });

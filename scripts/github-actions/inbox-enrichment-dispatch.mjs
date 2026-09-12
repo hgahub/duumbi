@@ -166,6 +166,7 @@ export function collectCandidatePaths({
   inboxRoot,
   targetPath = "",
   scanLimit = DEFAULT_SCAN_LIMIT,
+  candidateLimit = 1,
 }) {
   if (!fs.existsSync(inboxRoot) || !fs.statSync(inboxRoot).isDirectory()) {
     throw new Error(`Missing Inbox path: ${inboxRoot}`);
@@ -193,11 +194,11 @@ export function collectCandidatePaths({
   }
 
   const visit = (currentDir) => {
-    if (candidatePaths.length >= 1 || inspectedCount >= effectiveScanLimit) return;
+    if (candidatePaths.length >= Math.min(5, Math.max(1, candidateLimit)) || inspectedCount >= effectiveScanLimit) return;
     const entries = fs.readdirSync(currentDir, { withFileTypes: true })
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (candidatePaths.length >= 1 || inspectedCount >= effectiveScanLimit) return;
+      if (candidatePaths.length >= Math.min(5, Math.max(1, candidateLimit)) || inspectedCount >= effectiveScanLimit) return;
       const fullPath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
         visit(fullPath);
@@ -996,4 +997,60 @@ export async function runInboxEnrichment({
     core?.setFailed?.(message);
     return { ...result, changed: false, decision: "enrichment_failed", error: message };
   }
+}
+
+/** Drain a bounded snapshot serially; stop on failure and preserve per-note evidence. */
+export async function runInboxEnrichmentBatch(options) {
+  const { env = process.env, context, core, summary, workspace = process.cwd(), fs = fsModule, path = pathModule } = options;
+  const inputs = context?.payload?.inputs || {};
+  const vaultRoot = path.resolve(workspace, 'duumbi-vault');
+  let candidates;
+  try {
+    candidates = collectCandidatePaths({ fs, path, vaultRoot,
+      inboxRoot: path.join(vaultRoot, 'Duumbi', '00 Inbox (ToProcess)'),
+      targetPath: String(inputs.target_path || '').trim(),
+      scanLimit: parsePositiveInteger(inputs.scan_limit, DEFAULT_SCAN_LIMIT), candidateLimit: 5,
+    }).candidatePaths;
+  } catch {
+    // Reuse the single-note failure path and its metrics for configuration errors.
+    return runInboxEnrichment(options);
+  }
+  if (!candidates.length) return runInboxEnrichment(options);
+  const results = [];
+  const metrics = [];
+  const output = env.DUUMBI_METRICS_PATH || 'duumbi-workflow-metrics.json';
+  for (const [index, candidate] of candidates.entries()) {
+    const metricsPath = output.replace(/\.json$/, '') + `-note-${index + 1}.json`;
+    const result = await runInboxEnrichment({ ...options, summary: null,
+      env: { ...env, DUUMBI_METRICS_PATH: metricsPath },
+      context: { ...context, payload: { ...context.payload, inputs: { ...inputs, target_path: candidate } } },
+    });
+    results.push(result);
+    metrics.push(JSON.parse(fs.readFileSync(path.resolve(workspace, metricsPath), 'utf8')));
+    if (result.error || !result.changed) break;
+  }
+  const aggregate = structuredClone(metrics[0]);
+  aggregate.workflow.conclusion = results.some((r) => r.error) ? 'failure' : 'success';
+  aggregate.workflow.completed_at = nowIso();
+  aggregate.correlation.decision = aggregate.workflow.conclusion === 'failure' ? 'batch_failed' : 'batch_enriched';
+  aggregate.warnings = [...new Set(metrics.flatMap((m) => m.warnings))];
+  for (const key of Object.keys(aggregate.counts)) {
+    const values = metrics.map((m) => m.counts[key]).filter((v) => typeof v === 'number');
+    aggregate.counts[key] = values.length ? values.reduce((a, b) => a + b, 0) : null;
+  }
+  const called = metrics.filter((m) => m.provider_usage.available);
+  if (called.length) {
+    aggregate.provider_usage = { ...called[0].provider_usage };
+    for (const key of ['request_count', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'estimated_cost_usd', 'latency_ms', 'failure_count']) {
+      const values = called.map((m) => m.provider_usage[key]);
+      aggregate.provider_usage[key] = values.every((v) => typeof v === 'number') ? values.reduce((a, b) => a + b, 0) : null;
+    }
+  }
+  writeMetrics(fs, path, workspace, output, aggregate);
+  if (summary) await summary.addHeading('DUUMBI Inbox batch', 2).addTable([
+    ['Note', 'Status', 'Owner', 'Commit', 'Slack'],
+    ...results.map((r) => [r.candidatePath || 'none', r.error ? 'failed — see run logs' : r.intakeStatus || 'unchanged', r.owner || 'none', r.commitSha || 'none', r.slackNotification]),
+  ]).write();
+  core?.info?.(`Inbox batch: ${results.filter((r) => r.changed).length}/${candidates.length} synchronized; maximum 5 per run.`);
+  return { results, changed: results.some((r) => r.changed), decision: aggregate.correlation.decision };
 }
