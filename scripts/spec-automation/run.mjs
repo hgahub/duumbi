@@ -187,7 +187,7 @@ async function finalize(job, save) {
     const coordinator = issue === job.event.issue && Object.keys(job.children).length > 0;
     for (const stage of [7, 9]) await comment(issue, `${job.key}:gate${stage}:${issue}`, `## Stage ${stage} AI Gate Decision\n**Decision:** Approve\n**Reviewer source:** Codex ${job[`gate${stage}`].model} / high, independent session\n**Spec PR:** ${pr.html_url}\n**Reviewed head:** ${job.head}\n**Merge:** ${pr.merge_commit_sha}\n**Rationale:** ${job[`gate${stage}`].rationale}\n**Next state:** ${coordinator ? 'Coordination only; implementation belongs to sub-issues' : 'Ready for Build'}\n${issue !== job.event.issue ? `Stage 5 acceptance inherited from #${job.event.issue}, decision ${job.event.decision}.` : ''}`);
     await projectStatus(issue, coordinator ? 'In Progress' : 'Ready for Build');
-    await labels(issue, coordinator ? ['spec-coordinator', 'accepted'] : ['accepted', 'product-spec-approved', 'tech-spec-approved'], ['needs-spec', 'needs-tech-spec', 'spec-review', 'technical-spec-review', 'spec-automation']);
+    await labels(issue, coordinator ? ['spec-coordinator', 'accepted'] : ['accepted', 'product-spec-approved', 'tech-spec-approved'], ['needs-spec', 'needs-tech-spec', 'spec-review', 'technical-spec-review', 'spec-automation', ...(coordinator ? ['tech-spec-approved', 'product-spec-approved'] : ['spec-coordinator'])]);
   }
   job.status = 'complete'; await save(job);
 }
@@ -258,6 +258,7 @@ export async function main(args) {
     if (!job) {
       if (mode !== 'run') throw new Error('No job to resume');
       const current = await snapshot(input);
+      if (!current.issue.labels.some((l) => l.name === 'needs-spec')) throw new Error('New jobs require Spec Needed (needs-spec); refusing to restart downstream work');
       const active = await pages(`repos/${REPO}/git/matching-refs/heads/codex/spec-${input.issue}-`);
       if (active.length) throw new Error('Another spec PR is active for this issue');
       const baseSha = (await api(`repos/${REPO}/commits/main`)).sha;

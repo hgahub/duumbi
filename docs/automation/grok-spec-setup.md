@@ -65,6 +65,21 @@ Copy-ready routine instructions:
 > Run `drain` every five minutes to service pending events after an invocation ends.
 > Never merge a PR, start Stage 10, force-push, or clear a lock automatically.
 
+A job can outlive a conversational tool call. Launch the worker in the VM's persistent
+background-task facility, or use `nohup` with the configured environment and append-only
+local logs; do not tie its lifetime to a short Slack routine timeout. For example, after
+validating the two numeric event fields:
+
+```sh
+mkdir -p /workspace/duumbi-spec-state
+nohup node /workspace/duumbi/scripts/spec-automation/run.mjs enqueue 123 456789 run >> /workspace/duumbi-spec-state/worker.log 2>&1 < /dev/null &
+```
+
+Use actual IDs. The same background pattern applies to `drain`. A PID/queued receipt is
+not completion: the lightweight routine should inspect job/queue status and report only
+new PRs, failures, clarification or completion, without another conversational model doing
+specification work. Do not forward raw logs containing issue content to public channels.
+
 The exact routine UI and event retention behavior must be verified in the user's Grok
 surface. Installing a skill alone does not subscribe it to Slack/GitHub events. If merge
 notifications are not available, run `finalize` manually after merging; no recurring Codex

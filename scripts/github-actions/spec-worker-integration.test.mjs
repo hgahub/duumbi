@@ -96,3 +96,11 @@ test('queue records quota failure for attention and never automatically retries 
   const record = JSON.parse(await fs.readFile(path.join(f.dir, 'state/queue/run-123-42.json'), 'utf8'));
   assert.equal(record.status, 'attention');
 });
+
+
+test('accepted downstream issues cannot start a fresh specification job', async (t) => {
+  const f = await fixture(t); const db = await f.read();
+  await f.edit({ issue: { ...db.issue, labels: [{ name: 'accepted' }, { name: 'tech-spec-approved' }] } });
+  await assert.rejects(f.run('run'), /New jobs require Spec Needed/);
+  assert.equal((await f.read()).models.length, 0);
+});
