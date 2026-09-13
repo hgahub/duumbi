@@ -235,14 +235,16 @@ cannot move an issue backward after acceptance/closure.
 
 ### Rollout
 
-1. Before activating the new bridge, set **`SLACK_BOT_TOKEN`** in the Azure
-   Function App `func-duumbi-slack-bridge` / resource group `rg-duumbi-platform`.
-   Use the Bot User OAuth Token of the same Slack app that sent the buttons.
-   The GitHub repository secret alone does not configure Azure runtime settings.
-   Use Azure Portal → Function App → Settings → Environment variables → App
-   settings, or the `duumbi-infra` secret configuration. Never paste the token
-   into an issue, PR, chat, or command history. Keep the setting in infrastructure
-   management so a subsequent Pulumi deployment does not remove it.
+1. Configure and deploy the bot token through **duumbi-infra Pulumi**, not
+   Azure Portal. Its `platform` stack must read `slackBotToken` via
+   `config.requireSecret` and declare `SLACK_BOT_TOKEN` in the Function App
+   settings. Use the same Slack app's Bot User OAuth Token. Enter it only through
+   `bash scripts/configure-slack-bot-token.sh` in your own infra checkout terminal,
+   commit the encrypted `Pulumi.platform.yaml` change, then preview/apply the
+   targeted Function App update. See
+   [infra setup instructions](https://github.com/hgahub/duumbi-infra/blob/main/docs/slack-bot-token.md).
+   The GitHub secret alone does not configure Azure, and manual-only settings
+   are overwritten by Pulumi's complete app-settings list.
 2. Merge this PR. **Slack Bridge Deployment** tests and publishes the code on
    main, subject to the existing `production` environment approval rules.
 3. Wait for deployment success. The Slack interactivity URL remains unchanged;
