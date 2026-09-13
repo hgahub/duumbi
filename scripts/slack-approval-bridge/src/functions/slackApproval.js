@@ -67,6 +67,7 @@ async function handleSlackApproval(request, context, deps = {}) {
   }
 
   const params = new URLSearchParams(body);
+  if (params.has("command")) return handleIntakeCommand(params, context, { fetch: fetchImpl, env });
   let payload;
   try {
     payload = JSON.parse(params.get("payload") || "{}");
@@ -126,6 +127,31 @@ async function handleSlackApproval(request, context, deps = {}) {
   if (deps.awaitDispatch) await work;
 
   return { status: 200, body: "" };
+}
+
+async function handleIntakeCommand(params, context, { fetch: fetchImpl, env }) {
+  const reply = (text) => ({ status: 200, jsonBody: { response_type: "ephemeral", text } });
+  if (params.get("command") !== "/duumbi-triage") return reply("Unknown command. Use /duumbi-triage <intake_id>.");
+  const intakeId = (params.get("text") || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(intakeId)) return reply("Usage: /duumbi-triage <intake_id> — provide exactly one intake ID.");
+  const channel = params.get("channel_id"), user = params.get("user_id");
+  if (!/^[CG][A-Z0-9]+$/.test(channel || "") || !/^[UW][A-Z0-9]+$/.test(user || "")) return reply("Use the command in a Slack channel or private group.");
+  if (!env.GITHUB_TOKEN) return reply("GitHub dispatch is not configured. Run intake-stage5.yml manually.");
+  const repo = env.GITHUB_REPO || "hgahub/duumbi";
+  const workflow = `https://github.com/${repo}/actions/workflows/intake-stage5.yml`;
+  try {
+    // A bounded synchronous request avoids fire-and-forget work after Azure ends the invocation.
+    const response = await fetchImpl(`https://api.github.com/repos/${repo}/dispatches`, {
+      method: "POST", signal: AbortSignal.timeout(2000),
+      headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28" },
+      body: JSON.stringify({ event_type: "intake-stage5", client_payload: { intake_id: intakeId, channel_id: channel, user_id: user } }),
+    });
+    if (!response.ok) return reply(`Dispatch failed (HTTP ${response.status}). ${workflow}`);
+    return reply(`Intake ${intakeId} submitted for Stage 5 routing. This is not human acceptance. The Action will check readiness and report the result here. ${workflow}`);
+  } catch (error) {
+    context.error("Intake dispatch outcome unknown:", error.name);
+    return reply(`Dispatch outcome is unknown; check the Action before retrying. Reusing the same intake_id will not intentionally create another issue. ${workflow}`);
+  }
 }
 
 const STAGE5_MODAL = "duumbi_stage5_decision";

@@ -238,7 +238,14 @@ export async function collectTriageContext({
   const inboxRoot = path.join(duumbiRoot, "00 Inbox (ToProcess)");
   const inboxNotes = walkMarkdownFiles(fs, path, inboxRoot, 200)
     .map((file) => ({ path: path.relative(vaultRoot, file).split(path.sep).join("/"), text: fs.readFileSync(file, "utf8") }))
-    .filter((note) => hasStatus(note.text, "ready_for_triage")).slice(0, 8)
+    .filter((note) => hasStatus(note.text, "ready_for_triage"))
+    // A targeted run may have queued the issue before vault push failed. Leave that
+    // source for targeted recovery instead of creating a second issue in a later sweep.
+    .filter((note) => !(project?.items?.nodes || []).some((item) =>
+      item.content?.url?.startsWith(`https://github.com/${api.owner}/${api.repo}/issues/`)
+      && item.content?.body?.includes(note.path)
+      && statusNameForProjectItem(item) !== TODO_STATUS))
+    .slice(0, 8)
     .map((note) => ({ ...note, text: intakeExcerpt(note.text) }));
   const activeDocs = readVaultDocs(fs, path, vaultRoot, warnings);
 

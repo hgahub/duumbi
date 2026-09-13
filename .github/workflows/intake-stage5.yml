@@ -1,0 +1,80 @@
+name: Stage 4 - Select Intake for Stage 5
+
+on:
+  workflow_dispatch:
+    inputs:
+      intake_id:
+        description: Exact intake_id of a ready_for_triage Inbox note
+        required: true
+        type: string
+  repository_dispatch:
+    types: [intake-stage5]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: duumbi-vault-intake
+  cancel-in-progress: false
+
+jobs:
+  refill:
+    name: Queue developer-selected intake
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Check out DUUMBI vault
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ github.repository_owner }}/duumbi-vault
+          path: duumbi-vault
+          token: ${{ secrets.GH_PROJECT_PAT }}
+          persist-credentials: true
+
+      - name: Queue selected Inbox note
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
+        env:
+          GH_PROJECT_PAT: ${{ secrets.GH_PROJECT_PAT }}
+          DUUMBI_PROJECT_OWNER: ${{ vars.DUUMBI_PROJECT_OWNER || github.repository_owner }}
+          DUUMBI_PROJECT_OWNER_TYPE: ${{ vars.DUUMBI_PROJECT_OWNER_TYPE }}
+          DUUMBI_PROJECT_NUMBER: ${{ vars.DUUMBI_PROJECT_NUMBER }}
+        with:
+          script: |
+            const refill = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-actions/targeted-intake-triage.mjs`);
+            await refill.runTargetedIntake({
+              env: process.env,
+              context,
+              core,
+              summary: core.summary,
+              fetchImpl: fetch,
+              workspace: process.env.GITHUB_WORKSPACE,
+            });
+
+
+      - name: Notify Slack command result
+        if: always() && github.event_name == 'repository_dispatch'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const input = context.payload.client_payload || {};
+            if (!/^[CG][A-Z0-9]+$/.test(input.channel_id || '') || !/^[UW][A-Z0-9]+$/.test(input.user_id || '')) return;
+            const result = fs.existsSync('targeted-intake-result.json')
+              ? JSON.parse(fs.readFileSync('targeted-intake-result.json', 'utf8'))
+              : { status: 'failed', error: 'Workflow failed before intake processing; check the run.' };
+            const run = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const text = result.status === 'failed'
+              ? `Intake selection failed: ${result.error}\n${run}`
+              : `${result.status}: ${result.issue_url}\n${run}`;
+            if (!process.env.SLACK_BOT_TOKEN) { core.warning('SLACK_BOT_TOKEN missing; result is in the Actions run.'); return; }
+            const response = await fetch('https://slack.com/api/chat.postEphemeral', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel: input.channel_id, user: input.user_id, text }),
+            });
+            const body = await response.json();
+            if (!body.ok) core.warning(`Slack result delivery failed: ${body.error}`);
