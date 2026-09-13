@@ -180,12 +180,6 @@ jobs:
                         style: "danger",
                         action_id: "stage_reject",
                         value: buttonValue("reject"),
-                        confirm: {
-                          title: { type: "plain_text", text: "Reject Issue" },
-                          text: { type: "mrkdwn", text: `Reject issue #${issue.number}? This will close the issue.` },
-                          confirm: { type: "plain_text", text: "Reject" },
-                          deny: { type: "plain_text", text: "Cancel" },
-                        },
                       },
                     ],
                   },

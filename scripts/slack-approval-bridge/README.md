@@ -4,8 +4,9 @@ Azure Function that bridges Slack interactive button clicks to DUUMBI GitHub
 Actions workflows via `repository_dispatch`.
 
 Clicking **Approve**, **Request Changes**, or **Needs Clarification** in a
-DUUMBI Slack notification triggers a deterministic GitHub Action instead of
-launching an agent directly. Slack idea intake was retired on 2026-09-11;
+DUUMBI Slack notification routes to a deterministic GitHub Action instead of
+launching an agent directly. Stage 5 Needs Clarification and Reject collect
+required details in a modal before submitting the decision. Slack idea intake was retired on 2026-09-11;
 message and global shortcuts are unsupported. Submit ideas through Codex intake
 or the Obsidian Inbox.
 Existing Stage 5, Stage 7, and Stage 9 buttons continue to route to
@@ -205,3 +206,55 @@ Stage 5, Stage 7, and Stage 9 approvals use `stage-approval.yml`; Stage 10
 resource authorization uses `stage-10-authorization.yml`; Project Status
 uses `project-status.yml`. Stage 11 merge, request-changes, clarification,
 and abandon decisions are made directly in GitHub by the human reviewer.
+
+## Stage 5 decision forms
+
+Stage 5 **Needs Clarification** and **Reject** buttons now open a modal. Opening
+or cancelling the form makes no GitHub change. Both require a rationale.
+Clarification also requires a blocking question and a responsible GitHub username
+(with or without `@`). The username is recorded and mentioned in the issue's
+GitHub decision comment; it does not alter issue assignees or map Slack identities.
+Reject's form submission is the confirmation that the issue should close.
+
+The signed `view_submission` uses the existing `/api/slack-approval` interactivity
+URL. The bridge validates input, awaits GitHub repository-dispatch acceptance
+within a bounded timeout, and preserves the form on validation/API errors.
+Timeouts have an uncertain delivery outcome: check Actions before retrying. A
+stable view ID plus decision details identifies retries in the decision comment.
+The success modal confirms dispatch only; the workflow posts the durable outcome.
+No raw Slack message or response URL is forwarded.
+
+The workflow also validates manual/repository dispatches before writes. Required
+manual fields for Stage 5 are `rationale` for `reject`, and `rationale`,
+`clarification_question`, `clarification_owner` for `needs-clarification`.
+Accept and Reject remove a stale `needs-clarification` label. Clarification keeps
+`needs-human-review`; the owner continues with an `@Clarification` issue comment.
+Synthesis remains advisory and does not automatically approve the issue.
+New decisions require an open issue with `needs-human-review`; historical retries
+cannot move an issue backward after acceptance/closure.
+
+### Rollout
+
+1. Configure and deploy the bot token through **duumbi-infra Pulumi**, not
+   Azure Portal. Its `platform` stack must read `slackBotToken` via
+   `config.requireSecret` and declare `SLACK_BOT_TOKEN` in the Function App
+   settings. Use the same Slack app's Bot User OAuth Token. Enter it only through
+   `bash scripts/configure-slack-bot-token.sh` in your own infra checkout terminal,
+   commit the encrypted `Pulumi.platform.yaml` change, then preview/apply the
+   targeted Function App update. See
+   [infra setup instructions](https://github.com/hgahub/duumbi-infra/blob/main/docs/slack-bot-token.md).
+   The GitHub secret alone does not configure Azure, and manual-only settings
+   are overwritten by Pulumi's complete app-settings list.
+2. Merge this PR. **Slack Bridge Deployment** tests and publishes the code on
+   main, subject to the existing `production` environment approval rules.
+3. Wait for deployment success. The Slack interactivity URL remains unchanged;
+   `views.open` requires no additional OAuth scope.
+4. Smoke-test with a disposable issue carrying `needs-human-review`: cancel a
+   form (no decision), submit clarification (owner/question recorded), then
+   Accept (clarification label removed). On a second disposable issue, Reject
+   should record the rationale and close it. Verify the Project status and Slack
+   result, not only the modal acknowledgement.
+
+Without the Azure bot token, these two buttons fail closed with a visible setup
+message; manual workflow dispatch remains available. Stages 7/9/10 and Project
+Status keep their existing behavior.
