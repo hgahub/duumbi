@@ -38,8 +38,8 @@ Save these non-secret environment values in the bot's persistent execution confi
 Project 4 matches the existing DUUMBI_PROJECT_NUMBER repository variable (verified 2026-09-13).
 The project number is the numeric part of the DUUMBI Project URL, not an issue number.
 Do not set OPENAI_API_KEY or CODEX_API_KEY. `check` verifies ChatGPT auth and CLI flags,
-GitHub repository access, the actual pagination command and configuration presence; the first job verifies project status
-options/write access. It makes no model call and no GitHub write. Model availability is
+GitHub repository access, the actual pagination command, Project visibility/write capability,
+required Status options and (when reported) the classic-token project scope. It makes no model call and no GitHub write. Model availability is
 only proven by a real run; do not silently substitute a different model if access fails.
 
 Save [grok-spec-skill.md](grok-spec-skill.md) as a Grok skill. Bind one routine to the
@@ -104,6 +104,36 @@ node scripts/spec-automation/run.mjs finalize 123 456789
 ```
 
 Numbers are examples. Do not process these literal issue/decision IDs.
+
+## GitHub Project permissions and clarification stops
+
+The worker reads and writes Project V2 status: `read:project` alone is insufficient.
+For the gh CLI's stored OAuth login, on the VM run:
+
+```sh
+gh auth refresh --hostname github.com --scopes project
+node scripts/spec-automation/run.mjs check
+```
+
+Complete GitHub's browser/device authorization as the intended account. Do not paste a
+token into chat. If `GH_TOKEN`/`GITHUB_TOKEN` supplies the active credential, refreshing a
+stored login does not upgrade that environment token: update its permissions through the
+existing secure connection instead. Classic credentials need `project`; fine-grained
+credentials need the applicable Projects read/write permission and access to Project 4.
+Sources: [Project API authorization](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)
+and [gh auth refresh](https://cli.github.com/manual/gh_auth_refresh).
+
+Preflight verifies permissions before any model call or remote branch claim, without
+writing a test Project item. It checks `viewerCanUpdate`, Status options, and classic
+OAuth scopes when the REST response reports them. Runtime mutations still fail closed
+if credentials or project configuration change after this check.
+
+A job may be `needs_clarification` while its queue is `attention`: the first is the
+model's product-question result, while the second can reflect failure to write the
+Needs Clarification Project status. Fixing credentials does not answer product questions.
+Do not reset a completed clarification call or run `retry-call` to bypass the decision.
+Obtain the owner's answers and renewed Stage 5 acceptance, then reconcile the old branch/
+checkpoint as described below before starting the new acceptance event.
 
 ## Recovery for job 817/5655972051 (gh 2.46 compatibility)
 

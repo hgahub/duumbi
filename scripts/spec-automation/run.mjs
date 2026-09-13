@@ -77,6 +77,15 @@ async function labels(issue, add, remove = []) {
   const current = await api(`repos/${REPO}/issues/${issue}`);
   for (const name of remove) if (current.labels.some((l) => l.name === name)) await api(`repos/${REPO}/issues/${issue}/labels/${encodeURIComponent(name)}`, undefined, 'DELETE');
 }
+export function validateProjectAccess(project, headers = '') {
+  const scopes = headers.match(/^x-oauth-scopes:\s*(.*)$/im);
+  if (scopes && !scopes[1].split(',').map((s) => s.trim()).includes('project')) throw new Error('GitHub credential requires project scope (read:project is insufficient). On the VM use gh auth refresh -h github.com -s project for stored OAuth credentials, or update the configured token permissions.');
+  if (!project || project.viewerCanUpdate !== true) throw new Error('Configured Project is missing or not writable by the current GitHub credential');
+  const field = project.fields?.nodes.find((f) => f.name === 'Status');
+  for (const status of ['Technical Spec Needed', 'Technical Spec Review', 'Needs Clarification', 'Ready for Build', 'In Progress']) {
+    if (!field?.options?.some((o) => o.name === status)) throw new Error(`Missing project status: ${status}`);
+  }
+}
 async function preflight() {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ is required');
   if (process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) throw new Error('Unset OPENAI_API_KEY and CODEX_API_KEY: this worker only uses ChatGPT login');
@@ -87,7 +96,14 @@ async function preflight() {
   await command('gh', ['auth', 'status']);
   await api(`repos/${REPO}`);
   await pages(`repos/${REPO}/labels?per_page=100`); // Exercise the actual read-only pagination path during preflight.
-  if (!process.env.DUUMBI_PROJECT_NUMBER) throw new Error('Set DUUMBI_PROJECT_NUMBER');
+  const number = Number(process.env.DUUMBI_PROJECT_NUMBER);
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error('Set a positive DUUMBI_PROJECT_NUMBER');
+  // Inspect token scopes without displaying headers/token or writing a probe item.
+  const response = await command('gh', ['api', '--include', 'user']);
+  const headers = response.split(/\r?\n\r?\n/)[0];
+  const result = await api('graphql', { query: 'query($number:Int!){user(login:"hgahub"){projectV2(number:$number){id viewerCanUpdate fields(first:100){nodes{... on ProjectV2SingleSelectField{name options{name}}}}}}}', variables: { number } });
+  if (result.errors) throw new Error('Project preflight failed: verify project scope, project access and configuration before running Codex');
+  validateProjectAccess(result.data?.user?.projectV2, headers);
 }
 async function codex(job, dir, call) {
   const schemaFile = path.join(dir, `${call.key}.schema.json`), resultFile = path.join(dir, `${call.key}.result.json`);

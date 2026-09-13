@@ -36,6 +36,7 @@ if (bin === 'codex') {
   if (args.includes('--slurp')) { process.stderr.write('unknown flag: --slurp'); process.exit(1); }
   if (args.includes('--paginate') && db.failPagination) { save(); process.stderr.write('pagination failure before job checkpoint'); process.exit(1); }
   if (args[0] === 'auth') out('Authenticated');
+  else if (args.includes('--include') && args.includes('user')) out(`HTTP/2 200 OK\r\nX-OAuth-Scopes: ${db.noProjectScope ? 'repo, read:project' : 'repo, project'}\r\n\r\n{}`);
   else {
     const route = args.find((a) => a === 'graphql' || a.startsWith('repos/'));
     const body = input ? JSON.parse(input) : undefined;
@@ -45,7 +46,7 @@ if (bin === 'codex') {
     const target = number === 123 ? db.issue : db.children?.find((c) => c.number === number);
     if (route === 'graphql') {
       if (body.query.includes('reviewThreads')) result = { data: { repository: { pullRequest: { reviewThreads: { nodes: db.unresolved ? [{ isResolved: false }] : [], pageInfo: { hasNextPage: false } } } } } };
-      else if (body.query.startsWith('query')) result = { data: { user: { projectV2: { id: 'project', fields: { nodes: [{ id: 'status', name: 'Status', options: ['Spec Needed', 'Technical Spec Needed', 'Technical Spec Review', 'Needs Clarification', 'Ready for Build', 'In Progress'].map((name) => ({ name, id: name })) }] } } }, repository: { issue: { id: 'issue', projectItems: { nodes: [{ id: 'item', project: { id: 'project' } }] } } } } };
+      else if (body.query.startsWith('query')) result = { data: { user: { projectV2: { id: 'project', viewerCanUpdate: !db.readOnlyProject, fields: { nodes: [{ id: 'status', name: 'Status', options: ['Spec Needed', 'Technical Spec Needed', 'Technical Spec Review', 'Needs Clarification', 'Ready for Build', 'In Progress'].map((name) => ({ name, id: name })) }] } } }, repository: { issue: { id: 'issue', projectItems: { nodes: [{ id: 'item', project: { id: 'project' } }] } } } } };
       else { db.status = body.variables.o; result = { data: {} }; }
     } else if (apiPath === '') result = { full_name: 'hgahub/duumbi' };
     else if (apiPath === '/issues') {
