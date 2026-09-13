@@ -33,6 +33,8 @@ if (bin === 'codex') {
     if (db.failPushOnce) { db.failPushOnce = false; save(); process.stderr.write('lost push response'); process.exit(1); }
   }
 } else if (bin === 'gh') {
+  if (args.includes('--slurp')) { process.stderr.write('unknown flag: --slurp'); process.exit(1); }
+  if (args.includes('--paginate') && db.failPagination) { save(); process.stderr.write('pagination failure before job checkpoint'); process.exit(1); }
   if (args[0] === 'auth') out('Authenticated');
   else {
     const route = args.find((a) => a === 'graphql' || a.startsWith('repos/'));
@@ -78,7 +80,7 @@ if (bin === 'codex') {
     else if (apiPath.endsWith('/statuses')) result = [];
     else if (apiPath.startsWith('/contents/')) result = { content: Buffer.from(db.badArtifact ? 'changed' : fs.readFileSync(path.join(process.env.DUUMBI_SPEC_STATE, 'v1-123-42/publish', apiPath.slice('/contents/'.length)))).toString('base64') };
     else throw new Error(`Unhandled fake API: ${route}`);
-    out(args.includes('--slurp') ? [result] : result === null ? '' : result);
+    out(args.includes('--paginate') ? `${JSON.stringify(result)}\n` : result === null ? '' : result);
   }
 } else throw new Error(`Unexpected test binary: ${bin}`);
 save();

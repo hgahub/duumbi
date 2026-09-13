@@ -104,3 +104,22 @@ test('accepted downstream issues cannot start a fresh specification job', async 
   await assert.rejects(f.run('run'), /New jobs require Spec Needed/);
   assert.equal((await f.read()).models.length, 0);
 });
+
+test('operator retry recovers attention before job creation, then marks queue delivered', async (t) => {
+  const f = await fixture(t); await f.edit({ failPagination: true });
+  await assert.rejects(f.run('enqueue'), /pagination failure/);
+  await assert.rejects(fs.access(path.join(f.dir, 'state/v1-123-42/job.json')));
+  await f.edit({ failPagination: false }); await f.run('retry-event');
+  const record = JSON.parse(await fs.readFile(path.join(f.dir, 'state/queue/run-123-42.json'), 'utf8'));
+  assert.equal(record.status, 'delivered'); assert.equal((await f.read()).models.length, 4);
+  await assert.rejects(f.run('retry-event'), /matching attention/);
+});
+test('operator queue retry resumes saved artifacts and does not unlock uncertain model calls', async (t) => {
+  const f = await fixture(t); await f.edit({ failPushOnce: true });
+  await assert.rejects(f.run('enqueue'), /lost push response/);
+  await f.run('retry-event'); assert.equal((await f.read()).models.length, 4);
+  const g = await fixture(t); await g.edit({ failModel: true });
+  await assert.rejects(g.run('enqueue'), /quota exhausted/);
+  await assert.rejects(g.run('retry-event'), /Uncertain model call/);
+  assert.equal((await g.read()).models.length, 1);
+});

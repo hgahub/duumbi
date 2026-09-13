@@ -28,7 +28,18 @@ export async function command(bin, args, { cwd = root, input, env = process.env,
   });
 }
 const api = async (route, body, method) => JSON.parse(await command('gh', ['api', route, ...(body === undefined ? [] : ['--input', '-']), ...(method ? ['--method', method] : [])], { input: body === undefined ? undefined : JSON.stringify(body) }) || 'null');
-const pages = async (route) => JSON.parse(await command('gh', ['api', '--paginate', '--slurp', route])).flat();
+// gh 2.46 supports --jq but not --slurp. tojson emits one compact JSON
+// document per page; preserve object envelopes (e.g. check_runs), flatten arrays.
+export function parsePages(output) {
+  const lines = output.split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) throw new Error('Empty GitHub pagination response');
+  return lines.map((line) => {
+    const page = JSON.parse(line);
+    if (page === null || typeof page !== 'object') throw new Error('Unexpected GitHub pagination response');
+    return page;
+  }).flat();
+}
+const pages = async (route) => parsePages(await command('gh', ['api', '--paginate', '--jq', 'tojson', route]));
 async function atomic(file, data) { const temp = `${file}.${randomUUID()}.tmp`; await fs.writeFile(temp, JSON.stringify(data, null, 2), { mode: 0o600 }); await fs.rename(temp, file); }
 async function exists(file) { return fs.stat(file).then(() => true, () => false); }
 async function snapshot(input, expectedHash) {
@@ -75,6 +86,7 @@ async function preflight() {
   for (const flag of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--ephemeral']) if (!help.includes(flag)) throw new Error(`Upgrade Codex CLI: ${flag} is missing`);
   await command('gh', ['auth', 'status']);
   await api(`repos/${REPO}`);
+  await pages(`repos/${REPO}/labels?per_page=100`); // Exercise the actual read-only pagination path during preflight.
   if (!process.env.DUUMBI_PROJECT_NUMBER) throw new Error('Set DUUMBI_PROJECT_NUMBER');
 }
 async function codex(job, dir, call) {
@@ -210,7 +222,11 @@ async function drain(stateRoot) {
       const { record, file } = pending[0];
       // Persist before execution: an interrupted drainer needs explicit operator recovery.
       record.status = 'processing'; await atomic(file, record);
-      try { await main([record.mode, String(record.event.issue), String(record.event.decision)]); record.status = 'delivered'; }
+      try {
+        const checkpoint = path.join(stateRoot, `v1-${record.event.issue}-${record.event.decision}`, 'job.json');
+        const mode = record.recovery && record.mode === 'run' && await exists(checkpoint) ? 'resume' : record.mode;
+        await main([mode, String(record.event.issue), String(record.event.decision)]); record.status = 'delivered';
+      }
       catch (error) { record.status = 'attention'; record.error = error.message; process.exitCode = 1; console.error(`Queue item needs attention: ${record.event.issue}/${record.event.decision}: ${error.message}`); }
       await atomic(file, record);
     }
@@ -220,9 +236,31 @@ export async function main(args) {
   const [mode, ...rest] = args;
   const stateRoot = path.resolve(process.env.DUUMBI_SPEC_STATE || path.join(os.homedir(), '.local/state/duumbi-spec'));
   if (mode === 'drain') return drain(stateRoot);
-  if (!['check', 'enqueue', 'run', 'resume', 'finalize', 'status', 'retry-call'].includes(mode)) throw new Error('Usage: run.mjs check | drain | enqueue ISSUE DECISION [run|finalize] | run|resume|finalize|status ISSUE DECISION | retry-call ISSUE DECISION CALL');
+  if (!['check', 'enqueue', 'run', 'resume', 'finalize', 'status', 'retry-call', 'retry-event'].includes(mode)) throw new Error('Usage: run.mjs check | drain | enqueue ISSUE DECISION [run|finalize] | run|resume|finalize|status ISSUE DECISION | retry-call ISSUE DECISION CALL | retry-event ISSUE DECISION [run|finalize]');
   if (mode === 'check') { await preflight(); console.log('Preflight passed; no model call or GitHub write.'); return; }
   const input = event({ version: 1, repo: REPO, issue: Number(rest[0]), decision: Number(rest[1]) });
+  if (mode === 'retry-event') {
+    const operation = rest[2] || 'run';
+    if (!['run', 'finalize'].includes(operation)) throw new Error('Queue supports run or finalize only');
+    const queueLock = path.join(stateRoot, 'queue.lock');
+    await fs.mkdir(queueLock).catch(() => { throw new Error('Queue is running or locked; do not recover concurrently'); });
+    try {
+      await fs.writeFile(path.join(queueLock, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname() }));
+      if (await exists(path.join(stateRoot, 'worker.lock'))) throw new Error('Worker is running or locked; do not recover concurrently');
+      const file = path.join(stateRoot, 'queue', `${operation}-${input.issue}-${input.decision}.json`);
+      const record = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (record.status !== 'attention' || record.mode !== operation || JSON.stringify(event(record.event)) !== JSON.stringify(input)) throw new Error('Only the matching attention queue item can be retried');
+      const checkpoint = path.join(stateRoot, `v1-${input.issue}-${input.decision}`, 'job.json');
+      if (await exists(checkpoint)) {
+        const job = JSON.parse(await fs.readFile(checkpoint, 'utf8'));
+        if (Object.values(job.calls || {}).some((call) => !call.result)) throw new Error('Uncertain model call remains; inspect it and explicitly use retry-call first');
+      }
+      record.previousError = record.error; delete record.error;
+      record.status = 'pending'; record.recovery = true; record.retriedAt = new Date().toISOString();
+      await atomic(file, record);
+    } finally { await fs.rm(queueLock, { recursive: true }); }
+    return drain(stateRoot);
+  }
   if (mode === 'enqueue') {
     const operation = rest[2] || 'run';
     if (!['run', 'finalize'].includes(operation)) throw new Error('Queue supports run or finalize only');

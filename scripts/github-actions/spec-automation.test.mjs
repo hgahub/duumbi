@@ -70,3 +70,13 @@ test('split package only writes fixed spec paths, with separate child artifacts'
   const files = specFiles({ event: input, product: p, technical: { ...technical(), units: [...technical().units, { key: 'ui', technical: '# UI tech' }] }, children: { core: 201, ui: 202 } });
   assert.deepEqual(Object.keys(files).sort(), ['specs/DUUMBI-123/DECOMPOSITION.md','specs/DUUMBI-123/PRODUCT.md','specs/DUUMBI-123/TECHNICAL.md','specs/DUUMBI-201/PRODUCT.md','specs/DUUMBI-201/TECHNICAL.md','specs/DUUMBI-202/PRODUCT.md','specs/DUUMBI-202/TECHNICAL.md'].sort());
 });
+
+test('legacy gh pagination preserves arrays and object envelopes across compact JSON pages', async () => {
+  const { parsePages } = await import('../spec-automation/run.mjs');
+  assert.deepEqual(parsePages('[{"id":1,"body":"line 1\\nline 2"}]\r\n[]\n[{"id":2}]\n'), [{ id: 1, body: 'line 1\nline 2' }, { id: 2 }]);
+  assert.deepEqual(parsePages('{"check_runs":[{"id":1}]}\n{"check_runs":[{"id":2}]}\n').flatMap((p) => p.check_runs), [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(parsePages('[]\n'), []);
+  assert.throws(() => parsePages('[{"id":1}]\nnot json\n'));
+  assert.throws(() => parsePages('null\n'));
+  assert.throws(() => parsePages(''));
+});
