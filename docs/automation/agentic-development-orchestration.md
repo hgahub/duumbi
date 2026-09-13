@@ -288,3 +288,11 @@ reporting, so inspect the workflow result and Project state when either fails.
 See [bridge rollout instructions](../../scripts/slack-approval-bridge/README.md#rollout)
 for the Azure `SLACK_BOT_TOKEN` prerequisite, production deployment, and live
 smoke test. The interactivity URL is unchanged.
+
+## Developer-selected Inbox priority
+
+`intake-stage5.yml` accepts one exact `intake_id` through workflow_dispatch or the signed
+Slack `/duumbi-triage <intake_id>` command. It routes a ready_for_triage note through the
+Stage 4 queue writer to Stage 5 without the scheduled refill threshold or another model
+call. It preserves Human Acceptance, issue identity and the Inbox archive lifecycle.
+See [setup and recovery](targeted-intake-stage5.md).

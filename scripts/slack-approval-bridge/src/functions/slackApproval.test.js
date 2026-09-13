@@ -474,3 +474,26 @@ test('unknown modal and tampered decision metadata cannot dispatch', async () =>
     assert.equal(result.status, 400);
   }
 });
+
+test('signed slash command dispatches only validated intake ID and returns private acknowledgement', async () => {
+  const body = new URLSearchParams({ command: '/duumbi-triage', text: 'idea-123', channel_id: 'C123', user_id: 'U123', response_url: 'https://not-forwarded.invalid' }).toString();
+  const calls = [];
+  const result = await handleSlackApproval(mockRequest({ body, timestamp: '1000', signature: signBody(body, '1000') }), mockContext(), {
+    nowSeconds: 1000, env: { SLACK_SIGNING_SECRET: SIGNING_SECRET, GITHUB_TOKEN: 'test-token' },
+    fetch: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return { ok: true }; },
+  });
+  assert.equal(result.jsonBody.response_type, 'ephemeral'); assert.match(result.jsonBody.text, /not human acceptance/);
+  assert.deepEqual(calls[0].body, { event_type: 'intake-stage5', client_payload: { intake_id: 'idea-123', channel_id: 'C123', user_id: 'U123' } });
+});
+test('slash command rejects unsigned or malformed input and reports uncertain dispatch without retry', async () => {
+  for (const value of ['../file', 'two ids', '', 'id']) {
+    const body = new URLSearchParams({ command: '/duumbi-triage', text: value, channel_id: 'C123', user_id: 'U123' }).toString();
+    let calls = 0;
+    const result = await handleSlackApproval(mockRequest({ body, timestamp: '1000', signature: value === 'id' ? 'invalid' : signBody(body, '1000') }), mockContext(), { nowSeconds: 1000, env: { SLACK_SIGNING_SECRET: SIGNING_SECRET }, fetch: async () => { calls++; } });
+    assert.equal(calls, 0); assert.ok(result.status === 401 || /Usage/.test(result.jsonBody.text));
+  }
+  const body = new URLSearchParams({ command: '/duumbi-triage', text: 'idea-123', channel_id: 'C123', user_id: 'U123' }).toString();
+  let calls = 0;
+  const result = await handleSlackApproval(mockRequest({ body, timestamp: '1000', signature: signBody(body, '1000') }), mockContext(), { nowSeconds: 1000, env: { SLACK_SIGNING_SECRET: SIGNING_SECRET, GITHUB_TOKEN: 'test' }, fetch: async () => { calls++; throw new Error('timeout'); } });
+  assert.equal(calls, 1); assert.match(result.jsonBody.text, /outcome is unknown/);
+});

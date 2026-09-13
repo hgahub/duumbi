@@ -1,0 +1,18 @@
+{
+  "features": {
+    "slash_commands": [
+      {
+        "command": "/duumbi-triage",
+        "url": "https://func-duumbi-slack-bridge.azurewebsites.net/api/slack-approval",
+        "description": "Select an Inbox idea for Human Acceptance",
+        "usage_hint": "<intake_id>",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": ["commands", "chat:write"]
+    }
+  }
+}

@@ -943,3 +943,15 @@ test('triage archival source is limited to one supplied ready note', () => {
   const result = validateTriageDecision({ action: 'create_issue', source_links: [note, 'Duumbi/00 Inbox (ToProcess)/unrelated.md'], issue: { title: 'Title', body: 'Body' } }, payload);
   assert.equal(result.inbox_source, note);
 });
+
+test('scheduled sweep skips a source already queued by targeted triage but still allows Todo reuse', async () => {
+  const workspace = makeWorkspace();
+  try {
+    for (const [status, expected] of [[HUMAN_ACCEPTANCE_STATUS, 0], ['Spec Needed', 0], [TODO_STATUS, 1]]) {
+      const item = issueItem({ number: 7, status });
+      item.content.body = 'Source: Duumbi/00 Inbox (ToProcess)/candidate.md';
+      const context = await collectTriageContext({ workspace, project: projectWithItems([item]), api: { owner: 'hgahub', repo: 'duumbi' }, warnings: [] });
+      assert.equal(context.inbox_notes.length, expected);
+    }
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
+});

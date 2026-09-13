@@ -258,3 +258,11 @@ cannot move an issue backward after acceptance/closure.
 Without the Azure bot token, these two buttons fail closed with a visible setup
 message; manual workflow dispatch remains available. Stages 7/9/10 and Project
 Status keep their existing behavior.
+
+### Developer-selected Inbox intake
+
+The same signed endpoint also handles `/duumbi-triage <intake_id>`, dispatching
+`intake-stage5` to the source repository. The command selects a ready Inbox note for
+Stage 5; it does not accept or implement it. See
+[activation, permissions and retry behavior](../../docs/automation/targeted-intake-stage5.md).
+No new Azure settings or secrets are introduced.
