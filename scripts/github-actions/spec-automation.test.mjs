@@ -80,3 +80,12 @@ test('legacy gh pagination preserves arrays and object envelopes across compact 
   assert.throws(() => parsePages('null\n'));
   assert.throws(() => parsePages(''));
 });
+
+test('Project preflight checks writable project, required statuses and classic-token write scope', async () => {
+  const { validateProjectAccess } = await import('../spec-automation/run.mjs');
+  const project = { viewerCanUpdate: true, fields: { nodes: [{ name: 'Status', options: ['Technical Spec Needed','Technical Spec Review','Needs Clarification','Ready for Build','In Progress'].map((name) => ({ name })) }] } };
+  assert.doesNotThrow(() => validateProjectAccess(project, 'X-OAuth-Scopes: repo, project\r\n'));
+  assert.throws(() => validateProjectAccess(project, 'x-oauth-scopes: repo, read:project'), /requires project scope/);
+  assert.throws(() => validateProjectAccess({ ...project, viewerCanUpdate: false }), /not writable/);
+  assert.throws(() => validateProjectAccess({ ...project, fields: { nodes: [] } }), /Missing project status/);
+});

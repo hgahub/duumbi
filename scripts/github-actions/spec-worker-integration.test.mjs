@@ -123,3 +123,13 @@ test('operator queue retry resumes saved artifacts and does not unlock uncertain
   await assert.rejects(g.run('retry-event'), /Uncertain model call/);
   assert.equal((await g.read()).models.length, 1);
 });
+
+test('missing Project scope or write access fails preflight before model calls and claims', async (t) => {
+  for (const flag of ['noProjectScope', 'readOnlyProject']) {
+    const f = await fixture(t); await f.edit({ [flag]: true });
+    await assert.rejects(f.run('check'), /project scope|not writable/i);
+    await assert.rejects(f.run('enqueue'), /project scope|not writable/i);
+    const db = await f.read(); assert.equal(db.models.length, 0); assert.equal(db.claim, undefined);
+    assert.equal(db.operations.some((o) => o.bin === 'gh' && o.args.includes('--input') && !o.args.includes('graphql')), false);
+  }
+});
