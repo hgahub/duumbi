@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '../..');
 const yaml = fs.readFileSync(path.join(root, '.github/workflows/stage-approval.yml'), 'utf8');
 const script = yaml.split('          script: |\n')[1].split('\n      - name:')[0].split('\n').map((line) => line.replace(/^ {12}/, '')).join('\n');
-const execute = new (Object.getPrototypeOf(async function() {}).constructor)('github', 'context', 'core', 'require', 'process', script);
+const execute = new (Object.getPrototypeOf(async function() {}).constructor)('github', 'context', 'core', 'require', 'process', 'fetch', script);
 
 async function runDecision(input, options = {}) {
   const calls = [], comments = options.comments || [];
@@ -16,7 +16,7 @@ async function runDecision(input, options = {}) {
   const issues = {
     get: async () => ({ data: issue }),
     listComments: () => {},
-    createComment: async ({ body }) => { calls.push(['comment', body]); const c = { body, html_url: 'https://github.com/hgahub/duumbi/issues/123#issuecomment-1' }; comments.push(c); return { data: c }; },
+    createComment: async ({ body }) => { calls.push(['comment', body]); const c = { id: comments.length + 100, body, html_url: 'https://github.com/hgahub/duumbi/issues/123#issuecomment-1' }; comments.push(c); return { data: c }; },
     update: async (args) => { calls.push(['update', args]); },
     addLabels: async (args) => calls.push(['add', args.labels]),
     removeLabel: async (args) => calls.push(['remove', args.name]),
@@ -27,7 +27,7 @@ async function runDecision(input, options = {}) {
     eventName: options.manual ? 'workflow_dispatch' : 'repository_dispatch',
     payload: options.manual ? { inputs: { stage: '5', issue_number: 123, ...input } } : { client_payload: { stage: '5', issue_number: 123, ...input } },
     actor: 'hgahub', repo: { owner: 'hgahub', repo: 'duumbi' },
-  }, { info() {}, warning() {}, setFailed: (s) => failures.push(s), summary }, require, { env: { GITHUB_WORKSPACE: root } });
+  }, { info() {}, warning() {}, setFailed: (s) => failures.push(s), summary }, require, { env: { GITHUB_WORKSPACE: root, ...(options.env || {}) } }, async (url, request) => { calls.push(['slack', JSON.parse(request.body)]); return { json: async () => ({ ok: true }) }; });
   return { calls, failures, comments };
 }
 
@@ -83,4 +83,15 @@ test('unknown clarification owner fails before recording a decision', async () =
   const result = await runDecision({ decision: 'needs-clarification', rationale: 'Scope', clarification_question: 'Which provider?', clarification_owner: 'missing' }, { missingOwner: true });
   assert.equal(result.failures.length, 1);
   assert.deepEqual(result.calls, []);
+});
+
+
+test('only accepted Stage 5 Slack summaries emit the canonical decision ID event', async () => {
+  const env = { SLACK_BOT_TOKEN: 'fake-test-only', SLACK_REVIEW_CHANNEL_ID: 'test-channel' };
+  const accepted = await runDecision({ decision: 'approve' }, { env });
+  const message = accepted.calls.find(([kind]) => kind === 'slack')[1].text;
+  const payload = JSON.parse(message.split('\n').find((line) => line.startsWith('DUUMBI_SPEC_EVENT_V1 ')).slice('DUUMBI_SPEC_EVENT_V1 '.length));
+  assert.deepEqual(payload, { version: 1, repo: 'hgahub/duumbi', issue: 123, decision: accepted.comments[0].id });
+  const rejected = await runDecision({ decision: 'reject', rationale: 'Outside scope' }, { env });
+  assert.doesNotMatch(rejected.calls.find(([kind]) => kind === 'slack')[1].text, /DUUMBI_SPEC_EVENT/);
 });

@@ -1,5 +1,12 @@
 # DUUMBI Agentic Development Orchestration
 
+> **Stage 6–9 event worker:** The Grok VM path uses Stage 6 → independent Stage 7 →
+> Stage 8 → independent Stage 9, with a human spec-PR merge and deterministic finalization
+> to Ready for Build. It does not enter Stage 10. See [setup and recovery](grok-spec-setup.md)
+> and `duumbi-spec-autopilot`. Combined drafting/delivery paths below remain legacy/manual
+> alternatives and must not process the same `spec-automation` job concurrently.
+
+
 This document records the repository-side implementation of the redesigned
 DUUMBI intake-to-delivery workflow. The canonical operating model remains the
 DUUMBI Agentic Development Runbook in the vault; these files are the executable
