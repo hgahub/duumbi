@@ -337,16 +337,11 @@ jobs:
 
               if (stage === '5') {
                 return [
-                  'Run DUUMBI combined spec drafting with duumbi-spec-draft and duumbi-tech-spec-draft.',
+                  'Run DUUMBI Stage 6–9 with duumbi-spec-autopilot.',
                   '',
                   `Target issue: ${issueUrl}`,
-                  `Expected artifacts: specs/DUUMBI-${issueNumber}/PRODUCT.md and specs/DUUMBI-${issueNumber}/TECHNICAL.md`,
-                  '',
-                  'Goal: Verify Stage 5 acceptance, inspect active DUUMBI context and relevant source context, draft the product spec in English with BDD Scenarios, then immediately draft the agent-facing technical spec with BDD-to-test mapping, live E2E plan, and Ralph Cycle resource policy. Do not wait for external review between the two specs. Run Codex self-review on both, record Stage 7 and Stage 9 gate decisions when the AI gates are clean, merge the spec-only PR(s), move the issue to Ready for Build, and send the Stage 10 implementation prompt. Optionally request a quick low-cost review on the spec PR (e.g. MiniMax, DeepSeek, Grok Build, Cursor BugBot); it is advisory only. Do not invoke Greptile; Greptile is reserved for the final implementation PR.',
-                  '',
-                  `Spec-only PR rule: use non-closing issue references such as "Related to #${issueNumber}" or "Spec for #${issueNumber}". Include a workflow note that this PR must leave the execution issue open.`,
-                  '',
-                  'Do not create implementation code or Ralph cycles. Stop with findings if a gate fails or blocking product/architecture questions remain.',
+                  'The Grok VM worker validates this human acceptance, drafts and independently reviews product and technical specs, and opens one spec-only PR. Human merge remains required. Stop at Ready for Build; do not start Stage 10.',
+                  `Spec-only PR rule: use non-closing references such as "Related to #${issueNumber}". Leave the execution issue open.`,
                 ].join('\n');
               }
 
@@ -840,6 +835,9 @@ jobs:
             const summary = [
               `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
               `• Decision comment: ${posted.html_url}`,
+              stage === '5' && decision === 'approve' && Number.isSafeInteger(posted.id)
+                ? `DUUMBI_SPEC_EVENT_V1 ${JSON.stringify({ version: 1, repo: `${owner}/${repo}`, issue: issueNumber, decision: posted.id })}`
+                : null,
               stage === '5' && decision === 'needs-clarification' ? `• Owner: ${slackEscape(stage5Details.details.clarification_owner)}\n• Question: ${slackEscape(stage5Details.details.clarification_question)}\n• Continue: owner posts an @Clarification comment on the issue; human acceptance remains required.` : null,
               prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
               specPrMerge?.mergeSha ? `• Spec PR merged: ${specPrMerge.mergeSha}` : null,

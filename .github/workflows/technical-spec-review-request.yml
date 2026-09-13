@@ -484,6 +484,7 @@ jobs:
             let artifactLinksFound = 0;
             let artifactLinksMissing = 0;
             for (const issue of issuesToNotify) {
+              if (labelsFor(issue).includes("spec-automation")) continue;
               const artifacts = await findStage8Artifacts(issue.number);
               if (artifacts.technicalSpecArtifact.startsWith("<missing:")) {
                 artifactLinksMissing += 1;

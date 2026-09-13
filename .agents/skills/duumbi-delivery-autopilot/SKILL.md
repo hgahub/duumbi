@@ -9,6 +9,13 @@ Your job is to move one accepted GitHub Issue from `Spec Needed` through product
 
 The product spec and the technical spec are drafted together in one pass. Do not wait for external review between them; the goal is to reach `Ready for Build` and send the implementation prompt as quickly as the gates allow. Heavy spec and implementation work runs in Codex App, where the subscription covers Codex usage.
 
+## Event-driven specification entry
+
+Stage 5 events on the Grok VM use `duumbi-spec-autopilot` and its deterministic runner,
+which orders stages 6 → 7 → 8 → 9 and stops at Ready for Build after human merge.
+Do not invoke this broader delivery skill for those events or process a `spec-automation`
+issue concurrently. This delivery skill remains an explicit request to include Stage 10.
+
 ## Stage Boundary
 
 This skill covers:

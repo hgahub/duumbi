@@ -31,6 +31,16 @@ This skill does not:
 
 Stage 9 owns technical spec approval. `duumbi-ralph-cycle` owns per-cycle implementation execution. Stage 11 owns review, verification, merge, and `Done`.
 
+## Decomposed specification packages
+
+A `spec-coordinator` issue owns the overall outcome and must not run implementation
+cycles. Select an execution sub-issue instead. For worker-generated specs, read the
+parent `AUTOMATION.json` and `DECOMPOSITION.md`, resolve dependency keys to child issue
+IDs, and verify required predecessors are completed before starting a dependent child.
+Child Stage 5 acceptance may be inherited from the explicitly accepted parent only
+within the Stage 7 approved decomposition. Verify the linked decision and Stage 9
+artifact evidence; a sub-issue link or label alone is not approval.
+
 ## Source Of Truth Rules
 
 - GitHub Issues and Project fields hold workflow state.
