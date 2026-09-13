@@ -38,7 +38,7 @@ Save these non-secret environment values in the bot's persistent execution confi
 Project 4 matches the existing DUUMBI_PROJECT_NUMBER repository variable (verified 2026-09-13).
 The project number is the numeric part of the DUUMBI Project URL, not an issue number.
 Do not set OPENAI_API_KEY or CODEX_API_KEY. `check` verifies ChatGPT auth and CLI flags,
-GitHub repository access and configuration presence; the first job verifies project status
+GitHub repository access, the actual pagination command and configuration presence; the first job verifies project status
 options/write access. It makes no model call and no GitHub write. Model availability is
 only proven by a real run; do not silently substitute a different model if access fails.
 
@@ -105,6 +105,32 @@ node scripts/spec-automation/run.mjs finalize 123 456789
 
 Numbers are examples. Do not process these literal issue/decision IDs.
 
+## Recovery for job 817/5655972051 (gh 2.46 compatibility)
+
+The worker now uses `gh api --paginate --jq tojson`; it does not require `--slurp`.
+The official gh 2.46.0 macOS arm64 release was checksum-verified and tested read-only
+against two comment pages and 22 check-run pages. The VM's Linux build still needs the
+updated worker's `check` command; no VM CLI upgrade or login reset is required by this fix.
+
+After the fix is merged, on the Grok VM:
+
+```sh
+cd /workspace/duumbi
+git status --short
+git pull --ff-only origin main
+export DUUMBI_PROJECT_NUMBER=4
+export DUUMBI_SPEC_STATE=/workspace/duumbi-spec-state
+node scripts/spec-automation/run.mjs check
+node scripts/spec-automation/run.mjs retry-event 817 5655972051
+```
+
+Run the last command in the persistent/background facility described above. It explicitly
+requeues only the matching `attention` entry. If no job checkpoint exists yet, it starts
+`run`; otherwise it resumes saved progress. On success the queue entry becomes `delivered`
+and retains the previous error for audit. It never deletes state, steals locks, retries an
+uncertain model call, merges a PR, or starts Stage 10. A model call still requires explicit
+`retry-call` recovery if its outcome is uncertain. Do not make `retry-event` a recurring rule.
+
 ## What the worker owns
 
 | Stage | Work | Gate / stop |
@@ -154,7 +180,10 @@ artifact hashes, source/vault SHAs, gate rationale/model and decomposition IDs, 
   processes only pending items. After an interrupted drainer, inspect processing records
   and use the explicit job recovery commands; never automatically requeue uncertain work.
 - Duplicate event: `enqueue` preserves the original delivery; `run` reports the checkpoint and does not make another model call.
-- Ordinary GitHub/network failure: inspect the error and then `resume ISSUE DECISION`.
+- Queued operational failure: after fixing the cause, use `retry-event ISSUE DECISION`
+  (or append `finalize` for a failed merge event). This handles failures before job.json
+  exists and updates queue delivery state. It refuses uncertain model calls.
+- Direct GitHub/network failure: inspect the error and then `resume ISSUE DECISION`.
   Push recovery reuses the same commit and never force-pushes.
 - Interrupted/failed model call: verify it has stopped and inspect quota/logs. With an explicit
   decision to retry, `retry-call ISSUE DECISION 6-0` unlocks only that uncertain call;
