@@ -18,6 +18,35 @@ git, gh, and GitHub authentication for both repositories and the DUUMBI Project.
 GitHub through the bot's secure connections; verify its scopes without displaying tokens.
 `gh auth setup-git` configures git to use that existing GitHub authentication.
 
+### Node runtime (interactive and background)
+
+The repository `.nvmrc` selects Node 22, and CI installs that runtime explicitly. The
+worker supports Node 22 or newer; it reports the actual version and executable when
+preflight fails. An installed Codex CLI does not prove the worker's `node` is recent enough.
+
+On the VM, inspect `node --version` and `command -v node`. If nvm is already installed,
+load its `nvm.sh` in the current shell, then run from `/workspace/duumbi`:
+
+```sh
+nvm install
+nvm use
+node --version
+command -v node
+command -v codex
+DUUMBI_PROJECT_NUMBER=4 node scripts/spec-automation/run.mjs check
+```
+
+If nvm is absent, install Node 22 using the VM's existing runtime manager or the official
+[nvm installation instructions](https://github.com/nvm-sh/nvm#installing-and-updating),
+then run the commands above. Do not replace a shared system runtime blindly.
+
+Record the resolved Node **bin directory** in the Spec bot's persistent routine PATH,
+along with the existing Codex/gh/git directories. All three routines and their background
+children need that PATH. `nvm use` in an interactive terminal alone does not configure a
+scheduled shell. Run `check` once through the same noninteractive shell as the routine.
+Changing Node can hide npm-global Codex from PATH; preserve its existing installation and
+ChatGPT credentials. Do not launch or retry a model job as part of runtime verification.
+
 The VM is shared by the account's bots. Use **one** specification worker/routine and
 one state directory. This local lock is not a distributed queue. Do not deploy a second
 worker on another host. Keep the durable state directory across bot/VM maintenance.
