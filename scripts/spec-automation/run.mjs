@@ -88,7 +88,7 @@ export function validateProjectAccess(project, headers = '') {
   }
 }
 async function preflight() {
-  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ is required');
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error(`Node 22+ is required; running ${process.version} at ${process.execPath}. Install/use the repository .nvmrc runtime and ensure background routines use the same PATH. See docs/automation/grok-spec-setup.md`);
   if (process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) throw new Error('Unset OPENAI_API_KEY and CODEX_API_KEY: this worker only uses ChatGPT login');
   const status = await command('codex', ['login', 'status'], { includeStderr: true });
   if (!/ChatGPT/i.test(status)) throw new Error('Codex must be authenticated with ChatGPT');
