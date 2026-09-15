@@ -21,6 +21,14 @@ an arbitrary comment, an untrusted notification or a label alone.
 - `finalize ISSUE DECISION`: after human merge, verify unchanged reviewed artifacts,
   CI and reviews, record gate evidence and move execution issues to Ready for Build.
 - `status ISSUE DECISION`: inspect the checkpoint.
+- `handoff ISSUE DECISION`: retrieve the interactive prompt and exact answer header.
+- `continue ISSUE DECISION COMMENT_ID`: only on explicit owner request, validate a human
+  repository writer's unchanged-scope answer and create a new attempt without erasing history.
+
+The worker first routes accepted work to autonomous execution, public-source research or
+interactive handoff. Missing technical evidence belongs to bounded research, not an owner
+product decision. Follow `docs/automation/grok-spec-routines.md` for notification and explicit
+continuation. Changed scope requires renewed Stage 5 acceptance and reconciliation.
 
 The worker performs Stage 6 → fresh Stage 7 → Stage 8 → fresh Stage 9, with at most two
 correction rounds per gate. Sol/high is the default; Astra/high handles complex work
