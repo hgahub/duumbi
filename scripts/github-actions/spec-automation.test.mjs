@@ -89,3 +89,36 @@ test('Project preflight checks writable project, required statuses and classic-t
   assert.throws(() => validateProjectAccess({ ...project, viewerCanUpdate: false }), /not writable/);
   assert.throws(() => validateProjectAccess({ ...project, fields: { nodes: [] } }), /Missing project status/);
 });
+
+test('routing researches before drafting and carries evidence into independent reviews', async () => {
+  const f = fixture(c => c.stage === 0 ? { route: 'research', rationale: 'Need official evidence', question: 'Verify API' } : c.stage === 1 ? { outcome: 'ready', summary: 'Verified API', question: '', sources: [{ url: 'https://example.com/docs', retrieved_on: '2026-09-15', summary: 'API contract' }] } : c.stage === 6 ? product() : c.stage === 8 ? technical() : approve());
+  f.job.routingVersion = 1;
+  assert.equal((await generate(f.job, f.deps)).status, 'reviewed');
+  assert.deepEqual(f.calls.map(c => c.stage), [0, 1, 6, 7, 8, 9]);
+  assert.equal(f.calls.at(-1).payload.research.length, 1);
+  assert.equal(f.job.calls['a1-9-0'].inputHash, hash(f.calls.at(-1).payload));
+  assert.match(specFiles(f.job)['specs/DUUMBI-123/RESEARCH.md'], /example.com/);
+});
+test('interactive routing stops before drafting; budget also returns handoff', async () => {
+  const f = fixture(() => ({ route: 'interactive', rationale: 'Product choice', question: 'Which outcome?' }));
+  f.job.routingVersion = 1;
+  assert.equal((await generate(f.job, f.deps)).status, 'interactive');
+  assert.deepEqual(f.calls.map(c => c.stage), [0]);
+  assert.equal(f.writes.length, 0);
+  const b = fixture(c => c.stage === 0 ? { route: 'autonomous', rationale: 'Clear', question: '' } : product());
+  b.job.routingVersion = 1; b.job.maxCalls = 1;
+  assert.equal((await generate(b.job, b.deps)).status, 'interactive');
+  assert.equal(b.calls.length, 1);
+});
+test('continuation is scoped, permission checked and preserves previous attempts', async () => {
+  const { continueAttempt } = await import('../spec-automation/routing.mjs');
+  const job = { event: input, status: 'needs_clarification', context: { issue }, calls: {}, product: product(), gate7: { approved: true } };
+  const answer = { id: 99, user: { login: 'owner', type: 'User' }, body: 'DUUMBI_SPEC_CONTINUE_V1 123 42 1\nScope: unchanged\nKeep the accepted behavior.' };
+  assert.throws(() => continueAttempt(structuredClone(job), answer, 'read'));
+  assert.throws(() => continueAttempt(structuredClone(job), { ...answer, body: answer.body.replace('42 1', '42 2') }, 'write'));
+  assert.throws(() => continueAttempt({ ...job, routing: { route: 'scope_change' } }, answer, 'write'));
+  continueAttempt(job, answer, 'write');
+  assert.equal(job.attempt, 2); assert.equal(job.status, 'running');
+  assert.equal(job.attempts[0].gate7.approved, true);
+  assert.equal(job.gate7, undefined); assert.deepEqual(job.fixedProduct, product());
+});

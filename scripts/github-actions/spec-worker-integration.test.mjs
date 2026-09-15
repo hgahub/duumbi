@@ -20,7 +20,7 @@ async function fixture(t) {
   delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY;
   const read = async () => JSON.parse(await fs.readFile(file, 'utf8'));
   const edit = async (patch) => fs.writeFile(file, JSON.stringify({ ...await read(), ...patch }));
-  const run = (mode) => command(process.execPath, [path.join(root, 'scripts/spec-automation/run.mjs'), mode, '123', '42'], { env });
+  const run = (mode, ...extra) => command(process.execPath, [path.join(root, 'scripts/spec-automation/run.mjs'), mode, '123', '42', ...extra], { env });
   return { read, edit, run, dir };
 }
 test('real worker subprocess publishes once, waits for human merge, then finalizes idempotently', async (t) => {
@@ -28,13 +28,13 @@ test('real worker subprocess publishes once, waits for human merge, then finaliz
   assert.match(await f.run('check'), /Preflight passed/);
   assert.equal((await f.read()).models.length, 0);
   assert.match(await f.run('run'), /Spec PR/);
-  const published = await f.read(); assert.deepEqual(published.models.map((m) => m.stage), [6, 7, 8, 9]);
+  const published = await f.read(); assert.deepEqual(published.models.map((m) => m.stage), [0, 6, 7, 8, 9]);
   assert.equal(published.status, 'Technical Spec Review');
   assert.match(await f.run('run'), /Duplicate event/);
   await assert.rejects(f.run('finalize'), /not been merged/);
   await f.edit({ pr: { ...published.pr, merged: true } });
   assert.match(await f.run('finalize'), /Complete/);
-  const final = await f.read(); assert.equal(final.status, 'Ready for Build'); assert.equal(final.models.length, 4);
+  const final = await f.read(); assert.equal(final.status, 'Ready for Build'); assert.equal(final.models.length, 5);
   assert.ok(final.issue.labels.some((l) => l.name === 'tech-spec-approved'));
   assert.equal(final.issue.state, 'open');
   const writes = final.comments.length; await f.run('finalize'); assert.equal((await f.read()).comments.length, writes);
@@ -43,7 +43,7 @@ test('ambiguous push resumes the exact reviewed commit without another model cal
   const f = await fixture(t); await f.edit({ failPushOnce: true });
   await assert.rejects(f.run('run'), /lost push response/);
   assert.match(await f.run('run'), /Duplicate event/);
-  await f.run('resume'); assert.equal((await f.read()).models.length, 4);
+  await f.run('resume'); assert.equal((await f.read()).models.length, 5);
   assert.equal((await f.read()).pr.head.sha, 'headsha');
 });
 test('finalizer rejects changed head, non-spec files, failed CI, unresolved reviews and changed artifacts', async (t) => {
@@ -76,7 +76,7 @@ test('split work creates linked children once and finalizes parent as coordinati
   assert.ok(final.issue.labels.some((l) => l.name === 'spec-coordinator'));
   assert.ok(!final.issue.labels.some((l) => l.name === 'tech-spec-approved'));
   assert.ok(final.children.every((c) => c.labels.some((l) => l.name === 'tech-spec-approved')));
-  assert.equal(final.models.length, 4);
+  assert.equal(final.models.length, 5);
 });
 
 
@@ -85,8 +85,8 @@ test('durable queue retains a busy event, drains later, and deduplicates repeate
   assert.match(await f.run('enqueue'), /worker busy/);
   assert.equal((await f.read()).models.length, 0);
   await fs.rm(path.join(f.dir, 'state/worker.lock'), { recursive: true });
-  await f.run('drain'); assert.equal((await f.read()).models.length, 4);
-  await f.run('enqueue'); await f.run('drain'); assert.equal((await f.read()).models.length, 4);
+  await f.run('drain'); assert.equal((await f.read()).models.length, 5);
+  await f.run('enqueue'); await f.run('drain'); assert.equal((await f.read()).models.length, 5);
 });
 test('queue records quota failure for attention and never automatically retries it', async (t) => {
   const f = await fixture(t); await f.edit({ failModel: true });
@@ -111,13 +111,13 @@ test('operator retry recovers attention before job creation, then marks queue de
   await assert.rejects(fs.access(path.join(f.dir, 'state/v1-123-42/job.json')));
   await f.edit({ failPagination: false }); await f.run('retry-event');
   const record = JSON.parse(await fs.readFile(path.join(f.dir, 'state/queue/run-123-42.json'), 'utf8'));
-  assert.equal(record.status, 'delivered'); assert.equal((await f.read()).models.length, 4);
+  assert.equal(record.status, 'delivered'); assert.equal((await f.read()).models.length, 5);
   await assert.rejects(f.run('retry-event'), /matching attention/);
 });
 test('operator queue retry resumes saved artifacts and does not unlock uncertain model calls', async (t) => {
   const f = await fixture(t); await f.edit({ failPushOnce: true });
   await assert.rejects(f.run('enqueue'), /lost push response/);
-  await f.run('retry-event'); assert.equal((await f.read()).models.length, 4);
+  await f.run('retry-event'); assert.equal((await f.read()).models.length, 5);
   const g = await fixture(t); await g.edit({ failModel: true });
   await assert.rejects(g.run('enqueue'), /quota exhausted/);
   await assert.rejects(g.run('retry-event'), /Uncertain model call/);
@@ -132,4 +132,21 @@ test('missing Project scope or write access fails preflight before model calls a
     const db = await f.read(); assert.equal(db.models.length, 0); assert.equal(db.claim, undefined);
     assert.equal(db.operations.some((o) => o.bin === 'gh' && o.args.includes('--input') && !o.args.includes('graphql')), false);
   }
+});
+
+ test('interactive handoff is idempotent and explicit continuation creates a new audited attempt', async (t) => {
+  const f = await fixture(t); await f.edit({ route: 'interactive' });
+  assert.match(await f.run('run'), /interactive handoff/);
+  const stopped = await f.read();
+  await f.run('resume');
+  assert.equal((await f.read()).comments.length, stopped.comments.length);
+  assert.equal((await f.read()).models.length, 1);
+  await f.edit({ route: null, comments: [...stopped.comments, { id: 999, user: { login: 'owner', type: 'User' }, body: 'DUUMBI_SPEC_CONTINUE_V1 123 42 1\nScope: unchanged\nKeep accepted behavior.' }] });
+  assert.match(await f.run('continue', '999'), /Spec PR/);
+  const job = JSON.parse(await fs.readFile(path.join(f.dir, 'state/v1-123-42/job.json')));
+  assert.equal(job.attempt, 2); assert.equal(job.attempts.length, 1);
+  assert.ok(job.calls['a1-route']); assert.ok(job.calls['a2-route']);
+  const db = await f.read();
+  await f.edit({ comments: db.comments.map(c => c.id === 999 ? { ...c, body: c.body + ' edited' } : c) });
+  await assert.rejects(f.run('resume'), /Continuation evidence changed/);
 });

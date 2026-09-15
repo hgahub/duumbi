@@ -19,13 +19,13 @@ const str = { type: 'string' };
 const array = (items) => ({ type: 'array', items });
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 export const productSchema = object({
-  outcome: { enum: ['ready', 'needs_clarification'], type: 'string' }, question: str,
+  outcome: { enum: ['ready', 'needs_clarification', 'needs_research'], type: 'string' }, question: str,
   complexity: { enum: ['normal', 'high'], type: 'string' }, rationale: str,
   product: str, decomposition: str,
   units: array(object({ key: str, title: str, product: str, dependencies: array(str) })),
 });
-export const technicalSchema = object({ outcome: { enum: ['ready', 'needs_clarification'], type: 'string' }, question: str, technical: str, units: array(object({ key: str, technical: str })) });
-export const reviewSchema = object({ decision: { enum: ['approve', 'revise', 'needs_clarification'], type: 'string' }, rationale: str, findings: array(str), question: str });
+export const technicalSchema = object({ outcome: { enum: ['ready', 'needs_clarification', 'needs_research'], type: 'string' }, question: str, technical: str, units: array(object({ key: str, technical: str })) });
+export const reviewSchema = object({ decision: { enum: ['approve', 'revise', 'needs_clarification', 'needs_research'], type: 'string' }, rationale: str, findings: array(str), question: str });
 // Validate every field locally as well: output-schema is a model constraint, not a trust boundary.
 export function validate(value, schema, location = 'result') {
   if (schema.type === 'object') {
@@ -39,7 +39,7 @@ export function validate(value, schema, location = 'result') {
 }
 export function validateProduct(p) {
   validate(p, productSchema);
-  if (p.outcome === 'needs_clarification') { if (!p.question.trim()) throw new Error('Clarification requires a question'); return p; }
+  if (p.outcome !== 'ready') { if (!p.question.trim()) throw new Error('Clarification requires a question'); return p; }
   if (!p.product.trim() || !p.decomposition.trim() || !p.rationale.trim() || !p.units.length) throw new Error('Empty product or decomposition');
   const keys = new Set(p.units.map((u) => u.key));
   if (keys.size !== p.units.length) throw new Error('Duplicate unit key');
@@ -57,13 +57,13 @@ export function validateProduct(p) {
 }
 export function validateTechnical(t, p) {
   validate(t, technicalSchema);
-  if (t.outcome === 'needs_clarification') { if (!t.question.trim()) throw new Error('Clarification requires a question'); return t; }
+  if (t.outcome !== 'ready') { if (!t.question.trim()) throw new Error('Clarification requires a question'); return t; }
   if (!t.technical.trim() || t.units.length !== p.units.length || new Set(t.units.map((u) => u.key)).size !== t.units.length || t.units.some((u) => !u.technical.trim() || !p.units.some((v) => v.key === u.key))) throw new Error('Technical coverage does not match approved units');
   return t;
 }
 export function validateReview(r) {
   validate(r, reviewSchema);
-  if (!r.rationale.trim() || (r.decision === 'approve' && (r.findings.length || r.question.trim())) || (r.decision === 'revise' && !r.findings.length) || (r.decision === 'needs_clarification' && !r.question.trim())) throw new Error('Inconsistent review verdict');
+  if (!r.rationale.trim() || (r.decision === 'approve' && (r.findings.length || r.question.trim())) || (r.decision === 'revise' && !r.findings.length) || (['needs_clarification', 'needs_research'].includes(r.decision) && !r.question.trim())) throw new Error('Inconsistent review verdict');
   return r;
 }
 export function specFiles(job) {
@@ -77,6 +77,7 @@ export function specFiles(job) {
     files[`${dir}/PRODUCT.md`] = unit.product;
     files[`${dir}/TECHNICAL.md`] = job.technical.units.find((u) => u.key === unit.key).technical;
   }
+  if (job.research?.length) files[`${root}/RESEARCH.md`] = job.research.map((r) => `## ${r.recordedAt}\n${r.summary}\n\n${r.sources.map((s) => `- [Source](${s.url}) (${s.retrieved_on}): ${s.summary}`).join('\n')}`).join('\n\n');
   // One execution issue uses the top-level pair; require the model to keep unit and aggregate consistent in review.
   return files;
 }

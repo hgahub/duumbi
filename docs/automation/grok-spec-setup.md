@@ -132,8 +132,8 @@ A job may be `needs_clarification` while its queue is `attention`: the first is 
 model's product-question result, while the second can reflect failure to write the
 Needs Clarification Project status. Fixing credentials does not answer product questions.
 Do not reset a completed clarification call or run `retry-call` to bypass the decision.
-Obtain the owner's answers and renewed Stage 5 acceptance, then reconcile the old branch/
-checkpoint as described below before starting the new acceptance event.
+For unchanged scope, use the explicit continuation procedure below. Changed scope still
+requires renewed Stage 5 acceptance and reconciliation.
 
 ## Recovery for job 817/5655972051 (gh 2.46 compatibility)
 
@@ -216,7 +216,7 @@ artifact hashes, source/vault SHAs, gate rationale/model and decomposition IDs, 
 - Direct GitHub/network failure: inspect the error and then `resume ISSUE DECISION`.
   Push recovery reuses the same commit and never force-pushes.
 - Interrupted/failed model call: verify it has stopped and inspect quota/logs. With an explicit
-  decision to retry, `retry-call ISSUE DECISION 6-0` unlocks only that uncertain call;
+  decision to retry, `retry-call ISSUE DECISION CALL_KEY` archives and unlocks only that uncertain call;
   then `resume`. Never automate this command. Successful calls cannot be unlocked.
 - Stale lock: read worker.lock/owner.json and queue.lock/owner.json, confirm the recorded process and its Codex children
   have ended, then remove only the lock directory. Never delete it just because time elapsed.
@@ -224,14 +224,51 @@ artifact hashes, source/vault SHAs, gate rationale/model and decomposition IDs, 
   Repair that local checkout before resuming. Do not discard reviewed checkpoints.
 - Ambiguous remote branch claim: reconcile the remote branch and local `claimed` checkpoint
   manually; do not steal another worker's claim or start another host.
-- Clarification or exhausted reviews: owner answers the recorded question on the issue.
-  Arrange renewed Stage 5 review (`needs-human-review`, Needs Human Acceptance). Before a new
-  job, reconcile/close the old spec branch/PR and any child issues with the owner; the old branch
-  deliberately prevents a new acceptance from duplicating half-created work. This recovery is
-  a human handoff, not an automatic reinterpretation of an issue comment.
+- Clarification or exhausted reviews: use `handoff ISSUE DECISION` to retrieve the prompt.
+  An authorized human posts the exact continuation header and unchanged-scope answer from
+  that handoff, then explicitly invokes `continue ISSUE DECISION COMMENT_ID`. The worker
+  verifies write permission, current acceptance, attempt and unchanged comment evidence.
+  It archives the attempt, retains prior artifacts and restarts independent reviews.
+  A changed product scope requires new Stage 5 acceptance and reconciliation of old
+  branches/children; never delete checkpoints as a continuation mechanism.
 - Finalization failure: repair the reported gate/access problem, then retry `finalize`.
   Successful comments and status writes are idempotent. Edited reviewed artifacts require
   a new review; the finalizer will not bless the changed head/content.
 
 No live Grok execution is proven by local tests. The pilot above verifies event delivery,
 actual subscription model access, project permissions, generation quality and end-to-end state.
+
+## Autonomous routing and interactive continuation
+
+Use the three copy-ready routines in [grok-spec-routines.md](grok-spec-routines.md).
+Stage 0 is an internal routing assessment, not a replacement for Stage 5 acceptance.
+Codex selects autonomous work, public-documentation research, or an owner handoff.
+Technical unknowns trigger research; genuine product decisions trigger a concrete question.
+Stages 6–9 may request research again. Maximum two research calls, sixteen model calls and
+90 minutes of completed model-call time per attempt; each call has a 20-minute timeout.
+A budget stop produces a handoff; an uncertain call remains an operational failure and is
+never automatically retried. Explicit failed-call retries are archived separately.
+
+Only the research session enables hosted live web search. Other sessions disable it.
+The prompt requires public official sources, dated concise extracts, and distinctions
+between supported, unsupported and unverified behavior. Source credibility is checked by
+independent reviews, not proven by URL syntax validation. Research joins the model context
+and the reviewed PR as RESEARCH.md. See the [Codex web search documentation](https://learn.chatgpt.com/docs/web-search).
+
+Handoff is recorded as an idempotent GitHub comment and local handoff.md. Grok sends the
+link and copyable prompt to the Owner; GitHub remains the durable source of truth. A failed
+GitHub publication can be recovered with resume without another model call. Notification
+transport is still the Grok routine: this change does not install a new Slack token/client.
+
+An unchanged-scope continuation uses the same accepted issue/decision and remote branch,
+with a new attempt number and input digest. Source/vault snapshots remain immutable;
+new answer/evidence enters versioned context. All previous call files remain. Existing
+approved product/decomposition is fixed if child allocation may have occurred; changed
+product requires reconciliation. Both reviews run again. Editing/deleting a previously
+used continuation comment blocks further execution and finalization.
+
+Deploy after human PR merge: wait until the VM worker is idle; verify its checkout is
+clean; `git pull --ff-only origin main`; run `node scripts/spec-automation/run.mjs check`.
+Update the saved worker skill and the three routines from this repository. Existing
+stopped jobs can use `handoff ISSUE DECISION`, then explicit continuation; no checkpoint
+reset, automatic retry, new acceptance or model API key is needed for unchanged scope.

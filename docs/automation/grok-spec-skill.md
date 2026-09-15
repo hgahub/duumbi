@@ -22,7 +22,12 @@ Codex CLI specification worker, or finalize its spec PR after a human merge. Cov
    to the owner and preserve the checkpoint, not automatic repeated model calls.
 5. Report the returned job state or spec PR link. Await human merge when requested. On an
    operational blocker give the error and the recovery command from grok-spec-setup.md.
-   Clarification needs the named owner's actual answer and renewed human review.
+   For interactive/needs_clarification/review_blocked, retrieve `handoff ISSUE DECISION`
+   and send the durable GitHub handoff link plus copyable prompt once per attempt.
+   Only on explicit owner request run `continue ISSUE DECISION COMMENT_ID`; the referenced
+   human-writer comment must confirm unchanged scope with the exact attempt header.
+   Changed scope needs renewed Stage 5 acceptance and reconciliation. Never erase checkpoints.
+   Use the notification receipt policy in grok-spec-routines.md.
 6. Never choose a paid API fallback, change model IDs, clear locks, force-push, merge PRs,
    bypass a failed gate, launch delivery-autopilot, or start Stage 10.
 

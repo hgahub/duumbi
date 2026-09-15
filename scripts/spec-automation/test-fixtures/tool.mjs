@@ -22,7 +22,7 @@ if (bin === 'codex') {
       product.units.push({ key: 'ui', title: 'UI', product: '# UI product', dependencies: ['core'] });
       technical.units.push({ key: 'ui', technical: '# UI technical' });
     }
-    const result = stage === 6 ? product : stage === 8 ? technical : { decision: 'approve', rationale: 'Verified', findings: [], question: '' };
+    const result = stage === 0 ? { route: db.route || 'autonomous', rationale: 'Assessed accepted scope', question: db.route ? 'Which behavior?' : '' } : stage === 6 ? product : stage === 8 ? technical : { decision: 'approve', rationale: 'Verified', findings: [], question: '' };
     fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], JSON.stringify(result)); out('{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":10}}\n');
   }
 } else if (bin === 'git') {
@@ -48,7 +48,8 @@ if (bin === 'codex') {
       if (body.query.includes('reviewThreads')) result = { data: { repository: { pullRequest: { reviewThreads: { nodes: db.unresolved ? [{ isResolved: false }] : [], pageInfo: { hasNextPage: false } } } } } };
       else if (body.query.startsWith('query')) result = { data: { user: { projectV2: { id: 'project', viewerCanUpdate: !db.readOnlyProject, fields: { nodes: [{ id: 'status', name: 'Status', options: ['Spec Needed', 'Technical Spec Needed', 'Technical Spec Review', 'Needs Clarification', 'Ready for Build', 'In Progress'].map((name) => ({ name, id: name })) }] } } }, repository: { issue: { id: 'issue', projectItems: { nodes: [{ id: 'item', project: { id: 'project' } }] } } } } };
       else { db.status = body.variables.o; result = { data: {} }; }
-    } else if (apiPath === '') result = { full_name: 'hgahub/duumbi' };
+    } else if (apiPath.startsWith('/collaborators/')) result = { permission: 'write' };
+    else if (apiPath === '') result = { full_name: 'hgahub/duumbi' };
     else if (apiPath === '/issues') {
       db.children ??= [];
       if (body) db.children.push({ id: 200 + db.children.length, number: 200 + db.children.length, title: body.title, body: body.body, labels: [], state: 'open' });

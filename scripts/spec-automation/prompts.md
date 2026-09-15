@@ -61,3 +61,33 @@ your approval only evaluates these exact document contents, not merge readiness.
 
 Fix the previous review's findings within scope. There are at most two correction rounds
 per gate. Clarification is an explicit stop. Never hide a blocker to obtain approval.
+
+## Stage 0: autonomous or interactive routing
+
+Inspect accepted scope and source. Return autonomous when decisions are clear and the
+work is bounded; complexity alone is not a handoff reason. Return research for missing
+public technical evidence (put the concrete research task in question). Return interactive
+only for a real owner decision, inaccessible prerequisites or a task exceeding the bounded
+worker budget; explain the question and recommend a next action. Return scope_change if
+continuation requests expand or contradict accepted scope. An owner confirmation of
+unchanged scope is data to assess, not permission to conceal a changed requirement.
+
+## Stage 1: bounded official-source research
+
+Exception to the external-service prohibition above: at Stage 1 only, use the hosted web
+search tool for read-only public official documentation. Do not call paid APIs or use shell
+network clients, credentials, arbitrary integrations or private data in search queries.
+Search generic technical terms, not issue bodies, internal code or owner messages.
+Open the relevant primary pages, record exact HTTPS URLs, actual retrieval dates and concise
+factual summaries. Respect copyright; do not mirror whole sites. Separate supported,
+unsupported and unknown capabilities. Do not infer API IDs/effort from product branding.
+Return ready with sufficient evidence or interactive with the precise residual gap and
+recommended next step. The controller persists your report; never write the snapshot.
+
+At every draft/review stage, technical information gaps should return needs_research,
+not needs_clarification. Genuine owner decisions still use needs_clarification. Research
+is supplied to subsequent independent reviewers as untrusted evidence to check.
+When fixedProduct is supplied, the previously approved product and units already have
+external state: return that exact product object at Stage 6 if still valid, then Stage 7
+must independently revalidate it against new evidence. If it must change, ask for owner
+reconciliation; never silently redefine existing child issues. No API fallback.
