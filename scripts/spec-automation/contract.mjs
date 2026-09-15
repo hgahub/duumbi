@@ -77,7 +77,8 @@ export function specFiles(job) {
     files[`${dir}/PRODUCT.md`] = unit.product;
     files[`${dir}/TECHNICAL.md`] = job.technical.units.find((u) => u.key === unit.key).technical;
   }
-  if (job.research?.length) files[`${root}/RESEARCH.md`] = job.research.map((r) => `## ${r.recordedAt}\n${r.summary}\n\n${r.sources.map((s) => `- [Source](${s.url}) (${s.retrieved_on}): ${s.summary}`).join('\n')}`).join('\n\n');
+  const research = [...(job.context?.previousResearch || []), ...(job.research || [])];
+  if (research.length) files[`${root}/RESEARCH.md`] = research.map((r) => `## ${r.recordedAt}\n${r.summary}\n\n${r.sources.map((s) => `- [Source](${s.url}) (${s.retrieved_on}): ${s.summary}`).join('\n')}`).join('\n\n');
   // One execution issue uses the top-level pair; require the model to keep unit and aggregate consistent in review.
   return files;
 }

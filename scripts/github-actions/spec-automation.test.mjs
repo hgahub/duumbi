@@ -98,6 +98,8 @@ test('routing researches before drafting and carries evidence into independent r
   assert.equal(f.calls.at(-1).payload.research.length, 1);
   assert.equal(f.job.calls['a1-9-0'].inputHash, hash(f.calls.at(-1).payload));
   assert.match(specFiles(f.job)['specs/DUUMBI-123/RESEARCH.md'], /example.com/);
+  f.job.context.previousResearch = f.job.research; delete f.job.research;
+  assert.match(specFiles(f.job)['specs/DUUMBI-123/RESEARCH.md'], /example.com/, 'continuation retains earlier sources in published evidence');
 });
 test('interactive routing stops before drafting; budget also returns handoff', async () => {
   const f = fixture(() => ({ route: 'interactive', rationale: 'Product choice', question: 'Which outcome?' }));
