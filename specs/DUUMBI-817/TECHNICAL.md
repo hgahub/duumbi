@@ -1,7 +1,8 @@
 # DUUMBI-817 — Technical specification
 
 Related to #817. Implements the contract in [PRODUCT.md](PRODUCT.md) only after
-the required human gates. This PR contains no implementation. The evidence
+the required human gates. This PR contains no implementation. The target and retirement policy are in [MODEL_LIFECYCLE.md](MODEL_LIFECYCLE.md).
+The evidence
 matrix is [EVIDENCE.md](EVIDENCE.md); fresh review findings are in
 [REVIEWS.md](REVIEWS.md). No Grok worker, merge or Stage 10 is started here.
 
@@ -13,11 +14,12 @@ Inspected main revision: `5e9fa23`.
 | --- | --- |
 | `src/agents/openai.rs` | Chat Completions, no effort field; tool, captured-tool, text-fallback and answer builders repeat request construction. Callback methods buffer JSON responses. Keep this legacy adapter for compatible providers. |
 | `src/agents/anthropic.rs` | Messages; fixed `max_tokens=4096`; JSON and SSE tool paths; buffered answer callback; API-key or bearer authentication. Add one shared request policy across paths. |
+| `src/agents/minimax.rs` | Thin OpenAiClient wrapper today; forward immutable options into a MiniMax-specific Chat profile. |
 | `src/agents/grok.rs` | Wrapper around OpenAiClient. Route named native xAI models through a separate Responses profile while preserving legacy construction. |
-| `src/agents/mod.rs` | Object-safe LlmProvider exposes five methods; AgentError::is_transient controls fallback. Add capability and incomplete-output errors. |
+| `src/agents/mod.rs` | Object-safe LlmProvider exposes five methods; AgentError::is_transient controls fallback. Add capability, noncanonical-effort, retirement and incomplete-output errors. |
 | `src/agents/factory.rs` | Resolves model, credentials and shared compatible clients. Add options-aware construction without requiring callers to store model/effort preferences. |
 | `src/agents/fallback.rs` | Falls through on transient errors and records last successful model label. Explicit-effort and pinned validation calls must not substitute models. |
-| `src/agents/model_catalog.rs` | Static and refreshed ranking catalog; reasoning/coding Booleans; ModelSelectionContext; ResolvedProviderConfig assembly. No effort capability metadata. |
+| `src/agents/model_catalog.rs` | Static and refreshed ranking catalog; reasoning/coding Booleans; ModelSelectionContext; ResolvedProviderConfig assembly. No effort capability metadata. Current retired explicit-model resolution can silently fall back; replace that behavior for retirement failures. |
 | `src/agents/model_catalog_publisher.rs` | Deterministic V1 metadata publisher; keep provider capability authority separate from discovery/ranking hints. |
 | `src/config.rs` | ProviderConfig/ResolvedProviderConfig have no effort. Preserve persisted schema and defaults. |
 | `src/tools.rs` | Existing schemas and tool-call-to-PatchOp converters. Adapt the envelope, not graph semantics. |
@@ -74,14 +76,20 @@ not permit an invalid tool request.
 
 Resolution order:
 
+0. Apply provider/model tombstones before selection, capability lookup or legacy
+   exceptions. Explicit retired selection returns a typed error, never `None`
+   meaning "choose something else". Filter automatic candidates before ranking.
 1. Resolve the model with existing selection/access policy. Explicit model
    overrides remain exact. Do not reinterpret catalog reasoning as effort.
 2. Classify endpoint identity and locate the exact reviewed capability row.
    Never infer Responses support from a model prefix or arbitrary base URL.
 3. Apply legacy omitted compatibility first for custom/compatible endpoints and
-   models outside the named set. This branch emits no new effort control.
-4. For named direct-native rows, select the documented surface. Check omitted
-   support or the exact explicit cell. V yields a plan; N/U return typed errors.
+   non-retired models outside the named set. This branch emits no new effort control.
+4. Reject documented noncanonical aliases as `NonCanonicalEffort`. For named
+   direct-native rows, select the documented surface. Check omitted
+   support or the exact explicit cell. An admitted V yields a plan; N/U return typed errors.
+   Evidence class and canonical-admission Boolean are separate metadata; V†
+   denotes documented API aliases blocked by the preceding policy check.
 5. For explicit effort with no reviewed row, fail U. Do not rescore/select
    another model based on the failure. Validate output-limit constraints.
 6. Execute one plan; preserve it across the existing bounded repair/retry path.
@@ -98,13 +106,16 @@ different provenance: remotely refreshed quality/reasoning/coding fields cannot
 grant an effort value, request field or endpoint. Reviewed capability entries
 include CallMode, each effort state, API surface, mapping, source IDs and dates.
 
-Add all ten IDs to embedded/curated model data. Use the existing Haiku alias as
-an explicitly documented equivalent capability key and allow its pinned ID.
-Never map Grok Build to DUUMBI's retired `grok-code-fast-1`. Keep the existing
-retirement rule intact. Ranking scores are maintained as routing preferences,
-not evidence that one provider's effort is equivalent to another's.
+Curate exactly the 17 target IDs and eight providers from MODEL_LIFECYCLE.md.
+Remove the 22 retired embedded rows and the OpenRouter route; maintain a shared,
+release-owned tombstone lookup with explicit equivalent aliases (including the
+pinned Haiku ID). Keep the historical retired Grok ID. A discovered model or
+old catalog must not override retirement. Ranking scores remain routing
+preferences, not evidence of effort equivalence.
 
-Old V1 documents deserialize unchanged. Capability resolution joins their model
+Old V1 documents deserialize unchanged, including retired provider/model keys.
+Keep parsing compatibility separate from eligibility; filter retired rows after
+loading, before accessible-model/routing caches, selection and publication. Capability resolution joins their model
 IDs against this release's reviewed lookup. A known reviewed model can use its
 reviewed capability; absent capability evidence remains U for explicit effort.
 A downloaded new model or a true `reasoning` Boolean cannot create support.
@@ -117,12 +128,47 @@ discovery status truthful. No claim of fresh discovery is created by a static
 matrix. Retain deterministic catalog bytes when semantic input is unchanged.
 No new remote catalog endpoint, schedule or docs-site deployment is required.
 
+Introduce a fallible resolution boundary, e.g. `Result<Option<ResolvedProviderConfig>,
+ProviderResolutionError>`: `Ok(None)` means no eligible automatic candidate;
+`Err(RetiredModel/RetiredProvider)` preserves an explicit invalid choice. Update
+factory, probe, chain builders and callers so they cannot swallow that error and
+try another model. Direct client calls consult the same tombstones before send.
+Chain construction excludes retired automatic entries; an explicit retired
+primary selection fails rather than silently becoming a fallback provider.
+
+Preserve ProviderKind/config deserialization for OpenRouter as a tombstone;
+remove dispatch construction and new setup choices. Provider-management views
+may display existing entries as retired and permit user-directed removal.
+Gemini loses its only curated model, so hide its new curated setup/default route;
+non-retired explicit legacy models still use omitted compatibility. Remove active
+OpenRouter examples, headers/dispatch integration and tests asserting support;
+replace them with migration/error tests. Do not erase stored credentials or
+rewrite explicit model values. No unrelated startup warning or all-config failure
+is acceptable when a valid provider remains.
+
 ## 4. Endpoint and authentication boundary
 
 Native profiles bind provider identity to the existing official origins:
 OpenAI `https://api.openai.com/v1/responses`, Anthropic
 `https://api.anthropic.com/v1/messages`, xAI
-`https://api.x.ai/v1/responses`. Authentication retains existing secret resolution
+`https://api.x.ai/v1/responses`; MiniMax
+`https://api.minimax.io/v1/chat/completions`; DeepSeek
+`https://api.deepseek.com/chat/completions`; Moonshot
+`https://api.moonshot.ai/v1/chat/completions`; Z.ai
+`https://api.z.ai/api/paas/v4/chat/completions`.
+
+Qwen uses the documented Singapore workspace endpoint
+`https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`.
+Resolve the actual workspace hostname from operator-supplied endpoint metadata,
+not credentials, guessed IDs or model output. Reuse existing base_url support;
+provider setup can request that endpoint without asking for a default model.
+Do not automatically migrate existing dashscope-intl URLs or region-bound keys.
+Until such an existing URL has its own reviewed descriptor for the new models,
+omitted requests keep legacy transport and explicit effort fails unverified;
+the native release matrix uses the documented workspace endpoint. Endpoint-only
+setup completion belongs to the existing `/provider` flow across CLI/TUI/Studio.
+
+Authentication retains existing secret resolution
 and provider-specific headers. API model support does not establish OAuth or
 subscription entitlement; preserve legacy auth handling and report access errors.
 
@@ -172,7 +218,7 @@ builders. Keep Messages headers/auth and existing tool schema. Exact native
 mapping is in EVIDENCE.md: omission sends no effort/thinking override; supported
 explicit none sends disabled thinking alone; named effort sends
 `output_config.effort` without an invented budget or extra thinking override.
-Automatic choice applies to all four models; Fable must never receive forced
+Automatic choice applies to all three models; Fable must never receive forced
 `any` or named-tool choice. No new beta header or per-message effort feature.
 
 Parse structured `tool_use` only; do not turn textual tool-looking content into
@@ -208,6 +254,37 @@ must validate the emitted key set. Existing buffered callbacks remain buffered;
 no new xAI SSE work is required. Preserve `xai` provider labels and Grok wrapper
 behavior for legacy models. No server-side search/code tools are enabled.
 
+### Five provider-specific Chat profiles
+
+Extend the shared Chat builder with explicit release-reviewed profiles, not
+provider-name string heuristics scattered across the five methods. MiniMax's
+wrapper forwards options/profile; DeepSeek, Qwen, Moonshot and Zhipu factory
+branches select their own profile. Keep unknown non-retired custom clients on
+the old omitted path. Do not let OpenAI Responses fields leak into Chat requests.
+
+| Profile | Explicit controls | Other contract requirements |
+| --- | --- | --- |
+| MiniMax M3 | none → `thinking.type=disabled`; named levels U | `reasoning_split:true`; no thinking override for omitted; separated reasoning is never answer/patch text |
+| DeepSeek | none → `thinking.type=disabled`; allowed levels → `reasoning_effort` | Omit `tool_choice`; use system/user roles and `max_tokens`; block aliases, Pro low U |
+| Qwen3.8 | none → `enable_thinking:false`; low/medium/xhigh → `reasoning_effort` | Never emit thinking_budget; reject high/max aliases; native nested Chat tools |
+| Kimi K3 | low/high/max → `reasoning_effort`; none N | `max_completion_tokens` instead of max_tokens; omit fixed temperature/top_p/n/penalty fields |
+| GLM5.3/Flash | low/high/max → `reasoning_effort`; none N | No disabled thinking; use `max_tokens`; no Coding Plan endpoint inference |
+
+For every profile, omission sends no effort or thinking override and Query omits
+tools. Keep existing bounded output allowance when compatible; serialize it using
+the profile's correct native field, with a checked model limit. Never inherit a
+large provider default accidentally because max_tokens was renamed or ignored.
+No sampling override is needed to implement effort. Audit existing shared-client
+fields against each model's allowed set, particularly Kimi's fixed sampling.
+
+Use buffered Chat JSON on the selected path; retain buffered callback semantics.
+Parse only structured `choices[].message.tool_calls` and final `content`;
+ignore separate reasoning/reasoning_details for answer/patch purposes. Validate
+finish_reason (including length/errors), complete argument JSON, ordering,
+NoToolCalls and capture parity. No additional vision, file, hosted tool or
+multiturn conversation subsystem is introduced. Future history must round-trip
+complete assistant data according to the provider, not reconstruct reasoning.
+
 ### Outcomes shared by all adapters
 
 | Method | Required result |
@@ -225,6 +302,12 @@ raw headers in capability diagnostics. Graph validation and atomic application
 stay in the existing orchestrator after complete response parsing.
 
 ## 6. Errors, retries and observability
+
+Add typed `RetiredProvider`, `RetiredModel` and `NonCanonicalEffort` errors,
+all non-transient and zero-send. Retirement messages identify the old selection
+and `/provider` remediation without auto-substitution or secret exposure.
+`NonCanonicalEffort` reports the allowed native list and the alias policy;
+it is distinct from provider non-support or missing evidence.
 
 Add typed `UnsupportedCapability` and `UnverifiedCapability` AgentError variants
 with provider/model/surface/mode/effort/evidence IDs. Stable display strings
@@ -248,20 +331,23 @@ default-model setup. No startup provider warnings are added for unrelated flows.
 
 ## 7. Validation and acceptance mapping
 
-Offline matrix generation covers 10 models × 7 effort states × 2 call modes =
-140 cells, plus invalid values, alias cases, unknown models and custom endpoints.
-V rows assert exact native request keys; N/U assert the correct error and zero
+Offline matrix generation covers 17 models × 7 effort states × 2 call modes =
+238 cells, plus invalid values, alias cases, unknown models and custom endpoints.
+Admitted V rows assert exact native request keys; V† asserts NonCanonicalEffort.
+N/U assert the correct error and zero
 mock-server requests. Do not call providers in default CI.
 
 | Test group | Evidence required | Product coverage |
 | --- | --- | --- |
-| Pure resolver/matrix | Every cell, endpoint identity, source completeness, Haiku alias and retired Grok alias; no missing row treated as V/N | AC-01–04 |
+| Pure resolver/matrix | Every cell, endpoint identity, source completeness, retired Haiku/Grok aliases and canonical-admission policy; no missing row treated as V/N | AC-01–04 |
 | Request contracts | Omitted keys absent, explicit none distinct, exact levels, OpenAI/xAI isolation, Fable auto choice, no invented budgets | AC-02–05 |
 | Response fixtures | Single/multiple/mixed calls, answer fallback, callback order, capture parity, malformed arguments, incomplete/refusal/error bodies, truncated SSE | AC-06 |
 | Factory and chain | All five methods, default wrappers, global-access/probe constructors, zero fallback on capability error, pinned transient/repair behavior | AC-02–06 |
 | Catalog migration | Old V1 load/adopt/hash behavior; unknown metadata cannot grant capabilities; invalid update rollback; deterministic publishing | AC-05, AC-07 |
 | Workflow regression | Agent/Intent/bench use production options boundary; Query read-only; provider/no-provider paths; compatible-provider custom URLs/headers/auth preserved | AC-05–08 |
-| Joint live matrix | Exact model/tool path, omitted plus every V explicit value; N/U remain local tests; no substitution, skipped/denied rows recorded as incomplete | AC-08–09 |
+| Retirement and migration | All 22 rows, pinned aliases, OpenRouter all models, stale/discovered catalog resurrection, explicit versus automatic selection, credential preservation and all provider UI surfaces | AC-10–11 |
+| Canonical effort | Qwen/DeepSeek aliases rejected with zero requests and no normalization; MiniMax/Grok Build optional U and Pro low U stay distinct | AC-12 |
+| Joint live matrix | Exact model/tool path, omitted plus every admitted V explicit value; N/U remain local tests; no substitution, skipped/denied rows recorded as incomplete | AC-08–09 |
 
 Use wiremock or the repository's existing HTTP-mock approach with injectable
 endpoints; never mutate global production origins to test. Integration tests
@@ -276,8 +362,8 @@ runtime checks are asserted to have run in this spec-only PR.
 Live tests are opt-in after implementation and resource authorization. They
 must use the production options/factory/codec path and record date, commit,
 model, endpoint, effort state, tool mode, transport, timeout/output allowance,
-redacted outcome and resulting validated graph evidence. Cover all ten omitted
-tool rows and each V explicit value on its selected tool path; additionally
+redacted outcome and resulting validated graph evidence. Cover all 17 omitted
+tool rows and each admitted V explicit value on its selected tool path; additionally
 cover tool-free answer, callback and capture integration for each adapter,
 including Anthropic SSE. Test Grok Build directly with omitted effort. Do not
 require a provider-internal effective effort value, force tools on Fable,
@@ -291,17 +377,20 @@ live calls were made while preparing this specification.
 
 After Owner review/merge and the actual Ready for Build gate, implement bounded
 work packages in one delivery unit: (1) matrix/resolver/options and legacy
-fixtures, (2) OpenAI Responses, (3) Anthropic controls, (4) xAI Responses and
-catalog integration, (5) full regression plus joint live evidence. Each package
+fixtures/retirement/migration, (2) OpenAI Responses, (3) Anthropic controls,
+(4) xAI Responses, (5) five Chat profiles and Qwen endpoint setup,
+(6) full catalog/UI regression plus joint live evidence. Each package
 must remain reviewable; none independently fulfills #817. New sub-issues or
 parallel execution are not created by this document.
 
 Reuse reqwest, serde/serde_json, futures and existing error/test libraries.
-No new provider SDK, database or public config migration is required. Verify
+No new provider SDK, database or persisted config schema migration is required. Verify
 provider documentation/access again before release; new contradictory evidence
 requires updating this matrix and its reviews, not runtime guesses.
 
 Rollback means reverting the implementation as one feature and retaining
-legacy persisted config/catalog readability. It must not silently dispatch an
+legacy persisted config/catalog readability. Preserve retirement tombstones
+through any adapter-only rollback; reinstating retired support requires a new
+Owner decision. It must not silently dispatch an
 explicit-effort call through the old adapter. Runtime HTTP failure is not a
 rollback trigger that permits effort downgrade or model substitution.

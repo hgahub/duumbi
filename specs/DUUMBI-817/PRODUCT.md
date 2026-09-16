@@ -1,11 +1,12 @@
-# DUUMBI-817 — Provider Models and Reasoning Effort Support
+# DUUMBI-817 — Provider Catalog Renewal and Native Reasoning Support
 
 Related to #817. Specification only; the execution issue stays open.
 
 ## Authority and status
 
 This revision follows [Stage 5 Accept 5704193547](https://github.com/hgahub/duumbi/issues/817#issuecomment-5704193547)
-of 2026-09-16 and the Owner's manual Desktop handoff. It supersedes the older
+of 2026-09-16, the Owner's manual Desktop handoff, and the later explicit
+[model lifecycle and canonical-effort decisions](MODEL_LIFECYCLE.md). It supersedes the older
 product requirements wherever they conflict. Approval of decision 5655972051
 and its Stage 7 review is historical, not approval of this revision.
 
@@ -32,13 +33,25 @@ provider probes and live benchmark validation. Provider setup remains through
 
 ## Scope
 
-One joint delivery covers these ten models:
+One joint delivery covers **17 models across eight providers**, including the
+existing DeepSeek V4 Pro. The complete exact-ID target and all 22 model
+retirements plus OpenRouter removal are authoritative in
+[MODEL_LIFECYCLE.md](MODEL_LIFECYCLE.md).
 
 | Provider | Required models |
 | --- | --- |
 | OpenAI | GPT-5.6 Luna, Terra, Sol; GPT-6 Astra |
-| Anthropic | Claude Sonnet 5, Opus 5, Haiku 4.5, Fable 5.1 |
+| Anthropic | Claude Sonnet 5, Opus 5, Fable 5.1 |
 | xAI | Grok 4.6; Grok Build 0.1 |
+| MiniMax | MiniMax-M3 |
+| DeepSeek | V4 Pro (retained); V4.1 Flash |
+| Alibaba / Qwen | Qwen3.8-Max; Qwen3.8-Flash |
+| Moonshot | Kimi K3 |
+| Zhipu / Z.ai | GLM-5.3; GLM-5.3 Flash |
+
+The Owner's later scope supersedes the original ten-model/three-provider list.
+Haiku 4.5 is now retired. Google has no curated active model; OpenRouter is
+retired as a provider. Do not add unrequested replacement models.
 
 Include an authoritative model/API/tool/effort matrix, native request mapping,
 response parsing, internal effort propagation, catalog integration, compatibility,
@@ -47,7 +60,7 @@ their tool, text, callback and capture contracts.
 
 Exclude new CLI/TUI effort controls, persisted default effort, new model-selection
 UX, automatic effort policy, cross-provider effort equivalences, new graph
-semantics, arbitrary tools, new provider onboarding, workflow changes, public
+semantics, arbitrary tools, onboarding new provider brands, workflow changes, public
 catalog deployment and unrelated #780 benchmark work. No implementation is
 authorized by this specification task.
 
@@ -65,6 +78,11 @@ The internal caller supplies exactly one of:
    provider/model/API/tool combination. Do not clamp, drop, translate to an
    approximate budget, or choose a different model to make it work.
 
+Only a model's independent native effort levels are admitted. Documented
+provider aliases are rejected with `NonCanonicalEffort` and zero sends, as
+explicitly decided by the Owner. Keep this policy separate from evidence class:
+a documented accepted alias is not falsely labeled undocumented or API-unsupported.
+
 Existing callers default to omitted. Task complexity, performance history and
 catalog ranking must not silently introduce an explicit effort. Internal
 validation harnesses use the same request-options boundary as production.
@@ -73,7 +91,7 @@ Each combination has a dated evidence class:
 
 | Class | Meaning | Dispatch behavior |
 | --- | --- | --- |
-| V | Officially verified support with URL, retrieval date and short excerpt | Dispatch with the reviewed native mapping |
+| V | Officially verified support with URL, retrieval date and short excerpt | Dispatch only if canonical-effort and lifecycle policy also admit it |
 | N | Officially documented non-support | Fail before send: `unsupported capability` |
 | U | Unverified; official confirmation is missing or ambiguous | Fail before send: `unverified capability` |
 
@@ -92,18 +110,23 @@ chain establishing the omitted path, separately from future live evidence.
 ## Compatibility and call outcomes
 
 For named models on their direct native provider endpoints, choose the verified
-API surface even when effort is omitted. For previously supported models
+API surface even when effort is omitted. For non-retired previously supported models
 outside this set, omitted effort preserves endpoint, request shape, headers,
 authentication, model selection and fallback behavior. Unknown, non-retired
 explicit model overrides remain usable through that legacy omitted path.
 Legacy omission is a compatibility exception, not a V capability assertion.
 
-Custom URLs and OpenRouter do not inherit direct-provider capabilities from
+Custom URLs do not inherit direct-provider capabilities from
 model names. An existing custom endpoint with omission retains its existing
 transport. New explicit effort or an API migration needs an internal endpoint
 descriptor naming the exact endpoint and reviewed protocol; no arbitrary URL
 rewriting, origin change or credential redirection is permitted. Without that
 descriptor, reject the new operation as unverified before sending it.
+
+Retirement checks precede every compatibility exception; OpenRouter cannot
+use a custom URL or omitted effort to bypass retirement. Preserve old config
+readability and credentials, but reject explicit retired selections without
+substitution as defined in MODEL_LIFECYCLE.md.
 
 Once an explicit effort request resolves a model, retries must retain its
 identity, endpoint profile and effort. Existing omitted-effort legacy fallback
@@ -122,15 +145,18 @@ The sole delivery owner is unit `provider-reasoning-compatibility`.
 
 | ID | Observable acceptance requirement |
 | --- | --- |
-| AC-817-01 | All ten models have exact IDs, selected API and tool/non-tool modes, V/N/U effort cells, mappings, prerequisites and dated official evidence. All ten omitted native tool paths are V before Stage 9 passes. |
+| AC-817-01 | All 17 models have exact IDs, selected API and tool/non-tool modes, V/N/U effort cells, mappings, prerequisites and dated official evidence. All 17 omitted native tool paths are V before Stage 9 passes. |
 | AC-817-02 | Omitted, explicit none and explicit level remain distinct through resolution, factory, wrappers, all five provider methods and retry. Existing callers supply omitted; no implicit level or invented budget appears. |
 | AC-817-03 | Supported tools and effort use the native compatible surface, including OpenAI Responses. Requested model and effort are preserved; no downgrade or substitution rescues a failed request. |
 | AC-817-04 | N and U fail before HTTP dispatch and graph mutation with different stable, non-transient errors identifying provider/model/API/tool mode/effort and safe evidence references. |
-| AC-817-05 | Existing omitted-effort configs, unknown non-retired overrides, custom endpoints and unrelated compatible providers retain legacy behavior. Explicit effort on an unverified custom endpoint fails locally. |
+| AC-817-05 | Non-retired existing omitted-effort configs, unknown non-retired overrides, custom endpoints and unrelated compatible providers retain legacy behavior. Explicit effort on an unverified custom endpoint fails locally. |
 | AC-817-06 | Tool, answer, callback and capture paths preserve their observable outcomes. Query sends no mutation tools. Partial/invalid output produces no applied patch. |
 | AC-817-07 | Embedded/refreshed catalog handling, deterministic publisher inputs, diagnostics, CLI/REPL/TUI/Studio callers, tests and docs agree. Older catalogs do not invent explicit-effort support or rewrite credentials/configs. |
-| AC-817-08 | Offline tests cover every matrix cell and call path, including zero-send failures, shared-client isolation, identity preservation and catalog compatibility. Live evidence covers all ten omitted tool paths and every V explicit value on its selected tool path, with tool-free and streaming coverage per adapter. |
-| AC-817-09 | One joint release requires all named models and three providers. Missing access, skipped live cells or unresolved mandatory capabilities block completion; they are never converted into passing evidence. |
+| AC-817-08 | Offline tests cover every matrix cell and call path, including zero-send failures, shared-client isolation, identity preservation and catalog compatibility. Live evidence covers all 17 omitted tool paths and every admitted V explicit value on its selected tool path, with tool-free and streaming coverage per adapter. |
+| AC-817-09 | One joint release requires all named models and eight providers. Missing access, skipped live cells or unresolved mandatory capabilities block completion; they are never converted into passing evidence. |
+| AC-817-10 | Exactly 17 curated models/eight active providers remain after the Owner-directed retirements. Tombstones cover old/refreshed/discovered catalogs, probes, explicit calls and fallbacks; no retired explicit choice silently migrates. |
+| AC-817-11 | Old configs remain readable and credentials retained. OpenRouter dispatch/setup is retired; Google has no active curated replacement. CLI/REPL/TUI/Studio agree, and unrelated commands remain quiet and usable. |
+| AC-817-12 | Only independent native effort levels are admitted. Documented aliases produce a distinct non-transient NonCanonicalEffort error before HTTP; no provider alias, invented budget or silent normalization implements a requested level. |
 
 ## BDD scenarios
 
@@ -140,22 +166,27 @@ The sole delivery owner is unit `provider-reasoning-compatibility`.
 | BDD-817-02 | Given each named model and omitted effort, when native tools are requested, then send no effort/thinking override through its V path; never require knowledge of the internal default. This includes Grok Build without an effort field. |
 | BDD-817-03 | Given Astra and explicit none, when any call is attempted, then reject as documented unsupported with zero requests. |
 | BDD-817-04 | Given Grok Build and explicit high, when a call is attempted while that cell is U, then return `unverified capability`, with no fallback and no request. |
-| BDD-817-05 | Given Sonnet/Opus/Haiku and verified explicit none, when a Messages call is built, then use the native disabled-thinking representation; omission must not emit that field. |
-| BDD-817-06 | Given Haiku and named high, when a call is attempted, then reject unsupported; never manufacture `budget_tokens`. Given Fable and none, reject unsupported. |
+| BDD-817-05 | Given Sonnet/Opus and verified explicit none, when a Messages call is built, then use the native disabled-thinking representation; omission must not emit that field. |
+| BDD-817-06 | Given Fable, Kimi K3 or GLM-5.3/Flash and none, reject unsupported with zero sends; never replace none with low. |
 | BDD-817-07 | Given Fable and a V effort, when requesting mutation tools, then use automatic tool choice; never force a named tool or `any`. Text-only output remains text, not a patch. |
-| BDD-817-08 | Given an old catalog/config and custom URL or unrelated provider, when effort is omitted, then preserve the existing request contract. An explicit effort without verified endpoint metadata fails as U. |
+| BDD-817-08 | Given a non-retired old catalog/config and custom URL or unrelated provider, when effort is omitted, then preserve the existing request contract. An explicit effort without verified endpoint metadata fails as U. |
 | BDD-817-09 | Given an explicit effort request and a timeout or rate limit, when retry policy applies, then retain model and effort; do not invoke another provider/model. Legacy omitted fallback is separately regression-tested. |
 | BDD-817-10 | Given tool, text-only, mixed, malformed and truncated responses, when each applicable method parses them, then preserve callbacks/capture and apply only complete validated patches. |
 | BDD-817-11 | Given Query with any allowed effort, when answering, then no mutation tools are sent and no graph/workspace write occurs. |
 | BDD-817-12 | Given a refreshed catalog adds a model or changes reasoning rankings, when it is adopted, then it cannot create verified effort support or change credentials; legacy omission remains available as defined above. |
-| BDD-817-13 | Given nine passing live model tests and absent Grok Build live evidence/access, when release completion is evaluated, then joint delivery remains blocked; this does not block specification review. |
+| BDD-817-13 | Given 16 passing live model tests and absent Grok Build live evidence/access, when release completion is evaluated, then joint delivery remains blocked; this does not block specification review. |
+| BDD-817-14 | Given a retired explicit model or OpenRouter provider, when any probe/answer/tool/capture/retry path is invoked, then fail locally with retirement guidance and no replacement or HTTP call. |
+| BDD-817-15 | Given stale/discovered metadata lists retired models, when loaded or adopted, then those models stay excluded; mixed configs still allow valid providers without erasing credentials. |
+| BDD-817-16 | Given Qwen high/max or DeepSeek Flash medium/xhigh, when requested explicitly, then return NonCanonicalEffort even though the provider accepts the alias; emit zero requests. |
+| BDD-817-17 | Given MiniMax M3 or DeepSeek Flash and explicit none, use the verified disabled-thinking control; omission emits no thinking/effort override. Qwen none uses enable_thinking=false. |
+| BDD-817-18 | Given target catalog refresh, then retain DeepSeek V4 Pro, introduce the seven requested models, remove all listed retirements, and expose exactly 17 curated models across eight providers. |
 
 ## Decomposition decision
 
 Keep #817 together. The matrix, preflight errors, internal options and shared
 transport compatibility are one contract; separate provider releases would
 violate Stage 5. Sequential implementation work packages can cover the common
-boundary, OpenAI, Anthropic, xAI and joint verification after approval. They are
+boundary/lifecycle, OpenAI, Anthropic, xAI, the five compatible providers and joint verification after approval. They are
 not independently shippable sub-issues. No new execution issue is allocated.
 
 ## Evidence standard and remaining validation
@@ -171,8 +202,8 @@ This applies to Grok Build: its model page declares function calling, while xAI
 specifies the common Responses function-tool request/response contract. The
 reviewed omitted route uses both sources; the generic reasoning controls are
 not extrapolated to that model. This corrects the earlier worker's unnecessarily
-strict evidence threshold without changing Stage 5 scope.
+strict evidence threshold without weakening the remaining Stage 5 invariants.
 
-Account entitlement, structured tool output and all requested V combinations
+Account entitlement, structured tool output and all requested admitted V combinations
 must still pass live implementation validation. No provider call or access test
-has been performed in this specification task. No new product decision remains.
+has been performed in this specification task. The Owner resolved the native-level/alias decision; no product question remains.
