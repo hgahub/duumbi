@@ -86,12 +86,37 @@ test('unknown clarification owner fails before recording a decision', async () =
 });
 
 
-test('only accepted Stage 5 Slack summaries emit the canonical decision ID event', async () => {
+test('Stage 5 Accept stores the Desktop prompt on GitHub and sends it once without a worker event', async () => {
+  for (const manual of [false, true]) {
+    const env = { SLACK_BOT_TOKEN: 'fake-test-only', SLACK_REVIEW_CHANNEL_ID: 'test-channel', INPUT_SLACK_RESPONSE_URL: 'https://example.test/response' };
+    const accepted = await runDecision({ decision: 'approve' }, { env, manual, labels: ['needs-human-review', 'spec-automation'] });
+    assert.ok(accepted.calls.some(([kind, name]) => kind === 'remove' && name === 'spec-automation'));
+    assert.deepEqual(accepted.failures, []);
+    const messages = accepted.calls.filter(([kind]) => kind === 'slack');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0][1].channel, 'test-channel');
+    const prompt = accepted.comments[0].body.split('```text\n')[1].split('```')[0].trim();
+    assert.match(prompt, /duumbi-spec-desktop/);
+    assert.match(prompt, /Do not merge, start implementation or Stage 10/);
+    assert.ok(messages[0][1].text.includes(prompt));
+    assert.doesNotMatch(messages[0][1].text, /DUUMBI_SPEC_EVENT|duumbi-spec-autopilot/);
+    const replay = await runDecision({ decision: 'approve' }, { env, manual, comments: accepted.comments, labels: ['accepted', 'needs-spec'] });
+    assert.deepEqual(replay.calls, []);
+  }
+});
+test('Stage 5 Desktop handoff uses response URL when channel credentials are absent', async () => {
+  const accepted = await runDecision({ decision: 'approve' }, { env: { INPUT_SLACK_RESPONSE_URL: 'https://example.test/response' } });
+  const messages = accepted.calls.filter(([kind]) => kind === 'slack');
+  assert.equal(messages.length, 1);
+  assert.match(messages[0][1].text, /duumbi-spec-desktop/);
+  assert.equal(messages[0][1].replace_original, false);
+});
+test('non-accept decisions never emit a specification prompt or worker event', async () => {
   const env = { SLACK_BOT_TOKEN: 'fake-test-only', SLACK_REVIEW_CHANNEL_ID: 'test-channel' };
-  const accepted = await runDecision({ decision: 'approve' }, { env });
-  const message = accepted.calls.find(([kind]) => kind === 'slack')[1].text;
-  const payload = JSON.parse(message.split('\n').find((line) => line.startsWith('DUUMBI_SPEC_EVENT_V1 ')).slice('DUUMBI_SPEC_EVENT_V1 '.length));
-  assert.deepEqual(payload, { version: 1, repo: 'hgahub/duumbi', issue: 123, decision: accepted.comments[0].id });
-  const rejected = await runDecision({ decision: 'reject', rationale: 'Outside scope' }, { env });
-  assert.doesNotMatch(rejected.calls.find(([kind]) => kind === 'slack')[1].text, /DUUMBI_SPEC_EVENT/);
+  for (const decision of ['reject', 'needs-clarification']) {
+    const result = await runDecision({ decision, rationale: 'Requires owner attention', clarification_question: 'Which scope?', clarification_owner: 'hgahub' }, { env });
+    assert.deepEqual(result.failures, []);
+    assert.doesNotMatch(result.comments[0].body, /duumbi-spec-desktop/);
+    assert.doesNotMatch(result.calls.find(([kind]) => kind === 'slack')[1].text, /DUUMBI_SPEC_EVENT|duumbi-spec-desktop/);
+  }
 });
