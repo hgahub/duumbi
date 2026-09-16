@@ -1,3 +1,8 @@
+> **RETIRED — 2026-09-16.** Do not install or run the Grok Spec bot, skill or routines below.
+> These instructions are historical recovery documentation only. Disable the three saved
+> routines, preserve existing evidence, and use [manual Codex Desktop specification](manual-spec-handoff.md).
+> Stage 5 no longer emits worker events. The Owner starts the Desktop task manually.
+
 # Grok Spec routines — autonomous work and interactive handoff
 
 Replace the existing three routines after deploying this worker. Keep their current

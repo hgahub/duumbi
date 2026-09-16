@@ -1,11 +1,9 @@
 # DUUMBI Agentic Development Orchestration
 
-> **Stage 6–9 event worker:** The Grok VM path uses Stage 6 → independent Stage 7 →
-> Stage 8 → independent Stage 9, with a human spec-PR merge and deterministic finalization
-> to Ready for Build. It does not enter Stage 10. See [setup and recovery](grok-spec-setup.md)
-> and `duumbi-spec-autopilot`. Combined drafting/delivery paths below remain legacy/manual
-> alternatives and must not process the same `spec-automation` job concurrently.
-
+> **Stage 6–9 manual Desktop handoff:** Stage 5 records the specification prompt on the
+> GitHub issue and sends it once to Slack. The Owner submits it in Codex Desktop with
+> `duumbi-spec-desktop`. The Grok VM specification worker is retired; no automatic spec
+> task starts. See [manual handoff and migration](manual-spec-handoff.md).
 
 This document records the repository-side implementation of the redesigned
 DUUMBI intake-to-delivery workflow. The canonical operating model remains the
@@ -219,12 +217,11 @@ workflow state. If the PR is draft, dirty, not spec-only, missing required
 reviewer submissions, or has unresolved review threads, the workflow fails
 closed or defers notification.
 
-The Stage 5 approval prompt is intentionally a combined spec handoff: it
-instructs Codex to draft the product spec and the technical spec together,
-without waiting for external review between them, then run the Stage 7 and
-Stage 9 gates, merge the spec-only PR(s), move the issue to `Ready for Build`,
-and send the Stage 10 implementation prompt. The Stage 7 approval prompt
-remains a Stage 8-to-Ready handoff for issues that took the human review path.
+The Stage 5 approval prompt starts no work by itself. The Owner submits it in Codex
+Desktop to draft and review product/technical specifications (Stages 6–9), ending in a
+spec-only PR for human review and merge. This handoff does not authorize automatic merge
+or Stage 10. The broader delivery-autopilot requires a separate explicit request. Existing
+Stage 7/9 human approval workflows retain the merge-gate behavior described above.
 
 `ready-for-build-handoff.yml` is the fallback and retry path for the Stage 10
 Slack handoff. It posts when `tech-spec-approved` is added and also scans for

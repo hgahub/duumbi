@@ -183,7 +183,7 @@ For `Accept`:
 - add existing `accepted` and `needs-spec` labels when available
 - remove existing `needs-human-review` when available
 - do not create a product spec
-- next stage: combined spec drafting (Stage 6 product spec immediately followed by Stage 8 technical spec, no review wait between them); the user pastes the generated prompt into Codex App
+- next stage: the workflow records the manual Stage 6–9 prompt on GitHub and sends it once to Slack; the Owner submits it in Codex Desktop with duumbi-spec-desktop. No worker event, automatic task or implementation starts.
 
 For `Needs Clarification`:
 

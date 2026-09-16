@@ -153,7 +153,7 @@ jobs:
                 approve: {
                   label: 'Accept',
                   add: ['accepted', 'needs-spec'],
-                  remove: ['needs-human-review', 'needs-clarification'],
+                  remove: ['needs-human-review', 'needs-clarification', 'spec-automation'],
                   projectStatus: 'Spec Needed',
                   nextState: 'Spec Needed',
                   nextStage: 'Stage 6 Spec Preparation',
@@ -337,10 +337,13 @@ jobs:
 
               if (stage === '5') {
                 return [
-                  'Run DUUMBI Stage 6–9 with duumbi-spec-autopilot.',
+                  'Use duumbi-spec-desktop in Codex Desktop for manually initiated Stage 6–9 specification.',
                   '',
                   `Target issue: ${issueUrl}`,
-                  'The Grok VM worker validates this human acceptance, drafts and independently reviews product and technical specs, and opens one spec-only PR. Human merge remains required. Stop at Ready for Build; do not start Stage 10.',
+                  'Read the latest Stage 5 Accept decision and its rationale on the issue; revised Owner decisions take precedence over older drafts and intake text.',
+                  'Inspect AGENTS.md, current source and retained research. Prepare PRODUCT.md and TECHNICAL.md, assess decomposition, and review them against the accepted scope. Ask the Owner directly in this Desktop task when a product decision is needed.',
+                  `Expected artifacts: specs/DUUMBI-${issueNumber}/PRODUCT.md and specs/DUUMBI-${issueNumber}/TECHNICAL.md in a spec-only PR. Record Stage 7 and Stage 9 review findings and resolve blockers.`,
+                  'Stop with the reviewed spec PR and an Owner summary. Do not merge, start implementation or Stage 10, invoke the retired Grok worker, enqueue jobs, or require VM checkpoint continuation.',
                   `Spec-only PR rule: use non-closing references such as "Related to #${issueNumber}". Leave the execution issue open.`,
                 ].join('\n');
               }
@@ -832,12 +835,15 @@ jobs:
             }[decision] || 'ℹ️';
             const slackEscape = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const safeTitle = slackEscape(issue.title).slice(0, 60);
-            const summary = [
+            const desktopHandoff = stage === '5' && decision === 'approve';
+            const summary = desktopHandoff ? [
+              `✅ Stage 5 Accept — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
+              `Decision: ${posted.html_url}`,
+              'Paste this prompt into a new Codex Desktop task. Specification starts only when you submit it:',
+              '```', slackEscape(nextCodexPrompt), '```',
+            ].join('\n') : [
               `${decisionEmoji} Stage ${stage} *${dc.label}* — <${issueUrl}|#${issueNumber} ${safeTitle}>`,
               `• Decision comment: ${posted.html_url}`,
-              stage === '5' && decision === 'approve' && Number.isSafeInteger(posted.id)
-                ? `DUUMBI_SPEC_EVENT_V1 ${JSON.stringify({ version: 1, repo: `${owner}/${repo}`, issue: issueNumber, decision: posted.id })}`
-                : null,
               stage === '5' && decision === 'needs-clarification' ? `• Owner: ${slackEscape(stage5Details.details.clarification_owner)}\n• Question: ${slackEscape(stage5Details.details.clarification_question)}\n• Continue: owner posts an @Clarification comment on the issue; human acceptance remains required.` : null,
               prCommentUrl ? `• PR comment: ${prCommentUrl}` : null,
               specPrMerge?.mergeSha ? `• Spec PR merged: ${specPrMerge.mergeSha}` : null,
@@ -849,7 +855,10 @@ jobs:
 
             // Reply in Slack thread via response_url (from button click)
             const slackResponseUrl = process.env.INPUT_SLACK_RESPONSE_URL;
-            if (slackResponseUrl) {
+            const slackToken = process.env.SLACK_BOT_TOKEN;
+            const slackChannel = process.env.SLACK_REVIEW_CHANNEL_ID;
+            // A Stage 5 Accept emits one handoff: channel preferred, response URL fallback.
+            if (slackResponseUrl && !(desktopHandoff && slackToken && slackChannel)) {
               try {
                 await fetch(slackResponseUrl, {
                   method: 'POST',
@@ -862,8 +871,6 @@ jobs:
             }
 
             // Post to review channel
-            const slackToken = process.env.SLACK_BOT_TOKEN;
-            const slackChannel = process.env.SLACK_REVIEW_CHANNEL_ID;
             if (slackToken && slackChannel && !(context.eventName === 'pull_request' && reusedDecisionComment)) {
               try {
                 const res = await fetch('https://slack.com/api/chat.postMessage', {

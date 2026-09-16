@@ -152,3 +152,10 @@ Project v2 status-update permission/API issue, not missing project membership.
    present.
 6. If more than 10 unnotified issues exist, confirm that only 10 are processed in
    one hourly run and the rest remain eligible for later sweeps.
+
+## After Accept: manual Desktop handoff
+
+Stage 5 persists the decision and `duumbi-spec-desktop` prompt on the issue, then sends
+one prompt message to Slack. It emits no Grok worker event. The Owner starts Stage 6–9
+manually in Codex Desktop. See [manual handoff](manual-spec-handoff.md), including retirement
+of the old three Grok routines and migration of already accepted issues.
