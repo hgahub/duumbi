@@ -6,10 +6,10 @@ license = "MPL-2.0"
 
 [dependencies]
 duumbi = { path = "../.." }
-leptos = "0.8.20"
+leptos = "0.8.21"
 leptos_axum = { version = "0.8.10", optional = true }
-leptos_router = "0.8.15"
-leptos_meta = "0.8.6"
+leptos_router = "0.8.16"
+leptos_meta = "0.8.7"
 leptos_config = "0.8.10"
 axum = { version = "0.8.9", optional = true }
 tokio = { version = "1.53.1", features = ["full"], optional = true }
