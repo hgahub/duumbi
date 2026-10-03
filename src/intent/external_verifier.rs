@@ -12,7 +12,6 @@ pub trait ExternalVerifier: Send + Sync {
     /// Adds stable execution inputs before the intent is saved and hashed.
     fn prepare_spec(&self, spec: &mut IntentSpec);
     /// Verifies the authored workspace and retains implementation-specific evidence.
-    #[must_use]
     fn verify<'a>(
         &'a mut self,
         workspace: &'a Path,
