@@ -20,13 +20,13 @@ cranelift-frontend = "0.136.2"
 cranelift-module = "0.136.2"
 cranelift-object = "0.136.2"
 target-lexicon = "0.13.5"
-toml = "1.1.6"
+toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "signal", "net", "io-util", "time"] }
 reqwest = { version = "0.13.5", features = ["json", "stream"] }
 ratatui = { version = "0.30.2", features = ["crossterm"] }
-ratatui-textarea = "0.9.2"
+ratatui-textarea = "0.9.3"
 crossterm = "0.29.0"
 pulldown-cmark = "0.13.4"
 futures-util = "0.3.34"
