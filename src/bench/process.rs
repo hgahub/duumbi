@@ -235,18 +235,8 @@ impl ProcessVerifier {
     /// Uses the running CLI, or its adjacent CLI binary in a Cargo test run.
     #[must_use = "verifier setup failures must be handled"]
     pub fn for_current_executable() -> Result<Self, ProcessFailure> {
-        let mut path =
-            std::env::current_exe().map_err(|e| infrastructure(ProcessStage::Setup, e))?;
-        if path
-            .parent()
-            .and_then(Path::file_name)
-            .is_some_and(|name| name == "deps")
-        {
-            path.pop();
-            path.pop();
-            path.push("duumbi");
-        }
-        Self::new(path, ProcessLimits::default())
+        let path = std::env::current_exe().map_err(|e| infrastructure(ProcessStage::Setup, e))?;
+        Self::new(cli_executable(&path), ProcessLimits::default())
     }
 
     /// Adds the selected port to the intent before any provider mutation.
@@ -479,6 +469,25 @@ impl ProcessVerifier {
         }
         evidence
     }
+}
+
+fn cli_executable(path: &Path) -> PathBuf {
+    let profile = path.parent().and_then(|parent| {
+        if parent.ends_with("deps") {
+            parent.parent()
+        } else if parent.ends_with("out")
+            && parent
+                .ancestors()
+                .nth(2)
+                .is_some_and(|p| p.ends_with("build"))
+        {
+            // Newer Cargo places test binaries in build/<package-hash>/out/.
+            parent.ancestors().nth(3)
+        } else {
+            None
+        }
+    });
+    profile.map_or_else(|| path.to_path_buf(), |dir| dir.join("duumbi"))
 }
 
 impl ExternalVerifier for ProcessVerifier {
@@ -796,6 +805,25 @@ mod tests {
 
     fn expected() -> Value {
         json!({"service":"scaled-http-sqlite-json", "route":"/facts", "count":1, "first_fact":"Ada Lovelace", "storage":"sqlite-memory"})
+    }
+
+    #[test]
+    fn cli_resolution_supports_cargo_test_layouts_and_installed_binaries() {
+        for (executable, cli) in [
+            ("/target/debug/deps/test-hash", "/target/debug/duumbi"),
+            (
+                "/target/llvm-cov-target/debug/build/duumbi-hash/out/test-hash",
+                "/target/llvm-cov-target/debug/duumbi",
+            ),
+            (
+                "/target/release/build/duumbi-hash/out/test-hash",
+                "/target/release/duumbi",
+            ),
+            ("/usr/local/bin/duumbi", "/usr/local/bin/duumbi"),
+            ("/opt/out/duumbi", "/opt/out/duumbi"),
+        ] {
+            assert_eq!(cli_executable(Path::new(executable)), Path::new(cli));
+        }
     }
 
     #[test]
