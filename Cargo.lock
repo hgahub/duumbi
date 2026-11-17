@@ -1269,7 +1269,7 @@ dependencies = [
 [[package]]
 name = "duumbi-registry"
 version = "0.1.0"
-source = "git+https://github.com/hgahub/duumbi-registry.git?rev=cb90fa0e063cc4f946316b7ddf7315d6719ebfab#cb90fa0e063cc4f946316b7ddf7315d6719ebfab"
+source = "git+https://github.com/hgahub/duumbi-registry.git?rev=679eeb7ed166f2f02bb095b74f24b212d17f55d4#679eeb7ed166f2f02bb095b74f24b212d17f55d4"
 dependencies = [
  "anyhow",
  "argon2",
