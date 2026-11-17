@@ -475,14 +475,14 @@ fn cli_executable(path: &Path) -> PathBuf {
     let profile = path.parent().and_then(|parent| {
         if parent.ends_with("deps") {
             parent.parent()
-        } else if parent.ends_with("out")
-            && parent
+        } else if parent.ends_with("out") {
+            // Cargo uses build/<package-hash>/out or build/<package>/<hash>/out.
+            parent
                 .ancestors()
-                .nth(2)
-                .is_some_and(|p| p.ends_with("build"))
-        {
-            // Newer Cargo places test binaries in build/<package-hash>/out/.
-            parent.ancestors().nth(3)
+                .skip(2)
+                .take(2)
+                .find(|dir| dir.ends_with("build"))
+                .and_then(Path::parent)
         } else {
             None
         }
@@ -813,6 +813,10 @@ mod tests {
             ("/target/debug/deps/test-hash", "/target/debug/duumbi"),
             (
                 "/target/llvm-cov-target/debug/build/duumbi-hash/out/test-hash",
+                "/target/llvm-cov-target/debug/duumbi",
+            ),
+            (
+                "/target/llvm-cov-target/debug/build/duumbi/fed3db876a07e3d6/out/integration_duumbi780_process_evidence-fed3db876a07e3d6",
                 "/target/llvm-cov-target/debug/duumbi",
             ),
             (
