@@ -50,6 +50,6 @@ libc = "0.2.191"
 
 [dev-dependencies]
 axum = "0.8.9"
-duumbi-registry = { git = "https://github.com/hgahub/duumbi-registry.git", rev = "a3adef41242229feaf00f5352fee7d7a7c5891ce" }
+duumbi-registry = { git = "https://github.com/hgahub/duumbi-registry.git", rev = "cb90fa0e063cc4f946316b7ddf7315d6719ebfab" }
 rustls = { version = "0.23.46", default-features = false }
 wiremock = "0.6.5"
